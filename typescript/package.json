@@ -1,5 +1,5 @@
 {
-  "name": "@arker/sdk",
+  "name": "@arker-ai/sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for the Arker virtual computer platform — spawn sandboxed VMs, run code, sync files.",
   "type": "module",

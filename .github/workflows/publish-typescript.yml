@@ -6,7 +6,7 @@ name: Publish TypeScript SDK
 # Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret needed.
 # One-time setup on npmjs.com:
 #   1. Create the `arker` org (https://www.npmjs.com/org/create) and
-#      claim the `@arker/sdk` package by publishing once manually OR by
+#      claim the `@arker-ai/sdk` package by publishing once manually OR by
 #      pre-registering it via the org's Packages page.
 #   2. On the package's "Settings → Trusted publishers" page add:
 #        Provider:        GitHub Actions
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: npm
-      url: https://www.npmjs.com/package/@arker/sdk
+      url: https://www.npmjs.com/package/@arker-ai/sdk
     permissions:
       id-token: write   # required for npm Trusted Publishing OIDC
       contents: read

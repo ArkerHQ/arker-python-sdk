@@ -3,7 +3,7 @@
  *
  * Quickstart:
  *
- *   import { Arker } from "@arker/sdk";
+ *   import { Arker } from "@arker-ai/sdk";
  *   const arker = new Arker({ apiKey: "ark_live_..." });
  *   const vm    = await arker.vm("arkuntu").fork({ name: "hello" });
  *

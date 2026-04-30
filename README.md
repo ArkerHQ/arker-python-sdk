@@ -84,7 +84,7 @@ from the SDK — same filesystem, same view, both directions.
 | Language   | Package                                                | Source                        | Status |
 |------------|--------------------------------------------------------|-------------------------------|--------|
 | Python     | [`arker`](https://pypi.org/project/arker/)             | [`python/`](./python)         | alpha  |
-| TypeScript | [`@arker/sdk`](https://www.npmjs.com/package/@arker/sdk) | [`typescript/`](./typescript) | alpha  |
+| TypeScript | [`@arker-ai/sdk`](https://www.npmjs.com/package/@arker-ai/sdk) | [`typescript/`](./typescript) | alpha  |
 
 Each SDK lives in its own subdirectory with a dedicated README and tests.
 See [`python/README.md`](./python/README.md) for the full Python API

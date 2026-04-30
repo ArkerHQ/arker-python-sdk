@@ -8,7 +8,7 @@ the platform's built-in `fetch` and `crypto`).
 ## Install
 
 ```bash
-npm install @arker/sdk
+npm install @arker-ai/sdk
 ```
 
 Works in Node ≥ 18. ESM + CJS + types all included.
@@ -16,7 +16,7 @@ Works in Node ≥ 18. ESM + CJS + types all included.
 ## Quickstart
 
 ```ts
-import { Arker, ArkerError } from "@arker/sdk";
+import { Arker, ArkerError } from "@arker-ai/sdk";
 
 const arker = new Arker({ apiKey: "ark_live_..." });
 const vm    = await arker.vm("arkuntu").fork({ name: "hello" });
