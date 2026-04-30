@@ -1,0 +1,55 @@
+name: Publish Python SDK
+
+# Triggers on `python-v*` tags (e.g. `python-v0.1.0`). Tag prefix
+# distinguishes Python releases from future TS / other-language ones in
+# this monorepo.
+#
+# Uses PyPI Trusted Publishing (OIDC). One-time setup on PyPI:
+#   1. Create a "pending publisher" or claim the project once.
+#   2. Add a Trusted Publisher with:
+#        Owner:           ArkerHQ
+#        Repository:      arker-sdks
+#        Workflow name:   publish-python.yml
+#        Environment:     pypi   (matches the `environment:` below)
+
+on:
+  push:
+    tags: ["python-v*"]
+
+defaults:
+  run:
+    working-directory: python
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/arker
+    permissions:
+      id-token: write   # required for Trusted Publishing OIDC
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Verify built version matches tag
+        run: |
+          tag="${GITHUB_REF#refs/tags/python-v}"
+          built=$(ls dist/arker-*.whl | sed -E 's/.*arker-([^-]+)-.*/\1/')
+          if [ "$tag" != "$built" ]; then
+            echo "Tag python-v$tag does not match built version $built"
+            exit 1
+          fi
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist
