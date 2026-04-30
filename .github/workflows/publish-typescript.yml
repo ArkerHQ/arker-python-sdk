@@ -58,4 +58,4 @@ jobs:
       - name: Publish to npm
         run: npm publish --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}   # OIDC fills this when configured
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}   # repo secret. Once Trusted Publishing is configured on npm, swap in OIDC.
