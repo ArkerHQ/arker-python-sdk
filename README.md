@@ -1,7 +1,22 @@
+<div align="center">
+
 # Arker SDKs
 
-Official client libraries for [Arker](https://arker.ai) — spawn isolated
-Linux VMs, run code in them, sync files in and out. Three primitives.
+**Spawn isolated Linux VMs in milliseconds. Run code. Sync files.**
+
+Three primitives. Zero infrastructure.
+
+[![PyPI](https://img.shields.io/pypi/v/arker.svg?style=flat-square)](https://pypi.org/project/arker/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square)](./LICENSE)
+[![Python](https://img.shields.io/pypi/pyversions/arker.svg?style=flat-square)](https://pypi.org/project/arker/)
+
+[Quickstart](#quickstart) · [Primitives](#the-three-primitives) · [Python SDK](./python) · [arker.ai](https://arker.ai)
+
+</div>
+
+---
+
+## Quickstart
 
 ```bash
 pip install arker
@@ -12,9 +27,16 @@ from arker import Arker
 
 arker = Arker(api_key="ark_live_...")
 vm    = arker.vm("arkuntu").fork(name="hello")
+result = vm.run("python3 -c 'print(2+2)'")
+print(result.stdout.decode())   # → "4\n"
+vm.delete()
 ```
 
-## fork — instant VMs
+---
+
+## The three primitives
+
+### `fork` &nbsp;·&nbsp; instant VMs
 
 ```python
 vm    = arker.vm("arkuntu").fork()       # fresh VM from a base image
@@ -22,13 +44,13 @@ child = vm.fork(name="branch")           # branch an existing VM
 ```
 
 Constant-time. The child is bit-identical to its parent at the moment
-of fork — same files, same processes' last state, same everything —
+of fork — same files, same last-known process state, same everything —
 and from that moment on, writes to either side don't affect the other.
-Fork to spin up a clean environment, branch off a known-good state to
-try a risky operation, or run N variants in parallel from one
+Fork to spin up a clean environment, branch a known-good state to try
+a risky operation, or run *N* variants in parallel from a single
 configured VM.
 
-## run — execute anything
+### `run` &nbsp;·&nbsp; execute anything
 
 ```python
 result = vm.run("python3 -c 'print(2+2)'")
@@ -36,47 +58,44 @@ print(result.stdout.decode())            # → "4\n"
 print(result.exit_code, result.duration_ms)
 ```
 
-Run shell, Python, or Node — anything installed inside the VM. State
-persists across calls in a session, so a `cd /tmp` sticks for the next
-`ls`, and Python globals defined in one `vm.run(...)` are still there
-in the next. Every call returns a structured `RunResult` with
-`stdout`, `stderr`, `exit_code`, `duration_ms`, and `cwd` — no parsing
-required.
+Shell, Python, Node — anything installed inside the VM. State persists
+across calls in a session, so a `cd /tmp` sticks for the next `ls`,
+and Python globals defined in one `vm.run(...)` are still there in the
+next. Every call returns a structured `RunResult` with `stdout`,
+`stderr`, `exit_code`, `duration_ms`, and `cwd` — no parsing required.
 
-## sync — file I/O without size limits
+### `sync` &nbsp;·&nbsp; file I/O up to 100 MB
 
 ```python
 vm.sync.write_file("/home/user/data.bin", b"...")
 back = vm.sync.read_file("/home/user/data.bin")    # → bytes
 ```
 
-Read and write raw bytes. No encoding to think about, no chunking, no
-practical size cap — small payloads go in one round-trip, larger ones
-take a direct upload path the SDK manages for you. Files written from
-the SDK are immediately visible to shell commands inside the VM, and
-files the VM writes are readable from the SDK — same filesystem, same
-view, both directions.
+Read and write raw bytes — files up to 100 MB. Small payloads go in
+one round-trip; larger ones take a direct upload path the SDK manages
+transparently. Files written from the SDK are immediately visible to
+shell commands inside the VM, and files the VM writes are readable
+from the SDK — same filesystem, same view, both directions.
 
 ---
 
 ## Languages
 
-| Language   | Package                                    | Path                  | Status |
+| Language   | Package                                    | Source                | Status |
 |------------|--------------------------------------------|-----------------------|--------|
 | Python     | [`arker`](https://pypi.org/project/arker/) | [`python/`](./python) | alpha  |
-| TypeScript | (coming soon)                              | —                     | —      |
+| TypeScript | _coming soon_                              | —                     | —      |
 
-Each language SDK lives in its own subdirectory, with its own README
-and tests. See [`python/README.md`](./python/README.md) for the full
-Python API.
+Each SDK lives in its own subdirectory with a dedicated README and tests.
+See [`python/README.md`](./python/README.md) for the full Python API
+reference.
 
 ## Releasing
 
-Each SDK uses tag-prefixed releases so they version independently:
+Each SDK is versioned independently via tag-prefixed releases:
 
-- **Python** — push tag `python-vX.Y.Z` (must match `python/pyproject.toml`).
-  GitHub Actions builds a wheel and publishes to PyPI via Trusted
-  Publishing — no token to manage.
+- **Python** — push `python-vX.Y.Z` (must match `python/pyproject.toml`).
+  GitHub Actions builds and publishes to PyPI via Trusted Publishing.
 
 ## License
 

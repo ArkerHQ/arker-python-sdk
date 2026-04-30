@@ -100,14 +100,14 @@ except ArkerError as err:
 
 Hidden behind these six methods:
 
-- **Write strategy**: small files go in one call; larger files use a
-  direct upload bypass so the bytes don't traverse the API layer.
-  `write_file` always returns once the bytes are durably stored.
+- **Write strategy**: files up to 100 MB. Small payloads go in one call;
+  larger ones use a direct upload path so the bytes don't traverse the
+  API layer. `write_file` returns once the bytes are durably stored.
 - **Read coalescing**: `read_file` always returns raw `bytes`, regardless
-  of whether the server inlined the content or returned a presigned URL.
+  of whether the server inlined the content or returned a signed URL.
 - **Idempotent retry**: transient errors are retried with exponential
   backoff. Writes are server-side idempotent on `upload_id`, so retries
-  never produce duplicate writes.
+  never produce duplicates.
 - **Path validation**: only `/home/user/...` paths accepted; `..` rejected.
 
 ## Demo / smoke test
