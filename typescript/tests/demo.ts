@@ -140,8 +140,11 @@ try {
 
   // ── 8. writeFile (large / presigned bypass) ────────────────────
   section("vm.sync.writeFile(big_blob) — large payload uses presigned upload");
+  // crypto.getRandomValues has a 64 KB per-call limit; fill in chunks.
   const payloadBig = new Uint8Array(8 * 1024 * 1024);
-  crypto.getRandomValues(payloadBig);
+  for (let off = 0; off < payloadBig.length; off += 65536) {
+    crypto.getRandomValues(payloadBig.subarray(off, Math.min(off + 65536, payloadBig.length)));
+  }
   const t0 = Date.now();
   await vm.sync.writeFile("/home/user/big.bin", payloadBig);
   check("8 MiB write returned", true, `${Date.now() - t0}ms`);
