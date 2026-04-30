@@ -6,17 +6,19 @@
 
 Three primitives. Zero infrastructure.
 
-[![PyPI](https://img.shields.io/pypi/v/arker.svg?style=flat-square)](https://pypi.org/project/arker/)
+[![PyPI](https://img.shields.io/pypi/v/arker.svg?style=flat-square&label=pypi)](https://pypi.org/project/arker/)
+[![npm](https://img.shields.io/npm/v/@arker-ai/sdk.svg?style=flat-square&label=npm)](https://www.npmjs.com/package/@arker-ai/sdk)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square)](./LICENSE)
-[![Python](https://img.shields.io/pypi/pyversions/arker.svg?style=flat-square)](https://pypi.org/project/arker/)
 
-[Quickstart](#quickstart) · [Primitives](#the-three-primitives) · [Python SDK](./python) · [arker.ai](https://arker.ai)
+[Quickstart](#quickstart) · [Primitives](#the-three-primitives) · [Python](./python) · [TypeScript](./typescript) · [arker.ai](https://arker.ai)
 
 </div>
 
 ---
 
 ## Quickstart
+
+### Python
 
 ```bash
 pip install arker
@@ -32,9 +34,27 @@ print(result.stdout.decode())   # → "4\n"
 vm.delete()
 ```
 
+### TypeScript
+
+```bash
+npm install @arker-ai/sdk
+```
+
+```ts
+import { Arker } from "@arker-ai/sdk";
+
+const arker = new Arker({ apiKey: "ark_live_..." });
+const vm    = await arker.vm("arkuntu").fork({ name: "hello" });
+const result = await vm.run("node -e 'console.log(2+2)'");
+console.log(new TextDecoder().decode(result.stdout));   // → "4\n"
+await vm.delete();
+```
+
 ---
 
 ## The three primitives
+
+> Examples below use Python; TypeScript is identical in shape with `await` on every call. See [`typescript/README.md`](./typescript/README.md) for the equivalent surface.
 
 ### `fork` &nbsp;·&nbsp; instant VMs
 

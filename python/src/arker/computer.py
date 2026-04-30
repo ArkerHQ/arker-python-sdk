@@ -139,12 +139,14 @@ class Arker:
         headers = {"authorization": f"Bearer {self._api_key}", "content-type": "application/json"}
         data = json.dumps(body).encode() if body is not None else None
         url = (base_url.rstrip("/") if base_url else self._base_url) + path
-        last_status, last_err, last_payload = 0, None, None
+        last_status, last_err = 0, None
+        last_text = ""
         for attempt in range(MAX_ATTEMPTS):
             status, raw = _http(method, url, headers, data)
             try: payload = json.loads(raw) if raw else {}
             except json.JSONDecodeError: payload = None
-            last_status, last_payload = status, payload
+            last_status = status
+            last_text = (raw or b"").decode("utf-8", "replace").strip()
             envelope_err = (payload.get("error") if isinstance(payload, dict) and payload.get("ok") is False else None)
             last_err = envelope_err
             if status in RETRYABLE_HTTP or _is_transient(envelope_err):
@@ -154,11 +156,11 @@ class Arker:
             if envelope_err is not None:
                 raise ArkerError(envelope_err.get("code", "internal"), envelope_err.get("message", ""), status)
             if status >= 400:
-                raise ArkerError("internal", str(payload)[:200], status)
+                raise ArkerError("internal", last_text[:200] or f"HTTP {status}", status)
             return payload  # type: ignore[return-value]
         if last_err is not None:
             raise ArkerError(last_err.get("code", "internal"), last_err.get("message", ""), last_status)
-        raise ArkerError("internal", str(last_payload)[:200], last_status)
+        raise ArkerError("internal", last_text[:200] or f"HTTP {last_status} after {MAX_ATTEMPTS} attempts", last_status)
 
     def vm(self, vm_id: str) -> "Computer":
         """Open a handle to a VM by ULID *or* by template name (e.g.

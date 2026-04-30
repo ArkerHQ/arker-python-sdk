@@ -30,7 +30,7 @@ const SOURCE_VM = process.env.ARKER_SOURCE_VM ?? "arkuntu";
 const origFetch = globalThis.fetch;
 globalThis.fetch = (async (input: any, init?: any) => {
   const url = typeof input === "string" ? input : input.url;
-  const method = init?.method ?? (typeof input === "object" && input.method) ?? "GET";
+  const method = init?.method ?? (typeof input === "object" ? input.method : undefined) ?? "GET";
   const body = init?.body;
   let bodyPreview = "";
   if (body) {

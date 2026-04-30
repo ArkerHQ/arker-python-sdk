@@ -213,7 +213,7 @@ export class Arker {
         payload = null;
       }
       lastStatus = resp.status;
-      lastText = text;
+      lastText = text.trim();
 
       const envelopeErr =
         payload && typeof payload === "object" && payload.ok === false
@@ -230,7 +230,7 @@ export class Arker {
         throw new ArkerError(envelopeErr.code ?? "internal", envelopeErr.message ?? "", resp.status);
       }
       if (resp.status >= 400) {
-        throw new ArkerError("internal", text.slice(0, 200) || "request failed", resp.status);
+        throw new ArkerError("internal", lastText.slice(0, 200) || `HTTP ${resp.status}`, resp.status);
       }
       return payload as T;
     }
@@ -238,7 +238,11 @@ export class Arker {
     if (lastErr) {
       throw new ArkerError(lastErr.code ?? "internal", lastErr.message ?? "", lastStatus);
     }
-    throw new ArkerError("internal", lastText.slice(0, 200) || "no response", lastStatus);
+    throw new ArkerError(
+      "internal",
+      lastText.slice(0, 200) || `HTTP ${lastStatus} after ${MAX_ATTEMPTS} attempts`,
+      lastStatus,
+    );
   }
 
   /** Open a handle to a VM by ULID *or* template name. No network call. */
