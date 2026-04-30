@@ -1,0 +1,61 @@
+name: Publish TypeScript SDK
+
+# Triggers on `typescript-v*` tags (e.g. `typescript-v0.1.0`). Tag prefix
+# distinguishes TS releases from Python ones in this monorepo.
+#
+# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret needed.
+# One-time setup on npmjs.com:
+#   1. Create the `arker` org (https://www.npmjs.com/org/create) and
+#      claim the `@arker/sdk` package by publishing once manually OR by
+#      pre-registering it via the org's Packages page.
+#   2. On the package's "Settings → Trusted publishers" page add:
+#        Provider:        GitHub Actions
+#        Owner:           ArkerHQ
+#        Repository:      arker-sdks
+#        Workflow:        .github/workflows/publish-typescript.yml
+#        Environment:     npm
+
+on:
+  push:
+    tags: ["typescript-v*"]
+
+defaults:
+  run:
+    working-directory: typescript
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@arker/sdk
+    permissions:
+      id-token: write   # required for npm Trusted Publishing OIDC
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Verify package version matches tag
+        run: |
+          tag="${GITHUB_REF#refs/tags/typescript-v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag typescript-v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}   # OIDC fills this when configured
