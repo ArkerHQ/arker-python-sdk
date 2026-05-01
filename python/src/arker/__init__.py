@@ -4,4 +4,4 @@ for the implementation."""
 from .computer import Arker, Computer, Sync, RunResult, VmSummary, VmList, ArkerError
 
 __all__ = ["Arker", "Computer", "Sync", "RunResult", "VmSummary", "VmList", "ArkerError"]
-__version__ = "0.1.2"
+__version__ = "0.1.3"
