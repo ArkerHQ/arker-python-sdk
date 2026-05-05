@@ -27,7 +27,7 @@ from __future__ import annotations
 import base64, dataclasses, json, os, secrets, time, urllib.error, urllib.parse, urllib.request
 from typing import Any
 
-DEFAULT_BASE_URL = "https://aws-us-west-2.burst.arker.ai"
+DEFAULT_BASE_URL = "https://aws-burst-us-west-2.arker.ai"
 LIST_BASE_URL    = "https://arker.ai"   # listVms is served from CF → PlanetScale (Hyperdrive),
                                         # not the regional ALB. Use this regardless of the
                                         # client's base_url so list works on default config.

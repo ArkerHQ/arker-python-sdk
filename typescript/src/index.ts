@@ -26,7 +26,7 @@
  * Errors are thrown as `ArkerError(code, message, status)`.
  */
 
-export const DEFAULT_BASE_URL = "https://aws-us-west-2.burst.arker.ai";
+export const DEFAULT_BASE_URL = "https://aws-burst-us-west-2.arker.ai";
 /** `list` is served from a different host than the rest; used regardless of the client's baseUrl. */
 export const LIST_BASE_URL = "https://arker.ai";
 /** 1000 pre-forked public VMs (snapshots of `arkuntu`). The SDK picks one

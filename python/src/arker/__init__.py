@@ -4,4 +4,4 @@ the implementation, and `docs/sync-api.md` for wire-level details."""
 from .computer import Arker, Computer, Sync, RunResult, VmSummary, VmList, ArkerError
 
 __all__ = ["Arker", "Computer", "Sync", "RunResult", "VmSummary", "VmList", "ArkerError"]
-__version__ = "0.2.0"
+__version__ = "0.2.1"
