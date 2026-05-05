@@ -13,7 +13,7 @@ Quickstart:
     child = vm.fork(name="branch")                     # branch off this VM
     child.delete(); vm.delete()
 
-    # List your VMs (paginated):
+    # List your VMs (paginated; hits arker.ai → global database, not the regional path):
     page = arker.list(limit=10)
     for summary in page.items:
         print(summary.vm_id, summary.name, summary.created_at)
@@ -28,12 +28,13 @@ import base64, dataclasses, json, os, secrets, time, urllib.error, urllib.parse,
 from typing import Any
 
 DEFAULT_BASE_URL = "https://aws-us-west-2.burst.arker.ai"
-LIST_BASE_URL    = "https://arker.ai"   # `list` is served from a different host than the rest;
-                                        # used regardless of the client's base_url.
-# 1000 pre-forked public VMs (snapshots of `arkuntu`). The SDK picks one
-# at random per `vm("arkuntu").fork()` call so concurrent fork bursts
-# fan out across distinct source state.log keys, avoiding per-key
-# throttling under load.
+LIST_BASE_URL    = "https://arker.ai"   # listVms is served from CF → PlanetScale (Hyperdrive),
+                                        # not the regional ALB. Use this regardless of the
+                                        # client's base_url so list works on default config.
+# 100 pre-forked public VMs (snapshots of `arkuntu`). The SDK picks one
+# at random per `vm("arkuntu").fork()` call to spread fork load across
+# distinct source state.log keys, avoiding per-key throttling under
+# burst workloads.
 ARKUNTU_POOL = (
     '01KQH2ADR3DCAJF06N4R453WPJ_uswe', '01KQH2ADRNE00A79ZHCZ79H7Y5_uswe', '01KQH2ADRQ5KEGQ98G463F407J_uswe', '01KQH2ADRRTKK5DK61GSMW8YSA_uswe',
     '01KQH2ADS5TX7WT1195VWZ9WHZ_uswe', '01KQH2ADS74BNXV0DEE87SXJ69_uswe', '01KQH2ADT0GANZWQZK4R002PCS_uswe', '01KQH2ADT28CGF7NY0WC5TRPX7_uswe',
@@ -287,13 +288,10 @@ ARKUNTU_POOL = (
     '01KQH54HSA1HGH8FA7K52XKHQ9_uswe', '01KQH54HSAC37K7VZ46T49H7J4_uswe', '01KQH54HSDHHRT11MSFHV54FZ6_uswe', '01KQH54JB26N7C34HBWKB4W28V_uswe',
 )
 SOURCE_ALIASES = {"arkuntu": ARKUNTU_POOL}  # alias name -> pool of source VMs
-CHUNK_SIZE       = 4 * 1024 * 1024     # files above this go through a direct upload
-PRESIGN_EXPIRES  = 900                  # signed-URL lifetime (s)
+CHUNK_SIZE       = 4 * 1024 * 1024     # max single-chunk size; larger → presigned bypass
+PRESIGN_EXPIRES  = 900                  # presigned URL lifetime (s)
 RETRYABLE_HTTP   = {429, 502, 503, 504}
-# Substring matches in `error.message` that mark a transient failure
-# the server expects clients to retry. Matched verbatim against the
-# message returned in the error envelope.
-_TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
+TRANSIENT_HINTS  = ("SlowDown", "503", "Service Unavailable", "throttle", "ThrottlingException")
 MAX_ATTEMPTS     = 4
 BACKOFF_S        = 0.2
 ULID_ALPHABET    = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -365,7 +363,7 @@ def _decode_stream(text: Any, encoding: Any) -> bytes:
 def _is_transient(err: dict | None) -> bool:
     if not err or err.get("code") != "internal":
         return False
-    return any(h in (err.get("message") or "") for h in _TRANSIENT_HINTS)
+    return any(h in (err.get("message") or "") for h in TRANSIENT_HINTS)
 
 
 def _http(method: str, url: str, headers: dict, body: bytes | None) -> tuple[int, bytes]:
@@ -379,9 +377,9 @@ def _http(method: str, url: str, headers: dict, body: bytes | None) -> tuple[int
 
 
 class Arker:
-    """Top-level client. Default `base_url` points at the production
-    regional endpoint; override per-client or via the `ARKER_BASE_URL`
-    env var to use a different region or a self-hosted deployment."""
+    """Top-level client. Default base_url = regional ALB (no Cloudflare hop;
+    requires ULID `from_=` for fork). Override to https://arker.ai for
+    name resolution like `arker.fork("arkuntu")`."""
     def __init__(self, api_key: str, base_url: str | None = None) -> None:
         if not api_key: raise ValueError("api_key is required")
         self._api_key = api_key
@@ -391,18 +389,17 @@ class Arker:
                  *, base_url: str | None = None) -> dict:
         """One retry budget covering both transient HTTP statuses and
         envelope-level transient errors. `base_url=` overrides the client
-        default for routes that live on a different host (e.g. `list`)."""
+        default for routes that must hit a specific host (e.g. `list`,
+        which lives on the CF edge → PlanetScale path, not the ALB)."""
         headers = {"authorization": f"Bearer {self._api_key}", "content-type": "application/json"}
         data = json.dumps(body).encode() if body is not None else None
         url = (base_url.rstrip("/") if base_url else self._base_url) + path
-        last_status, last_err = 0, None
-        last_text = ""
+        last_status, last_err, last_payload = 0, None, None
         for attempt in range(MAX_ATTEMPTS):
             status, raw = _http(method, url, headers, data)
             try: payload = json.loads(raw) if raw else {}
             except json.JSONDecodeError: payload = None
-            last_status = status
-            last_text = (raw or b"").decode("utf-8", "replace").strip()
+            last_status, last_payload = status, payload
             envelope_err = (payload.get("error") if isinstance(payload, dict) and payload.get("ok") is False else None)
             last_err = envelope_err
             if status in RETRYABLE_HTTP or _is_transient(envelope_err):
@@ -412,11 +409,11 @@ class Arker:
             if envelope_err is not None:
                 raise ArkerError(envelope_err.get("code", "internal"), envelope_err.get("message", ""), status)
             if status >= 400:
-                raise ArkerError("internal", last_text[:200] or f"HTTP {status}", status)
+                raise ArkerError("internal", str(payload)[:200], status)
             return payload  # type: ignore[return-value]
         if last_err is not None:
             raise ArkerError(last_err.get("code", "internal"), last_err.get("message", ""), last_status)
-        raise ArkerError("internal", last_text[:200] or f"HTTP {last_status} after {MAX_ATTEMPTS} attempts", last_status)
+        raise ArkerError("internal", str(last_payload)[:200], last_status)
 
     def vm(self, vm_id: str) -> "Computer":
         """Open a handle to a VM by ULID *or* by template name (e.g.
@@ -426,9 +423,12 @@ class Arker:
 
     def list(self, *, limit: int = 25, offset: int = 0,
              q: str | None = None, sort: str | None = None) -> VmList:
-        """List VMs in the caller's organization. Always hits
-        `https://arker.ai` regardless of the client's `base_url` — list
-        data is served from a global host rather than the regional one.
+        """List VMs in the caller's organization.
+
+        Always hits `https://arker.ai/api/v1/vms/list` regardless of the
+        client's `base_url` — the data lives in PlanetScale (not in
+        per-VM state on the regional Lambda backend), so going through
+        the CF edge → PlanetScale path is the direct route.
 
         Args:
             limit:  1–100, default 25.
@@ -470,8 +470,9 @@ class Computer:
     def fork(self, *, name: str | None = None, is_public: bool = False,
              region: str | None = None) -> "Computer":
         """Branch off this VM. Aliases like `"arkuntu"` resolve to a
-        ULID client-side via `SOURCE_ALIASES`; the request then uses
-        the by-id endpoint so it works on the default `base_url`."""
+        pool of source VMs client-side (see `SOURCE_ALIASES`); a random
+        member is picked per call so concurrent forks fan out across
+        distinct source state.log keys, avoiding hot-key throttling."""
         body: dict[str, Any] = {"is_public": is_public}
         if name is not None:   body["name"] = name
         if region is not None: body["region"] = region
@@ -481,7 +482,8 @@ class Computer:
         if _looks_like_vm_id(resolved):
             r = self._client._request("POST", f"/api/v1/vms/{resolved}/fork", body)
         else:
-            # Unknown name; let the global host resolve it.
+            # Unknown name (not a ULID, not in the alias table). Let the
+            # global host resolve it.
             body["from"] = self.id
             r = self._client._request("POST", "/api/v1/vms/fork", body, base_url=LIST_BASE_URL)
         if not r.get("vm_id"):
@@ -531,8 +533,8 @@ class Sync:
             self._presigned(path, data)
 
     def _fast_path(self, path: str, data: bytes) -> None:
-        """Single-chunk write for payloads ≤ CHUNK_SIZE: one round-trip,
-        bytes carried inline."""
+        """Single-chunk write, ≤ CHUNK_SIZE. Server takes the chunk
+        fast-path: one Lambda call, no staging round-trip."""
         size = len(data)
         entry = {"path": path, "size": size, "upload_id": _ulid(),
                  "start": 0, "end": size,
@@ -542,13 +544,13 @@ class Sync:
             raise ArkerError("internal", "fast-path write returned without complete+written", 200)
 
     def _presigned(self, path: str, data: bytes) -> None:
-        """> CHUNK_SIZE: request a signed upload URL, PUT bytes directly,
-        then commit. Bytes never pass through the API layer."""
+        """> CHUNK_SIZE: presigned-bypass. Three calls, but the bytes
+        never traverse Lambda — meaningfully cheaper above ~5 MB."""
         size = len(data)
-        # Step 1 — request the signed URL.
+        # Shape 2 — request URL.
         e1 = self._send_one({"path": path, "size": size, "presigned": True})
         url, upload_id = e1["presigned_url"], e1["upload_id"]
-        # Step 2 — direct PUT to the upload URL, retrying transient HTTP statuses.
+        # Direct S3 PUT (with inline retry on transient HTTP statuses).
         for attempt in range(MAX_ATTEMPTS):
             try:
                 req = urllib.request.Request(url, method="PUT", data=data)
@@ -558,15 +560,15 @@ class Sync:
                 break
             except urllib.error.HTTPError as e:
                 if e.code not in RETRYABLE_HTTP or attempt == MAX_ATTEMPTS - 1:
-                    raise ArkerError("internal", f"upload PUT failed: {e.code}", e.code)
+                    raise ArkerError("internal", f"S3 PUT failed: {e.code}", e.code)
                 time.sleep(BACKOFF_S * (2 ** attempt))
-        # Step 3 — commit.
+        # Shape 3 — commit.
         self._send_one({"path": path, "size": size, "upload_id": upload_id})
 
     def _send_one(self, entry: dict) -> dict:
-        """POST a single-entry write request, retrying transient
-        envelope-level errors (HTTP 200 with `error.code:"internal"` and
-        a throttling-style hint in the message)."""
+        """POST a single-entry write request, retrying on transient
+        per-entry errors (Lambda-wrapped S3 SlowDown surfacing as
+        `error.code:"internal"` inside a 200 response)."""
         last_err = None
         for attempt in range(MAX_ATTEMPTS):
             r = self._client._request("POST", self._path(), {"op": "write", "writes": [entry]})

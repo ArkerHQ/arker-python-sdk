@@ -13,7 +13,7 @@ pip install arker
 Or, while in alpha:
 
 ```bash
-pip install git+https://github.com/ArkerHQ/arker-python-sdk@v0.1.0
+pip install git+https://github.com/arker-ai/arker-python@v0.2.0
 ```
 
 ## Quickstart
@@ -66,18 +66,18 @@ ArkerError(code, message, status)                   # one exception type for eve
 
 ### Routing
 
-`fork`, `run`, `sync`, and `delete` use the regional endpoint set on the
-client (default `https://aws-us-west-2.burst.arker.ai`).
+`fork`, `run`, `sync`, `delete` go to the regional ALB (default
+`https://aws-us-west-2.burst.arker.ai`) — fastest path, no Cloudflare hop.
 
-`list` always goes through `https://arker.ai` regardless of `base_url`,
-because list data is served from a global host rather than a regional
-one.
+`list` always goes through `https://arker.ai` (Cloudflare → PlanetScale)
+regardless of `base_url`, because the data lives in the global database
+rather than per-VM regional state.
 
 Public base-image names like `"arkuntu"` resolve to a ULID **client-side**
-(see `SOURCE_ALIASES` in `computer.py`), so `arker.vm("arkuntu").fork()`
-works on the default endpoint with no extra round-trip. Override
-`base_url` or set `ARKER_BASE_URL` to point at a different region or a
-self-hosted deployment.
+(see `SOURCE_ALIASES` in `computer.py`), so `a.vm("arkuntu").fork()` works
+on the default ALB path with no extra round-trip. Override `base_url` or
+set `ARKER_BASE_URL` only if you want to point at a different region or
+a self-hosted stack.
 
 ### Errors
 
@@ -100,14 +100,14 @@ except ArkerError as err:
 
 Hidden behind these six methods:
 
-- **Write strategy**: files up to 100 MB. Small payloads go in one call;
-  larger ones use a direct upload path so the bytes don't traverse the
-  API layer. `write_file` returns once the bytes are durably stored.
+- **Write strategy**: small files go in one call; larger files use a
+  direct upload bypass so the bytes don't traverse the API layer.
+  `write_file` always returns once the bytes are durably stored.
 - **Read coalescing**: `read_file` always returns raw `bytes`, regardless
-  of whether the server inlined the content or returned a signed URL.
+  of whether the server inlined the content or returned a presigned URL.
 - **Idempotent retry**: transient errors are retried with exponential
   backoff. Writes are server-side idempotent on `upload_id`, so retries
-  never produce duplicates.
+  never produce duplicate writes.
 - **Path validation**: only `/home/user/...` paths accepted; `..` rejected.
 
 ## Demo / smoke test
@@ -115,7 +115,7 @@ Hidden behind these six methods:
 Run the full surface against a live deployment:
 
 ```bash
-ARKER_API_KEY=ark_live_... python tests/demo.py
+ARKER_API_KEY=ark_live_... python -m arker.tests.demo
 ```
 
 It exercises every method (`list`, `vm`, `fork`, `run`, `sync.write_file`,

@@ -8,7 +8,7 @@ name: Publish Python SDK
 #   1. Create a "pending publisher" or claim the project once.
 #   2. Add a Trusted Publisher with:
 #        Owner:           ArkerHQ
-#        Repository:      arker-sdks
+#        Repository:      arker-sdk
 #        Workflow name:   publish-python.yml
 #        Environment:     pypi   (matches the `environment:` below)
 

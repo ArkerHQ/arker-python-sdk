@@ -25,8 +25,6 @@ API_KEY = os.environ.get("ARKER_API_KEY") or os.environ.get("AUTH_KEY")
 if not API_KEY:
     print("ARKER_API_KEY is required", file=sys.stderr)
     sys.exit(2)
-# Source VM to fork from. Defaults to the public `arkuntu` base image.
-SOURCE_VM = os.environ.get("ARKER_SOURCE_VM", "arkuntu")
 
 # ── Wire-level request tracing ─────────────────────────────────────────
 # Wrap urlopen so every HTTP call the SDK makes is printed verbatim.
@@ -84,17 +82,17 @@ for summary in page_before.items[:3]:
     print(f"     · {summary.vm_id}  name={summary.name!r}  region={summary.region}  created={summary.created_at}")
 
 # ── 2. vm() — open handle, no network call ─────────────────────────────
-section(f'arker_client.vm("{SOURCE_VM}") — handle, no network call')
-source = arker_client.vm(SOURCE_VM)
+section('arker_client.vm("arkuntu") — handle, no network call')
+arkuntu = arker_client.vm("arkuntu")
 check(
-    f'arker_client.vm("{SOURCE_VM}") returns Computer',
-    isinstance(source, Computer) and source.id == SOURCE_VM,
-    f"id={source.id!r}",
+    'arker_client.vm("arkuntu") returns Computer',
+    isinstance(arkuntu, Computer) and arkuntu.id == "arkuntu",
+    f"id={arkuntu.id!r}",
 )
 
-# ── 3. fork() ──────────────────────────────────────────────────────────
-section(f'source.fork(name="sdk-demo") — fork from {SOURCE_VM}')
-vm = source.fork(name="sdk-demo")
+# ── 3. fork() — alias resolves client-side, hits ALB by-id ─────────────
+section('arkuntu.fork(name="demo") — alias resolved client-side')
+vm = arkuntu.fork(name="sdk-demo")
 check(
     "fork returns Computer with new ULID id",
     isinstance(vm, Computer) and vm.id != "arkuntu" and len(vm.id) >= 26,

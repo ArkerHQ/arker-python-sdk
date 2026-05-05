@@ -1,6 +1,6 @@
 {
   "name": "@arker-ai/sdk",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "TypeScript SDK for the Arker virtual computer platform — spawn sandboxed VMs, run code, sync files.",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -27,10 +27,10 @@
   "homepage": "https://arker.ai",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ArkerHQ/arker-sdks.git",
+    "url": "git+https://github.com/ArkerHQ/arker-sdk.git",
     "directory": "typescript"
   },
-  "bugs": "https://github.com/ArkerHQ/arker-sdks/issues",
+  "bugs": "https://github.com/ArkerHQ/arker-sdk/issues",
   "devDependencies": {
     "@types/node": "^25.6.0",
     "tsup": "^8.3.0",

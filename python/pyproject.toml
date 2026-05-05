@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arker"
-version = "0.1.3"
+version = "0.2.0"
 description = "Python client for the Arker virtual computer platform."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,13 +31,14 @@ test = ["pytest>=8.0"]
 [project.urls]
 Homepage = "https://arker.ai"
 Documentation = "https://arker.ai/docs"
-Source = "https://github.com/ArkerHQ/arker-sdks"
-Issues = "https://github.com/ArkerHQ/arker-sdks/issues"
+Source = "https://github.com/ArkerHQ/arker-sdk"
+Issues = "https://github.com/ArkerHQ/arker-sdk/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/arker"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# `tests/demo.py` hits a live deployment; only runs if ARKER_API_KEY is set.
+# `test_e2e.py` and `test_presigned.py` hit a live deployment; skip
+# unless ARKER_API_KEY is set in the environment.
 addopts = "-q"
