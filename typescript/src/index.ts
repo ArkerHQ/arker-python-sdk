@@ -455,7 +455,13 @@ function normalizeRegion(region: string): string {
 
 function regionBaseUrl(region: string, burst: boolean): string {
   const normalized = normalizeRegion(region);
-  return `https://${normalized}${burst ? "-burst" : ""}.arker.ai${burst ? "/api" : ""}`;
+  if (!burst) return `https://${normalized}.arker.ai`;
+  return `https://${burstRegionHost(normalized)}.arker.ai/api`;
+}
+
+function burstRegionHost(region: string): string {
+  if (region.startsWith("aws-")) return `aws-burst-${region.slice("aws-".length)}`;
+  return `${region}-burst`;
 }
 
 function isBurstRef(ref: string): boolean {

@@ -96,7 +96,7 @@ npm run check:api-types
 
 With `region: "aws-us-west-2"`, the SDK uses
 `https://aws-us-west-2.arker.ai` for normal VMs and
-`https://aws-us-west-2-burst.arker.ai/api` for `arkuntu` and burst VM ids.
+`https://aws-burst-us-west-2.arker.ai/api` for `arkuntu` and burst VM ids.
 The returned `Computer` stays pinned to the endpoint that created it.
 
 ## Smoke Test
@@ -116,7 +116,7 @@ To compare two backends:
 ```bash
 ARKER_API_KEY=ark_live_... \
 ARKER_SMOKE_TARGETS='[
-  {"name":"burst","baseUrl":"https://aws-us-west-2-burst.arker.ai/api","source":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
+  {"name":"burst","baseUrl":"https://aws-burst-us-west-2.arker.ai/api","source":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
   {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai","source":"ubuntu"}
 ]' \
 npm run smoke

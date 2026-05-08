@@ -123,14 +123,14 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
         vm = arker.vm("ubuntu").fork()
 
     assert arker.base_url == "https://aws-us-west-2.arker.ai"
-    assert arker.burst_base_url == "https://aws-us-west-2-burst.arker.ai/api"
+    assert arker.burst_base_url == "https://aws-burst-us-west-2.arker.ai/api"
     assert vm.base_url == "https://aws-us-west-2.arker.ai"
 
 
 def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-us-west-2-burst.arker.ai/api/v1/vms/arkuntu/fork",
+        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/arkuntu/fork",
         200,
         {"id": "legacy_child_without_suffix"},
     )
@@ -139,13 +139,13 @@ def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
         vm = region_client().vm("arkuntu").fork()
 
     assert vm.id == "legacy_child_without_suffix"
-    assert vm.base_url == "https://aws-us-west-2-burst.arker.ai/api"
+    assert vm.base_url == "https://aws-burst-us-west-2.arker.ai/api"
 
 
 def test_region_routes_burst_vm_ids_to_burst_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
+        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
         200,
         {
             "stdout": "hi\n",
@@ -160,7 +160,7 @@ def test_region_routes_burst_vm_ids_to_burst_endpoint() -> None:
     with patch("urllib.request.urlopen", t):
         region_client().vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hi")
 
-    assert t.calls[0]["url"] == "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run"
+    assert t.calls[0]["url"] == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run"
 
 
 def test_list_uses_configured_base_url() -> None:

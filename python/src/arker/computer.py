@@ -516,7 +516,15 @@ def _normalize_region(region: str) -> str:
 
 def _region_base_url(region: str, burst: bool) -> str:
     normalized = _normalize_region(region)
-    return f"https://{normalized}{'-burst' if burst else ''}.arker.ai{'/api' if burst else ''}"
+    if not burst:
+        return f"https://{normalized}.arker.ai"
+    return f"https://{_burst_region_host(normalized)}.arker.ai/api"
+
+
+def _burst_region_host(region: str) -> str:
+    if region.startswith("aws-"):
+        return f"aws-burst-{region[len('aws-'):]}"
+    return f"{region}-burst"
 
 
 def _is_burst_ref(ref: str) -> bool:

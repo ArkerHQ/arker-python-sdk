@@ -85,7 +85,7 @@ Pass `retry=False` to disable SDK retries.
 
 With `region="aws-us-west-2"`, the SDK uses
 `https://aws-us-west-2.arker.ai` for normal VMs and
-`https://aws-us-west-2-burst.arker.ai/api` for `arkuntu` and burst VM ids.
+`https://aws-burst-us-west-2.arker.ai/api` for `arkuntu` and burst VM ids.
 The returned `Computer` stays pinned to the endpoint that created it.
 
 ## Demo

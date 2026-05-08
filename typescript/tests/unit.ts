@@ -138,14 +138,14 @@ async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const vm = await arker.vm("ubuntu").fork();
 
   assert.equal(arker.baseUrl, "https://aws-us-west-2.arker.ai");
-  assert.equal(arker.burstBaseUrl, "https://aws-us-west-2-burst.arker.ai/api");
+  assert.equal(arker.burstBaseUrl, "https://aws-burst-us-west-2.arker.ai/api");
   assert.equal(vm.baseUrl, "https://aws-us-west-2.arker.ai");
 }
 
 async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-us-west-2-burst.arker.ai/api/v1/vms/arkuntu/fork",
+    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/vms/arkuntu/fork",
     200,
     { id: "legacy_child_without_suffix" },
   );
@@ -153,13 +153,13 @@ async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
   const vm = await regionClient(fetch).vm("arkuntu").fork();
 
   assert.equal(vm.id, "legacy_child_without_suffix");
-  assert.equal(vm.baseUrl, "https://aws-us-west-2-burst.arker.ai/api");
+  assert.equal(vm.baseUrl, "https://aws-burst-us-west-2.arker.ai/api");
 }
 
 async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
+    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
     200,
     {
       stdout: "hello\n",
@@ -173,7 +173,7 @@ async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
 
   await regionClient(fetch).vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hello");
 
-  assert.equal(fetch.calls[0]!.url, "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run");
+  assert.equal(fetch.calls[0]!.url, "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run");
 }
 
 await testForkPostsDirectlyToSourceVm();
