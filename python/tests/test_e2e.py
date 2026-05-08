@@ -3,7 +3,7 @@
 Run directly with live credentials:
 
     ARKER_API_KEY=ark_live_... \\
-    ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \\
+    ARKER_REGION=aws-us-west-2 \\
     ARKER_SOURCE_VM=ubuntu \\
     python tests/test_e2e.py
 """
@@ -22,18 +22,19 @@ from arker import Arker, CompletedRunResult
 
 API_KEY = os.environ.get("ARKER_API_KEY") or os.environ.get("AUTH_KEY")
 BASE_URL = os.environ.get("ARKER_BASE_URL")
+REGION = os.environ.get("ARKER_REGION")
 SOURCE_VM = os.environ.get("ARKER_SOURCE_VM")
 
-if pytest and (not API_KEY or not BASE_URL or not SOURCE_VM):
+if pytest and (not API_KEY or not (BASE_URL or REGION) or not SOURCE_VM):
     pytest.skip("live Arker credentials are not configured", allow_module_level=True)
 
-if not API_KEY or not BASE_URL or not SOURCE_VM:
-    print("ARKER_API_KEY, ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
+if not API_KEY or not (BASE_URL or REGION) or not SOURCE_VM:
+    print("ARKER_API_KEY, ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
     sys.exit(2)
 
 
 def main() -> int:
-    arker = Arker(api_key=API_KEY, base_url=BASE_URL)
+    arker = Arker(api_key=API_KEY, base_url=BASE_URL, region=REGION)
     vm = arker.vm(SOURCE_VM).fork(name="python-sdk-e2e")
 
     try:

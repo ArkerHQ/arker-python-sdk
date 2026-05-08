@@ -1,9 +1,8 @@
 /**
  * Arker TypeScript SDK.
  *
- * A small wrapper around the VM API. The client does not resolve golden names,
- * choose regions, or route between endpoints. Set baseUrl to the API endpoint
- * you want this client to use.
+ * A small wrapper around the VM API. Configure a region for the standard
+ * Arker endpoints, or pass baseUrl directly for internal/dev targets.
  */
 
 import type { components } from "./generated/api-types.js";
@@ -21,6 +20,9 @@ const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES = new Set(["routing_unavailable", "unavailable", "temporarily_unavailable"]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const DEFAULT_REGION_ENV = "ARKER_REGION";
+const BURST_SOURCE_REFS = new Set(["arkuntu"]);
+const BURST_VM_ID = /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$/;
 
 type FetchLike = typeof fetch;
 type HttpMethod = "GET" | "POST" | "DELETE";
@@ -44,7 +46,9 @@ export interface RetryOptions {
 export interface ArkerOptions {
   apiKey?: string;
   baseUrl?: string;
+  burstBaseUrl?: string;
   fetch?: FetchLike;
+  region?: string;
   retry?: RetryOptions | false;
 }
 
@@ -149,19 +153,26 @@ export class ArkerError extends Error {
 
 export class Arker {
   readonly baseUrl: string;
+  readonly burstBaseUrl?: string;
+  readonly region?: string;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryConfig;
 
   constructor(opts: ArkerOptions = {}) {
     const apiKey = opts.apiKey ?? env("ARKER_API_KEY") ?? env("AUTH_KEY");
-    const baseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
+    const explicitBaseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
+    const region = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
+    const baseUrl = explicitBaseUrl ?? (region ? regionBaseUrl(region, false) : undefined);
+    const burstBaseUrl = opts.burstBaseUrl ?? env("ARKER_BURST_BASE_URL") ?? (region ? regionBaseUrl(region, true) : undefined);
 
     if (!apiKey) throw new Error("apiKey is required; pass apiKey or set ARKER_API_KEY");
-    if (!baseUrl) throw new Error("baseUrl is required; pass baseUrl or set ARKER_BASE_URL");
+    if (!baseUrl) throw new Error("region or baseUrl is required; pass region, baseUrl, ARKER_REGION, or ARKER_BASE_URL");
 
     this.apiKey = apiKey;
     this.baseUrl = normalizeBaseUrl(baseUrl);
+    this.burstBaseUrl = burstBaseUrl ? normalizeBaseUrl(burstBaseUrl) : undefined;
+    this.region = region ? normalizeRegion(region) : undefined;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retry = normalizeRetry(opts.retry);
 
@@ -169,7 +180,7 @@ export class Arker {
   }
 
   vm(vmId: string): Computer {
-    return new Computer(this, vmId);
+    return new Computer(this, vmId, this._baseUrlFor(vmId));
   }
 
   async goldens(): Promise<ListGoldensResponse> {
@@ -181,12 +192,12 @@ export class Arker {
   }
 
   async get(vmId: string): Promise<VmInfo> {
-    return this._request("GET", vmPath(vmId));
+    return this._request("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
   }
 
   /** @internal */
-  async _request<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
+  async _request<T>(method: HttpMethod, path: string, body?: unknown, baseUrl = this.baseUrl): Promise<T> {
+    const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.apiKey}`,
     };
@@ -252,43 +263,56 @@ export class Arker {
   _retryDelay(attempt: number): number {
     return retryDelay(this.retry, attempt);
   }
+
+  /** @internal */
+  _baseUrlFor(ref: string): string {
+    if (isBurstRef(ref) && this.burstBaseUrl) return this.burstBaseUrl;
+    return this.baseUrl;
+  }
 }
 
 export class Computer {
   readonly id: string;
+  readonly baseUrl: string;
   readonly sync: Sync;
   /** @internal */
   readonly _client: Arker;
 
-  constructor(client: Arker, vmId: string) {
+  constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId)) {
     this._client = client;
     this.id = vmId;
+    this.baseUrl = baseUrl;
     this.sync = new Sync(this);
   }
 
   async fork(request: ForkOptions = {}): Promise<Computer> {
-    const response = await this._client._request<ForkVmResponse & { id?: string }>("POST", `${vmPath(this.id)}/fork`, request);
-    return new Computer(this._client, stringField(response.vm_id ?? response.id, "fork response.vm_id"));
+    const response = await this._client._request<ForkVmResponse & { id?: string }>(
+      "POST",
+      `${vmPath(this.id)}/fork`,
+      request,
+      this.baseUrl,
+    );
+    return new Computer(this._client, stringField(response.vm_id ?? response.id, "fork response.vm_id"), this.baseUrl);
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
     const response = await this._client._request<unknown>("POST", `${vmPath(this.id)}/run`, {
       ...options,
       command,
-    });
+    }, this.baseUrl);
     return parseRunResponse(response);
   }
 
   async runStatus(runId: string): Promise<RunStatusResponse> {
-    return this._client._request("GET", `${vmPath(this.id)}/runs/${pathSegment(runId)}`);
+    return this._client._request("GET", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
   }
 
   async cancelRun(runId: string): Promise<CancelRunResponse> {
-    return this._client._request("DELETE", `${vmPath(this.id)}/runs/${pathSegment(runId)}`);
+    return this._client._request("DELETE", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
   }
 
   async delete(): Promise<DeleteVmResponse> {
-    return this._client._request("DELETE", vmPath(this.id));
+    return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
   }
 }
 
@@ -305,6 +329,7 @@ export class Sync {
       "POST",
       this.path(),
       { op: "read", path },
+      this._vm.baseUrl,
     );
 
     if ("content" in response) return decodeBytes(response.content, response.encoding);
@@ -400,7 +425,7 @@ export class Sync {
       const response = await this._vm._client._request<SyncWriteResponse>("POST", this.path(), {
         op: "write",
         writes: [entry],
-      });
+      }, this._vm.baseUrl);
       const result = response.results[0];
       if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
 
@@ -420,6 +445,22 @@ function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   if (!trimmed) throw new Error("baseUrl must not be empty");
   return trimmed;
+}
+
+function normalizeRegion(region: string): string {
+  const trimmed = region.trim().toLowerCase();
+  if (!trimmed) throw new Error("region must not be empty");
+  return trimmed;
+}
+
+function regionBaseUrl(region: string, burst: boolean): string {
+  const normalized = normalizeRegion(region);
+  return `https://${normalized}${burst ? "-burst" : ""}.arker.ai${burst ? "/api" : ""}`;
+}
+
+function isBurstRef(ref: string): boolean {
+  const trimmed = ref.trim();
+  return BURST_SOURCE_REFS.has(trimmed.toLowerCase()) || BURST_VM_ID.test(trimmed);
 }
 
 function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {

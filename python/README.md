@@ -1,8 +1,7 @@
 # Arker Python SDK
 
 Small Python wrapper for the Arker VM API. The SDK keeps API keys,
-base URLs, retries, output decoding, and file sync ergonomics in one place.
-It does not hardcode VM names, resolve golden aliases, or choose endpoints.
+region routing, retries, output decoding, and file sync ergonomics in one place.
 
 ## Install
 
@@ -19,7 +18,7 @@ from arker import Arker, CompletedRunResult
 
 arker = Arker(
     api_key="ark_live_...",
-    base_url="https://aws-us-west-2.arker.ai",
+    region="aws-us-west-2",
 )
 
 vm = arker.vm("ubuntu").fork(name="hello")
@@ -34,17 +33,21 @@ data = vm.sync.read_file("/home/user/data.txt")
 vm.delete()
 ```
 
-`base_url` is the endpoint this client talks to. If an endpoint mounts the API
-under `/api`, include that prefix:
+`region` selects the regional Arker endpoints. The SDK routes `arkuntu` and
+burst VM ids to the burst endpoint for that region; other golden names and VM
+ids use the normal regional endpoint. There is no cross-region VM replication.
 
 ```bash
-export ARKER_BASE_URL=https://aws-us-west-2.arker.ai
+export ARKER_REGION=aws-us-west-2
 ```
+
+For internal or dev targets, pass `base_url` directly. If an endpoint mounts
+the API under `/api`, include that prefix.
 
 ## API
 
 ```python
-Arker(api_key=None, base_url=None, retry=None)
+Arker(api_key=None, region=None, base_url=None, burst_base_url=None, retry=None)
     .vm(vm_id)
     .goldens()
     .list()
@@ -61,7 +64,8 @@ Computer
 ```
 
 `api_key` falls back to `ARKER_API_KEY` or `AUTH_KEY`.
-`base_url` falls back to `ARKER_BASE_URL`; there is no built-in default endpoint.
+`region` falls back to `ARKER_REGION`; `base_url` falls back to
+`ARKER_BASE_URL`. There is no built-in default region.
 
 Retries are configured on the client:
 
@@ -70,7 +74,7 @@ from arker import Arker, RetryOptions
 
 arker = Arker(
     api_key="ark_live_...",
-    base_url="https://aws-us-west-2.arker.ai",
+    region="aws-us-west-2",
     retry=RetryOptions(attempts=4, base_delay_s=0.2, max_delay_s=2.0),
 )
 ```
@@ -79,15 +83,16 @@ Pass `retry=False` to disable SDK retries.
 
 ## Routing
 
-Golden availability is owned by the backend behind `base_url`. For example,
-if `ubuntu` is not available on a burst endpoint, `arker.vm("ubuntu").fork()`
-will fail with the backend error. The SDK does not special-case that.
+With `region="aws-us-west-2"`, the SDK uses
+`https://aws-us-west-2.arker.ai` for normal VMs and
+`https://aws-us-west-2-burst.arker.ai/api` for `arkuntu` and burst VM ids.
+The returned `Computer` stays pinned to the endpoint that created it.
 
 ## Demo
 
 ```bash
 ARKER_API_KEY=ark_live_... \
-ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
+ARKER_REGION=aws-us-west-2 \
 ARKER_SOURCE_VM=ubuntu \
 python tests/demo.py
 ```

@@ -3,7 +3,7 @@
  *
  * Run:
  *   ARKER_API_KEY=ark_live_... \
- *   ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
+ *   ARKER_REGION=aws-us-west-2 \
  *   ARKER_SOURCE_VM=ubuntu \
  *   npm run demo
  */
@@ -19,6 +19,11 @@ function requiredEnv(name: string): string {
   return value.trim();
 }
 
+function optionalEnv(name: string): string | undefined {
+  const value = process.env[name];
+  return value?.trim() || undefined;
+}
+
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
 }
@@ -30,7 +35,8 @@ function assertCompleted(result: unknown): asserts result is CompletedRunResult 
 }
 
 const apiKey = requiredEnv("ARKER_API_KEY");
-const baseUrl = requiredEnv("ARKER_BASE_URL");
+const baseUrl = optionalEnv("ARKER_BASE_URL");
+const region = optionalEnv("ARKER_REGION");
 const sourceVm = requiredEnv("ARKER_SOURCE_VM");
 
 const originalFetch = globalThis.fetch;
@@ -42,7 +48,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return originalFetch(input, init);
 }) as typeof fetch;
 
-const arker = new Arker({ apiKey, baseUrl });
+const arker = new Arker({ apiKey, baseUrl, region });
 const source = arker.vm(sourceVm);
 if (!(source instanceof Computer)) throw new Error("vm() did not return a Computer");
 

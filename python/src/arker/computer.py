@@ -1,8 +1,7 @@
 """Arker Python SDK.
 
-A small wrapper around the VM API. The client does not resolve golden names,
-choose regions, or route between endpoints. Set base_url to the API endpoint
-you want this client to use.
+A small wrapper around the VM API. Configure a region for the standard Arker
+endpoints, or pass base_url directly for internal/dev targets.
 """
 
 from __future__ import annotations
@@ -11,6 +10,7 @@ import base64
 import dataclasses
 import json
 import os
+import re
 import secrets
 import time
 import urllib.error
@@ -29,6 +29,9 @@ RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {"routing_unavailable", "unavailable", "temporarily_unavailable"}
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+DEFAULT_REGION_ENV = "ARKER_REGION"
+BURST_SOURCE_REFS = {"arkuntu"}
+BURST_VM_ID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -179,26 +182,45 @@ class Arker:
         self,
         api_key: str | None = None,
         base_url: str | None = None,
+        burst_base_url: str | None = None,
+        region: str | None = None,
         retry: RetryOptions | dict[str, Any] | bool | None = None,
     ) -> None:
         resolved_api_key = api_key or _env("ARKER_API_KEY") or _env("AUTH_KEY")
-        resolved_base_url = base_url or _env("ARKER_BASE_URL")
+        explicit_base_url = base_url or _env("ARKER_BASE_URL")
+        resolved_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
+        resolved_base_url = explicit_base_url or (_region_base_url(resolved_region, False) if resolved_region else None)
+        resolved_burst_base_url = (
+            burst_base_url
+            or _env("ARKER_BURST_BASE_URL")
+            or (_region_base_url(resolved_region, True) if resolved_region else None)
+        )
 
         if not resolved_api_key:
             raise ValueError("api_key is required; pass api_key or set ARKER_API_KEY")
         if not resolved_base_url:
-            raise ValueError("base_url is required; pass base_url or set ARKER_BASE_URL")
+            raise ValueError("region or base_url is required; pass region, base_url, ARKER_REGION, or ARKER_BASE_URL")
 
         self._api_key = resolved_api_key
         self._base_url = _normalize_base_url(resolved_base_url)
+        self._burst_base_url = _normalize_base_url(resolved_burst_base_url) if resolved_burst_base_url else None
+        self._region = _normalize_region(resolved_region) if resolved_region else None
         self._retry = _normalize_retry(retry)
 
     @property
     def base_url(self) -> str:
         return self._base_url
 
+    @property
+    def burst_base_url(self) -> str | None:
+        return self._burst_base_url
+
+    @property
+    def region(self) -> str | None:
+        return self._region
+
     def vm(self, vm_id: str) -> "Computer":
-        return Computer(self, vm_id)
+        return Computer(self, vm_id, self._base_url_for(vm_id))
 
     def goldens(self) -> ListGoldensResponse:
         payload = self._request("GET", "/v1/goldens")
@@ -209,10 +231,17 @@ class Arker:
         return ListVmsResponse([_vm_info(item) for item in payload.get("vms", [])])
 
     def get(self, vm_id: str) -> VmInfo:
-        return _vm_info(self._request("GET", _vm_path(vm_id)))
+        return _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
 
-    def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        url = self._base_url + path
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        base_url: str | None = None,
+    ) -> dict[str, Any]:
+        url = (base_url or self._base_url) + path
         headers = {"authorization": f"Bearer {self._api_key}"}
         data = None
 
@@ -260,11 +289,17 @@ class Arker:
         base = min(self._retry.max_delay_s, self._retry.base_delay_s * (2 ** attempt))
         return base + secrets.randbelow(max(1, int(self._retry.jitter_s * 1000) + 1)) / 1000.0
 
+    def _base_url_for(self, ref: str) -> str:
+        if _is_burst_ref(ref) and self._burst_base_url:
+            return self._burst_base_url
+        return self._base_url
+
 
 class Computer:
-    def __init__(self, client: Arker, vm_id: str) -> None:
+    def __init__(self, client: Arker, vm_id: str, base_url: str | None = None) -> None:
         self._client = client
         self.id = vm_id
+        self.base_url = base_url or client._base_url_for(vm_id)
         self.sync = Sync(self)
 
     def fork(
@@ -289,8 +324,8 @@ class Computer:
             "max_memory_mib": max_memory_mib,
             "disk_mib": disk_mib,
         }
-        response = self._client._request("POST", f"{_vm_path(self.id)}/fork", body)
-        return Computer(self._client, _fork_vm_id(response))
+        response = self._client._request("POST", f"{_vm_path(self.id)}/fork", body, base_url=self.base_url)
+        return Computer(self._client, _fork_vm_id(response), self.base_url)
 
     def run(
         self,
@@ -326,17 +361,17 @@ class Computer:
             "runtime": runtime,
             "runtime_override": runtime_override,
         }
-        return _run_response(self._client._request("POST", f"{_vm_path(self.id)}/run", body))
+        return _run_response(self._client._request("POST", f"{_vm_path(self.id)}/run", body, base_url=self.base_url))
 
     def run_status(self, run_id: str) -> RunStatusResponse:
-        return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}"))
+        return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
 
     def cancel_run(self, run_id: str) -> CancelRunResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/runs/{_segment(run_id)}")
+        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url)
         return CancelRunResponse(cancelled=bool(payload.get("cancelled")))
 
     def delete(self) -> DeleteVmResponse:
-        payload = self._client._request("DELETE", _vm_path(self.id))
+        payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
         return DeleteVmResponse(deleted=bool(payload.get("deleted")))
 
 
@@ -346,7 +381,7 @@ class Sync:
         self._client = vm._client
 
     def read_file(self, path: str) -> bytes:
-        payload = self._client._request("POST", self._path(), {"op": "read", "path": path})
+        payload = self._client._request("POST", self._path(), {"op": "read", "path": path}, base_url=self._vm.base_url)
         if "content" in payload:
             return _decode_bytes(str(payload.get("content", "")), str(payload.get("encoding", "utf-8")))
 
@@ -421,7 +456,7 @@ class Sync:
         last_error: dict[str, str] | None = None
 
         for attempt in range(self._client._retry.attempts):
-            payload = self._client._request("POST", self._path(), {"op": "write", "writes": [entry]})
+            payload = self._client._request("POST", self._path(), {"op": "write", "writes": [entry]}, base_url=self._vm.base_url)
             results = payload.get("results")
             if not isinstance(results, list) or not results:
                 raise ArkerError("internal", "write response missing results[0]", 200)
@@ -470,6 +505,23 @@ def _normalize_base_url(base_url: str) -> str:
     if not normalized:
         raise ValueError("base_url must not be empty")
     return normalized
+
+
+def _normalize_region(region: str) -> str:
+    normalized = region.strip().lower()
+    if not normalized:
+        raise ValueError("region must not be empty")
+    return normalized
+
+
+def _region_base_url(region: str, burst: bool) -> str:
+    normalized = _normalize_region(region)
+    return f"https://{normalized}{'-burst' if burst else ''}.arker.ai{'/api' if burst else ''}"
+
+
+def _is_burst_ref(ref: str) -> bool:
+    trimmed = ref.strip()
+    return trimmed.lower() in BURST_SOURCE_REFS or bool(BURST_VM_ID.match(trimmed))
 
 
 def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> RetryOptions:

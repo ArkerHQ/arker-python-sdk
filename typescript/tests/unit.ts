@@ -48,6 +48,15 @@ function client(fetch: FakeFetch): Arker {
   });
 }
 
+function regionClient(fetch: FakeFetch): Arker {
+  return new Arker({
+    apiKey: "ark_live_test",
+    region: "aws-us-west-2",
+    fetch: fetch.fetch,
+    retry: false,
+  });
+}
+
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
 }
@@ -117,9 +126,62 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "printf hello" });
 }
 
+async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://aws-us-west-2.arker.ai/v1/vms/ubuntu/fork",
+    200,
+    { vm_id: "vmh-child", owner_id: "owner", created_at: "now", sessions: [] },
+  );
+
+  const arker = regionClient(fetch);
+  const vm = await arker.vm("ubuntu").fork();
+
+  assert.equal(arker.baseUrl, "https://aws-us-west-2.arker.ai");
+  assert.equal(arker.burstBaseUrl, "https://aws-us-west-2-burst.arker.ai/api");
+  assert.equal(vm.baseUrl, "https://aws-us-west-2.arker.ai");
+}
+
+async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://aws-us-west-2-burst.arker.ai/api/v1/vms/arkuntu/fork",
+    200,
+    { id: "legacy_child_without_suffix" },
+  );
+
+  const vm = await regionClient(fetch).vm("arkuntu").fork();
+
+  assert.equal(vm.id, "legacy_child_without_suffix");
+  assert.equal(vm.baseUrl, "https://aws-us-west-2-burst.arker.ai/api");
+}
+
+async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
+    200,
+    {
+      stdout: "hello\n",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+      exit_code: 0,
+      completed: true,
+    },
+  );
+
+  await regionClient(fetch).vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hello");
+
+  assert.equal(fetch.calls[0]!.url, "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run");
+}
+
 await testForkPostsDirectlyToSourceVm();
 await testForkAcceptsLegacyIdResponse();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
+await testRegionRoutesGoldensToMainEndpoint();
+await testRegionRoutesArkuntuAliasToBurstEndpoint();
+await testRegionRoutesBurstVmIdsToBurstEndpoint();
 
 console.log("PASS unit");

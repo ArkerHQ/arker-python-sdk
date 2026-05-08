@@ -2,7 +2,7 @@
 
 Run:
     ARKER_API_KEY=ark_live_... \\
-    ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \\
+    ARKER_REGION=aws-us-west-2 \\
     ARKER_SOURCE_VM=ubuntu \\
     python tests/demo.py
 """
@@ -24,8 +24,14 @@ def required_env(name: str) -> str:
     return value.strip()
 
 
+def optional_env(name: str) -> str | None:
+    value = os.environ.get(name)
+    return value.strip() if value and value.strip() else None
+
+
 api_key = required_env("ARKER_API_KEY")
-base_url = required_env("ARKER_BASE_URL")
+base_url = optional_env("ARKER_BASE_URL")
+region = optional_env("ARKER_REGION")
 source_vm = required_env("ARKER_SOURCE_VM")
 
 original_urlopen = urllib.request.urlopen
@@ -46,7 +52,7 @@ def trace_urlopen(req, *args, **kwargs):  # type: ignore[no-untyped-def]
 
 urllib.request.urlopen = trace_urlopen  # type: ignore[assignment]
 
-arker = Arker(api_key=api_key, base_url=base_url)
+arker = Arker(api_key=api_key, base_url=base_url, region=region)
 vm = None
 
 try:

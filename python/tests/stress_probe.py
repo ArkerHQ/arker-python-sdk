@@ -4,7 +4,7 @@ read/write operations against the staging deploy.
 Usage:
 
     ARKER_API_KEY=ark_live_... \\
-    ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \\
+    ARKER_REGION=aws-us-west-2 \\
     ARKER_SOURCE_VM=ubuntu \\
     python tests/stress_probe.py
 
@@ -31,11 +31,12 @@ import arker.computer as sdk  # local-import; install with pip install -e .
 
 API_KEY = os.environ.get("ARKER_API_KEY") or os.environ.get("AUTH_KEY")
 BASE_URL = os.environ.get("ARKER_BASE_URL")
+REGION = os.environ.get("ARKER_REGION")
 SOURCE_VM = os.environ.get("ARKER_SOURCE_VM")
 N = int(os.environ.get("STRESS_N", "30"))
 
-if not API_KEY or not BASE_URL or not SOURCE_VM:
-    print("ARKER_API_KEY, ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
+if not API_KEY or not (BASE_URL or REGION) or not SOURCE_VM:
+    print("ARKER_API_KEY, ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
     sys.exit(2)
 
 
@@ -125,7 +126,7 @@ def run_phase(label: str, fn, n: int, trace: list[dict]) -> None:
 
 
 def main() -> None:
-    arker = sdk.Arker(api_key=API_KEY, base_url=BASE_URL)
+    arker = sdk.Arker(api_key=API_KEY, base_url=BASE_URL, region=REGION)
     trace = install_http_tracer()
     print(f"base_url={arker.base_url}\nsource_vm={SOURCE_VM}\nn={N}")
 

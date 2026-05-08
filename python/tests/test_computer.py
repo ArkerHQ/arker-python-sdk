@@ -58,14 +58,19 @@ def client() -> sdk.Arker:
     return sdk.Arker(api_key="ark_live_test", base_url="https://test.invalid/api", retry=False)
 
 
+def region_client() -> sdk.Arker:
+    return sdk.Arker(api_key="ark_live_test", region="aws-us-west-2", retry=False)
+
+
 def session(session_id: str = "s0") -> dict[str, str]:
     return {"session_id": session_id, "state": "ready", "cwd": "/home/user"}
 
 
 def test_constructor_requires_base_url(monkeypatch) -> None:
     monkeypatch.delenv("ARKER_BASE_URL", raising=False)
+    monkeypatch.delenv("ARKER_REGION", raising=False)
     monkeypatch.delenv("ARKER_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="base_url is required"):
+    with pytest.raises(ValueError, match="region or base_url is required"):
         sdk.Arker(api_key="ark_live_test")
 
 
@@ -103,6 +108,59 @@ def test_fork_accepts_legacy_id_response() -> None:
         vm = client().vm("ubuntu").fork()
 
     assert vm.id == "vm_child"
+
+
+def test_region_routes_goldens_to_main_endpoint() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://aws-us-west-2.arker.ai/v1/vms/ubuntu/fork",
+        200,
+        {"vm_id": "vmh-child", "owner_id": "owner", "created_at": "now", "sessions": []},
+    )
+
+    with patch("urllib.request.urlopen", t):
+        arker = region_client()
+        vm = arker.vm("ubuntu").fork()
+
+    assert arker.base_url == "https://aws-us-west-2.arker.ai"
+    assert arker.burst_base_url == "https://aws-us-west-2-burst.arker.ai/api"
+    assert vm.base_url == "https://aws-us-west-2.arker.ai"
+
+
+def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://aws-us-west-2-burst.arker.ai/api/v1/vms/arkuntu/fork",
+        200,
+        {"id": "legacy_child_without_suffix"},
+    )
+
+    with patch("urllib.request.urlopen", t):
+        vm = region_client().vm("arkuntu").fork()
+
+    assert vm.id == "legacy_child_without_suffix"
+    assert vm.base_url == "https://aws-us-west-2-burst.arker.ai/api"
+
+
+def test_region_routes_burst_vm_ids_to_burst_endpoint() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
+        200,
+        {
+            "stdout": "hi\n",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": 0,
+            "completed": True,
+        },
+    )
+
+    with patch("urllib.request.urlopen", t):
+        region_client().vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hi")
+
+    assert t.calls[0]["url"] == "https://aws-us-west-2-burst.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run"
 
 
 def test_list_uses_configured_base_url() -> None:
