@@ -1,9 +1,8 @@
-# Arker — TypeScript SDK
+# Arker TypeScript SDK
 
-TypeScript client for the [Arker](https://arker.ai) virtual computer
-platform. Spawn isolated Linux sandboxes, run shell / Python / Node
-code in them, read and write files. Zero runtime dependencies (uses
-the platform's built-in `fetch` and `crypto`).
+Small TypeScript wrapper for the Arker VM API. The SDK keeps API keys,
+base URLs, retries, output decoding, and file sync ergonomics in one place.
+It does not hardcode VM names, resolve golden aliases, or choose endpoints.
 
 ## Install
 
@@ -11,126 +10,110 @@ the platform's built-in `fetch` and `crypto`).
 npm install @arker-ai/sdk
 ```
 
-Works in Node ≥ 18. ESM + CJS + types all included.
+Node 18 or newer is required.
 
 ## Quickstart
 
 ```ts
-import { Arker, ArkerError } from "@arker-ai/sdk";
+import { Arker } from "@arker-ai/sdk";
 
-const arker = new Arker({ apiKey: "ark_live_..." });
-const vm    = await arker.vm("arkuntu").fork({ name: "hello" });
+const arker = new Arker({
+  apiKey: process.env.ARKER_API_KEY,
+  baseUrl: process.env.ARKER_BASE_URL,
+});
 
-const result = await vm.run("python3 -c 'print(2+2)'");
-console.log(new TextDecoder().decode(result.stdout));   // → "4\n"
+const vm = await arker.vm("ubuntu").fork({ name: "hello" });
+const result = await vm.run("printf 'hello\\n'");
 
-await vm.sync.writeFile("/home/user/data.csv", "a,b\n1,2\n");
-const data = await vm.sync.readFile("/home/user/data.csv");
+if (result.type === "completed") {
+  console.log(new TextDecoder().decode(result.stdout));
+}
 
-const child = await vm.fork({ name: "branch" });        // constant-time copy-on-write
-await child.delete();
+await vm.sync.writeFile("/home/user/data.txt", "hello\n");
+const data = await vm.sync.readFile("/home/user/data.txt");
+
 await vm.delete();
 ```
 
-List your VMs:
+`baseUrl` is the endpoint this client talks to. If an endpoint mounts the API
+under `/api`, include that prefix:
 
-```ts
-const page = await arker.list({ limit: 10, sort: "-created_at" });
-console.log(`${page.total} total`);
-for (const summary of page.items) {
-  console.log(summary.vm_id, summary.name, summary.region, summary.created_at);
-}
+```bash
+export ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api
 ```
 
 ## API
 
-```
-new Arker({ apiKey, baseUrl? })
-    .vm(vmId) -> Computer                         // open handle (no network call)
-    .list({ limit?, offset?, q?, sort? }) -> Promise<VmList>
+```ts
+new Arker({ apiKey?, baseUrl?, retry? })
+  .vm(vmId)
+  .goldens()
+  .list()
+  .get(vmId)
 
 Computer
-    .id, .delete()
-    .fork({ name?, isPublic?, region? }) -> Promise<Computer>
-    .run(command, { sessionId?, timeout? }) -> Promise<RunResult>
-    .sync.readFile(path) -> Promise<Uint8Array>
-    .sync.writeFile(path, data: Uint8Array | string) -> Promise<void>
-
-RunResult: stdout, stderr (Uint8Array), exitCode, durationMs, sessionId, cwd
-VmSummary: vm_id, name, base_image, region, created_at (ISO 8601)
-VmList:    items (VmSummary[]), total (number)
-
-ArkerError(code, message, status) extends Error    // single error type
+  .fork(request)
+  .run(command, options)
+  .runStatus(runId)
+  .cancelRun(runId)
+  .delete()
+  .sync.readFile(path)
+  .sync.writeFile(path, data)
 ```
 
-### Routing
+`apiKey` falls back to `ARKER_API_KEY` or `AUTH_KEY`.
+`baseUrl` falls back to `ARKER_BASE_URL`; there is no built-in default endpoint.
 
-`fork`, `run`, `sync`, and `delete` use the regional endpoint set on the
-client (default `https://aws-us-west-2.burst.arker.ai`).
-
-`list` always goes through `https://arker.ai` regardless of `baseUrl`,
-because list data is served from a global host rather than a regional
-one.
-
-Public base-image names like `"arkuntu"` resolve to a ULID **client-side**
-(see `SOURCE_ALIASES` in `src/index.ts`), so `arker.vm("arkuntu").fork()`
-works on the default endpoint with no extra round-trip. Override
-`baseUrl` or set `ARKER_BASE_URL` to point at a different region or a
-self-hosted deployment.
-
-### Errors
-
-Every server-side error becomes an `ArkerError`:
+Retries are configured on the client:
 
 ```ts
-try {
-  await vm.sync.readFile("/home/user/missing");
-} catch (err) {
-  if (err instanceof ArkerError) {
-    console.log(err.code);      // "not_found"
-    console.log(err.message);   // "not_found: file not found: ..."
-    console.log(err.status);    // 404
-  }
-}
+const arker = new Arker({
+  apiKey: "ark_live_...",
+  baseUrl: "https://aws-us-west-2.arker.ai/api",
+  retry: { attempts: 4, baseDelayMs: 200, maxDelayMs: 2000 },
+});
 ```
 
-`code` is a stable enum: `bad_request`, `unauthorized`, `payment_required`,
-`forbidden`, `not_found`, `conflict`, `payload_too_large`, `internal`,
-`not_implemented`, `vm_busy`, `unsupported_*`, `command_not_found`.
+Pass `retry: false` to disable SDK retries.
 
-### What the SDK does for you
+## Routing
 
-Hidden behind these six methods:
+Golden availability is owned by the backend behind `baseUrl`. For example,
+if `ubuntu` is not available on a burst endpoint, `arker.vm("ubuntu").fork()`
+will fail with the backend error. The SDK does not special-case that.
 
-- **Write strategy**: files up to 100 MB. Small payloads go in one call;
-  larger ones use a direct upload path so the bytes don't traverse the
-  API layer. `writeFile` resolves once the bytes are durably stored.
-- **Read coalescing**: `readFile` always resolves to a `Uint8Array`,
-  regardless of whether the server inlined the content or returned a
-  signed URL.
-- **Idempotent retry**: transient errors are retried with exponential
-  backoff. Writes are server-side idempotent on `upload_id`, so retries
-  never produce duplicates.
-- **Path validation**: only `/home/user/...` paths accepted; `..` rejected.
+## Smoke Test
 
-## Demo / smoke test
-
-Run the full surface against a live deployment:
+The conformance smoke test uses raw HTTP and checks the fork/run/sync wire
+shape without going through the SDK:
 
 ```bash
-ARKER_API_KEY=ark_live_... npx tsx tests/demo.ts
+ARKER_API_KEY=ark_live_... \
+ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ARKER_SOURCE_VM=ubuntu \
+npm run smoke
 ```
 
-It exercises every method (`list`, `vm`, `fork`, `run`, `sync.writeFile`,
-`sync.readFile`, error path, child fork, `delete`) and prints what each
-call hits on the wire — useful as living documentation.
-
-To fork from a specific source VM instead of the default `arkuntu`:
+To compare two backends:
 
 ```bash
-ARKER_API_KEY=ark_live_... ARKER_SOURCE_VM=01KQ... npx tsx tests/demo.ts
+ARKER_API_KEY=ark_live_... \
+ARKER_SMOKE_TARGETS='[
+  {"name":"burst","baseUrl":"https://aws-burst-us-west-2.arker.ai/api","source":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
+  {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai/api","source":"ubuntu"}
+]' \
+npm run smoke
+```
+
+## Demo
+
+```bash
+ARKER_API_KEY=ark_live_... \
+ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ARKER_SOURCE_VM=ubuntu \
+npm run demo
 ```
 
 ## License
 
-Apache-2.0.
+Apache-2.0

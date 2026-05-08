@@ -20,6 +20,8 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --clean --target=node18",
     "demo": "tsx tests/demo.ts",
+    "smoke": "tsx tests/conformance/fork-run-sync.ts",
+    "typecheck": "tsc -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
   "keywords": ["arker", "vm", "sandbox", "agent", "code-execution"],

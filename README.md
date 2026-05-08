@@ -43,10 +43,15 @@ npm install @arker-ai/sdk
 ```ts
 import { Arker } from "@arker-ai/sdk";
 
-const arker = new Arker({ apiKey: "ark_live_..." });
-const vm    = await arker.vm("arkuntu").fork({ name: "hello" });
+const arker = new Arker({
+  apiKey: "ark_live_...",
+  baseUrl: "https://aws-us-west-2.arker.ai/api",
+});
+const vm = await arker.vm("ubuntu").fork({ name: "hello" });
 const result = await vm.run("node -e 'console.log(2+2)'");
-console.log(new TextDecoder().decode(result.stdout));   // → "4\n"
+if (result.type === "completed") {
+  console.log(new TextDecoder().decode(result.stdout));  // -> "4\n"
+}
 await vm.delete();
 ```
 
@@ -54,7 +59,7 @@ await vm.delete();
 
 ## The three primitives
 
-> Examples below use Python; TypeScript is identical in shape with `await` on every call. See [`typescript/README.md`](./typescript/README.md) for the equivalent surface.
+> Examples below use Python. See [`typescript/README.md`](./typescript/README.md) for the TypeScript surface.
 
 ### `fork` &nbsp;·&nbsp; instant VMs
 
