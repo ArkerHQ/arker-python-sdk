@@ -23,6 +23,7 @@
     "demo": "tsx tests/demo.ts",
     "generate:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts",
     "smoke": "tsx tests/conformance/fork-run-sync.ts",
+    "test": "tsx tests/unit.ts",
     "typecheck": "tsc -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
