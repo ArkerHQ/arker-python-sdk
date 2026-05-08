@@ -9,7 +9,7 @@
  *
  * Run one target:
  *   ARKER_API_KEY=ark_live_... \
- *   ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ *   ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
  *   ARKER_SOURCE_VM=ubuntu \
  *   npm run smoke
  *
@@ -17,7 +17,7 @@
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_SMOKE_TARGETS='[
  *     {"name":"burst","baseUrl":"https://aws-burst-us-west-2.arker.ai/api","source":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
- *     {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai/api","source":"ubuntu"}
+ *     {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai","source":"ubuntu"}
  *   ]' \
  *   npm run smoke
  */

@@ -19,7 +19,7 @@ from arker import Arker, CompletedRunResult
 
 arker = Arker(
     api_key="ark_live_...",
-    base_url="https://aws-us-west-2.arker.ai/api",
+    base_url="https://aws-us-west-2.arker.ai",
 )
 
 vm = arker.vm("ubuntu").fork(name="hello")
@@ -38,7 +38,7 @@ vm.delete()
 under `/api`, include that prefix:
 
 ```bash
-export ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api
+export ARKER_BASE_URL=https://aws-us-west-2.arker.ai
 ```
 
 ## API
@@ -70,7 +70,7 @@ from arker import Arker, RetryOptions
 
 arker = Arker(
     api_key="ark_live_...",
-    base_url="https://aws-us-west-2.arker.ai/api",
+    base_url="https://aws-us-west-2.arker.ai",
     retry=RetryOptions(attempts=4, base_delay_s=0.2, max_delay_s=2.0),
 )
 ```
@@ -87,7 +87,7 @@ will fail with the backend error. The SDK does not special-case that.
 
 ```bash
 ARKER_API_KEY=ark_live_... \
-ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
 ARKER_SOURCE_VM=ubuntu \
 python tests/demo.py
 ```

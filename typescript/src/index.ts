@@ -267,8 +267,8 @@ export class Computer {
   }
 
   async fork(request: ForkOptions = {}): Promise<Computer> {
-    const response = await this._client._request<ForkVmResponse>("POST", `${vmPath(this.id)}/fork`, request);
-    return new Computer(this._client, response.vm_id);
+    const response = await this._client._request<ForkVmResponse & { id?: string }>("POST", `${vmPath(this.id)}/fork`, request);
+    return new Computer(this._client, stringField(response.vm_id ?? response.id, "fork response.vm_id"));
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
@@ -520,7 +520,7 @@ function extractError(payload: unknown): ParsedError | undefined {
     return { code: payload.code, message: payload.message };
   }
 
-  if (payload.ok === false && isObject(payload.error)) {
+  if (isObject(payload.error)) {
     return {
       code: typeof payload.error.code === "string" ? payload.error.code : "internal",
       message: typeof payload.error.message === "string" ? payload.error.message : "",

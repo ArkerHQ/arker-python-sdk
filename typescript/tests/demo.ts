@@ -3,7 +3,7 @@
  *
  * Run:
  *   ARKER_API_KEY=ark_live_... \
- *   ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ *   ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
  *   ARKER_SOURCE_VM=ubuntu \
  *   npm run demo
  */

@@ -29,7 +29,7 @@ from arker import Arker
 
 arker = Arker(
     api_key="ark_live_...",
-    base_url="https://aws-us-west-2.arker.ai/api",
+    base_url="https://aws-us-west-2.arker.ai",
 )
 vm = arker.vm("ubuntu").fork(name="hello")
 result = vm.run("python3 -c 'print(2+2)'")
@@ -49,7 +49,7 @@ import { Arker } from "@arker-ai/sdk";
 
 const arker = new Arker({
   apiKey: "ark_live_...",
-  baseUrl: "https://aws-us-west-2.arker.ai/api",
+  baseUrl: "https://aws-us-west-2.arker.ai",
 });
 const vm = await arker.vm("ubuntu").fork({ name: "hello" });
 const result = await vm.run("node -e 'console.log(2+2)'");

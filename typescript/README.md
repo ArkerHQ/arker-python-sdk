@@ -39,7 +39,7 @@ await vm.delete();
 under `/api`, include that prefix:
 
 ```bash
-export ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api
+export ARKER_BASE_URL=https://aws-us-west-2.arker.ai
 ```
 
 ## API
@@ -69,7 +69,7 @@ Retries are configured on the client:
 ```ts
 const arker = new Arker({
   apiKey: "ark_live_...",
-  baseUrl: "https://aws-us-west-2.arker.ai/api",
+  baseUrl: "https://aws-us-west-2.arker.ai",
   retry: { attempts: 4, baseDelayMs: 200, maxDelayMs: 2000 },
 });
 ```
@@ -101,7 +101,7 @@ shape without going through the SDK:
 
 ```bash
 ARKER_API_KEY=ark_live_... \
-ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
 ARKER_SOURCE_VM=ubuntu \
 npm run smoke
 ```
@@ -112,7 +112,7 @@ To compare two backends:
 ARKER_API_KEY=ark_live_... \
 ARKER_SMOKE_TARGETS='[
   {"name":"burst","baseUrl":"https://aws-burst-us-west-2.arker.ai/api","source":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
-  {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai/api","source":"ubuntu"}
+  {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai","source":"ubuntu"}
 ]' \
 npm run smoke
 ```
@@ -121,7 +121,7 @@ npm run smoke
 
 ```bash
 ARKER_API_KEY=ark_live_... \
-ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
 ARKER_SOURCE_VM=ubuntu \
 npm run demo
 ```

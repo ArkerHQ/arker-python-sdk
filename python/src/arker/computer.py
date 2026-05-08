@@ -289,8 +289,8 @@ class Computer:
             "max_memory_mib": max_memory_mib,
             "disk_mib": disk_mib,
         }
-        response = _fork_response(self._client._request("POST", f"{_vm_path(self.id)}/fork", body))
-        return Computer(self._client, response.vm_id)
+        response = self._client._request("POST", f"{_vm_path(self.id)}/fork", body)
+        return Computer(self._client, _fork_vm_id(response))
 
     def run(
         self,
@@ -520,7 +520,7 @@ def _extract_error(payload: Any) -> dict[str, str] | None:
         return {"code": payload["code"], "message": payload["message"]}
 
     nested = payload.get("error")
-    if payload.get("ok") is False and isinstance(nested, dict):
+    if isinstance(nested, dict):
         return {
             "code": str(nested.get("code", "internal")),
             "message": str(nested.get("message", "")),
@@ -607,6 +607,13 @@ def _fork_response(payload: dict[str, Any]) -> ForkVmResponse:
         tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
         network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
     )
+
+
+def _fork_vm_id(payload: dict[str, Any]) -> str:
+    value = payload.get("vm_id") or payload.get("id")
+    if not isinstance(value, str) or not value:
+        raise ArkerError("internal", "fork response.vm_id must be a non-empty string", 200)
+    return value
 
 
 def _run_response(payload: dict[str, Any]) -> RunResult:

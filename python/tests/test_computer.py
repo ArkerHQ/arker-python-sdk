@@ -91,6 +91,20 @@ def test_fork_posts_directly_to_source_vm() -> None:
     assert body == {"name": "demo"}
 
 
+def test_fork_accepts_legacy_id_response() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/vms/ubuntu/fork",
+        200,
+        {"id": "vm_child"},
+    )
+
+    with patch("urllib.request.urlopen", t):
+        vm = client().vm("ubuntu").fork()
+
+    assert vm.id == "vm_child"
+
+
 def test_list_uses_configured_base_url() -> None:
     t = FakeTransport()
     t.add_json(
@@ -175,6 +189,17 @@ def test_legacy_nested_error_response_still_parses() -> None:
 
     assert caught.value.code == "not_found"
     assert caught.value.status == 404
+
+
+def test_nested_error_response_without_ok_still_parses() -> None:
+    t = FakeTransport()
+    t.add_json(lambda _method, _url: True, 503, {"error": {"code": "unavailable", "message": "try later"}})
+
+    with patch("urllib.request.urlopen", t), pytest.raises(sdk.ArkerError) as caught:
+        client().vm("missing").delete()
+
+    assert caught.value.code == "unavailable"
+    assert caught.value.status == 503
 
 
 def test_retry_on_503_then_success(monkeypatch) -> None:

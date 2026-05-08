@@ -7,7 +7,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
     {
-      "url": "https://aws-us-west-2.arker.ai/api"
+      "url": "https://aws-us-west-2.arker.ai"
     }
   ],
   "x-arker-source": "arker-app/shared/arker-api-contract",
