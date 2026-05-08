@@ -52,6 +52,12 @@ jobs:
             exit 1
           fi
 
+      - name: Check generated API types
+        run: npm run check:api-types
+
+      - name: Typecheck
+        run: npm run typecheck
+
       - name: Build
         run: npm run build
 

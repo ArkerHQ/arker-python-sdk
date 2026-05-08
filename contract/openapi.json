@@ -1,0 +1,1564 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Arker Public VM API",
+    "version": "0.1.0"
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [
+    {
+      "url": "https://aws-us-west-2.arker.ai/api"
+    }
+  ],
+  "x-arker-source": "arker-app/shared/arker-api-contract",
+  "paths": {
+    "/v1/goldens": {
+      "get": {
+        "operationId": "listGoldens",
+        "responses": {
+          "200": {
+            "description": "Available golden VM sources for this endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListGoldensResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms": {
+      "get": {
+        "operationId": "listVms",
+        "responses": {
+          "200": {
+            "description": "VMs visible to the authenticated caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListVmsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "get": {
+        "operationId": "getVm",
+        "responses": {
+          "200": {
+            "description": "VM details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VmInfo"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteVm",
+        "responses": {
+          "200": {
+            "description": "Delete result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteVmResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/fork": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "post": {
+        "operationId": "forkVm",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Forked VM.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForkVmResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/run": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "post": {
+        "operationId": "runVm",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/runs/{run_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        },
+        {
+          "$ref": "#/components/parameters/RunId"
+        }
+      ],
+      "get": {
+        "operationId": "getRun",
+        "responses": {
+          "200": {
+            "description": "Run status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStatusResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "cancelRun",
+        "responses": {
+          "200": {
+            "description": "Cancel result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelRunResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/sessions": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "get": {
+        "operationId": "listSessions",
+        "responses": {
+          "200": {
+            "description": "VM sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListSessionsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSession",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/sessions/{sid}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        },
+        {
+          "$ref": "#/components/parameters/SessionId"
+        }
+      ],
+      "delete": {
+        "operationId": "deleteSession",
+        "responses": {
+          "200": {
+            "description": "Delete result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteSessionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/sessions/{sid}/resize": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        },
+        {
+          "$ref": "#/components/parameters/SessionId"
+        }
+      ],
+      "post": {
+        "operationId": "resizePty",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResizePtyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resize result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResizePtyResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/resize": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "post": {
+        "operationId": "resizeVm",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResizeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resize result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResizeResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/v1/vms/{id}/sync": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "post": {
+        "operationId": "syncVm",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sync result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "VmId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "RunId": {
+        "name": "run_id",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "SessionId": {
+        "name": "sid",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "API error.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["code", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "NetworkPolicy": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/NetworkPolicyOpen"
+          },
+          {
+            "$ref": "#/components/schemas/NetworkPolicyBlocked"
+          },
+          {
+            "$ref": "#/components/schemas/NetworkPolicyAllow"
+          },
+          {
+            "$ref": "#/components/schemas/NetworkPolicyBlock"
+          }
+        ]
+      },
+      "NetworkPolicyOpen": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "open"
+          }
+        }
+      },
+      "NetworkPolicyBlocked": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "blocked"
+          }
+        }
+      },
+      "NetworkPolicyAllow": {
+        "type": "object",
+        "required": ["type", "allow"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "allow"
+          },
+          "allow": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "NetworkPolicyBlock": {
+        "type": "object",
+        "required": ["type", "block"],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "block"
+          },
+          "block": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "NetworkPolicyInput": {
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/NetworkPolicy"
+          }
+        ]
+      },
+      "ForkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": ["string", "null"]
+          },
+          "image": {
+            "type": ["string", "null"]
+          },
+          "network": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NetworkPolicyInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "disk": {
+            "type": "boolean",
+            "default": true
+          },
+          "vcpu_count": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "maximum": 255
+          },
+          "memory_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "max_memory_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "disk_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          }
+        }
+      },
+      "SessionInfo": {
+        "type": "object",
+        "required": ["session_id", "state", "cwd"],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          }
+        }
+      },
+      "ListSessionsResponse": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SessionInfo"
+        }
+      },
+      "GoldenInfo": {
+        "type": "object",
+        "required": ["vm_id", "name", "source_golden"],
+        "additionalProperties": false,
+        "properties": {
+          "vm_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source_golden": {
+            "type": "string"
+          },
+          "memory_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "vcpu_count": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "maximum": 255
+          },
+          "disk_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          }
+        }
+      },
+      "ListGoldensResponse": {
+        "type": "object",
+        "required": ["goldens"],
+        "additionalProperties": false,
+        "properties": {
+          "goldens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GoldenInfo"
+            }
+          }
+        }
+      },
+      "VmInfo": {
+        "type": "object",
+        "required": ["vm_id", "owner_id", "created_at", "state", "sessions"],
+        "additionalProperties": false,
+        "properties": {
+          "vm_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "name": {
+            "type": ["string", "null"]
+          },
+          "source_golden": {
+            "type": ["string", "null"]
+          },
+          "state": {
+            "type": "string"
+          },
+          "last_activity": {
+            "type": ["string", "null"]
+          },
+          "vcpu_count": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "maximum": 255
+          },
+          "memory_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "disk_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionInfo"
+            }
+          }
+        }
+      },
+      "ListVmsResponse": {
+        "type": "object",
+        "required": ["vms"],
+        "additionalProperties": false,
+        "properties": {
+          "vms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmInfo"
+            }
+          }
+        }
+      },
+      "ForkVmResponse": {
+        "type": "object",
+        "required": ["vm_id", "owner_id", "created_at", "sessions"],
+        "additionalProperties": false,
+        "properties": {
+          "vm_id": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionInfo"
+            }
+          },
+          "ssh_private_key": {
+            "type": ["string", "null"]
+          },
+          "tunnels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunTunnelStatus"
+            }
+          },
+          "network": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunNetworkStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "DeleteVmResponse": {
+        "type": "object",
+        "required": ["deleted"],
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DeleteSessionResponse": {
+        "type": "object",
+        "required": ["deleted"],
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MountRequest": {
+        "type": "object",
+        "required": ["uri", "mount_point"],
+        "additionalProperties": false,
+        "properties": {
+          "uri": {
+            "type": "string"
+          },
+          "mount_point": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "default": "dir"
+          }
+        }
+      },
+      "RunRequest": {
+        "type": "object",
+        "required": ["command"],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": ["string", "null"]
+          },
+          "command": {
+            "type": "string"
+          },
+          "background": {
+            "type": "boolean",
+            "default": false
+          },
+          "timeout": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "end_symbol": {
+            "type": ["string", "null"],
+            "default": "auto"
+          },
+          "mounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MountRequest"
+            },
+            "default": []
+          },
+          "vcpu_count": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "maximum": 255
+          },
+          "memory_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "disk_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "network": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunNetworkRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "release": {
+            "type": ["string", "null"]
+          },
+          "signal": {
+            "type": ["string", "null"]
+          },
+          "runtime": {
+            "type": ["string", "null"]
+          },
+          "runtime_override": {
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "RunNetworkRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inbound": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunInboundRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "RunInboundRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ports": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RunInboundPortRequest"
+            },
+            "default": {}
+          }
+        }
+      },
+      "RunInboundPortRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "visibility": {
+            "type": "string",
+            "default": "private"
+          },
+          "protocol": {
+            "type": "string",
+            "default": "http"
+          }
+        }
+      },
+      "RunResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CompletedRunResponse"
+          },
+          {
+            "$ref": "#/components/schemas/BackgroundRunResponse"
+          },
+          {
+            "$ref": "#/components/schemas/PtyRunResponse"
+          }
+        ]
+      },
+      "CompletedRunResponse": {
+        "type": "object",
+        "required": ["stdout", "stdout_encoding", "stderr", "stderr_encoding", "exit_code", "completed"],
+        "additionalProperties": false,
+        "properties": {
+          "stdout": {
+            "type": "string"
+          },
+          "stdout_encoding": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stderr_encoding": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "BackgroundRunResponse": {
+        "type": "object",
+        "required": ["run_id", "completed"],
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "tunnels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunTunnelStatus"
+            },
+            "default": []
+          },
+          "network": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunNetworkStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "PtyRunResponse": {
+        "type": "object",
+        "required": ["pty", "session_id", "ws_url"],
+        "additionalProperties": false,
+        "properties": {
+          "pty": {
+            "const": true
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "ws_url": {
+            "type": "string"
+          }
+        }
+      },
+      "RunStatusResponse": {
+        "type": "object",
+        "required": ["run_id", "stdout", "stdout_encoding", "stderr", "stderr_encoding", "exit_code", "completed", "tunnels"],
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stdout_encoding": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stderr_encoding": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": ["integer", "null"]
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "tunnels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunTunnelStatus"
+            }
+          },
+          "network": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunNetworkStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "RunNetworkStatus": {
+        "type": "object",
+        "required": ["inbound"],
+        "additionalProperties": false,
+        "properties": {
+          "inbound": {
+            "$ref": "#/components/schemas/RunInboundStatus"
+          }
+        }
+      },
+      "RunInboundStatus": {
+        "type": "object",
+        "required": ["ports"],
+        "additionalProperties": false,
+        "properties": {
+          "ports": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RunInboundPortStatus"
+            }
+          }
+        }
+      },
+      "RunInboundPortStatus": {
+        "type": "object",
+        "required": ["requested", "observed", "effective", "protocol"],
+        "additionalProperties": false,
+        "properties": {
+          "requested": {
+            "type": "string"
+          },
+          "observed": {
+            "type": "string"
+          },
+          "effective": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "url": {
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "RunTunnelStatus": {
+        "type": "object",
+        "required": ["port", "visibility", "protocol", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "default": ""
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "visibility": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "url": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "type": "string"
+          },
+          "message": {
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "CancelRunResponse": {
+        "type": "object",
+        "required": ["cancelled"],
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "env": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cwd": {
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "ResizePtyRequest": {
+        "type": "object",
+        "required": ["cols", "rows"],
+        "additionalProperties": false,
+        "properties": {
+          "cols": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          }
+        }
+      },
+      "ResizePtyResponse": {
+        "type": "object",
+        "required": ["resized"],
+        "additionalProperties": false,
+        "properties": {
+          "resized": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ResizeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "vcpu_count": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "maximum": 255
+          },
+          "memory_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "disk_mib": {
+            "type": ["integer", "null"],
+            "minimum": 0
+          }
+        }
+      },
+      "ResizeResponse": {
+        "type": "object",
+        "required": ["ok"],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SyncRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncReadRequest"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWriteRequest"
+          }
+        ]
+      },
+      "SyncReadRequest": {
+        "type": "object",
+        "required": ["op", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "read"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncWriteRequest": {
+        "type": "object",
+        "required": ["op", "writes"],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "write"
+          },
+          "writes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncWriteEntry"
+            }
+          }
+        }
+      },
+      "SyncWriteEntry": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncChunkWrite"
+          },
+          {
+            "$ref": "#/components/schemas/SyncPresignedWriteRequest"
+          },
+          {
+            "$ref": "#/components/schemas/SyncPresignedWriteCommit"
+          }
+        ]
+      },
+      "SyncChunkWrite": {
+        "type": "object",
+        "required": ["path", "size", "upload_id", "content", "start", "end"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "upload_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": ["string", "null"]
+          },
+          "is_secret": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "SyncPresignedWriteRequest": {
+        "type": "object",
+        "required": ["path", "size", "presigned"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "presigned": {
+            "type": "boolean"
+          },
+          "is_secret": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "SyncPresignedWriteCommit": {
+        "type": "object",
+        "required": ["path", "size", "upload_id"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "upload_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": ["string", "null"]
+          }
+        }
+      },
+      "SyncResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncReadResponse"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWriteResponse"
+          }
+        ]
+      },
+      "SyncReadResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncReadInlineResponse"
+          },
+          {
+            "$ref": "#/components/schemas/SyncReadPresignedResponse"
+          }
+        ]
+      },
+      "SyncReadInlineResponse": {
+        "type": "object",
+        "required": ["ok", "op", "path", "size", "content", "encoding"],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "const": "read"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "content": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncReadPresignedResponse": {
+        "type": "object",
+        "required": ["ok", "op", "path", "size", "presigned_url", "expires_in", "method"],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "const": "read"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "presigned_url": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "method": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncWriteResponse": {
+        "type": "object",
+        "required": ["ok", "op", "results"],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "const": "write"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncWriteResult"
+            }
+          }
+        }
+      },
+      "SyncWriteResult": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncChunkWriteResult"
+          },
+          {
+            "$ref": "#/components/schemas/SyncPresignedWriteRequestResult"
+          },
+          {
+            "$ref": "#/components/schemas/SyncCommitWriteResult"
+          }
+        ]
+      },
+      "SyncChunkWriteResult": {
+        "type": "object",
+        "required": ["path", "size", "received_bytes", "ranges", "complete", "written"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "received_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ranges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncByteRange"
+            }
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "written": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncEntryError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SyncPresignedWriteRequestResult": {
+        "type": "object",
+        "required": ["path", "size", "presigned_url", "upload_id", "expires_in", "method", "complete", "written"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "presigned_url": {
+            "type": "string"
+          },
+          "upload_id": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "method": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "written": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncEntryError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SyncCommitWriteResult": {
+        "type": "object",
+        "required": ["path", "size", "complete", "written"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "written": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SyncEntryError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SyncByteRange": {
+        "type": "object",
+        "required": ["start", "end"],
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "SyncEntryError": {
+        "type": "object",
+        "required": ["code", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

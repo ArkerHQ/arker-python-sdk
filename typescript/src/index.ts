@@ -6,6 +6,10 @@
  * you want this client to use.
  */
 
+import type { components } from "./generated/api-types.js";
+
+type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
+
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 const DEFAULT_RETRY_ATTEMPTS = 4;
@@ -44,135 +48,33 @@ export interface ArkerOptions {
   retry?: RetryOptions | false;
 }
 
-export interface NetworkPolicy {
-  type: "open" | "blocked" | "allow" | "block";
-  allow?: string[];
-  block?: string[];
-}
-
-export type NetworkPolicyInput = boolean | string | NetworkPolicy;
-
-export interface ForkRequest {
-  name?: string | null;
-  image?: string | null;
-  network?: NetworkPolicyInput | null;
-  disk?: boolean;
-  vcpu_count?: number | null;
-  memory_mib?: number | null;
-  max_memory_mib?: number | null;
-  disk_mib?: number | null;
-}
-
+export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
+export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
+export type ForkRequest = ApiSchema<"ForkRequest">;
 export type ForkOptions = ForkRequest;
-
-export interface SessionInfo {
-  session_id: string;
-  state: string;
-  cwd: string;
-}
-
-export interface GoldenInfo {
-  vm_id: string;
-  name: string;
-  source_golden: string;
-  memory_mib?: number | null;
-  vcpu_count?: number | null;
-  disk_mib?: number | null;
-}
-
-export interface ListGoldensResponse {
-  goldens: GoldenInfo[];
-}
-
-export interface VmInfo {
-  vm_id: string;
-  owner_id: string;
-  created_at: string;
-  name?: string | null;
-  source_golden?: string | null;
-  state: string;
-  last_activity?: string | null;
-  vcpu_count?: number | null;
-  memory_mib?: number | null;
-  disk_mib?: number | null;
-  sessions: SessionInfo[];
-}
-
-export interface ListVmsResponse {
-  vms: VmInfo[];
-}
-
+export type SessionInfo = ApiSchema<"SessionInfo">;
+export type GoldenInfo = ApiSchema<"GoldenInfo">;
+export type ListGoldensResponse = ApiSchema<"ListGoldensResponse">;
+export type VmInfo = ApiSchema<"VmInfo">;
+export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
+export type ListSessionsResponse = ApiSchema<"ListSessionsResponse">;
 export type VmSummary = VmInfo;
 export type VmList = ListVmsResponse;
-
-export interface ForkVmResponse {
-  vm_id: string;
-  owner_id: string;
-  created_at: string;
-  sessions: SessionInfo[];
-  ssh_private_key?: string | null;
-  tunnels?: RunTunnelStatus[];
-  network?: RunNetworkStatus | null;
-}
-
-export interface DeleteVmResponse {
-  deleted: boolean;
-}
-
-export interface MountRequest {
-  uri: string;
-  mount_point: string;
-  format?: string;
-}
-
-export interface RunInboundPortRequest {
-  visibility?: string;
-  protocol?: string;
-}
-
-export interface RunNetworkRequest {
-  inbound?: {
-    ports?: Record<string, RunInboundPortRequest>;
-  };
-}
-
-export interface RunOptions {
-  session_id?: string | null;
-  background?: boolean;
-  timeout?: number | null;
-  end_symbol?: string | null;
-  mounts?: MountRequest[];
-  vcpu_count?: number | null;
-  memory_mib?: number | null;
-  disk_mib?: number | null;
-  network?: RunNetworkRequest | null;
-  release?: string | null;
-  signal?: string | null;
-  runtime?: string | null;
-  runtime_override?: string | null;
-}
-
-export interface RunTunnelStatus {
-  run_id?: string;
-  port: number;
-  visibility: string;
-  protocol: string;
-  url?: string | null;
-  status: string;
-  message?: string | null;
-}
-
-export interface RunNetworkStatus {
-  inbound: {
-    ports: Record<string, {
-      requested: string;
-      observed: string;
-      effective: string;
-      protocol: string;
-      url?: string | null;
-    }>;
-  };
-}
+export type ForkVmResponse = ApiSchema<"ForkVmResponse">;
+export type DeleteVmResponse = ApiSchema<"DeleteVmResponse">;
+export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
+export type MountRequest = ApiSchema<"MountRequest">;
+export type RunRequest = ApiSchema<"RunRequest">;
+export type RunOptions = Omit<RunRequest, "command">;
+export type RunInboundPortRequest = ApiSchema<"RunInboundPortRequest">;
+export type RunNetworkRequest = ApiSchema<"RunNetworkRequest">;
+export type RunTunnelStatus = ApiSchema<"RunTunnelStatus">;
+export type RunNetworkStatus = ApiSchema<"RunNetworkStatus">;
+export type RunResponse = ApiSchema<"RunResponse">;
+export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
+export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
+export type PtyRunResponse = ApiSchema<"PtyRunResponse">;
+export type RawRunResponse = RunResponse;
 
 export interface CompletedRunResult {
   type: "completed";
@@ -201,91 +103,25 @@ export interface PtyRunResult {
 
 export type RunResult = CompletedRunResult | BackgroundRunResult | PtyRunResult;
 
-export interface RunStatusResponse {
-  run_id: string;
-  stdout: string;
-  stdout_encoding: string;
-  stderr: string;
-  stderr_encoding: string;
-  exit_code: number | null;
-  completed: boolean;
-  tunnels: RunTunnelStatus[];
-  network?: RunNetworkStatus | null;
-}
-
-export interface CancelRunResponse {
-  cancelled: boolean;
-}
-
-export interface SyncReadInlineResponse {
-  ok: boolean;
-  op: "read";
-  path: string;
-  size: number;
-  content: string;
-  encoding: string;
-}
-
-export interface SyncReadPresignedResponse {
-  ok: boolean;
-  op: "read";
-  path: string;
-  size: number;
-  presigned_url: string;
-  expires_in: number;
-  method: string;
-}
-
-export interface SyncByteRange {
-  start: number;
-  end: number;
-}
-
-export interface ErrorResponse {
-  code: string;
-  message: string;
-}
-
-export interface SyncChunkWriteResult {
-  path: string;
-  size: number;
-  received_bytes: number;
-  ranges: SyncByteRange[];
-  complete: boolean;
-  written: boolean;
-  error?: ErrorResponse | null;
-}
-
-export interface SyncPresignedWriteRequestResult {
-  path: string;
-  size: number;
-  presigned_url: string;
-  upload_id: string;
-  expires_in: number;
-  method: string;
-  complete: boolean;
-  written: boolean;
-  error?: ErrorResponse | null;
-}
-
-export interface SyncCommitWriteResult {
-  path: string;
-  size: number;
-  complete: boolean;
-  written: boolean;
-  error?: ErrorResponse | null;
-}
-
-export type SyncWriteResult =
-  | SyncChunkWriteResult
-  | SyncPresignedWriteRequestResult
-  | SyncCommitWriteResult;
-
-export interface SyncWriteResponse {
-  ok: boolean;
-  op: "write";
-  results: SyncWriteResult[];
-}
+export type RunStatusResponse = ApiSchema<"RunStatusResponse">;
+export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
+export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
+export type ResizePtyRequest = ApiSchema<"ResizePtyRequest">;
+export type ResizePtyResponse = ApiSchema<"ResizePtyResponse">;
+export type ResizeRequest = ApiSchema<"ResizeRequest">;
+export type ResizeResponse = ApiSchema<"ResizeResponse">;
+export type SyncRequest = ApiSchema<"SyncRequest">;
+export type SyncResponse = ApiSchema<"SyncResponse">;
+export type SyncReadResponse = ApiSchema<"SyncReadResponse">;
+export type SyncReadInlineResponse = ApiSchema<"SyncReadInlineResponse">;
+export type SyncReadPresignedResponse = ApiSchema<"SyncReadPresignedResponse">;
+export type SyncByteRange = ApiSchema<"SyncByteRange">;
+export type ErrorResponse = ApiSchema<"ErrorResponse">;
+export type SyncChunkWriteResult = ApiSchema<"SyncChunkWriteResult">;
+export type SyncPresignedWriteRequestResult = ApiSchema<"SyncPresignedWriteRequestResult">;
+export type SyncCommitWriteResult = ApiSchema<"SyncCommitWriteResult">;
+export type SyncWriteResult = ApiSchema<"SyncWriteResult">;
+export type SyncWriteResponse = ApiSchema<"SyncWriteResponse">;
 
 interface RetryConfig {
   attempts: number;

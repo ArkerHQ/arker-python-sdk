@@ -76,6 +76,18 @@ const arker = new Arker({
 
 Pass `retry: false` to disable SDK retries.
 
+## API Contract
+
+The SDK request and response types are generated from
+`../contract/openapi.json`. The client itself is handwritten.
+
+After updating the vendored contract:
+
+```bash
+npm run generate:api-types
+npm run check:api-types
+```
+
 ## Routing
 
 Golden availability is owned by the backend behind `baseUrl`. For example,
