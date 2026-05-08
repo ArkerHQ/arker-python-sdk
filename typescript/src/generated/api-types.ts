@@ -65,6 +65,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Fork a VM or golden source. Optional network, disk, and resource overrides may return ErrorResponse code "unsupported_operation" on backends that do not support those options. */
         post: operations["forkVm"];
         delete?: never;
         options?: never;
@@ -83,6 +84,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code "unsupported_operation". */
         post: operations["runVm"];
         delete?: never;
         options?: never;
@@ -100,9 +102,11 @@ export interface paths {
             };
             cookie?: never;
         };
+        /** @description Get background run status. Backends without background runs return ErrorResponse code "unsupported_operation". */
         get: operations["getRun"];
         put?: never;
         post?: never;
+        /** @description Cancel a background run. Backends without background runs return ErrorResponse code "unsupported_operation". */
         delete: operations["cancelRun"];
         options?: never;
         head?: never;
@@ -118,8 +122,10 @@ export interface paths {
             };
             cookie?: never;
         };
+        /** @description List persistent sessions. Backends without persistent sessions return ErrorResponse code "unsupported_operation". */
         get: operations["listSessions"];
         put?: never;
+        /** @description Create a persistent session. Backends without persistent sessions return ErrorResponse code "unsupported_operation". */
         post: operations["createSession"];
         delete?: never;
         options?: never;
@@ -140,6 +146,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /** @description Delete a persistent session. Backends without persistent sessions return ErrorResponse code "unsupported_operation". */
         delete: operations["deleteSession"];
         options?: never;
         head?: never;
@@ -158,6 +165,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Resize a PTY session. Backends without PTY sessions return ErrorResponse code "unsupported_operation". */
         post: operations["resizePty"];
         delete?: never;
         options?: never;
@@ -176,6 +184,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Resize VM resources. Backends without VM resize support return ErrorResponse code "unsupported_operation". */
         post: operations["resizeVm"];
         delete?: never;
         options?: never;
@@ -194,6 +203,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Read or write files. Basic sync is part of the public API; backend-specific large-file or presigned sync limitations return ErrorResponse code "unsupported_operation". */
         post: operations["syncVm"];
         delete?: never;
         options?: never;
@@ -205,8 +215,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Standard API error. Backends use code "unsupported_operation" when the request is valid but names an operation or option this backend cannot support. */
         ErrorResponse: {
+            /**
+             * @description Stable machine-readable error code. "unsupported_operation" means the backend does not implement the requested optional feature.
+             * @example unsupported_operation
+             */
             code: string;
+            /** @description Human-readable error message. */
             message: string;
         };
         NetworkPolicy: components["schemas"]["NetworkPolicyOpen"] | components["schemas"]["NetworkPolicyBlocked"] | components["schemas"]["NetworkPolicyAllow"] | components["schemas"]["NetworkPolicyBlock"];
@@ -294,23 +310,39 @@ export interface components {
             /** @default dir */
             format?: string;
         };
+        /** @description Foreground command execution is the portable baseline. Optional session, background, mount, resource, network, signal, release, and runtime fields may return ErrorResponse code "unsupported_operation" on backends that do not support them. */
         RunRequest: {
+            /** @description Optional persistent session id. Backends without persistent sessions return unsupported_operation when this is requested. */
             session_id?: string | null;
             command: string;
-            /** @default false */
+            /**
+             * @description Run asynchronously. Backends without background execution return unsupported_operation and must not silently run the command synchronously.
+             * @default false
+             */
             background?: boolean;
             timeout?: number | null;
             /** @default auto */
             end_symbol?: string | null;
-            /** @default [] */
+            /**
+             * @description Optional external mounts. Backends without mount support return unsupported_operation when this is non-empty.
+             * @default []
+             */
             mounts?: components["schemas"]["MountRequest"][];
+            /** @description Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested. */
             vcpu_count?: number | null;
+            /** @description Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested. */
             memory_mib?: number | null;
+            /** @description Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested. */
             disk_mib?: number | null;
+            /** @description Optional network/tunnel request. Backends without networking support return unsupported_operation when this is requested. */
             network?: components["schemas"]["RunNetworkRequest"] | null;
+            /** @description Optional release selection. Backends without release selection support return unsupported_operation when this is requested. */
             release?: string | null;
+            /** @description Optional session signal. Backends without signal support return unsupported_operation when this is requested. */
             signal?: string | null;
+            /** @description Optional runtime selection. Backends without runtime selection support return unsupported_operation when this is requested. */
             runtime?: string | null;
+            /** @description Optional runtime override. Backends without runtime overrides return unsupported_operation when this is requested. */
             runtime_override?: string | null;
         };
         RunNetworkRequest: {
@@ -328,6 +360,7 @@ export interface components {
             /** @default http */
             protocol?: string;
         };
+        /** @description Successful run result. BackgroundRunResponse and PtyRunResponse are returned only by backends that support those modes; unsupported modes return ErrorResponse code "unsupported_operation". */
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"] | components["schemas"]["PtyRunResponse"];
         CompletedRunResponse: {
             stdout: string;
@@ -389,12 +422,14 @@ export interface components {
         CancelRunResponse: {
             cancelled: boolean;
         };
+        /** @description Create a persistent session. Backends without persistent sessions return unsupported_operation. */
         CreateSessionRequest: {
             env?: {
                 [key: string]: string;
             } | null;
             cwd?: string | null;
         };
+        /** @description Resize a PTY session. Backends without PTY sessions return unsupported_operation. */
         ResizePtyRequest: {
             cols: number;
             rows: number;
@@ -402,6 +437,7 @@ export interface components {
         ResizePtyResponse: {
             resized: boolean;
         };
+        /** @description Resize VM resources. Backends without VM resize support return unsupported_operation. */
         ResizeRequest: {
             vcpu_count?: number | null;
             memory_mib?: number | null;
@@ -513,6 +549,15 @@ export interface components {
     responses: {
         /** @description API error. */
         Error: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorResponse"];
+            };
+        };
+        /** @description The request is valid, but this backend does not support the requested operation or option. The response body uses ErrorResponse with code "unsupported_operation". */
+        UnsupportedOperation: {
             headers: {
                 [name: string]: unknown;
             };
@@ -644,6 +689,7 @@ export interface operations {
                     "application/json": components["schemas"]["ForkVmResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -671,6 +717,7 @@ export interface operations {
                     "application/json": components["schemas"]["RunResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -695,6 +742,7 @@ export interface operations {
                     "application/json": components["schemas"]["RunStatusResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -719,6 +767,7 @@ export interface operations {
                     "application/json": components["schemas"]["CancelRunResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -742,6 +791,7 @@ export interface operations {
                     "application/json": components["schemas"]["ListSessionsResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -769,6 +819,7 @@ export interface operations {
                     "application/json": components["schemas"]["SessionInfo"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -793,6 +844,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeleteSessionResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -821,6 +873,7 @@ export interface operations {
                     "application/json": components["schemas"]["ResizePtyResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -848,6 +901,7 @@ export interface operations {
                     "application/json": components["schemas"]["ResizeResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -875,6 +929,7 @@ export interface operations {
                     "application/json": components["schemas"]["SyncResponse"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };

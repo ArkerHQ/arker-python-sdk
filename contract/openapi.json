@@ -2,7 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Arker Public VM API",
-    "version": "0.1.0"
+    "version": "0.1.1",
+    "description": "Public VM API contract. Backends expose the same endpoint and wire shapes; backend-specific feature limitations are returned as standard ErrorResponse bodies with code \"unsupported_operation\"."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
@@ -124,10 +125,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Fork a VM or golden source. Optional network, disk, and resource overrides may return ErrorResponse code \"unsupported_operation\" on backends that do not support those options."
       }
     },
     "/v1/vms/{id}/run": {
@@ -159,10 +164,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code \"unsupported_operation\"."
       }
     },
     "/v1/vms/{id}/runs/{run_id}": {
@@ -187,10 +196,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Get background run status. Backends without background runs return ErrorResponse code \"unsupported_operation\"."
       },
       "delete": {
         "operationId": "cancelRun",
@@ -205,10 +218,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Cancel a background run. Backends without background runs return ErrorResponse code \"unsupported_operation\"."
       }
     },
     "/v1/vms/{id}/sessions": {
@@ -230,10 +247,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "List persistent sessions. Backends without persistent sessions return ErrorResponse code \"unsupported_operation\"."
       },
       "post": {
         "operationId": "createSession",
@@ -258,10 +279,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Create a persistent session. Backends without persistent sessions return ErrorResponse code \"unsupported_operation\"."
       }
     },
     "/v1/vms/{id}/sessions/{sid}": {
@@ -286,10 +311,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Delete a persistent session. Backends without persistent sessions return ErrorResponse code \"unsupported_operation\"."
       }
     },
     "/v1/vms/{id}/sessions/{sid}/resize": {
@@ -324,10 +353,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Resize a PTY session. Backends without PTY sessions return ErrorResponse code \"unsupported_operation\"."
       }
     },
     "/v1/vms/{id}/resize": {
@@ -359,10 +392,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Resize VM resources. Backends without VM resize support return ErrorResponse code \"unsupported_operation\"."
       }
     },
     "/v1/vms/{id}/sync": {
@@ -394,10 +431,14 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Read or write files. Basic sync is part of the public API; backend-specific large-file or presigned sync limitations return ErrorResponse code \"unsupported_operation\"."
       }
     }
   },
@@ -438,21 +479,49 @@
             }
           }
         }
+      },
+      "UnsupportedOperation": {
+        "description": "The request is valid, but this backend does not support the requested operation or option. The response body uses ErrorResponse with code \"unsupported_operation\".",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "examples": {
+              "unsupportedOperation": {
+                "summary": "Unsupported backend feature",
+                "value": {
+                  "code": "unsupported_operation",
+                  "message": "background runs are not supported on this backend"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "schemas": {
       "ErrorResponse": {
         "type": "object",
-        "required": ["code", "message"],
+        "required": [
+          "code",
+          "message"
+        ],
         "additionalProperties": false,
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "description": "Stable machine-readable error code. \"unsupported_operation\" means the backend does not implement the requested optional feature.",
+            "examples": [
+              "unsupported_operation"
+            ]
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Human-readable error message."
           }
-        }
+        },
+        "description": "Standard API error. Backends use code \"unsupported_operation\" when the request is valid but names an operation or option this backend cannot support."
       },
       "NetworkPolicy": {
         "oneOf": [
@@ -472,7 +541,9 @@
       },
       "NetworkPolicyOpen": {
         "type": "object",
-        "required": ["type"],
+        "required": [
+          "type"
+        ],
         "additionalProperties": false,
         "properties": {
           "type": {
@@ -482,7 +553,9 @@
       },
       "NetworkPolicyBlocked": {
         "type": "object",
-        "required": ["type"],
+        "required": [
+          "type"
+        ],
         "additionalProperties": false,
         "properties": {
           "type": {
@@ -492,7 +565,10 @@
       },
       "NetworkPolicyAllow": {
         "type": "object",
-        "required": ["type", "allow"],
+        "required": [
+          "type",
+          "allow"
+        ],
         "additionalProperties": false,
         "properties": {
           "type": {
@@ -508,7 +584,10 @@
       },
       "NetworkPolicyBlock": {
         "type": "object",
-        "required": ["type", "block"],
+        "required": [
+          "type",
+          "block"
+        ],
         "additionalProperties": false,
         "properties": {
           "type": {
@@ -540,10 +619,16 @@
         "additionalProperties": false,
         "properties": {
           "name": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "image": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "network": {
             "anyOf": [
@@ -560,27 +645,43 @@
             "default": true
           },
           "vcpu_count": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0,
             "maximum": 255
           },
           "memory_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "max_memory_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "disk_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           }
         }
       },
       "SessionInfo": {
         "type": "object",
-        "required": ["session_id", "state", "cwd"],
+        "required": [
+          "session_id",
+          "state",
+          "cwd"
+        ],
         "additionalProperties": false,
         "properties": {
           "session_id": {
@@ -602,7 +703,11 @@
       },
       "GoldenInfo": {
         "type": "object",
-        "required": ["vm_id", "name", "source_golden"],
+        "required": [
+          "vm_id",
+          "name",
+          "source_golden"
+        ],
         "additionalProperties": false,
         "properties": {
           "vm_id": {
@@ -615,23 +720,34 @@
             "type": "string"
           },
           "memory_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "vcpu_count": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0,
             "maximum": 255
           },
           "disk_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           }
         }
       },
       "ListGoldensResponse": {
         "type": "object",
-        "required": ["goldens"],
+        "required": [
+          "goldens"
+        ],
         "additionalProperties": false,
         "properties": {
           "goldens": {
@@ -644,7 +760,13 @@
       },
       "VmInfo": {
         "type": "object",
-        "required": ["vm_id", "owner_id", "created_at", "state", "sessions"],
+        "required": [
+          "vm_id",
+          "owner_id",
+          "created_at",
+          "state",
+          "sessions"
+        ],
         "additionalProperties": false,
         "properties": {
           "vm_id": {
@@ -657,28 +779,46 @@
             "type": "string"
           },
           "name": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "source_golden": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "type": "string"
           },
           "last_activity": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "vcpu_count": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0,
             "maximum": 255
           },
           "memory_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "disk_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "sessions": {
@@ -691,7 +831,9 @@
       },
       "ListVmsResponse": {
         "type": "object",
-        "required": ["vms"],
+        "required": [
+          "vms"
+        ],
         "additionalProperties": false,
         "properties": {
           "vms": {
@@ -704,7 +846,12 @@
       },
       "ForkVmResponse": {
         "type": "object",
-        "required": ["vm_id", "owner_id", "created_at", "sessions"],
+        "required": [
+          "vm_id",
+          "owner_id",
+          "created_at",
+          "sessions"
+        ],
         "additionalProperties": false,
         "properties": {
           "vm_id": {
@@ -723,7 +870,10 @@
             }
           },
           "ssh_private_key": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "tunnels": {
             "type": "array",
@@ -745,7 +895,9 @@
       },
       "DeleteVmResponse": {
         "type": "object",
-        "required": ["deleted"],
+        "required": [
+          "deleted"
+        ],
         "additionalProperties": false,
         "properties": {
           "deleted": {
@@ -755,7 +907,9 @@
       },
       "DeleteSessionResponse": {
         "type": "object",
-        "required": ["deleted"],
+        "required": [
+          "deleted"
+        ],
         "additionalProperties": false,
         "properties": {
           "deleted": {
@@ -765,7 +919,10 @@
       },
       "MountRequest": {
         "type": "object",
-        "required": ["uri", "mount_point"],
+        "required": [
+          "uri",
+          "mount_point"
+        ],
         "additionalProperties": false,
         "properties": {
           "uri": {
@@ -782,25 +939,38 @@
       },
       "RunRequest": {
         "type": "object",
-        "required": ["command"],
+        "required": [
+          "command"
+        ],
         "additionalProperties": false,
         "properties": {
           "session_id": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional persistent session id. Backends without persistent sessions return unsupported_operation when this is requested."
           },
           "command": {
             "type": "string"
           },
           "background": {
             "type": "boolean",
-            "default": false
+            "default": false,
+            "description": "Run asynchronously. Backends without background execution return unsupported_operation and must not silently run the command synchronously."
           },
           "timeout": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "end_symbol": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "default": "auto"
           },
           "mounts": {
@@ -808,20 +978,33 @@
             "items": {
               "$ref": "#/components/schemas/MountRequest"
             },
-            "default": []
+            "default": [],
+            "description": "Optional external mounts. Backends without mount support return unsupported_operation when this is non-empty."
           },
           "vcpu_count": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0,
-            "maximum": 255
+            "maximum": 255,
+            "description": "Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested."
           },
           "memory_mib": {
-            "type": ["integer", "null"],
-            "minimum": 0
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested."
           },
           "disk_mib": {
-            "type": ["integer", "null"],
-            "minimum": 0
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested."
           },
           "network": {
             "anyOf": [
@@ -831,21 +1014,39 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Optional network/tunnel request. Backends without networking support return unsupported_operation when this is requested."
           },
           "release": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional release selection. Backends without release selection support return unsupported_operation when this is requested."
           },
           "signal": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional session signal. Backends without signal support return unsupported_operation when this is requested."
           },
           "runtime": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional runtime selection. Backends without runtime selection support return unsupported_operation when this is requested."
           },
           "runtime_override": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional runtime override. Backends without runtime overrides return unsupported_operation when this is requested."
           }
-        }
+        },
+        "description": "Foreground command execution is the portable baseline. Optional session, background, mount, resource, network, signal, release, and runtime fields may return ErrorResponse code \"unsupported_operation\" on backends that do not support them."
       },
       "RunNetworkRequest": {
         "type": "object",
@@ -901,11 +1102,19 @@
           {
             "$ref": "#/components/schemas/PtyRunResponse"
           }
-        ]
+        ],
+        "description": "Successful run result. BackgroundRunResponse and PtyRunResponse are returned only by backends that support those modes; unsupported modes return ErrorResponse code \"unsupported_operation\"."
       },
       "CompletedRunResponse": {
         "type": "object",
-        "required": ["stdout", "stdout_encoding", "stderr", "stderr_encoding", "exit_code", "completed"],
+        "required": [
+          "stdout",
+          "stdout_encoding",
+          "stderr",
+          "stderr_encoding",
+          "exit_code",
+          "completed"
+        ],
         "additionalProperties": false,
         "properties": {
           "stdout": {
@@ -930,7 +1139,10 @@
       },
       "BackgroundRunResponse": {
         "type": "object",
-        "required": ["run_id", "completed"],
+        "required": [
+          "run_id",
+          "completed"
+        ],
         "additionalProperties": false,
         "properties": {
           "run_id": {
@@ -960,7 +1172,11 @@
       },
       "PtyRunResponse": {
         "type": "object",
-        "required": ["pty", "session_id", "ws_url"],
+        "required": [
+          "pty",
+          "session_id",
+          "ws_url"
+        ],
         "additionalProperties": false,
         "properties": {
           "pty": {
@@ -976,7 +1192,16 @@
       },
       "RunStatusResponse": {
         "type": "object",
-        "required": ["run_id", "stdout", "stdout_encoding", "stderr", "stderr_encoding", "exit_code", "completed", "tunnels"],
+        "required": [
+          "run_id",
+          "stdout",
+          "stdout_encoding",
+          "stderr",
+          "stderr_encoding",
+          "exit_code",
+          "completed",
+          "tunnels"
+        ],
         "additionalProperties": false,
         "properties": {
           "run_id": {
@@ -995,7 +1220,10 @@
             "type": "string"
           },
           "exit_code": {
-            "type": ["integer", "null"]
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "completed": {
             "type": "boolean"
@@ -1020,7 +1248,9 @@
       },
       "RunNetworkStatus": {
         "type": "object",
-        "required": ["inbound"],
+        "required": [
+          "inbound"
+        ],
         "additionalProperties": false,
         "properties": {
           "inbound": {
@@ -1030,7 +1260,9 @@
       },
       "RunInboundStatus": {
         "type": "object",
-        "required": ["ports"],
+        "required": [
+          "ports"
+        ],
         "additionalProperties": false,
         "properties": {
           "ports": {
@@ -1043,7 +1275,12 @@
       },
       "RunInboundPortStatus": {
         "type": "object",
-        "required": ["requested", "observed", "effective", "protocol"],
+        "required": [
+          "requested",
+          "observed",
+          "effective",
+          "protocol"
+        ],
         "additionalProperties": false,
         "properties": {
           "requested": {
@@ -1059,13 +1296,21 @@
             "type": "string"
           },
           "url": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
       "RunTunnelStatus": {
         "type": "object",
-        "required": ["port", "visibility", "protocol", "status"],
+        "required": [
+          "port",
+          "visibility",
+          "protocol",
+          "status"
+        ],
         "additionalProperties": false,
         "properties": {
           "run_id": {
@@ -1084,19 +1329,27 @@
             "type": "string"
           },
           "url": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "type": "string"
           },
           "message": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
       "CancelRunResponse": {
         "type": "object",
-        "required": ["cancelled"],
+        "required": [
+          "cancelled"
+        ],
         "additionalProperties": false,
         "properties": {
           "cancelled": {
@@ -1122,13 +1375,20 @@
             ]
           },
           "cwd": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           }
-        }
+        },
+        "description": "Create a persistent session. Backends without persistent sessions return unsupported_operation."
       },
       "ResizePtyRequest": {
         "type": "object",
-        "required": ["cols", "rows"],
+        "required": [
+          "cols",
+          "rows"
+        ],
         "additionalProperties": false,
         "properties": {
           "cols": {
@@ -1141,11 +1401,14 @@
             "minimum": 0,
             "maximum": 65535
           }
-        }
+        },
+        "description": "Resize a PTY session. Backends without PTY sessions return unsupported_operation."
       },
       "ResizePtyResponse": {
         "type": "object",
-        "required": ["resized"],
+        "required": [
+          "resized"
+        ],
         "additionalProperties": false,
         "properties": {
           "resized": {
@@ -1158,23 +1421,35 @@
         "additionalProperties": false,
         "properties": {
           "vcpu_count": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0,
             "maximum": 255
           },
           "memory_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "disk_mib": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           }
-        }
+        },
+        "description": "Resize VM resources. Backends without VM resize support return unsupported_operation."
       },
       "ResizeResponse": {
         "type": "object",
-        "required": ["ok"],
+        "required": [
+          "ok"
+        ],
         "additionalProperties": false,
         "properties": {
           "ok": {
@@ -1194,7 +1469,10 @@
       },
       "SyncReadRequest": {
         "type": "object",
-        "required": ["op", "path"],
+        "required": [
+          "op",
+          "path"
+        ],
         "additionalProperties": false,
         "properties": {
           "op": {
@@ -1207,7 +1485,10 @@
       },
       "SyncWriteRequest": {
         "type": "object",
-        "required": ["op", "writes"],
+        "required": [
+          "op",
+          "writes"
+        ],
         "additionalProperties": false,
         "properties": {
           "op": {
@@ -1236,7 +1517,14 @@
       },
       "SyncChunkWrite": {
         "type": "object",
-        "required": ["path", "size", "upload_id", "content", "start", "end"],
+        "required": [
+          "path",
+          "size",
+          "upload_id",
+          "content",
+          "start",
+          "end"
+        ],
         "additionalProperties": false,
         "properties": {
           "path": {
@@ -1261,7 +1549,10 @@
             "minimum": 0
           },
           "sha256": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "is_secret": {
             "type": "boolean",
@@ -1271,7 +1562,11 @@
       },
       "SyncPresignedWriteRequest": {
         "type": "object",
-        "required": ["path", "size", "presigned"],
+        "required": [
+          "path",
+          "size",
+          "presigned"
+        ],
         "additionalProperties": false,
         "properties": {
           "path": {
@@ -1292,7 +1587,11 @@
       },
       "SyncPresignedWriteCommit": {
         "type": "object",
-        "required": ["path", "size", "upload_id"],
+        "required": [
+          "path",
+          "size",
+          "upload_id"
+        ],
         "additionalProperties": false,
         "properties": {
           "path": {
@@ -1306,7 +1605,10 @@
             "type": "string"
           },
           "sha256": {
-            "type": ["string", "null"]
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -1332,7 +1634,14 @@
       },
       "SyncReadInlineResponse": {
         "type": "object",
-        "required": ["ok", "op", "path", "size", "content", "encoding"],
+        "required": [
+          "ok",
+          "op",
+          "path",
+          "size",
+          "content",
+          "encoding"
+        ],
         "additionalProperties": false,
         "properties": {
           "ok": {
@@ -1358,7 +1667,15 @@
       },
       "SyncReadPresignedResponse": {
         "type": "object",
-        "required": ["ok", "op", "path", "size", "presigned_url", "expires_in", "method"],
+        "required": [
+          "ok",
+          "op",
+          "path",
+          "size",
+          "presigned_url",
+          "expires_in",
+          "method"
+        ],
         "additionalProperties": false,
         "properties": {
           "ok": {
@@ -1388,7 +1705,11 @@
       },
       "SyncWriteResponse": {
         "type": "object",
-        "required": ["ok", "op", "results"],
+        "required": [
+          "ok",
+          "op",
+          "results"
+        ],
         "additionalProperties": false,
         "properties": {
           "ok": {
@@ -1420,7 +1741,14 @@
       },
       "SyncChunkWriteResult": {
         "type": "object",
-        "required": ["path", "size", "received_bytes", "ranges", "complete", "written"],
+        "required": [
+          "path",
+          "size",
+          "received_bytes",
+          "ranges",
+          "complete",
+          "written"
+        ],
         "additionalProperties": false,
         "properties": {
           "path": {
@@ -1460,7 +1788,16 @@
       },
       "SyncPresignedWriteRequestResult": {
         "type": "object",
-        "required": ["path", "size", "presigned_url", "upload_id", "expires_in", "method", "complete", "written"],
+        "required": [
+          "path",
+          "size",
+          "presigned_url",
+          "upload_id",
+          "expires_in",
+          "method",
+          "complete",
+          "written"
+        ],
         "additionalProperties": false,
         "properties": {
           "path": {
@@ -1503,7 +1840,12 @@
       },
       "SyncCommitWriteResult": {
         "type": "object",
-        "required": ["path", "size", "complete", "written"],
+        "required": [
+          "path",
+          "size",
+          "complete",
+          "written"
+        ],
         "additionalProperties": false,
         "properties": {
           "path": {
@@ -1533,7 +1875,10 @@
       },
       "SyncByteRange": {
         "type": "object",
-        "required": ["start", "end"],
+        "required": [
+          "start",
+          "end"
+        ],
         "additionalProperties": false,
         "properties": {
           "start": {
@@ -1548,7 +1893,10 @@
       },
       "SyncEntryError": {
         "type": "object",
-        "required": ["code", "message"],
+        "required": [
+          "code",
+          "message"
+        ],
         "additionalProperties": false,
         "properties": {
           "code": {
