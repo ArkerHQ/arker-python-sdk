@@ -1,7 +1,47 @@
-"""Arker — single-file Python client for the Arker virtual computer
-platform. See README.md for the quickstart, `arker/computer.py` for
-the implementation, and `docs/sync-api.md` for wire-level details."""
-from .computer import Arker, Computer, Sync, RunResult, VmSummary, VmList, ArkerError
+"""Python client for the Arker VM API."""
+from .computer import (
+    Arker,
+    ArkerError,
+    BackgroundRunResult,
+    CancelRunResponse,
+    CompletedRunResult,
+    Computer,
+    DeleteVmResponse,
+    ForkVmResponse,
+    GoldenInfo,
+    ListGoldensResponse,
+    ListVmsResponse,
+    PtyRunResult,
+    RetryOptions,
+    RunResult,
+    RunStatusResponse,
+    SessionInfo,
+    Sync,
+    VmInfo,
+    VmList,
+    VmSummary,
+)
 
-__all__ = ["Arker", "Computer", "Sync", "RunResult", "VmSummary", "VmList", "ArkerError"]
+__all__ = [
+    "Arker",
+    "ArkerError",
+    "BackgroundRunResult",
+    "CancelRunResponse",
+    "CompletedRunResult",
+    "Computer",
+    "DeleteVmResponse",
+    "ForkVmResponse",
+    "GoldenInfo",
+    "ListGoldensResponse",
+    "ListVmsResponse",
+    "PtyRunResult",
+    "RetryOptions",
+    "RunResult",
+    "RunStatusResponse",
+    "SessionInfo",
+    "Sync",
+    "VmInfo",
+    "VmList",
+    "VmSummary",
+]
 __version__ = "0.2.1"

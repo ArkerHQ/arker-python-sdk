@@ -1,8 +1,8 @@
-# Arker — Python SDK
+# Arker Python SDK
 
-Single-file Python client for the [Arker](https://arker.ai) virtual computer
-platform. Spawn isolated Linux sandboxes, run shell / Python / Node code in
-them, read and write files. Zero runtime dependencies (stdlib `urllib`).
+Small Python wrapper for the Arker VM API. The SDK keeps API keys,
+base URLs, retries, output decoding, and file sync ergonomics in one place.
+It does not hardcode VM names, resolve golden aliases, or choose endpoints.
 
 ## Install
 
@@ -10,118 +10,88 @@ them, read and write files. Zero runtime dependencies (stdlib `urllib`).
 pip install arker
 ```
 
-Or, while in alpha:
-
-```bash
-pip install git+https://github.com/arker-ai/arker-python@v0.2.0
-```
+Python 3.10 or newer is required. The package has no runtime dependencies.
 
 ## Quickstart
 
 ```python
-from arker import Arker, ArkerError
+from arker import Arker, CompletedRunResult
 
-arker  = Arker(api_key="ark_live_...")
-vm     = arker.vm("arkuntu").fork(name="hello")     # fresh VM from base image
-result = vm.run("python3 -c 'print(2+2)'")
-print(result.stdout.decode())                        # → "4\n"
+arker = Arker(
+    api_key="ark_live_...",
+    base_url="https://aws-us-west-2.arker.ai/api",
+)
 
-vm.sync.write_file("/home/user/data.csv", b"a,b\n1,2\n")
-data = vm.sync.read_file("/home/user/data.csv")      # → b"a,b\n1,2\n"
+vm = arker.vm("ubuntu").fork(name="hello")
+result = vm.run("printf 'hello\\n'")
 
-child = vm.fork(name="branch")                       # constant-time copy-on-write
-child.delete()
+if isinstance(result, CompletedRunResult):
+    print(result.stdout.decode())
+
+vm.sync.write_file("/home/user/data.txt", "hello\n")
+data = vm.sync.read_file("/home/user/data.txt")
+
 vm.delete()
 ```
 
-List your VMs:
+`base_url` is the endpoint this client talks to. If an endpoint mounts the API
+under `/api`, include that prefix:
 
-```python
-page = arker.list(limit=10, sort="-created_at")
-print(f"{page.total} total")
-for summary in page:                                 # iterable; also page.items
-    print(summary.vm_id, summary.name, summary.region, summary.created_at)
+```bash
+export ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api
 ```
 
 ## API
 
-```
-Arker(api_key, base_url=None)
-    .vm(vm_id) -> Computer                          # open handle (no network call)
-    .list(*, limit=25, offset=0, q=None, sort=None) -> VmList
+```python
+Arker(api_key=None, base_url=None, retry=None)
+    .vm(vm_id)
+    .goldens()
+    .list()
+    .get(vm_id)
 
 Computer
-    .id, .delete()
-    .fork(*, name=, is_public=, region=) -> Computer
-    .run(command, *, session_id=, timeout=) -> RunResult
-    .sync.read_file(path) -> bytes
-    .sync.write_file(path, data: bytes | str)
-
-RunResult: stdout, stderr (bytes), exit_code, duration_ms, session_id, cwd
-VmSummary: vm_id, name, base_image, region, created_at (ISO 8601)
-VmList: items (list[VmSummary]), total (int);  iterable, len()-able
-
-ArkerError(code, message, status)                   # one exception type for everything
+    .fork(...)
+    .run(command, ...)
+    .run_status(run_id)
+    .cancel_run(run_id)
+    .delete()
+    .sync.read_file(path)
+    .sync.write_file(path, data)
 ```
 
-### Routing
+`api_key` falls back to `ARKER_API_KEY` or `AUTH_KEY`.
+`base_url` falls back to `ARKER_BASE_URL`; there is no built-in default endpoint.
 
-`fork`, `run`, `sync`, `delete` go to the regional ALB (default
-`https://aws-us-west-2.burst.arker.ai`) — fastest path, no Cloudflare hop.
-
-`list` always goes through `https://arker.ai` (Cloudflare → PlanetScale)
-regardless of `base_url`, because the data lives in the global database
-rather than per-VM regional state.
-
-Public base-image names like `"arkuntu"` resolve to a ULID **client-side**
-(see `SOURCE_ALIASES` in `computer.py`), so `a.vm("arkuntu").fork()` works
-on the default ALB path with no extra round-trip. Override `base_url` or
-set `ARKER_BASE_URL` only if you want to point at a different region or
-a self-hosted stack.
-
-### Errors
-
-Every server-side error becomes an `ArkerError`:
+Retries are configured on the client:
 
 ```python
-try:
-    vm.sync.read_file("/home/user/missing")
-except ArkerError as err:
-    print(err.code)      # "not_found"
-    print(err.message)   # "file not found: /home/user/missing"
-    print(err.status)    # 404
+from arker import Arker, RetryOptions
+
+arker = Arker(
+    api_key="ark_live_...",
+    base_url="https://aws-us-west-2.arker.ai/api",
+    retry=RetryOptions(attempts=4, base_delay_s=0.2, max_delay_s=2.0),
+)
 ```
 
-`code` is a stable enum: `bad_request`, `unauthorized`, `payment_required`,
-`forbidden`, `not_found`, `conflict`, `payload_too_large`, `internal`,
-`not_implemented`, `vm_busy`, `unsupported_*`, `command_not_found`.
+Pass `retry=False` to disable SDK retries.
 
-### What the SDK does for you
+## Routing
 
-Hidden behind these six methods:
+Golden availability is owned by the backend behind `base_url`. For example,
+if `ubuntu` is not available on a burst endpoint, `arker.vm("ubuntu").fork()`
+will fail with the backend error. The SDK does not special-case that.
 
-- **Write strategy**: small files go in one call; larger files use a
-  direct upload bypass so the bytes don't traverse the API layer.
-  `write_file` always returns once the bytes are durably stored.
-- **Read coalescing**: `read_file` always returns raw `bytes`, regardless
-  of whether the server inlined the content or returned a presigned URL.
-- **Idempotent retry**: transient errors are retried with exponential
-  backoff. Writes are server-side idempotent on `upload_id`, so retries
-  never produce duplicate writes.
-- **Path validation**: only `/home/user/...` paths accepted; `..` rejected.
-
-## Demo / smoke test
-
-Run the full surface against a live deployment:
+## Demo
 
 ```bash
-ARKER_API_KEY=ark_live_... python -m arker.tests.demo
+ARKER_API_KEY=ark_live_... \
+ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \
+ARKER_SOURCE_VM=ubuntu \
+python tests/demo.py
 ```
-
-It exercises every method (`list`, `vm`, `fork`, `run`, `sync.write_file`,
-`sync.read_file`, error path, child fork, `delete`) and prints what each
-call hits on the wire — useful as living documentation.
 
 ## License
 
-Apache-2.0.
+Apache-2.0

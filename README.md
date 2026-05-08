@@ -27,10 +27,14 @@ pip install arker
 ```python
 from arker import Arker
 
-arker = Arker(api_key="ark_live_...")
-vm    = arker.vm("arkuntu").fork(name="hello")
+arker = Arker(
+    api_key="ark_live_...",
+    base_url="https://aws-us-west-2.arker.ai/api",
+)
+vm = arker.vm("ubuntu").fork(name="hello")
 result = vm.run("python3 -c 'print(2+2)'")
-print(result.stdout.decode())   # → "4\n"
+if result.type == "completed":
+    print(result.stdout.decode())   # -> "4\n"
 vm.delete()
 ```
 
@@ -64,7 +68,7 @@ await vm.delete();
 ### `fork` &nbsp;·&nbsp; instant VMs
 
 ```python
-vm    = arker.vm("arkuntu").fork()       # fresh VM from a base image
+vm    = arker.vm("ubuntu").fork()        # fresh VM from a base image
 child = vm.fork(name="branch")           # branch an existing VM
 ```
 
@@ -80,14 +84,14 @@ configured VM.
 ```python
 result = vm.run("python3 -c 'print(2+2)'")
 print(result.stdout.decode())            # → "4\n"
-print(result.exit_code, result.duration_ms)
+print(result.exit_code)
 ```
 
 Shell, Python, Node — anything installed inside the VM. State persists
 across calls in a session, so a `cd /tmp` sticks for the next `ls`,
 and Python globals defined in one `vm.run(...)` are still there in the
-next. Every call returns a structured `RunResult` with `stdout`,
-`stderr`, `exit_code`, `duration_ms`, and `cwd` — no parsing required.
+next. Completed runs return structured output with `stdout`, `stderr`,
+and `exit_code` — no parsing required.
 
 ### `sync` &nbsp;·&nbsp; file I/O up to 100 MB
 

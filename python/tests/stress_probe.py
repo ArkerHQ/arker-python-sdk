@@ -4,8 +4,9 @@ read/write operations against the staging deploy.
 Usage:
 
     ARKER_API_KEY=ark_live_... \\
-    ARKER_BASE_URL=https://arker.ai \\
-    python3 sdk/custom/python/stress_probe.py
+    ARKER_BASE_URL=https://aws-us-west-2.arker.ai/api \\
+    ARKER_SOURCE_VM=ubuntu \\
+    python tests/stress_probe.py
 
 Reports:
   - per-op latency p50 / p90 / p99
@@ -29,20 +30,12 @@ from pathlib import Path
 import arker.computer as sdk  # local-import; install with pip install -e .
 
 API_KEY = os.environ.get("ARKER_API_KEY") or os.environ.get("AUTH_KEY")
-# `None` falls back to the SDK's `DEFAULT_BASE_URL` (now the ALB).
-# Override with `ARKER_BASE_URL=https://arker.ai` to compare via Cloudflare.
 BASE_URL = os.environ.get("ARKER_BASE_URL")
-# Default to the arkuntu template ULID (works against ALB which doesn't
-# resolve names). Override with `ARKER_TEMPLATE=arkuntu` only if going
-# through arker.ai.
-TEMPLATE = os.environ.get(
-    "ARKER_TEMPLATE",
-    "01KQBYKEV5WJ7YB010603T1DCT_d8c0",
-)
+SOURCE_VM = os.environ.get("ARKER_SOURCE_VM")
 N = int(os.environ.get("STRESS_N", "30"))
 
-if not API_KEY:
-    print("ARKER_API_KEY required", file=sys.stderr)
+if not API_KEY or not BASE_URL or not SOURCE_VM:
+    print("ARKER_API_KEY, ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
     sys.exit(2)
 
 
@@ -62,7 +55,7 @@ def install_http_tracer() -> list[dict]:
                 "elapsed_ms": elapsed * 1000,
                 "body_size": len(body) if body else 0,
                 "resp_size": len(raw) if raw else 0,
-                "is_transient": status in sdk._RETRYABLE_STATUSES,
+                "is_transient": status in sdk.RETRYABLE_HTTP,
             })
             return status, raw
         except Exception as e:
@@ -123,7 +116,7 @@ def run_phase(label: str, fn, n: int, trace: list[dict]) -> None:
     if slowest["ms"] > 2000:  # only bother for >2s outliers
         print(f"  ── slowest op #{slowest['i']} ({slowest['ms']:.0f}ms) HTTP trace ──")
         for j, h in enumerate(slowest["http_calls"]):
-            url_short = h["url"].split("/api/v1/")[-1] if "/api/v1/" in h["url"] else h["url"]
+            url_short = h["url"].split("/v1/")[-1] if "/v1/" in h["url"] else h["url"]
             url_short = url_short[:60]
             tag = "↻" if h.get("is_transient") else " "
             print(f"     {j+1}. {tag} {h['method']:5s} /{url_short:60s} "
@@ -134,10 +127,10 @@ def run_phase(label: str, fn, n: int, trace: list[dict]) -> None:
 def main() -> None:
     arker = sdk.Arker(api_key=API_KEY, base_url=BASE_URL)
     trace = install_http_tracer()
-    print(f"base_url={arker._base_url}\ntemplate={TEMPLATE}\nn={N}")
+    print(f"base_url={arker.base_url}\nsource_vm={SOURCE_VM}\nn={N}")
 
     # Pre-create one VM to operate against — fork is the only entry.
-    vm = arker.fork(TEMPLATE, name="stress-probe")
+    vm = arker.vm(SOURCE_VM).fork(name="stress-probe")
     print(f"vm={vm.id}")
 
     try:
