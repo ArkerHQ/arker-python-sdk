@@ -129,7 +129,7 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
 async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-us-west-2.arker.ai/v1/vms/ubuntu/fork",
+    (method, url) => method === "POST" && url === "https://aws-us-west-2.arker.ai/api/v1/vms/ubuntu/fork",
     200,
     { vm_id: "vmh-child", owner_id: "owner", created_at: "now", sessions: [] },
   );
@@ -137,9 +137,9 @@ async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const arker = regionClient(fetch);
   const vm = await arker.vm("ubuntu").fork();
 
-  assert.equal(arker.baseUrl, "https://aws-us-west-2.arker.ai");
+  assert.equal(arker.baseUrl, "https://aws-us-west-2.arker.ai/api");
   assert.equal(arker.burstBaseUrl, "https://aws-burst-us-west-2.arker.ai/api");
-  assert.equal(vm.baseUrl, "https://aws-us-west-2.arker.ai");
+  assert.equal(vm.baseUrl, "https://aws-us-west-2.arker.ai/api");
 }
 
 async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {

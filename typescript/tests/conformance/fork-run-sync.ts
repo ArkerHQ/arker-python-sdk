@@ -33,7 +33,7 @@ interface SmokeTarget {
 }
 
 type JsonObject = Record<string, unknown>;
-type HttpMethod = "POST";
+type HttpMethod = "POST" | "DELETE";
 
 interface Client {
   apiKey: string;
@@ -156,18 +156,18 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestJson(client: Client, method: HttpMethod, path: string, body: unknown): Promise<unknown> {
+async function requestJson(client: Client, method: HttpMethod, path: string, body?: unknown): Promise<unknown> {
   const url = client.baseUrl.replace(/\/+$/, "") + path;
 
   for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
-    const response = await fetch(url, {
-      method,
-      headers: {
-        authorization: `Bearer ${client.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+    const headers: Record<string, string> = { authorization: `Bearer ${client.apiKey}` };
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) {
+      headers["content-type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(url, init);
 
     const text = await response.text();
     const payload = parseJson(text);
@@ -305,35 +305,46 @@ async function smoke(target: SmokeTarget): Promise<void> {
     baseUrl: target.baseUrl,
   };
   const hello = `hello-from-arker-sdk-${Date.now()}`;
+  let vmId: string | undefined;
 
-  const fork = jsonObject(
-    await requestJson(client, "POST", apiPath(target.source, "fork"), canonicalForkRequest()),
-    "fork response",
-  );
-  const vmId = assertForkResponse(fork);
+  try {
+    const fork = jsonObject(
+      await requestJson(client, "POST", apiPath(target.source, "fork"), canonicalForkRequest()),
+      "fork response",
+    );
+    vmId = assertForkResponse(fork);
 
-  const run = jsonObject(
-    await requestJson(client, "POST", apiPath(vmId, "run"), canonicalRunRequest(`printf ${quote(`${hello}\n`)}`, target.runtime)),
-    "run response",
-  );
-  assertCompletedRunResponse(run, `${hello}\n`);
+    const run = jsonObject(
+      await requestJson(client, "POST", apiPath(vmId, "run"), canonicalRunRequest(`printf ${quote(`${hello}\n`)}`, target.runtime)),
+      "run response",
+    );
+    assertCompletedRunResponse(run, `${hello}\n`);
 
-  const path = `/home/user/${hello}.txt`;
-  const bytes = new TextEncoder().encode(`${hello}\n`);
+    const path = `/home/user/${hello}.txt`;
+    const bytes = new TextEncoder().encode(`${hello}\n`);
 
-  const write = jsonObject(
-    await requestJson(client, "POST", apiPath(vmId, "sync"), canonicalWriteRequest(path, bytes)),
-    "sync write response",
-  );
-  assertSyncWriteResponse(write, path, bytes.length);
+    const write = jsonObject(
+      await requestJson(client, "POST", apiPath(vmId, "sync"), canonicalWriteRequest(path, bytes)),
+      "sync write response",
+    );
+    assertSyncWriteResponse(write, path, bytes.length);
 
-  const read = jsonObject(
-    await requestJson(client, "POST", apiPath(vmId, "sync"), canonicalReadRequest(path)),
-    "sync read response",
-  );
-  assertSyncReadResponse(read, path, `${hello}\n`);
+    const read = jsonObject(
+      await requestJson(client, "POST", apiPath(vmId, "sync"), canonicalReadRequest(path)),
+      "sync read response",
+    );
+    assertSyncReadResponse(read, path, `${hello}\n`);
 
-  console.log(`PASS ${label}`);
+    console.log(`PASS ${label}`);
+  } finally {
+    if (vmId) {
+      try {
+        await requestJson(client, "DELETE", `/v1/vms/${pathSegment(vmId)}`);
+      } catch (error) {
+        console.warn(`WARN ${label}: failed to delete ${vmId}: ${errorMessage(error)}`);
+      }
+    }
+  }
 }
 
 function errorMessage(error: unknown): string {

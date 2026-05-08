@@ -455,7 +455,7 @@ function normalizeRegion(region: string): string {
 
 function regionBaseUrl(region: string, burst: boolean): string {
   const normalized = normalizeRegion(region);
-  if (!burst) return `https://${normalized}.arker.ai`;
+  if (!burst) return `https://${normalized}.arker.ai/api`;
   return `https://${burstRegionHost(normalized)}.arker.ai/api`;
 }
 

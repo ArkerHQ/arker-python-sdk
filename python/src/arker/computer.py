@@ -517,7 +517,7 @@ def _normalize_region(region: str) -> str:
 def _region_base_url(region: str, burst: bool) -> str:
     normalized = _normalize_region(region)
     if not burst:
-        return f"https://{normalized}.arker.ai"
+        return f"https://{normalized}.arker.ai/api"
     return f"https://{_burst_region_host(normalized)}.arker.ai/api"
 
 

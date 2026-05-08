@@ -113,7 +113,7 @@ def test_fork_accepts_legacy_id_response() -> None:
 def test_region_routes_goldens_to_main_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-us-west-2.arker.ai/v1/vms/ubuntu/fork",
+        lambda method, url: method == "POST" and url == "https://aws-us-west-2.arker.ai/api/v1/vms/ubuntu/fork",
         200,
         {"vm_id": "vmh-child", "owner_id": "owner", "created_at": "now", "sessions": []},
     )
@@ -122,9 +122,9 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
         arker = region_client()
         vm = arker.vm("ubuntu").fork()
 
-    assert arker.base_url == "https://aws-us-west-2.arker.ai"
+    assert arker.base_url == "https://aws-us-west-2.arker.ai/api"
     assert arker.burst_base_url == "https://aws-burst-us-west-2.arker.ai/api"
-    assert vm.base_url == "https://aws-us-west-2.arker.ai"
+    assert vm.base_url == "https://aws-us-west-2.arker.ai/api"
 
 
 def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
