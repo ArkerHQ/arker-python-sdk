@@ -363,6 +363,94 @@ def test_large_write_uses_presigned_bypass() -> None:
     assert first_entry == {"path": "/home/user/big", "size": len(payload), "presigned": True}
 
 
+def test_fork_sends_durable_flag() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        200,
+        {"vm_id": "vm_child", "owner_id": "owner", "created_at": "now", "sessions": []},
+    )
+
+    with patch("urllib.request.urlopen", t):
+        client().vm("ubuntu").fork(durable=True)
+
+    assert json.loads(t.calls[0]["body"]) == {"durable": True}
+
+
+def test_run_sends_idempotency_key_header() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/run"),
+        200,
+        {
+            "stdout": "hi\n",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": 0,
+            "completed": True,
+        },
+    )
+
+    captured: list[dict[str, str]] = []
+
+    def transport(req, timeout=None):
+        captured.append({k.lower(): v for k, v in req.header_items()})
+        return t(req, timeout=timeout)
+
+    with patch("urllib.request.urlopen", transport):
+        client().vm("vm_1").run("printf hi", idempotency_key="key-abc")
+
+    assert captured[0]["idempotency-key"] == "key-abc"
+
+
+def test_run_status_parses_retry_count() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/runs/run_1"),
+        200,
+        {
+            "run_id": "run_1",
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": 0,
+            "completed": True,
+            "tunnels": [],
+            "retry_count": 2,
+        },
+    )
+
+    with patch("urllib.request.urlopen", t):
+        status = client().vm("vm_1").run_status("run_1")
+
+    assert status.retry_count == 2
+
+
+def test_run_status_defaults_retry_count_when_missing() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/runs/run_1"),
+        200,
+        {
+            "run_id": "run_1",
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": 0,
+            "completed": True,
+            "tunnels": [],
+        },
+    )
+
+    with patch("urllib.request.urlopen", t):
+        status = client().vm("vm_1").run_status("run_1")
+
+    assert status.retry_count == 0
+
+
 def test_per_entry_internal_error_retries(monkeypatch) -> None:
     monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
     t = FakeTransport()

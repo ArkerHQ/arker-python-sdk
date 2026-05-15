@@ -6,6 +6,7 @@ type FetchCall = {
   url: string;
   method: string;
   body?: string;
+  headers: Record<string, string>;
 };
 
 type FetchScript = {
@@ -31,7 +32,11 @@ class FakeFetch {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? "GET";
     const body = typeof init?.body === "string" ? init.body : undefined;
-    this.calls.push({ url, method, body });
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
+      headers[key.toLowerCase()] = value;
+    }
+    this.calls.push({ url, method, body, headers });
 
     const index = this.script.findIndex((entry) => entry.predicate(method, url));
     assert.notEqual(index, -1, `no scripted response for ${method} ${url}`);
@@ -176,6 +181,63 @@ async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
   assert.equal(fetch.calls[0]!.url, "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run");
 }
 
+async function testForkSendsDurableFlag(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/ubuntu/fork",
+    200,
+    { vm_id: "vm_durable", owner_id: "owner", created_at: "now", sessions: [] },
+  );
+
+  await client(fetch).vm("ubuntu").fork({ durable: true });
+
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { durable: true });
+}
+
+async function testRunSendsIdempotencyKeyHeader(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/run",
+    200,
+    {
+      stdout: "hi\n",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+      exit_code: 0,
+      completed: true,
+    },
+  );
+
+  await client(fetch).vm("vm_1").run("printf hi", { idempotencyKey: "key-abc" });
+
+  const call = fetch.calls[0]!;
+  assert.equal(call.headers["idempotency-key"], "key-abc");
+  assert.deepEqual(JSON.parse(call.body!), { command: "printf hi" });
+}
+
+async function testRunStatusReturnsRetryCount(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/runs/run_1",
+    200,
+    {
+      run_id: "run_1",
+      stdout: "",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+      exit_code: 0,
+      completed: true,
+      tunnels: [],
+      retry_count: 2,
+    },
+  );
+
+  const status = await client(fetch).vm("vm_1").runStatus("run_1");
+  assert.equal(status.retry_count, 2);
+}
+
 await testForkPostsDirectlyToSourceVm();
 await testForkAcceptsLegacyIdResponse();
 await testNestedErrorWithoutOkStillParses();
@@ -183,5 +245,8 @@ await testCompletedRunDecodesOutput();
 await testRegionRoutesGoldensToMainEndpoint();
 await testRegionRoutesArkuntuAliasToBurstEndpoint();
 await testRegionRoutesBurstVmIdsToBurstEndpoint();
+await testForkSendsDurableFlag();
+await testRunSendsIdempotencyKeyHeader();
+await testRunStatusReturnsRetryCount();
 
 console.log("PASS unit");
