@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Arker Public VM API",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "description": "Public VM API contract. Backends expose the same endpoint and wire shapes; backend-specific feature limitations are returned as standard ErrorResponse bodies with code \"unsupported_operation\"."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
@@ -11,7 +11,6 @@
       "url": "https://aws-us-west-2.arker.ai"
     }
   ],
-  "x-arker-source": "arker-app/shared/arker-api-contract",
   "paths": {
     "/v1/goldens": {
       "get": {
@@ -143,6 +142,11 @@
       ],
       "post": {
         "operationId": "runVm",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -171,7 +175,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code \"unsupported_operation\"."
+        "description": "Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code \"unsupported_operation\". When the optional Idempotency-Key header is provided, retrying with the same key returns the original run; a different request body under the same key returns ErrorResponse code \"conflict\" with the original run_id."
       }
     },
     "/v1/vms/{id}/runs/{run_id}": {
@@ -467,6 +471,16 @@
         "schema": {
           "type": "string"
         }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Optional idempotency key for safe retries of POST /v1/vms/{id}/run. A retry with the same key and the same request returns the original run. A different request under the same key returns ErrorResponse code \"conflict\" with the original run_id. Keys expire 24h after the run completes.",
+        "schema": {
+          "type": "string",
+          "maxLength": 64
+        }
       }
     },
     "responses": {
@@ -672,6 +686,14 @@
               "null"
             ],
             "minimum": 0
+          },
+          "durable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "default": false,
+            "description": "Request a durable VM. If the underlying host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Use for long-running or non-idempotent work. Forked children default to non-durable. Backends without durability support return ErrorResponse code \"unsupported_operation\"."
           }
         }
       },
@@ -1243,6 +1265,12 @@
                 "type": "null"
               }
             ]
+          },
+          "retry_count": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Number of times this run has been automatically retried after an infrastructure failure. 0 for runs that completed without interruption. Backends without durability support omit this field; clients should treat it as 0 when absent."
           }
         }
       },

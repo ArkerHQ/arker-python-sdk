@@ -84,7 +84,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code "unsupported_operation". */
+        /** @description Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code "unsupported_operation". When the optional Idempotency-Key header is provided, retrying with the same key returns the original run; a different request body under the same key returns ErrorResponse code "conflict" with the original run_id. */
         post: operations["runVm"];
         delete?: never;
         options?: never;
@@ -255,6 +255,11 @@ export interface components {
             memory_mib?: number | null;
             max_memory_mib?: number | null;
             disk_mib?: number | null;
+            /**
+             * @description Request a durable VM. If the underlying host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Use for long-running or non-idempotent work. Forked children default to non-durable. Backends without durability support return ErrorResponse code "unsupported_operation".
+             * @default false
+             */
+            durable?: boolean | null;
         };
         SessionInfo: {
             session_id: string;
@@ -393,6 +398,11 @@ export interface components {
             completed: boolean;
             tunnels: components["schemas"]["RunTunnelStatus"][];
             network?: components["schemas"]["RunNetworkStatus"] | null;
+            /**
+             * @description Number of times this run has been automatically retried after an infrastructure failure. 0 for runs that completed without interruption. Backends without durability support omit this field; clients should treat it as 0 when absent.
+             * @default 0
+             */
+            retry_count?: number;
         };
         RunNetworkStatus: {
             inbound: components["schemas"]["RunInboundStatus"];
@@ -570,6 +580,8 @@ export interface components {
         VmId: string;
         RunId: string;
         SessionId: string;
+        /** @description Optional idempotency key for safe retries of POST /v1/vms/{id}/run. A retry with the same key and the same request returns the original run. A different request under the same key returns ErrorResponse code "conflict" with the original run_id. Keys expire 24h after the run completes. */
+        IdempotencyKey: string;
     };
     requestBodies: never;
     headers: never;
@@ -696,7 +708,10 @@ export interface operations {
     runVm: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional idempotency key for safe retries of POST /v1/vms/{id}/run. A retry with the same key and the same request returns the original run. A different request under the same key returns ErrorResponse code "conflict" with the original run_id. Keys expire 24h after the run completes. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: components["parameters"]["VmId"];
             };

@@ -160,6 +160,7 @@ class RunStatusResponse:
     completed: bool
     tunnels: list[dict[str, Any]]
     network: dict[str, Any] | None = None
+    retry_count: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -167,7 +168,7 @@ class CancelRunResponse:
     cancelled: bool
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(eq=False)
 class ArkerError(Exception):
     code: str
     message: str
@@ -240,9 +241,14 @@ class Arker:
         body: dict[str, Any] | None = None,
         *,
         base_url: str | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         url = (base_url or self._base_url) + path
         headers = {"authorization": f"Bearer {self._api_key}"}
+        if extra_headers:
+            for key, value in extra_headers.items():
+                if value is not None:
+                    headers[key] = value
         data = None
 
         if body is not None:
@@ -313,6 +319,7 @@ class Computer:
         memory_mib: int | None = None,
         max_memory_mib: int | None = None,
         disk_mib: int | None = None,
+        durable: bool | None = None,
     ) -> "Computer":
         body = {
             "name": name,
@@ -323,6 +330,7 @@ class Computer:
             "memory_mib": memory_mib,
             "max_memory_mib": max_memory_mib,
             "disk_mib": disk_mib,
+            "durable": durable,
         }
         response = self._client._request("POST", f"{_vm_path(self.id)}/fork", body, base_url=self.base_url)
         return Computer(self._client, _fork_vm_id(response), self.base_url)
@@ -344,6 +352,7 @@ class Computer:
         signal: str | None = None,
         runtime: str | None = None,
         runtime_override: str | None = None,
+        idempotency_key: str | None = None,
     ) -> RunResult:
         body = {
             "command": command,
@@ -361,7 +370,14 @@ class Computer:
             "runtime": runtime,
             "runtime_override": runtime_override,
         }
-        return _run_response(self._client._request("POST", f"{_vm_path(self.id)}/run", body, base_url=self.base_url))
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        return _run_response(self._client._request(
+            "POST",
+            f"{_vm_path(self.id)}/run",
+            body,
+            base_url=self.base_url,
+            extra_headers=headers,
+        ))
 
     def run_status(self, run_id: str) -> RunStatusResponse:
         return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
@@ -706,6 +722,7 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
 
 
 def _run_status_response(payload: dict[str, Any]) -> RunStatusResponse:
+    retry_count = payload.get("retry_count")
     return RunStatusResponse(
         run_id=str(payload["run_id"]),
         stdout=_decode_bytes(str(payload["stdout"]), str(payload["stdout_encoding"])),
@@ -716,6 +733,7 @@ def _run_status_response(payload: dict[str, Any]) -> RunStatusResponse:
         completed=bool(payload.get("completed")),
         tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
         network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
+        retry_count=int(retry_count) if isinstance(retry_count, int) else 0,
     )
 
 

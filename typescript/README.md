@@ -80,6 +80,32 @@ const arker = new Arker({
 
 Pass `retry: false` to disable SDK retries.
 
+## Durability
+
+For long-running or non-idempotent work, request a durable VM at fork
+time and pass an idempotency key when retrying `run`:
+
+```ts
+const vm = await arker.vm("ubuntu").fork({ name: "job", durable: true });
+
+const run = await vm.run("python3 train.py", {
+  background: true,
+  idempotencyKey: "550e8400-e29b-41d4-a716-446655440000",
+});
+```
+
+- If the underlying host fails mid-run, the run resumes on a healthy
+  host with the VM's filesystem state preserved.
+- A `run` retried with the same `idempotencyKey` and the same request
+  returns the original `run_id`. A different request under the same key
+  returns `ArkerError` code `conflict`.
+- `runStatus().retry_count` is the number of automatic retries the run
+  has gone through — `0` for runs that completed without interruption.
+
+Forked children default to non-durable. Backends without durability
+support return `ArkerError` code `unsupported_operation` when
+`durable: true` is requested.
+
 ## API Contract
 
 The SDK request and response types are generated from

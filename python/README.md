@@ -81,6 +81,33 @@ arker = Arker(
 
 Pass `retry=False` to disable SDK retries.
 
+## Durability
+
+For long-running or non-idempotent work, request a durable VM at fork
+time and pass an idempotency key when retrying `run`:
+
+```python
+vm = arker.vm("ubuntu").fork(name="job", durable=True)
+
+run = vm.run(
+    "python3 train.py",
+    background=True,
+    idempotency_key="550e8400-e29b-41d4-a716-446655440000",
+)
+```
+
+- If the underlying host fails mid-run, the run resumes on a healthy
+  host with the VM's filesystem state preserved.
+- A `run()` retried with the same `idempotency_key` and the same
+  request returns the original `run_id`. A different request under
+  the same key raises `ArkerError(code="conflict")`.
+- `run_status().retry_count` is the number of automatic retries the run
+  has gone through — `0` for runs that completed without interruption.
+
+Forked children default to non-durable. Backends without durability
+support raise `ArkerError(code="unsupported_operation")` when
+`durable=True` is requested.
+
 ## Routing
 
 With `region="aws-us-west-2"`, the SDK uses

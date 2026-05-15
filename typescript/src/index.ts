@@ -69,7 +69,16 @@ export type DeleteVmResponse = ApiSchema<"DeleteVmResponse">;
 export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
 export type MountRequest = ApiSchema<"MountRequest">;
 export type RunRequest = ApiSchema<"RunRequest">;
-export type RunOptions = Omit<RunRequest, "command">;
+export type RunOptions = Omit<RunRequest, "command"> & {
+  /**
+   * Optional idempotency key for retrying POST /v1/vms/{id}/run.
+   * Sent as the `Idempotency-Key` HTTP header. Retries with the same
+   * key and the same semantic request return the original run; a
+   * different semantic request under the same key returns
+   * ArkerError code "conflict" with the original run_id.
+   */
+  idempotencyKey?: string;
+};
 export type RunInboundPortRequest = ApiSchema<"RunInboundPortRequest">;
 export type RunNetworkRequest = ApiSchema<"RunNetworkRequest">;
 export type RunTunnelStatus = ApiSchema<"RunTunnelStatus">;
@@ -196,11 +205,22 @@ export class Arker {
   }
 
   /** @internal */
-  async _request<T>(method: HttpMethod, path: string, body?: unknown, baseUrl = this.baseUrl): Promise<T> {
+  async _request<T>(
+    method: HttpMethod,
+    path: string,
+    body?: unknown,
+    baseUrl = this.baseUrl,
+    extraHeaders?: Record<string, string | undefined>,
+  ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.apiKey}`,
     };
+    if (extraHeaders) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        if (value !== undefined) headers[key] = value;
+      }
+    }
     const init: RequestInit = { method, headers };
 
     if (body !== undefined) {
@@ -296,10 +316,15 @@ export class Computer {
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
-    const response = await this._client._request<unknown>("POST", `${vmPath(this.id)}/run`, {
-      ...options,
-      command,
-    }, this.baseUrl);
+    const { idempotencyKey, ...body } = options;
+    const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
+    const response = await this._client._request<unknown>(
+      "POST",
+      `${vmPath(this.id)}/run`,
+      { ...body, command },
+      this.baseUrl,
+      headers,
+    );
     return parseRunResponse(response);
   }
 
