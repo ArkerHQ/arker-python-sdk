@@ -63,13 +63,15 @@ class Filesystem:
         user: str = "user",
         request_timeout: float | None = None,
     ) -> Any:
+        if format == "stream":
+            raise NotImplementedError(
+                "arker.e2b: files.read(format='stream') is not supported — "
+                "Arker's sync API returns the whole file. Use format='bytes' "
+                "and stream from there if needed."
+            )
         data = self._sandbox._computer.sync.read_file(path)
         if format == "bytes":
             return bytearray(data)
-        if format == "stream":
-            # Single-chunk pseudo-stream. True chunked streaming requires
-            # range reads from presigned URLs — deferred.
-            return iter([data])
         return data.decode("utf-8", errors="replace")
 
     def write(
@@ -118,8 +120,10 @@ class Filesystem:
         return exit_code == 0
 
     def watch_dir(self, path: str, *, user: str = "user", request_timeout: float | None = None) -> WatchHandle:
-        logger.debug("arker.e2b: files.watch_dir(%s) — no-op handle (Arker has no fs-event API)", path)
-        return WatchHandle()
+        raise NotImplementedError(
+            "arker.e2b: files.watch_dir is not supported — Arker has no "
+            "filesystem-event API. Poll files.list / files.exists if needed."
+        )
 
     # ------------------------------------------------------------------
     # Internals

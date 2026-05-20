@@ -43,16 +43,16 @@ export class Filesystem {
 
   // ----- Native (sync API) -----
 
-  async read(path: string, opts: ReadOptions = {}): Promise<string | Uint8Array | AsyncIterableIterator<Uint8Array>> {
+  async read(path: string, opts: ReadOptions = {}): Promise<string | Uint8Array> {
+    if (opts.format === "stream") {
+      throw new Error(
+        "arker.e2b: files.read({ format: 'stream' }) is not supported — " +
+          "Arker's sync API returns the whole file. Use format: 'bytes' and " +
+          "stream from there if needed.",
+      );
+    }
     const data = await this.sbx._computer.sync.readFile(path);
     if (opts.format === "bytes") return data;
-    if (opts.format === "stream") {
-      const chunks = [data];
-      async function* gen(): AsyncIterableIterator<Uint8Array> {
-        for (const c of chunks) yield c;
-      }
-      return gen();
-    }
     return decode(data);
   }
 
@@ -103,7 +103,10 @@ export class Filesystem {
   }
 
   watchDir(_path: string): WatchHandle {
-    return new WatchHandle();
+    throw new Error(
+      "arker.e2b: files.watchDir is not supported — Arker has no " +
+        "filesystem-event API. Poll files.list / files.exists if needed.",
+    );
   }
 
   private async shell(cmd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {

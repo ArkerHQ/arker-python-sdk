@@ -2,6 +2,7 @@ import { Arker, ArkerError, type ArkerOptions, type Computer } from "../index.js
 import { Commands } from "./commands.js";
 import { Filesystem } from "./files.js";
 import { Pty } from "./pty.js";
+import type { SandboxInfo } from "./types.js";
 
 const DEFAULT_TEMPLATE_ENV = "ARKER_E2B_DEFAULT_TEMPLATE";
 const DEFAULT_TEMPLATE = "ubuntu";
@@ -85,6 +86,26 @@ export class Sandbox {
 
   static async connect(sandboxId: string, opts: Omit<SandboxOptions, "sandboxId"> = {}): Promise<Sandbox> {
     return Sandbox.create({ ...opts, sandboxId });
+  }
+
+  /**
+   * List sandboxes owned by the current API key.
+   *
+   * Maps Arker `VmInfo` -> e2b `SandboxInfo`. Metadata isn't stored remotely,
+   * so the `metadata` field is always `{}`.
+   */
+  static async list(opts: Pick<SandboxOptions, "apiKey" | "region" | "baseUrl" | "_arker"> = {}): Promise<SandboxInfo[]> {
+    const arker = opts._arker ?? new Arker(buildArkerOptions(opts));
+    const response = await arker.list();
+    const vms = (response as { vms?: Array<Record<string, unknown>> }).vms ?? [];
+    return vms.map((vm) => ({
+      sandboxId: String(vm.vm_id),
+      templateId: typeof vm.source_golden === "string" ? vm.source_golden : null,
+      name: typeof vm.name === "string" ? vm.name : null,
+      metadata: {},
+      startedAt: String(vm.created_at),
+      endAt: typeof vm.last_activity === "string" ? vm.last_activity : null,
+    }));
   }
 
   async kill(): Promise<boolean> {

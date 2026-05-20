@@ -31,6 +31,7 @@ from ._types import (
     FileType,
     ProcessInfo,
     SandboxException,
+    SandboxInfo,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "PtySize",
     "Sandbox",
     "SandboxException",
+    "SandboxInfo",
 ]

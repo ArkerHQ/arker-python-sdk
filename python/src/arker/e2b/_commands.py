@@ -103,10 +103,10 @@ class Commands:
             self._sandbox._forget_pid(pid)
 
     def send_stdin(self, pid: int, data: str, request_timeout: float | None = None) -> None:
-        """Arker has no non-PTY stdin primitive. No-op + DEBUG log so existing
-        e2b code paths that opportunistically call this don't crash.
-        """
-        logger.debug("arker.e2b: commands.send_stdin(%s, %d bytes) — no-op", pid, len(data))
+        raise NotImplementedError(
+            "arker.e2b: commands.send_stdin is not supported — Arker has no "
+            "non-PTY stdin primitive. Use a PTY session for interactive input."
+        )
 
     def connect(self, pid: int, timeout: float | None = 60, request_timeout: float | None = None) -> CommandHandle:
         run_id = self._sandbox._run_id_for(pid)

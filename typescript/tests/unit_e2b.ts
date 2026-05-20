@@ -9,6 +9,7 @@ import {
   FileType,
   type ProcessInfo,
   Sandbox,
+  type SandboxInfo,
   wrapCommand,
 } from "../src/e2b/index.js";
 import { Sandbox as CISandbox } from "../src/e2b/code-interpreter/index.js";
@@ -256,6 +257,67 @@ async function testRunCodeHappy(): Promise<void> {
   assert.equal(ex.error, null);
 }
 
+async function testSandboxListMapsToSandboxInfos(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms`,
+    200,
+    {
+      vms: [
+        {
+          vm_id: "vm_a",
+          owner_id: "o",
+          created_at: "2026-01-01T00:00:00Z",
+          state: "running",
+          sessions: [],
+          name: "alpha",
+          source_golden: "ubuntu",
+          last_activity: "2026-01-02T00:00:00Z",
+        },
+        {
+          vm_id: "vm_b",
+          owner_id: "o",
+          created_at: "2026-01-03T00:00:00Z",
+          state: "stopped",
+          sessions: [],
+        },
+      ],
+    },
+  );
+  const items: SandboxInfo[] = await Sandbox.list({ _arker: client(fetch) });
+  assert.deepEqual(items, [
+    {
+      sandboxId: "vm_a",
+      templateId: "ubuntu",
+      name: "alpha",
+      metadata: {},
+      startedAt: "2026-01-01T00:00:00Z",
+      endAt: "2026-01-02T00:00:00Z",
+    },
+    {
+      sandboxId: "vm_b",
+      templateId: null,
+      name: null,
+      metadata: {},
+      startedAt: "2026-01-03T00:00:00Z",
+      endAt: null,
+    },
+  ]);
+}
+
+async function testUnsupportedSurfacesThrow(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+
+  await assert.rejects(() => sbx.commands.sendStdin(1, "x"), /commands\.sendStdin is not supported/);
+  await assert.rejects(() => sbx.files.read("/x", { format: "stream" }), /format: 'stream'/);
+  assert.throws(() => sbx.files.watchDir("/tmp"), /files\.watchDir is not supported/);
+  await assert.rejects(() => sbx.pty.create({ rows: 24, cols: 80 }), /pty is not supported/);
+  await assert.rejects(() => sbx.pty.sendStdin(1, new Uint8Array()), /pty is not supported/);
+  await assert.rejects(() => sbx.pty.resize(1, { rows: 24, cols: 80 }), /pty is not supported/);
+  await assert.rejects(() => sbx.pty.kill(1), /pty is not supported/);
+}
+
 async function testIsRunningTrueAndFalse(): Promise<void> {
   const fetch = new FakeFetch();
   const sbx = await makeSandbox(fetch);
@@ -311,6 +373,8 @@ await testFilesListParses();
 await testFilesExists();
 await testFilesMakeDirAndRename();
 await testRunCodeHappy();
+await testSandboxListMapsToSandboxInfos();
+await testUnsupportedSurfacesThrow();
 await testIsRunningTrueAndFalse();
 testSetTimeoutStoresLocally();
 testRuntimeFor();

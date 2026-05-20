@@ -1,46 +1,34 @@
-import type { PtyRunResult } from "../index.js";
 import { CommandHandle } from "./handle.js";
 import type { Sandbox } from "./sandbox.js";
 import type { PtySize } from "./types.js";
 
-function randomSessionId(): string {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
+const UNSUPPORTED =
+  "arker.e2b.pty is not supported yet — Arker exposes PTY over WebSocket " +
+  "(`wsUrl` on the run response) but the SDK has no WS client. Use " +
+  "commands.run for non-interactive work, or wait for the WS upgrade.";
 
+/**
+ * `sandbox.pty` namespace.
+ *
+ * All methods throw — interactive PTY needs a WebSocket client we haven't
+ * shipped yet. Loud failure keeps callers from silently dropping input.
+ */
 export class Pty {
-  private readonly sbx: Sandbox;
+  constructor(_sbx: Sandbox) {}
 
-  constructor(sbx: Sandbox) {
-    this.sbx = sbx;
-  }
-
-  async create(_size: PtySize, opts: { timeout?: number } = {}): Promise<CommandHandle> {
-    const sessionId = randomSessionId();
-    const result = (await this.sbx._computer.run("/bin/bash", {
-      session_id: sessionId,
-      timeout: opts.timeout,
-    })) as PtyRunResult;
-    if (result.type !== "pty") {
-      throw new Error(`pty.create expected PtyRunResult, got ${result.type}`);
-    }
-    const pid = this.sbx._registerRun(sessionId, "/bin/bash");
-    return new CommandHandle(this.sbx, pid, sessionId, "/bin/bash");
+  async create(_size: PtySize, _opts: { timeout?: number } = {}): Promise<CommandHandle> {
+    throw new Error(UNSUPPORTED);
   }
 
   async sendStdin(_pid: number, _data: Uint8Array): Promise<void> {
-    // WS not wired up yet — input dropped; silent so existing code doesn't crash.
+    throw new Error(UNSUPPORTED);
   }
 
   async resize(_pid: number, _size: PtySize): Promise<void> {
-    // WS not wired up yet — silent no-op.
+    throw new Error(UNSUPPORTED);
   }
 
-  async kill(pid: number): Promise<boolean> {
-    // Sessions are deleted via /v1/vms/{id}/sessions/{sid}, not exposed by SDK
-    // yet. Local-only cleanup; real remote cancel lands with WS support.
-    this.sbx._forgetPid(pid);
-    return true;
+  async kill(_pid: number): Promise<boolean> {
+    throw new Error(UNSUPPORTED);
   }
 }

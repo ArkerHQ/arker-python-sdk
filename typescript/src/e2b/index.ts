@@ -27,4 +27,5 @@ export {
   type EntryInfo,
   type ProcessInfo,
   type PtySize,
+  type SandboxInfo,
 } from "./types.js";

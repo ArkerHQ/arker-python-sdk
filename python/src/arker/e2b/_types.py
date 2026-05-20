@@ -39,6 +39,16 @@ class ProcessInfo:
     cwd: str | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class SandboxInfo:
+    sandbox_id: str
+    template_id: str | None
+    name: str | None
+    metadata: dict[str, str]
+    started_at: str
+    end_at: str | None = None
+
+
 class SandboxException(Exception):
     """Base exception for the arker.e2b compat layer."""
 

@@ -30,6 +30,15 @@ export interface ProcessInfo {
   cwd?: string;
 }
 
+export interface SandboxInfo {
+  sandboxId: string;
+  templateId: string | null;
+  name: string | null;
+  metadata: Record<string, string>;
+  startedAt: string;
+  endAt: string | null;
+}
+
 export class SandboxException extends Error {
   constructor(message: string) {
     super(message);

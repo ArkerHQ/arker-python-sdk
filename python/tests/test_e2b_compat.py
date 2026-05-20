@@ -20,6 +20,7 @@ from arker.e2b import (
     ProcessInfo,
     PtySize,
     Sandbox,
+    SandboxInfo,
 )
 from arker.e2b._commands import wrap_command
 
@@ -240,12 +241,12 @@ def test_commands_connect_reconstructs_handle() -> None:
     assert again._run_id == "run_e"
 
 
-def test_commands_send_stdin_is_silent_noop(caplog) -> None:
+def test_commands_send_stdin_raises_not_implemented() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        # Should not raise even if pid doesn't exist
-        sbx.commands.send_stdin(99, "hello")
+        with pytest.raises(NotImplementedError, match="commands.send_stdin"):
+            sbx.commands.send_stdin(99, "hello")
 
 
 def test_handle_iter_yields_deltas(monkeypatch) -> None:
@@ -424,77 +425,34 @@ def test_files_make_dir_invokes_mkdir_p() -> None:
     assert body["command"] == "mkdir -p /tmp/nested/deep"
 
 
-def test_files_watch_dir_returns_inert_handle() -> None:
+def test_files_watch_dir_raises_not_implemented() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        h = sbx.files.watch_dir("/tmp")
-    with h:
-        h.stop()
+        with pytest.raises(NotImplementedError, match="files.watch_dir"):
+            sbx.files.watch_dir("/tmp")
 
 
-def test_files_read_stream_yields_single_chunk() -> None:
+def test_files_read_stream_raises_not_implemented() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        transport.add_json(
-            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/sync"),
-            200,
-            {"content": "blob", "encoding": "utf-8"},
-        )
-        chunks = list(sbx.files.read("/tmp/x", format="stream"))
-    assert chunks == [b"blob"]
+        with pytest.raises(NotImplementedError, match="format='stream'"):
+            sbx.files.read("/tmp/x", format="stream")
 
 
-def test_pty_create_calls_run_with_session_id_and_returns_handle() -> None:
+def test_pty_methods_all_raise_not_implemented() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        transport.add_json(
-            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
-            200,
-            {"pty": True, "session_id": "sess_a", "ws_url": "wss://x/ws", "type": "pty"},
-        )
-        h = sbx.pty.create(PtySize(rows=24, cols=80))
-        body = json.loads(transport.calls[-1]["body"])
-
-    assert isinstance(h, CommandHandle)
-    assert body["command"] == "/bin/bash"
-    assert isinstance(body["session_id"], str)
-
-
-def test_pty_send_stdin_and_resize_are_noops() -> None:
-    transport = FakeTransport()
-    with patch("urllib.request.urlopen", transport):
-        sbx = _make_sandbox(transport)
-        transport.add_json(
-            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
-            200,
-            {"pty": True, "session_id": "sess_b", "ws_url": "wss://x/ws", "type": "pty"},
-        )
-        h = sbx.pty.create(PtySize(rows=24, cols=80))
-        # No raise, no transport calls.
-        before = len(transport.calls)
-        sbx.pty.send_stdin(h.pid, b"data")
-        sbx.pty.resize(h.pid, PtySize(rows=30, cols=120))
-        assert len(transport.calls) == before
-
-
-def test_pty_kill_is_local_noop() -> None:
-    transport = FakeTransport()
-    with patch("urllib.request.urlopen", transport):
-        sbx = _make_sandbox(transport)
-        transport.add_json(
-            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
-            200,
-            {"pty": True, "session_id": "sess_c", "ws_url": "wss://x/ws", "type": "pty"},
-        )
-        h = sbx.pty.create(PtySize(rows=24, cols=80))
-        before = len(transport.calls)
-        assert sbx.pty.kill(h.pid) is True
-        # No remote DELETE issued — local-only cleanup until WS lands.
-        assert len(transport.calls) == before
-        assert sbx._bg_runs == {}
+        with pytest.raises(NotImplementedError, match="pty is not supported"):
+            sbx.pty.create(PtySize(rows=24, cols=80))
+        with pytest.raises(NotImplementedError, match="pty is not supported"):
+            sbx.pty.send_stdin(1, b"data")
+        with pytest.raises(NotImplementedError, match="pty is not supported"):
+            sbx.pty.resize(1, PtySize(rows=30, cols=120))
+        with pytest.raises(NotImplementedError, match="pty is not supported"):
+            sbx.pty.kill(1)
 
 
 def test_run_code_python_happy_path() -> None:
@@ -574,6 +532,58 @@ def test_run_code_picks_runtime_for_language() -> None:
     assert _runtime_for("javascript") == ("node", "js")
     assert _runtime_for("ts") == ("ts-node", "ts")
     assert _runtime_for("unknown-lang") == ("python3", "py")  # default
+
+
+def test_sandbox_list_maps_vms_to_sandbox_infos(monkeypatch) -> None:
+    monkeypatch.setenv("ARKER_API_KEY", "ark_live_test")
+    monkeypatch.setenv("ARKER_BASE_URL", "https://test.invalid/api")
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms"),
+        200,
+        {
+            "vms": [
+                {
+                    "vm_id": "vm_a",
+                    "owner_id": "o",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "state": "running",
+                    "sessions": [],
+                    "name": "alpha",
+                    "source_golden": "ubuntu",
+                    "last_activity": "2026-01-02T00:00:00Z",
+                },
+                {
+                    "vm_id": "vm_b",
+                    "owner_id": "o",
+                    "created_at": "2026-01-03T00:00:00Z",
+                    "state": "stopped",
+                    "sessions": [],
+                },
+            ],
+        },
+    )
+    with patch("urllib.request.urlopen", transport):
+        items = Sandbox.list()
+
+    assert items == [
+        SandboxInfo(
+            sandbox_id="vm_a",
+            template_id="ubuntu",
+            name="alpha",
+            metadata={},
+            started_at="2026-01-01T00:00:00Z",
+            end_at="2026-01-02T00:00:00Z",
+        ),
+        SandboxInfo(
+            sandbox_id="vm_b",
+            template_id=None,
+            name=None,
+            metadata={},
+            started_at="2026-01-03T00:00:00Z",
+            end_at=None,
+        ),
+    ]
 
 
 def test_is_running_returns_true_for_running_vm() -> None:

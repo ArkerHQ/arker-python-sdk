@@ -141,23 +141,29 @@ Also shimmed: `from arker.e2b import AsyncSandbox` (async wrapper) and
 
 **What's faithfully supported**
 
-- `Sandbox(...)` / `Sandbox.connect(sandbox_id)` / `.sandbox_id` / `.kill()` / `.is_running()`
+- `Sandbox(...)` / `Sandbox.connect(sandbox_id)` / `Sandbox.list()` / `.sandbox_id` / `.kill()` / `.is_running()` / `.set_timeout(secs)` (stored locally — no remote TTL yet)
 - `commands.run` (foreground + background) → `CommandResult` / `CommandHandle`
 - `commands.list / kill / connect`; `CommandHandle.wait / kill / __iter__`
-- `files.read` (text/bytes/stream) and `files.write` (native Arker sync API)
+- `files.read(format="text" | "bytes")` and `files.write` (native Arker sync API)
 - `files.list / exists / remove / rename / make_dir` (shell-shimmed via `find` / `test` / `rm` / `mv` / `mkdir`)
 - `code_interpreter.Sandbox.run_code` for python/js/ts/bash/ruby
+- `AsyncSandbox` (thread-pool wrapper)
 
-**What's a silent no-op (debug-logs, drop-in safe)**
+**What raises `NotImplementedError` (loud, so users discover the gap)**
 
-- `set_timeout`, `commands.send_stdin`, `files.watch_dir`
-- `pty.send_stdin` / `pty.resize` / `pty.kill` (server-side PTY is provisioned; live I/O needs WS — planned follow-up)
-- e2b-desktop methods (mouse / keyboard / screenshot)
+- `pty.create / send_stdin / resize / kill` — needs WS client
+- `commands.send_stdin` — Arker has no non-PTY stdin
+- `files.watch_dir` — no fs-event API
+- `files.read(format="stream")` — sync API returns the whole file
 
-**What changes shape**
+**What changes shape or degrades**
 
 - `CommandResult.stdout` is a `str` (UTF-8 decoded), matching e2b.
 - Live `on_stdout` / `on_stderr` callbacks fire once per polled chunk; true line-level streaming awaits WS support.
+- `commands.list()` reflects only handles created in this client session (no remote enumeration).
+- `Sandbox.list()` ignores e2b's `metadata` filter — Arker doesn't store metadata remotely.
+- Static `Sandbox.kill(id)` / `Sandbox.set_timeout(id, ...)` forms are not yet shimmed (only instance forms work).
+- e2b-desktop (mouse / keyboard / screenshot) is not implemented.
 
 ## Demo
 

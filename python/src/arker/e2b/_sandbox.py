@@ -13,6 +13,7 @@ from ._commands import Commands
 from ._files import Filesystem
 from ._handle import CommandHandle
 from ._pty import Pty
+from ._types import SandboxInfo
 
 if TYPE_CHECKING:
     pass
@@ -133,4 +134,32 @@ class Sandbox:
         debug: bool | None = None,
     ) -> "Sandbox":
         return cls(sandbox_id=sandbox_id, api_key=api_key, domain=domain, debug=debug)
+
+    @classmethod
+    def list(
+        cls,
+        *,
+        api_key: str | None = None,
+        domain: str | None = None,
+        debug: bool | None = None,
+        request_timeout: float | None = None,
+    ) -> list[SandboxInfo]:
+        """List sandboxes owned by the current API key.
+
+        Maps Arker `VmInfo` → e2b `SandboxInfo`. Metadata isn't stored
+        remotely, so the `metadata` field is always `{}`.
+        """
+        arker = _build_arker(api_key)
+        infos = arker.list().vms
+        return [
+            SandboxInfo(
+                sandbox_id=vm.vm_id,
+                template_id=vm.source_golden,
+                name=vm.name,
+                metadata={},
+                started_at=vm.created_at,
+                end_at=vm.last_activity,
+            )
+            for vm in infos
+        ]
 

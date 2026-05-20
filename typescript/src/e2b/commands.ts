@@ -97,9 +97,11 @@ export class Commands {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async sendStdin(_pid: number, _data: string): Promise<void> {
-    // Arker has no non-PTY stdin primitive. No-op (silent so existing e2b code paths don't crash).
+    throw new Error(
+      "arker.e2b: commands.sendStdin is not supported — Arker has no non-PTY " +
+        "stdin primitive. Use a PTY session for interactive input.",
+    );
   }
 
   connect(pid: number): CommandHandle {

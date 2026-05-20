@@ -171,22 +171,28 @@ for `sbx.runCode(code, { language: "python" })`.
 
 **Faithfully supported**
 
-- `Sandbox.create({...})` / `Sandbox.connect(id)` / `.sandboxId` / `.kill()` / `.isRunning()`
+- `Sandbox.create({...})` / `Sandbox.connect(id)` / `Sandbox.list()` / `.sandboxId` / `.kill()` / `.isRunning()` / `.setTimeout(secs)` (stored locally — no remote TTL yet)
 - `commands.run` (foreground + background) → `CommandResult` / `CommandHandle`
 - `commands.list / kill / connect`; `CommandHandle.wait`, `.kill`, `for await` iter
-- `files.read({format})` / `write` (native Arker sync API)
+- `files.read({ format: "text" | "bytes" })` / `write` (native Arker sync API)
 - `files.list / exists / remove / rename / makeDir` (shell-shimmed)
 - code-interpreter `runCode` for python/js/ts/bash/ruby
 
-**Silent no-ops (debug-safe, drop-in friendly)**
+**Throws (loud, so users discover the gap)**
 
-- `setTimeout`, `commands.sendStdin`, `files.watchDir`
-- `pty.sendStdin / resize / kill` (server-side PTY is provisioned; live I/O needs WS — planned follow-up)
+- `pty.create / sendStdin / resize / kill` — needs WS client
+- `commands.sendStdin` — Arker has no non-PTY stdin
+- `files.watchDir` — no fs-event API
+- `files.read({ format: "stream" })` — sync API returns the whole file
 
-**Shape differences**
+**Shape differences and degraded behavior**
 
 - `CommandResult.stdout` is a `string` (UTF-8 decoded), matching e2b.
 - Live callbacks fire once per polled chunk until WS support lands.
+- `commands.list()` reflects only handles created in this client session.
+- `Sandbox.list()` ignores e2b's `metadata` filter — Arker doesn't store metadata remotely.
+- Static `Sandbox.kill(id)` / `Sandbox.setTimeout(id, ...)` forms are not yet shimmed.
+- e2b-desktop is not implemented.
 
 ## Demo
 
