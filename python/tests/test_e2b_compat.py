@@ -350,3 +350,110 @@ def test_wrap_command_no_overrides() -> None:
 
 def test_wrap_command_cwd_only() -> None:
     assert wrap_command("ls", cwd="/tmp", envs=None) == "cd /tmp && ls"
+
+
+def _add_shell(transport: FakeTransport, vm_id: str, stdout: str = "", stderr: str = "", exit_code: int = 0) -> None:
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith(f"/v1/vms/{vm_id}/run"),
+        200,
+        _completed_run(stdout=stdout, stderr=stderr, exit_code=exit_code),
+    )
+
+
+def test_files_list_parses_find_output() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_child", stdout="readme.txt|f\nsrc|d\n")
+        entries = sbx.files.list("/work")
+
+    assert entries == [
+        EntryInfo(name="readme.txt", type=FileType.FILE, path="/work/readme.txt"),
+        EntryInfo(name="src", type=FileType.DIR, path="/work/src"),
+    ]
+
+
+def test_files_list_returns_empty_on_missing_path() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_child", stderr="No such file", exit_code=1)
+        assert sbx.files.list("/missing") == []
+
+
+def test_files_exists_true_and_false() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_child", exit_code=0)
+        assert sbx.files.exists("/tmp/x") is True
+        _add_shell(transport, "vm_child", exit_code=1)
+        assert sbx.files.exists("/nope") is False
+
+
+def test_files_remove_invokes_rm_rf() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_child")
+        sbx.files.remove("/tmp/junk")
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "rm -rf /tmp/junk"
+
+
+def test_files_rename_invokes_mv() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_child")
+        entry = sbx.files.rename("/a", "/b/c")
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "mv /a /b/c"
+    assert entry.path == "/b/c"
+    assert entry.name == "c"
+
+
+def test_files_make_dir_invokes_mkdir_p() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_child")
+        assert sbx.files.make_dir("/tmp/nested/deep") is True
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "mkdir -p /tmp/nested/deep"
+
+
+def test_files_watch_dir_returns_inert_handle() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        h = sbx.files.watch_dir("/tmp")
+    with h:
+        h.stop()
+
+
+def test_files_read_stream_yields_single_chunk() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/sync"),
+            200,
+            {"content": "blob", "encoding": "utf-8"},
+        )
+        chunks = list(sbx.files.read("/tmp/x", format="stream"))
+    assert chunks == [b"blob"]
+
+
+def test_files_shimmed_ops_quote_unsafe_paths() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_child")
+        sbx.files.remove("/tmp/with space; rm -rf /")
+        body = json.loads(transport.calls[-1]["body"])
+    # shlex.quote produces single-quoted form
+    assert body["command"].startswith("rm -rf '")
+    assert "; rm -rf /" in body["command"]
+    # The semicolon must be inside the quotes, not a real shell separator
+    assert "'/tmp/with space; rm -rf /'" in body["command"]
