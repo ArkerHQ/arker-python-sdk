@@ -171,12 +171,20 @@ for `sbx.runCode(code, { language: "python" })`.
 
 **Faithfully supported**
 
-- `Sandbox.create({...})` / `Sandbox.connect(id)` / `Sandbox.list()` / `.sandboxId` / `.kill()` / `.isRunning()` / `.setTimeout(secs)` (stored locally — no remote TTL yet)
+- `Sandbox.create({...})` / `Sandbox.connect(id)` / `Sandbox.list()` / `.sandboxId` / `.kill()` / `.isRunning()`
+- **Static-form `Sandbox.kill("vm_id")` and `Sandbox.setTimeout("vm_id", 300)`** are real static methods (no descriptor magic needed in TS)
 - `commands.run` (foreground + background) → `CommandResult` / `CommandHandle`
 - `commands.list / kill / connect`; `CommandHandle.wait`, `.kill`, `for await` iter
 - `files.read({ format: "text" | "bytes" })` / `write` (native Arker sync API)
 - `files.list / exists / remove / rename / makeDir` (shell-shimmed)
-- code-interpreter `runCode` for python/js/ts/bash/ruby
+- **`EntryInfo` populates `size`, `mode`, `permissions`, `owner`, `group`, `modifiedTime`, `symlinkTarget`** via richer `find -printf` format
+- **`SandboxInfo.startedAt` / `endAt` are `Date` objects** (e2b parity)
+- **Typed exception classes**: `TimeoutException`, `NotFoundException`, `FileNotFoundException`, `SandboxNotFoundException`, etc. (extend `SandboxException`)
+- code-interpreter `runCode` for python/js/ts/bash/ruby (`Execution.text` is the last-expression value per e2b semantics — stdout lives in `logs.stdout`)
+
+**Warns loudly but is local-only (drop-in safe but visible)**
+
+- `Sandbox.create({ timeout: 300 })` and `sbx.setTimeout(300)` — `console.warn` because Arker has no SDK-level VM TTL yet. **VMs will live until explicitly killed.**
 
 **Throws (loud, so users discover the gap)**
 
@@ -188,10 +196,10 @@ for `sbx.runCode(code, { language: "python" })`.
 **Shape differences and degraded behavior**
 
 - `CommandResult.stdout` is a `string` (UTF-8 decoded), matching e2b.
+- Default template is `"base"` (matches e2b) — override via `ARKER_E2B_DEFAULT_TEMPLATE`.
 - Live callbacks fire once per polled chunk until WS support lands.
 - `commands.list()` reflects only handles created in this client session.
 - `Sandbox.list()` ignores e2b's `metadata` filter — Arker doesn't store metadata remotely.
-- Static `Sandbox.kill(id)` / `Sandbox.setTimeout(id, ...)` forms are not yet shimmed.
 - e2b-desktop is not implemented.
 
 ## Demo

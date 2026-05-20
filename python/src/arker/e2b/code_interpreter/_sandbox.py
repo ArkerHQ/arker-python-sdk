@@ -78,7 +78,6 @@ class Sandbox(BaseSandbox):
                 pass
 
         return Execution(
-            text=stdout,
             logs=Logs(
                 stdout=[stdout] if stdout else [],
                 stderr=[stderr] if stderr else [],

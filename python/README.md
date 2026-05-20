@@ -141,13 +141,22 @@ Also shimmed: `from arker.e2b import AsyncSandbox` (async wrapper) and
 
 **What's faithfully supported**
 
-- `Sandbox(...)` / `Sandbox.connect(sandbox_id)` / `Sandbox.list()` / `.sandbox_id` / `.kill()` / `.is_running()` / `.set_timeout(secs)` (stored locally — no remote TTL yet)
+- `Sandbox(...)` / `Sandbox.connect(sandbox_id)` / `Sandbox.list()` / `.sandbox_id` / `.kill()` / `.is_running()`
+- **`with Sandbox() as sbx:`** context manager auto-kills the VM on exit (`async with AsyncSandbox()` too)
+- Static-form `Sandbox.kill("vm_id")` and `Sandbox.set_timeout("vm_id", 300)` work via descriptor dispatch
 - `commands.run` (foreground + background) → `CommandResult` / `CommandHandle`
 - `commands.list / kill / connect`; `CommandHandle.wait / kill / __iter__`
 - `files.read(format="text" | "bytes")` and `files.write` (native Arker sync API)
 - `files.list / exists / remove / rename / make_dir` (shell-shimmed via `find` / `test` / `rm` / `mv` / `mkdir`)
-- `code_interpreter.Sandbox.run_code` for python/js/ts/bash/ruby
-- `AsyncSandbox` (thread-pool wrapper)
+- **`EntryInfo` populates `size`, `mode`, `permissions`, `owner`, `group`, `modified_time`, `symlink_target`** via richer `find -printf` format
+- **`SandboxInfo.started_at` / `end_at` are `datetime` objects** (e2b parity)
+- **Typed exception subclasses**: `TimeoutException`, `NotFoundException`, `FileNotFoundException`, `SandboxNotFoundException`, `AuthenticationException`, `RateLimitException`, etc. (subclass `SandboxException`)
+- `code_interpreter.Sandbox.run_code` for python/js/ts/bash/ruby (`Execution.text` is the last-expression value per e2b semantics — stdout lives in `logs.stdout`)
+- `AsyncSandbox` (thread-pool wrapper) — supports `async with`, has the same surface
+
+**What warns loudly but is local-only (drop-in safe but visible)**
+
+- `Sandbox(timeout=300)` and `set_timeout(300)` — store locally and emit a `UserWarning` because Arker has no SDK-level VM TTL yet. **VMs will live until explicitly killed.**
 
 **What raises `NotImplementedError` (loud, so users discover the gap)**
 
@@ -159,10 +168,10 @@ Also shimmed: `from arker.e2b import AsyncSandbox` (async wrapper) and
 **What changes shape or degrades**
 
 - `CommandResult.stdout` is a `str` (UTF-8 decoded), matching e2b.
+- Default template is `"base"` (matches e2b) — override via `ARKER_E2B_DEFAULT_TEMPLATE`.
 - Live `on_stdout` / `on_stderr` callbacks fire once per polled chunk; true line-level streaming awaits WS support.
 - `commands.list()` reflects only handles created in this client session (no remote enumeration).
 - `Sandbox.list()` ignores e2b's `metadata` filter — Arker doesn't store metadata remotely.
-- Static `Sandbox.kill(id)` / `Sandbox.set_timeout(id, ...)` forms are not yet shimmed (only instance forms work).
 - e2b-desktop (mouse / keyboard / screenshot) is not implemented.
 
 ## Demo

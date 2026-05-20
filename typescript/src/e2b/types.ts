@@ -21,12 +21,21 @@ export interface EntryInfo {
   name: string;
   type: FileType;
   path: string;
+  size?: number;
+  mode?: number;
+  permissions?: string;
+  owner?: string;
+  group?: string;
+  modifiedTime?: Date;
+  symlinkTarget?: string | null;
 }
 
 export interface ProcessInfo {
   pid: number;
   tag: string;
   cmd: string;
+  args?: string[];
+  envs?: Record<string, string>;
   cwd?: string;
 }
 
@@ -35,8 +44,8 @@ export interface SandboxInfo {
   templateId: string | null;
   name: string | null;
   metadata: Record<string, string>;
-  startedAt: string;
-  endAt: string | null;
+  startedAt: Date;
+  endAt: Date | null;
 }
 
 export class SandboxException extends Error {
@@ -45,6 +54,19 @@ export class SandboxException extends Error {
     this.name = "SandboxException";
   }
 }
+
+// e2b's typed-exception hierarchy. Empty subclasses so existing
+// `catch (e) { if (e instanceof TimeoutException) ... }` patterns work.
+// Translating ArkerError -> the right subclass is a follow-up.
+export class TimeoutException extends SandboxException { override name = "TimeoutException" }
+export class InvalidArgumentException extends SandboxException { override name = "InvalidArgumentException" }
+export class NotEnoughSpaceException extends SandboxException { override name = "NotEnoughSpaceException" }
+export class NotFoundException extends SandboxException { override name = "NotFoundException" }
+export class FileNotFoundException extends NotFoundException { override name = "FileNotFoundException" }
+export class SandboxNotFoundException extends NotFoundException { override name = "SandboxNotFoundException" }
+export class AuthenticationException extends SandboxException { override name = "AuthenticationException" }
+export class RateLimitException extends SandboxException { override name = "RateLimitException" }
+export class TemplateException extends SandboxException { override name = "TemplateException" }
 
 export class CommandExitException extends SandboxException {
   readonly result: CommandResult;

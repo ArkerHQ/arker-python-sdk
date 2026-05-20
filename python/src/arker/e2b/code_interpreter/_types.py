@@ -34,10 +34,24 @@ class Result:
 
 @dataclasses.dataclass(frozen=True)
 class Execution:
-    text: str = ""
+    """e2b-shaped execution result.
+
+    `text` mirrors e2b's semantics: it is the textual representation of the
+    last-expression value (the `is_main_result` Result), NOT stdout. Stdout
+    lives in `logs.stdout`. Until we wire up a Jupyter kernel that emits
+    `results[]`, `text` is always `None` here — matching e2b's behavior when
+    the snippet has no expression value.
+    """
     logs: Logs = dataclasses.field(default_factory=Logs)
     error: ExecutionError | None = None
     results: list[Result] = dataclasses.field(default_factory=list)
+
+    @property
+    def text(self) -> str | None:
+        for r in self.results:
+            if r.is_main_result and r.text is not None:
+                return r.text
+        return None
 
     @property
     def exit_code(self) -> int:

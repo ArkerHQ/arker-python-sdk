@@ -119,3 +119,39 @@ class AsyncSandbox:
 
     async def kill(self, **kwargs: Any) -> bool:
         return await _to_thread(self._sync.kill, **kwargs)
+
+    async def is_running(self, **kwargs: Any) -> bool:
+        return await _to_thread(self._sync.is_running, **kwargs)
+
+    async def set_timeout(self, timeout: int, **kwargs: Any) -> None:
+        return await _to_thread(self._sync.set_timeout, timeout, **kwargs)
+
+    @classmethod
+    async def list(cls, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(Sandbox.list, **kwargs)
+
+    async def __aenter__(self) -> "AsyncSandbox":
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        try:
+            await self.kill()
+        except Exception:
+            pass
+
+    # Paid-tier e2b features the underlying Arker SDK doesn't expose yet.
+    # Throw loudly so users don't think they're working silently.
+    async def pause(self, **_kw: Any) -> None:
+        raise NotImplementedError("arker.e2b: pause/resume is not supported — Arker has no VM pause API")
+
+    async def resume(self, **_kw: Any) -> None:
+        raise NotImplementedError("arker.e2b: pause/resume is not supported — Arker has no VM pause API")
+
+    async def create_snapshot(self, **_kw: Any) -> None:
+        raise NotImplementedError("arker.e2b: snapshots are not supported yet")
+
+    async def get_info(self, **_kw: Any) -> Any:
+        raise NotImplementedError("arker.e2b: get_info() is not implemented — use Sandbox.list() to find this VM")
+
+    async def get_metrics(self, **_kw: Any) -> Any:
+        raise NotImplementedError("arker.e2b: get_metrics() is not implemented")

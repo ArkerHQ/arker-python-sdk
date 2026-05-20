@@ -2,8 +2,8 @@ import type { CompletedRunResult } from "../index.js";
 import type { Sandbox } from "./sandbox.js";
 import { type EntryInfo, FileType } from "./types.js";
 
-// `find ... -printf "%f|%y\n"` — one line per entry, type letter f/d/l/...
-const FIND_FMT = "%f|%y\\n";
+// `find ... -printf "%f|%y|%s|%m|%u|%g|%T@|%l\n"` — one line per entry.
+const FIND_FMT = "%f|%y|%s|%m|%u|%g|%T@|%l\\n";
 const FIND_TYPE_TO_ENUM: Record<string, FileType> = {
   f: FileType.File,
   d: FileType.Dir,
@@ -21,6 +21,33 @@ function basename(path: string): string {
   const trimmed = path.replace(/\/+$/, "");
   const idx = trimmed.lastIndexOf("/");
   return idx < 0 ? trimmed : trimmed.slice(idx + 1);
+}
+
+function dirname(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return idx <= 0 ? "/" : trimmed.slice(0, idx);
+}
+
+function parseFindLine(line: string, parent: string): EntryInfo | null {
+  const parts = line.split("|");
+  if (parts.length < 7) return null;
+  const [name, kind, sizeStr, modeStr, owner, group, mtimeStr, symlinkRaw] = parts;
+  const size = Number(sizeStr) || 0;
+  const mode = parseInt(modeStr ?? "", 8) || 0;
+  const mtime = Number(mtimeStr);
+  return {
+    name: name ?? "",
+    type: FIND_TYPE_TO_ENUM[kind ?? ""] ?? FileType.File,
+    path: `${parent.replace(/\/+$/, "")}/${name}`,
+    size,
+    mode,
+    permissions: "",
+    owner: owner ?? "",
+    group: group ?? "",
+    modifiedTime: isNaN(mtime) ? undefined : new Date(mtime * 1000),
+    symlinkTarget: symlinkRaw ? symlinkRaw : null,
+  };
 }
 
 export interface ReadOptions {
@@ -70,15 +97,9 @@ export class Filesystem {
     if (exitCode !== 0) return [];
     const entries: EntryInfo[] = [];
     for (const line of stdout.split("\n")) {
-      if (!line || !line.includes("|")) continue;
-      const pipe = line.lastIndexOf("|");
-      const name = line.slice(0, pipe);
-      const kind = line.slice(pipe + 1);
-      entries.push({
-        name,
-        type: FIND_TYPE_TO_ENUM[kind] ?? FileType.File,
-        path: `${path.replace(/\/+$/, "")}/${name}`,
-      });
+      if (!line) continue;
+      const entry = parseFindLine(line, path);
+      if (entry) entries.push(entry);
     }
     return entries;
   }
@@ -94,7 +115,7 @@ export class Filesystem {
 
   async rename(oldPath: string, newPath: string): Promise<EntryInfo> {
     await this.shell(`mv ${shellQuote(oldPath)} ${shellQuote(newPath)}`);
-    return { name: basename(newPath), type: FileType.File, path: newPath };
+    return this.statEntry(newPath);
   }
 
   async makeDir(path: string): Promise<boolean> {
@@ -119,5 +140,16 @@ export class Filesystem {
       stderr: decode(result.stderr),
       exitCode: result.exitCode,
     };
+  }
+
+  private async statEntry(path: string): Promise<EntryInfo> {
+    const { stdout, exitCode } = await this.shell(
+      `find ${shellQuote(path)} -maxdepth 0 -printf ${shellQuote(FIND_FMT)}`,
+    );
+    if (exitCode === 0 && stdout.trim()) {
+      const parsed = parseFindLine(stdout.split("\n")[0]!, dirname(path));
+      if (parsed) return { ...parsed, name: basename(path), path };
+    }
+    return { name: basename(path), type: FileType.File, path };
   }
 }

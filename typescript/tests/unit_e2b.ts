@@ -53,7 +53,7 @@ function runStatus(runId: string, stdout = "", stderr = "", exitCode: number | n
 
 function scriptFork(fetch: FakeFetch, vmId = "vm_child"): void {
   fetch.addJson(
-    (m, u) => m === "POST" && u === `${BASE}/v1/vms/ubuntu/fork`,
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/base/fork`,
     200,
     { vm_id: vmId, owner_id: "o", created_at: "now", sessions: [] },
   );
@@ -212,16 +212,21 @@ async function testCommandsListAndConnect(): Promise<void> {
 async function testFilesListParses(): Promise<void> {
   const fetch = new FakeFetch();
   const sbx = await makeSandbox(fetch);
+  // Rich find format: name|type|size|mode|owner|group|mtime|symlink
   fetch.addJson(
     (m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_child/run`,
     200,
-    completedRun("readme.txt|f\nsrc|d\n"),
+    completedRun("readme.txt|f|42|644|alice|users|1735776000.0|\nsrc|d|4096|755|alice|users|1735776100.0|\n"),
   );
   const entries = await sbx.files.list("/work");
-  assert.deepEqual(entries, [
-    { name: "readme.txt", type: FileType.File, path: "/work/readme.txt" },
-    { name: "src", type: FileType.Dir, path: "/work/src" },
-  ]);
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]!.name, "readme.txt");
+  assert.equal(entries[0]!.type, FileType.File);
+  assert.equal(entries[0]!.size, 42);
+  assert.equal(entries[0]!.owner, "alice");
+  assert.equal(entries[1]!.type, FileType.Dir);
+  assert.equal(entries[1]!.mode, 0o755);
+  assert.ok(entries[0]!.modifiedTime instanceof Date);
 }
 
 async function testFilesExists(): Promise<void> {
@@ -238,9 +243,15 @@ async function testFilesMakeDirAndRename(): Promise<void> {
   const sbx = await makeSandbox(fetch);
   fetch.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_child/run`, 200, completedRun());
   assert.equal(await sbx.files.makeDir("/tmp/deep/nest"), true);
-  fetch.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_child/run`, 200, completedRun());
+  fetch.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_child/run`, 200, completedRun()); // mv
+  fetch.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_child/run`,
+    200,
+    completedRun("c|d|4096|755|alice|users|1735776000.0|\n"),
+  ); // post-rename stat
   const entry = await sbx.files.rename("/a", "/b/c");
   assert.equal(entry.path, "/b/c");
+  assert.equal(entry.type, FileType.Dir);
 }
 
 // ----- Phase E (code interpreter) -----
@@ -253,7 +264,10 @@ async function testRunCodeHappy(): Promise<void> {
   fetch.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_ci/run`, 200, completedRun("4\n"));
   fetch.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_ci/run`, 200, completedRun());  // cleanup rm
   const ex = await sbx.runCode("console.log(2+2)", { language: "js" });
-  assert.equal(ex.text, "4\n");
+  // e2b semantics: text is the last-expression value (null when there is none).
+  // Stdout from console.log lives in logs.stdout.
+  assert.equal(ex.text, null);
+  assert.deepEqual(ex.logs.stdout, ["4\n"]);
   assert.equal(ex.error, null);
 }
 
@@ -291,15 +305,15 @@ async function testSandboxListMapsToSandboxInfos(): Promise<void> {
       templateId: "ubuntu",
       name: "alpha",
       metadata: {},
-      startedAt: "2026-01-01T00:00:00Z",
-      endAt: "2026-01-02T00:00:00Z",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+      endAt: new Date("2026-01-02T00:00:00Z"),
     },
     {
       sandboxId: "vm_b",
       templateId: null,
       name: null,
       metadata: {},
-      startedAt: "2026-01-03T00:00:00Z",
+      startedAt: new Date("2026-01-03T00:00:00Z"),
       endAt: null,
     },
   ]);
@@ -316,6 +330,31 @@ async function testUnsupportedSurfacesThrow(): Promise<void> {
   await assert.rejects(() => sbx.pty.sendStdin(1, new Uint8Array()), /pty is not supported/);
   await assert.rejects(() => sbx.pty.resize(1, { rows: 24, cols: 80 }), /pty is not supported/);
   await assert.rejects(() => sbx.pty.kill(1), /pty is not supported/);
+}
+
+async function testStaticKillById(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "DELETE" && u === `${BASE}/v1/vms/vm_static`,
+    200,
+    { deleted: true },
+  );
+  assert.equal(await Sandbox.kill("vm_static", { _arker: client(fetch) }), true);
+}
+
+async function testStaticSetTimeoutWarns(): Promise<void> {
+  // Just verify it doesn't throw. Warning goes to console.warn.
+  Sandbox.setTimeout("vm_x", 300);
+}
+
+async function testTypedExceptionsHierarchy(): Promise<void> {
+  const { SandboxException, TimeoutException, NotFoundException, FileNotFoundException, SandboxNotFoundException } = await import(
+    "../src/e2b/index.js"
+  );
+  assert.ok(new TimeoutException("x") instanceof SandboxException);
+  assert.ok(new NotFoundException("x") instanceof SandboxException);
+  assert.ok(new FileNotFoundException("x") instanceof NotFoundException);
+  assert.ok(new SandboxNotFoundException("x") instanceof NotFoundException);
 }
 
 async function testIsRunningTrueAndFalse(): Promise<void> {
@@ -376,6 +415,9 @@ await testRunCodeHappy();
 await testSandboxListMapsToSandboxInfos();
 await testUnsupportedSurfacesThrow();
 await testIsRunningTrueAndFalse();
+await testStaticKillById();
+await testStaticSetTimeoutWarns();
+await testTypedExceptionsHierarchy();
 testSetTimeoutStoresLocally();
 testRuntimeFor();
 

@@ -32,7 +32,11 @@ export interface Result {
 }
 
 export interface Execution {
-  text: string;
+  /** e2b semantics: the textual representation of the last-expression value
+   * (the `isMainResult` Result), NOT stdout. Stdout lives in `logs.stdout`.
+   * Returns `null` when there is no expression value (e.g., the snippet only
+   * calls `print`). */
+  text: string | null;
   logs: Logs;
   error: ExecutionError | null;
   results: Result[];
@@ -128,14 +132,20 @@ export class Sandbox extends BaseSandbox {
       }
     }
 
+    const results: Result[] = [];
     return {
-      text: stdout,
+      get text(): string | null {
+        for (const r of results) {
+          if (r.isMainResult && r.text != null) return r.text;
+        }
+        return null;
+      },
       logs: {
         stdout: stdout ? [stdout] : [],
         stderr: stderr ? [stderr] : [],
       },
       error,
-      results: [],
+      results,
     };
   }
 }

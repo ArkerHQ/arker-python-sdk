@@ -20,9 +20,18 @@ export { Filesystem, WatchHandle, type ReadOptions } from "./files.js";
 export { CommandHandle, type WaitOptions } from "./handle.js";
 export { Pty } from "./pty.js";
 export {
+  AuthenticationException,
   CommandExitException,
+  FileNotFoundException,
   FileType,
+  InvalidArgumentException,
+  NotEnoughSpaceException,
+  NotFoundException,
+  RateLimitException,
   SandboxException,
+  SandboxNotFoundException,
+  TemplateException,
+  TimeoutException,
   type CommandResult,
   type EntryInfo,
   type ProcessInfo,

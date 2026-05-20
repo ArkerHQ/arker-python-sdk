@@ -5,7 +5,21 @@ import { Pty } from "./pty.js";
 import type { SandboxInfo } from "./types.js";
 
 const DEFAULT_TEMPLATE_ENV = "ARKER_E2B_DEFAULT_TEMPLATE";
-const DEFAULT_TEMPLATE = "ubuntu";
+const DEFAULT_TEMPLATE = "base";
+
+function warnTimeoutNoop(value: number): void {
+  // eslint-disable-next-line no-console
+  console.warn(
+    `arker.e2b: Sandbox timeout=${value} is stored locally only — Arker has ` +
+      `no server-side auto-kill yet. VMs will live until explicitly killed.`,
+  );
+}
+
+function parseDate(value: unknown): Date | null {
+  if (typeof value !== "string" || !value) return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
 
 function resolveTemplate(template?: string): string {
   if (template) return template;
@@ -55,14 +69,17 @@ export class Sandbox {
   readonly commands: Commands;
   readonly files: Filesystem;
   readonly pty: Pty;
+  private _timeoutValue?: number;
 
-  protected constructor(arker: Arker, computer: Computer, envs: Record<string, string>) {
+  protected constructor(arker: Arker, computer: Computer, envs: Record<string, string>, timeout?: number) {
     this._arker = arker;
     this._computer = computer;
     this._defaultEnvs = envs;
+    this._timeoutValue = timeout;
     this.commands = new Commands(this);
     this.files = new Filesystem(this);
     this.pty = new Pty(this);
+    if (timeout !== undefined) warnTimeoutNoop(timeout);
   }
 
   get sandboxId(): string {
@@ -81,11 +98,29 @@ export class Sandbox {
       const name = opts.metadata?.name;
       computer = await arker.vm(source).fork(name ? { name } : {});
     }
-    return new Sandbox(arker, computer, { ...(opts.envs ?? {}) });
+    return new Sandbox(arker, computer, { ...(opts.envs ?? {}) }, opts.timeout);
   }
 
   static async connect(sandboxId: string, opts: Omit<SandboxOptions, "sandboxId"> = {}): Promise<Sandbox> {
     return Sandbox.create({ ...opts, sandboxId });
+  }
+
+  /** Static-form kill — e2b's `Sandbox.kill(sandboxId)`. */
+  static async kill(sandboxId: string, opts: Pick<SandboxOptions, "apiKey" | "region" | "baseUrl" | "_arker"> = {}): Promise<boolean> {
+    const arker = opts._arker ?? new Arker(buildArkerOptions(opts));
+    try {
+      const r = await arker.vm(sandboxId).delete();
+      return !!r.deleted;
+    } catch (error) {
+      if (error instanceof ArkerError) return false;
+      throw error;
+    }
+  }
+
+  /** Static-form setTimeout — local warning only; matches e2b's signature. */
+  static setTimeout(sandboxId: string, timeout: number): void {
+    void sandboxId;
+    warnTimeoutNoop(timeout);
   }
 
   /**
@@ -98,14 +133,20 @@ export class Sandbox {
     const arker = opts._arker ?? new Arker(buildArkerOptions(opts));
     const response = await arker.list();
     const vms = (response as { vms?: Array<Record<string, unknown>> }).vms ?? [];
-    return vms.map((vm) => ({
-      sandboxId: String(vm.vm_id),
-      templateId: typeof vm.source_golden === "string" ? vm.source_golden : null,
-      name: typeof vm.name === "string" ? vm.name : null,
-      metadata: {},
-      startedAt: String(vm.created_at),
-      endAt: typeof vm.last_activity === "string" ? vm.last_activity : null,
-    }));
+    const out: SandboxInfo[] = [];
+    for (const vm of vms) {
+      const started = parseDate(vm.created_at);
+      if (started === null) continue;
+      out.push({
+        sandboxId: String(vm.vm_id),
+        templateId: typeof vm.source_golden === "string" ? vm.source_golden : null,
+        name: typeof vm.name === "string" ? vm.name : null,
+        metadata: {},
+        startedAt: started,
+        endAt: parseDate(vm.last_activity),
+      });
+    }
+    return out;
   }
 
   async kill(): Promise<boolean> {
@@ -129,15 +170,35 @@ export class Sandbox {
   }
 
   /** Sandbox lifetime hint. Stored locally — Arker has no SDK-level VM TTL yet. */
-  setTimeout(_timeout: number): void {
-    this._timeoutValue = _timeout;
+  setTimeout(timeout: number): void {
+    this._timeoutValue = timeout;
+    warnTimeoutNoop(timeout);
   }
 
   get timeout(): number | undefined {
     return this._timeoutValue;
   }
 
-  private _timeoutValue?: number;
+  // Paid-tier e2b features Arker doesn't expose yet — throw loud so they're discoverable.
+  async pause(): Promise<void> {
+    throw new Error("arker.e2b: pause/resume is not supported — Arker has no VM pause API");
+  }
+
+  async resume(): Promise<void> {
+    throw new Error("arker.e2b: pause/resume is not supported — Arker has no VM pause API");
+  }
+
+  async createSnapshot(): Promise<void> {
+    throw new Error("arker.e2b: snapshots are not supported yet");
+  }
+
+  async getInfo(): Promise<unknown> {
+    throw new Error("arker.e2b: getInfo() is not implemented — use Sandbox.list() to find this VM");
+  }
+
+  async getMetrics(): Promise<unknown> {
+    throw new Error("arker.e2b: getMetrics() is not implemented");
+  }
 
   _registerRun(runId: string, cmd: string): number {
     const pid = this._nextPid++;

@@ -46,7 +46,7 @@ def _completed_run(stdout: str = "", stderr: str = "", exit_code: int = 0) -> di
 def _make_sandbox(transport: FakeTransport, vm_id: str = "vm_child") -> Sandbox:
     """Build a Sandbox whose underlying VM is a freshly-forked vm_id."""
     transport.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
         200,
         {"vm_id": vm_id, "owner_id": "o", "created_at": "now", "sessions": [session()]},
     )
@@ -366,13 +366,20 @@ def test_files_list_parses_find_output() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        _add_shell(transport, "vm_child", stdout="readme.txt|f\nsrc|d\n")
+        # Format: name|type|size|mode|owner|group|mtime|symlink
+        _add_shell(
+            transport,
+            "vm_child",
+            stdout="readme.txt|f|42|644|alice|users|1735776000.0|\nsrc|d|4096|755|alice|users|1735776100.0|\n",
+        )
         entries = sbx.files.list("/work")
 
-    assert entries == [
-        EntryInfo(name="readme.txt", type=FileType.FILE, path="/work/readme.txt"),
-        EntryInfo(name="src", type=FileType.DIR, path="/work/src"),
+    assert [(e.name, e.type, e.path, e.size, e.owner) for e in entries] == [
+        ("readme.txt", FileType.FILE, "/work/readme.txt", 42, "alice"),
+        ("src", FileType.DIR, "/work/src", 4096, "alice"),
     ]
+    assert entries[0].modified_time is not None
+    assert entries[1].mode == 0o755
 
 
 def test_files_list_returns_empty_on_missing_path() -> None:
@@ -407,12 +414,15 @@ def test_files_rename_invokes_mv() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        _add_shell(transport, "vm_child")
+        _add_shell(transport, "vm_child")  # mv
+        _add_shell(transport, "vm_child", stdout="c|d|4096|755|alice|users|1735776000.0|\n")  # post-rename stat
         entry = sbx.files.rename("/a", "/b/c")
-        body = json.loads(transport.calls[-1]["body"])
-    assert body["command"] == "mv /a /b/c"
+        # First call is the `mv`; the stat is the second.
+        mv_body = json.loads(transport.calls[-2]["body"])
+    assert mv_body["command"] == "mv /a /b/c"
     assert entry.path == "/b/c"
     assert entry.name == "c"
+    assert entry.type == FileType.DIR  # detected from post-rename stat
 
 
 def test_files_make_dir_invokes_mkdir_p() -> None:
@@ -460,7 +470,7 @@ def test_run_code_python_happy_path() -> None:
 
     transport = FakeTransport()
     transport.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
         200,
         {"vm_id": "vm_ci", "owner_id": "o", "created_at": "now", "sessions": [session()]},
     )
@@ -488,7 +498,9 @@ def test_run_code_python_happy_path() -> None:
         ex = sbx.run_code("print(2+2)")
 
     assert isinstance(ex, Execution)
-    assert ex.text == "4\n"
+    # e2b semantics: ex.text is the last-expression value (None when there
+    # is none). Stdout from print() lives in ex.logs.stdout.
+    assert ex.text is None
     assert ex.error is None
     assert ex.logs.stdout == ["4\n"]
 
@@ -498,7 +510,7 @@ def test_run_code_captures_runtime_error() -> None:
 
     transport = FakeTransport()
     transport.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
         200,
         {"vm_id": "vm_ci", "owner_id": "o", "created_at": "now", "sessions": [session()]},
     )
@@ -566,21 +578,23 @@ def test_sandbox_list_maps_vms_to_sandbox_infos(monkeypatch) -> None:
     with patch("urllib.request.urlopen", transport):
         items = Sandbox.list()
 
+    import datetime as _dt
+
     assert items == [
         SandboxInfo(
             sandbox_id="vm_a",
             template_id="ubuntu",
             name="alpha",
             metadata={},
-            started_at="2026-01-01T00:00:00Z",
-            end_at="2026-01-02T00:00:00Z",
+            started_at=_dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc),
+            end_at=_dt.datetime(2026, 1, 2, tzinfo=_dt.timezone.utc),
         ),
         SandboxInfo(
             sandbox_id="vm_b",
             template_id=None,
             name=None,
             metadata={},
-            started_at="2026-01-03T00:00:00Z",
+            started_at=_dt.datetime(2026, 1, 3, tzinfo=_dt.timezone.utc),
             end_at=None,
         ),
     ]
@@ -620,6 +634,90 @@ def test_set_timeout_stores_locally() -> None:
         assert sbx.timeout == 300
 
 
+def test_context_manager_kills_on_exit() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
+            200,
+            {"vm_id": "vm_ctx", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+        )
+        transport.add_json(
+            lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_ctx"),
+            200,
+            {"deleted": True},
+        )
+        with Sandbox(_arker=client()) as sbx:
+            assert sbx.sandbox_id == "vm_ctx"
+        # __exit__ issued the DELETE; check both calls happened.
+        assert any(c["method"] == "DELETE" and c["url"].endswith("/vm_ctx") for c in transport.calls)
+
+
+def test_static_kill_works_via_descriptor() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_static"),
+        200,
+        {"deleted": True},
+    )
+    with patch("urllib.request.urlopen", transport):
+        # Static-form invocation. Use _arker override via Arker kwarg path:
+        # the descriptor calls _build_arker(api_key), so set env vars.
+        import os as _os
+        _os.environ["ARKER_API_KEY"] = "ark_live_test"
+        _os.environ["ARKER_BASE_URL"] = "https://test.invalid/api"
+        try:
+            assert Sandbox.kill("vm_static") is True
+        finally:
+            _os.environ.pop("ARKER_API_KEY", None)
+            _os.environ.pop("ARKER_BASE_URL", None)
+
+
+def test_set_timeout_emits_warning() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.warns(UserWarning, match="stored locally only"):
+            sbx.set_timeout(300)
+
+
+def test_constructor_timeout_emits_warning() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
+            200,
+            {"vm_id": "vm_t", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+        )
+        with pytest.warns(UserWarning, match="stored locally only"):
+            Sandbox(timeout=300, _arker=client())
+
+
+def test_typed_exceptions_subclass_sandbox_exception() -> None:
+    from arker.e2b import (
+        AuthenticationException,
+        FileNotFoundException,
+        NotFoundException,
+        RateLimitException,
+        SandboxException,
+        SandboxNotFoundException,
+        TimeoutException,
+    )
+
+    # Subclass chain must work for existing e2b try/except patterns.
+    for exc_cls in [
+        TimeoutException,
+        AuthenticationException,
+        RateLimitException,
+        NotFoundException,
+        FileNotFoundException,
+        SandboxNotFoundException,
+    ]:
+        assert issubclass(exc_cls, SandboxException)
+    assert issubclass(FileNotFoundException, NotFoundException)
+    assert issubclass(SandboxNotFoundException, NotFoundException)
+
+
 def test_async_sandbox_proxies_to_sync() -> None:
     import asyncio
 
@@ -627,7 +725,7 @@ def test_async_sandbox_proxies_to_sync() -> None:
 
     transport = FakeTransport()
     transport.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
         200,
         {"vm_id": "vm_async", "owner_id": "o", "created_at": "now", "sessions": [session()]},
     )

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
-from typing import TYPE_CHECKING
-
-logger = logging.getLogger("arker.e2b")
+import warnings
+from typing import Any
 
 from ..computer import Arker, ArkerError, Computer
 from ._commands import Commands
@@ -15,11 +15,10 @@ from ._handle import CommandHandle
 from ._pty import Pty
 from ._types import SandboxInfo
 
-if TYPE_CHECKING:
-    pass
+logger = logging.getLogger("arker.e2b")
 
 DEFAULT_TEMPLATE_ENV = "ARKER_E2B_DEFAULT_TEMPLATE"
-DEFAULT_TEMPLATE = "ubuntu"
+DEFAULT_TEMPLATE = "base"
 
 
 def _resolve_template(template: str | None) -> str:
@@ -29,23 +28,71 @@ def _resolve_template(template: str | None) -> str:
 
 
 def _build_arker(api_key: str | None) -> Arker:
-    """Build an Arker client, deferring api_key/region resolution to Arker itself.
-
-    The Arker constructor already reads ARKER_API_KEY / ARKER_REGION /
-    ARKER_BASE_URL from the env, so we only forward an explicit api_key.
-    """
     return Arker(api_key=api_key)
 
 
-class Sandbox:
-    """e2b.Sandbox drop-in. Phase A surface:
+def _parse_dt(value: Any) -> _dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
-    - Constructor (create-from-template or connect-to-existing)
-    - `.kill()` instance method, `Sandbox.kill(sandbox_id)` static
-    - `Sandbox.connect(sandbox_id)` classmethod
-    - `.commands.run(cmd, ...)` foreground exec
-    - `.files.read(path, format=...)`, `.files.write(path, data)`
-    - `.sandbox_id` property
+
+def _warn_timeout_noop(value: int) -> None:
+    warnings.warn(
+        f"arker.e2b: Sandbox timeout={value} is stored locally only — "
+        "Arker has no server-side auto-kill yet. VMs will live until "
+        "explicitly killed. Track follow-up for SDK-level TTL support.",
+        stacklevel=3,
+    )
+
+
+class _KillDispatcher:
+    """Descriptor mimicking e2b's `@class_method_variant` — supports BOTH
+    `sandbox.kill()` (instance) and `Sandbox.kill(sandbox_id)` (static)."""
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._name = name
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        if obj is None:
+            def static_kill(sandbox_id: str, *, api_key: str | None = None, **_: Any) -> bool:
+                arker = _build_arker(api_key)
+                try:
+                    return bool(arker.vm(sandbox_id).delete().deleted)
+                except ArkerError:
+                    return False
+            return static_kill
+        return lambda request_timeout=None: obj._instance_kill(request_timeout)
+
+
+class _SetTimeoutDispatcher:
+    """Same dual-dispatch trick for `set_timeout`."""
+
+    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+        if obj is None:
+            def static_set_timeout(sandbox_id: str, timeout: int, *, api_key: str | None = None, **_: Any) -> None:
+                # No remote effect — see warning emitted at instance use too.
+                _warn_timeout_noop(timeout)
+                logger.debug("arker.e2b: static set_timeout(%s, %d) — no remote effect", sandbox_id, timeout)
+            return static_set_timeout
+        return lambda timeout, request_timeout=None: obj._instance_set_timeout(timeout)
+
+
+class Sandbox:
+    """e2b.Sandbox drop-in.
+
+    Supports:
+    - Constructor (fork-from-template or attach-by-sandbox_id)
+    - `Sandbox(...)` context manager — `with Sandbox() as sbx:` auto-kills
+    - `.kill()` instance / `Sandbox.kill(sandbox_id)` static
+    - `Sandbox.connect(sandbox_id)`, `Sandbox.list()`
+    - `.set_timeout(secs)` / `Sandbox.set_timeout(id, secs)` — both warn
+      that the value is local-only until Arker ships SDK-level TTL.
+    - `.commands.run`, `.files.read/write/list/...`, `.pty.*` (raises),
+      and `.sandbox_id` / `.is_running()` / `.timeout`
     """
 
     def __init__(
@@ -81,9 +128,22 @@ class Sandbox:
         self._bg_runs: dict[int, tuple[str, str]] = {}  # pid -> (run_id, cmd)
         self._next_pid = 1
 
+        if timeout is not None:
+            _warn_timeout_noop(timeout)
+
         self.commands = Commands(self)
         self.files = Filesystem(self)
         self.pty = Pty(self)
+
+    # Context manager — e2b's blessed `with Sandbox() as sbx:` idiom.
+    def __enter__(self) -> "Sandbox":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        try:
+            self.kill()
+        except Exception:
+            pass
 
     def _register_run(self, run_id: str, cmd: str) -> CommandHandle:
         pid = self._next_pid
@@ -102,23 +162,24 @@ class Sandbox:
     def sandbox_id(self) -> str:
         return self._computer.id
 
-    def kill(self, request_timeout: float | None = None) -> bool:
+    kill = _KillDispatcher()
+    set_timeout = _SetTimeoutDispatcher()
+
+    def _instance_kill(self, request_timeout: float | None = None) -> bool:
         try:
             return bool(self._computer.delete().deleted)
         except ArkerError:
             return False
+
+    def _instance_set_timeout(self, timeout: int) -> None:
+        self._timeout = timeout
+        _warn_timeout_noop(timeout)
 
     def is_running(self, request_timeout: float | None = None) -> bool:
         try:
             return self._arker.get(self._computer.id).state == "running"
         except ArkerError:
             return False
-
-    def set_timeout(self, timeout: int, request_timeout: float | None = None) -> None:
-        # Arker has no user-mutable VM TTL via SDK today. Store locally so a
-        # later call to `sandbox.timeout` returns the user's intent.
-        self._timeout = timeout
-        logger.debug("arker.e2b: set_timeout(%d) — stored locally; no remote effect yet", timeout)
 
     @property
     def timeout(self) -> int | None:
@@ -147,19 +208,23 @@ class Sandbox:
         """List sandboxes owned by the current API key.
 
         Maps Arker `VmInfo` → e2b `SandboxInfo`. Metadata isn't stored
-        remotely, so the `metadata` field is always `{}`.
+        remotely, so the `metadata` field is always `{}`. Datetime fields
+        are parsed to `datetime` to match e2b's shape; if Arker returns
+        a malformed timestamp, the field stays None.
         """
         arker = _build_arker(api_key)
         infos = arker.list().vms
-        return [
-            SandboxInfo(
+        out: list[SandboxInfo] = []
+        for vm in infos:
+            started = _parse_dt(vm.created_at)
+            if started is None:
+                continue  # skip rows with malformed timestamps
+            out.append(SandboxInfo(
                 sandbox_id=vm.vm_id,
                 template_id=vm.source_golden,
                 name=vm.name,
                 metadata={},
-                started_at=vm.created_at,
-                end_at=vm.last_activity,
-            )
-            for vm in infos
-        ]
-
+                started_at=started,
+                end_at=_parse_dt(vm.last_activity),
+            ))
+        return out
