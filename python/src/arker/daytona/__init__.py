@@ -65,9 +65,12 @@ site):
      `set_auto_delete_interval`, `update_network_settings` — local
      no-ops; Arker has no equivalents.
 
- 10. `AsyncDaytona` (async client) not yet shipped in Phase A.
+ 10. `AsyncDaytona` (async client) ships in Phase D via `asyncio.to_thread`
+     around the sync `Daytona` — equivalent behavior, slight cold-start
+     latency from the thread hop. Native async HTTP would close the gap.
 """
 
+from ._async import AsyncDaytona, AsyncSandbox
 from ._client import Daytona
 from ._files import FileSystem
 from ._process import Process
@@ -96,6 +99,8 @@ from ._types import (
 )
 
 __all__ = [
+    "AsyncDaytona",
+    "AsyncSandbox",
     "Chart",
     "CodeRunParams",
     "Command",

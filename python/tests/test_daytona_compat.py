@@ -656,6 +656,45 @@ def test_process_send_session_command_input_raises() -> None:
             sbx.process.send_session_command_input("s", "c", "x")
 
 
+def test_async_daytona_full_round_trip() -> None:
+    import asyncio
+
+    from arker.daytona import AsyncDaytona, AsyncSandbox
+
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
+        200,
+        {"vm_id": "vm_async", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_async/run"),
+        200,
+        _completed_run(stdout="hi\n"),
+    )
+    transport.add_json(
+        lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_async"),
+        200,
+        {"deleted": True},
+    )
+
+    sync = Daytona(DaytonaConfig(api_key="ark_live_test"), _arker=client())
+
+    async def run() -> tuple[str, int, str]:
+        with patch("urllib.request.urlopen", transport):
+            async with AsyncDaytona(_sync=sync) as d:
+                async with await d.create() as sbx:
+                    assert isinstance(sbx, AsyncSandbox)
+                    sid = sbx.id
+                    resp = await sbx.process.exec("echo hi")
+                    return sid, resp.exit_code, resp.result
+
+    sid, exit_code, output = asyncio.run(run())
+    assert sid == "vm_async"
+    assert exit_code == 0
+    assert output == "hi\n"
+
+
 def test_sandbox_delete_swallows_arker_errors() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
