@@ -21,6 +21,7 @@ async variant arrive in later phases.
 from ._commands import Commands
 from ._files import Filesystem
 from ._handle import CommandHandle
+from ._pty import Pty, PtySize
 from ._sandbox import Sandbox
 from ._types import (
     CommandExitException,
@@ -40,6 +41,8 @@ __all__ = [
     "FileType",
     "Filesystem",
     "ProcessInfo",
+    "Pty",
+    "PtySize",
     "Sandbox",
     "SandboxException",
 ]

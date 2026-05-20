@@ -9,6 +9,7 @@ from ..computer import Arker, ArkerError, Computer
 from ._commands import Commands
 from ._files import Filesystem
 from ._handle import CommandHandle
+from ._pty import Pty
 
 if TYPE_CHECKING:
     pass
@@ -78,6 +79,7 @@ class Sandbox:
 
         self.commands = Commands(self)
         self.files = Filesystem(self)
+        self.pty = Pty(self)
 
     def _register_run(self, run_id: str, cmd: str) -> CommandHandle:
         pid = self._next_pid

@@ -18,6 +18,7 @@ from arker.e2b import (
     EntryInfo,
     FileType,
     ProcessInfo,
+    PtySize,
     Sandbox,
 )
 from arker.e2b._commands import wrap_command
@@ -443,6 +444,57 @@ def test_files_read_stream_yields_single_chunk() -> None:
         )
         chunks = list(sbx.files.read("/tmp/x", format="stream"))
     assert chunks == [b"blob"]
+
+
+def test_pty_create_calls_run_with_session_id_and_returns_handle() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            {"pty": True, "session_id": "sess_a", "ws_url": "wss://x/ws", "type": "pty"},
+        )
+        h = sbx.pty.create(PtySize(rows=24, cols=80))
+        body = json.loads(transport.calls[-1]["body"])
+
+    assert isinstance(h, CommandHandle)
+    assert body["command"] == "/bin/bash"
+    assert isinstance(body["session_id"], str)
+
+
+def test_pty_send_stdin_and_resize_are_noops() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            {"pty": True, "session_id": "sess_b", "ws_url": "wss://x/ws", "type": "pty"},
+        )
+        h = sbx.pty.create(PtySize(rows=24, cols=80))
+        # No raise, no transport calls.
+        before = len(transport.calls)
+        sbx.pty.send_stdin(h.pid, b"data")
+        sbx.pty.resize(h.pid, PtySize(rows=30, cols=120))
+        assert len(transport.calls) == before
+
+
+def test_pty_kill_is_local_noop() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            {"pty": True, "session_id": "sess_c", "ws_url": "wss://x/ws", "type": "pty"},
+        )
+        h = sbx.pty.create(PtySize(rows=24, cols=80))
+        before = len(transport.calls)
+        assert sbx.pty.kill(h.pid) is True
+        # No remote DELETE issued — local-only cleanup until WS lands.
+        assert len(transport.calls) == before
+        assert sbx._bg_runs == {}
 
 
 def test_files_shimmed_ops_quote_unsafe_paths() -> None:
