@@ -497,6 +497,85 @@ def test_pty_kill_is_local_noop() -> None:
         assert sbx._bg_runs == {}
 
 
+def test_run_code_python_happy_path() -> None:
+    from arker.e2b.code_interpreter import Execution, Sandbox as CISandbox
+
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        200,
+        {"vm_id": "vm_ci", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    with patch("urllib.request.urlopen", transport):
+        sbx = CISandbox(_arker=client())
+
+        # write code to /tmp/...
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_ci/sync"),
+            200,
+            {"results": [{"complete": True, "written": True}]},
+        )
+        # python3 /tmp/...
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_ci/run"),
+            200,
+            _completed_run(stdout="4\n"),
+        )
+        # cleanup rm -rf
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_ci/run"),
+            200,
+            _completed_run(),
+        )
+        ex = sbx.run_code("print(2+2)")
+
+    assert isinstance(ex, Execution)
+    assert ex.text == "4\n"
+    assert ex.error is None
+    assert ex.logs.stdout == ["4\n"]
+
+
+def test_run_code_captures_runtime_error() -> None:
+    from arker.e2b.code_interpreter import Sandbox as CISandbox
+
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        200,
+        {"vm_id": "vm_ci", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    with patch("urllib.request.urlopen", transport):
+        sbx = CISandbox(_arker=client())
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_ci/sync"),
+            200,
+            {"results": [{"complete": True, "written": True}]},
+        )
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_ci/run"),
+            200,
+            _completed_run(stderr="Traceback: NameError", exit_code=1),
+        )
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_ci/run"),
+            200,
+            _completed_run(),
+        )
+        ex = sbx.run_code("undefined()")
+
+    assert ex.error is not None
+    assert "NameError" in ex.error.traceback
+
+
+def test_run_code_picks_runtime_for_language() -> None:
+    from arker.e2b.code_interpreter._sandbox import _runtime_for
+
+    assert _runtime_for("python") == ("python3", "py")
+    assert _runtime_for("javascript") == ("node", "js")
+    assert _runtime_for("ts") == ("ts-node", "ts")
+    assert _runtime_for("unknown-lang") == ("python3", "py")  # default
+
+
 def test_files_shimmed_ops_quote_unsafe_paths() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
