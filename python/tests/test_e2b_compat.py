@@ -576,6 +576,40 @@ def test_run_code_picks_runtime_for_language() -> None:
     assert _runtime_for("unknown-lang") == ("python3", "py")  # default
 
 
+def test_is_running_returns_true_for_running_vm() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_child"),
+            200,
+            {"vm_id": "vm_child", "owner_id": "o", "created_at": "now", "state": "running", "sessions": []},
+        )
+        assert sbx.is_running() is True
+
+
+def test_is_running_false_on_error() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_child"),
+            404,
+            {"code": "not_found", "message": "missing"},
+        )
+        assert sbx.is_running() is False
+
+
+def test_set_timeout_stores_locally() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        before = len(transport.calls)
+        sbx.set_timeout(300)
+        assert len(transport.calls) == before  # no remote call
+        assert sbx.timeout == 300
+
+
 def test_async_sandbox_proxies_to_sync() -> None:
     import asyncio
 

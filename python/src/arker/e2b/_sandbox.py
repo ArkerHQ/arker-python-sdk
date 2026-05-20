@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger("arker.e2b")
 
 from ..computer import Arker, ArkerError, Computer
 from ._commands import Commands
@@ -103,6 +106,22 @@ class Sandbox:
             return bool(self._computer.delete().deleted)
         except ArkerError:
             return False
+
+    def is_running(self, request_timeout: float | None = None) -> bool:
+        try:
+            return self._arker.get(self._computer.id).state == "running"
+        except ArkerError:
+            return False
+
+    def set_timeout(self, timeout: int, request_timeout: float | None = None) -> None:
+        # Arker has no user-mutable VM TTL via SDK today. Store locally so a
+        # later call to `sandbox.timeout` returns the user's intent.
+        self._timeout = timeout
+        logger.debug("arker.e2b: set_timeout(%d) — stored locally; no remote effect yet", timeout)
+
+    @property
+    def timeout(self) -> int | None:
+        return self._timeout
 
     @classmethod
     def connect(

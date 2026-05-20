@@ -97,6 +97,27 @@ export class Sandbox {
     }
   }
 
+  async isRunning(): Promise<boolean> {
+    try {
+      const info = (await this._arker.get(this._computer.id)) as { state?: string };
+      return info.state === "running";
+    } catch (error) {
+      if (error instanceof ArkerError) return false;
+      throw error;
+    }
+  }
+
+  /** Sandbox lifetime hint. Stored locally — Arker has no SDK-level VM TTL yet. */
+  setTimeout(_timeout: number): void {
+    this._timeoutValue = _timeout;
+  }
+
+  get timeout(): number | undefined {
+    return this._timeoutValue;
+  }
+
+  private _timeoutValue?: number;
+
   _registerRun(runId: string, cmd: string): number {
     const pid = this._nextPid++;
     this._bgRuns.set(pid, { runId, cmd });

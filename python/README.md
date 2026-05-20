@@ -115,6 +115,50 @@ With `region="aws-us-west-2"`, the SDK uses
 `https://aws-burst-us-west-2.arker.ai/api` for `arkuntu` and burst VM ids.
 The returned `Computer` stays pinned to the endpoint that created it.
 
+## Migrating from e2b
+
+`arker.e2b` is a drop-in for the `e2b` Python package. Most existing code only
+needs an import change:
+
+```python
+# before
+from e2b import Sandbox
+
+# after
+from arker.e2b import Sandbox
+
+sbx = Sandbox()                         # forks $ARKER_E2B_DEFAULT_TEMPLATE (or "ubuntu")
+sbx = Sandbox(template="ubuntu")        # forks a specific golden
+sbx = Sandbox(sandbox_id="vm_…")        # attaches to an existing Arker VM
+
+result = sbx.commands.run("echo hi", cwd="/tmp", envs={"K": "V"})
+sbx.files.write("/tmp/x", "data")
+sbx.kill()
+```
+
+Also shimmed: `from arker.e2b import AsyncSandbox` (async wrapper) and
+`from arker.e2b.code_interpreter import Sandbox` for `run_code(code, language="python")`.
+
+**What's faithfully supported**
+
+- `Sandbox(...)` / `Sandbox.connect(sandbox_id)` / `.sandbox_id` / `.kill()` / `.is_running()`
+- `commands.run` (foreground + background) → `CommandResult` / `CommandHandle`
+- `commands.list / kill / connect`; `CommandHandle.wait / kill / __iter__`
+- `files.read` (text/bytes/stream) and `files.write` (native Arker sync API)
+- `files.list / exists / remove / rename / make_dir` (shell-shimmed via `find` / `test` / `rm` / `mv` / `mkdir`)
+- `code_interpreter.Sandbox.run_code` for python/js/ts/bash/ruby
+
+**What's a silent no-op (debug-logs, drop-in safe)**
+
+- `set_timeout`, `commands.send_stdin`, `files.watch_dir`
+- `pty.send_stdin` / `pty.resize` / `pty.kill` (server-side PTY is provisioned; live I/O needs WS — planned follow-up)
+- e2b-desktop methods (mouse / keyboard / screenshot)
+
+**What changes shape**
+
+- `CommandResult.stdout` is a `str` (UTF-8 decoded), matching e2b.
+- Live `on_stdout` / `on_stderr` callbacks fire once per polled chunk; true line-level streaming awaits WS support.
+
 ## Demo
 
 ```bash

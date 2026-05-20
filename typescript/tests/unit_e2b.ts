@@ -256,6 +256,37 @@ async function testRunCodeHappy(): Promise<void> {
   assert.equal(ex.error, null);
 }
 
+async function testIsRunningTrueAndFalse(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  fetch.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms/vm_child`,
+    200,
+    { vm_id: "vm_child", owner_id: "o", created_at: "now", state: "running", sessions: [] },
+  );
+  assert.equal(await sbx.isRunning(), true);
+
+  fetch.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms/vm_child`,
+    404,
+    { code: "not_found", message: "missing" },
+  );
+  assert.equal(await sbx.isRunning(), false);
+}
+
+function testSetTimeoutStoresLocally(): void {
+  // Construct without _arker; sandboxId attaches without remote call.
+  const fetch = new FakeFetch();
+  // Use the synchronous _computer path: connect via _arker
+  // (kept simple — purely an in-memory assertion).
+  Sandbox.create({ _arker: client(fetch), sandboxId: "vm_x" }).then((sbx) => {
+    const before = fetch.calls.length;
+    sbx.setTimeout(300);
+    assert.equal(fetch.calls.length, before);
+    assert.equal(sbx.timeout, 300);
+  });
+}
+
 function testRuntimeFor(): void {
   assert.deepEqual(runtimeFor("python"), ["python3", "py"]);
   assert.deepEqual(runtimeFor("ts"), ["ts-node", "ts"]);
@@ -280,6 +311,8 @@ await testFilesListParses();
 await testFilesExists();
 await testFilesMakeDirAndRename();
 await testRunCodeHappy();
+await testIsRunningTrueAndFalse();
+testSetTimeoutStoresLocally();
 testRuntimeFor();
 
 console.log("PASS unit_e2b");

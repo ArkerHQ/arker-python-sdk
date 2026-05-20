@@ -148,6 +148,46 @@ ARKER_SMOKE_TARGETS='[
 npm run smoke
 ```
 
+## Migrating from e2b
+
+`@arker-ai/sdk/e2b` is a drop-in for the `e2b` npm package. Most existing
+code only needs an import change:
+
+```ts
+// before
+import { Sandbox } from "e2b";
+
+// after
+import { Sandbox } from "@arker-ai/sdk/e2b";
+
+const sbx = await Sandbox.create();                       // forks default template
+const r = await sbx.commands.run("echo hi", { cwd: "/tmp" });
+await sbx.files.write("/tmp/x", "data");
+await sbx.kill();
+```
+
+Also shimmed: `import { Sandbox } from "@arker-ai/sdk/e2b/code-interpreter"`
+for `sbx.runCode(code, { language: "python" })`.
+
+**Faithfully supported**
+
+- `Sandbox.create({...})` / `Sandbox.connect(id)` / `.sandboxId` / `.kill()` / `.isRunning()`
+- `commands.run` (foreground + background) → `CommandResult` / `CommandHandle`
+- `commands.list / kill / connect`; `CommandHandle.wait`, `.kill`, `for await` iter
+- `files.read({format})` / `write` (native Arker sync API)
+- `files.list / exists / remove / rename / makeDir` (shell-shimmed)
+- code-interpreter `runCode` for python/js/ts/bash/ruby
+
+**Silent no-ops (debug-safe, drop-in friendly)**
+
+- `setTimeout`, `commands.sendStdin`, `files.watchDir`
+- `pty.sendStdin / resize / kill` (server-side PTY is provisioned; live I/O needs WS — planned follow-up)
+
+**Shape differences**
+
+- `CommandResult.stdout` is a `string` (UTF-8 decoded), matching e2b.
+- Live callbacks fire once per polled chunk until WS support lands.
+
 ## Demo
 
 ```bash
