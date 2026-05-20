@@ -31,6 +31,14 @@ class EntryInfo:
     path: str
 
 
+@dataclasses.dataclass(frozen=True)
+class ProcessInfo:
+    pid: int
+    tag: str
+    cmd: str
+    cwd: str | None = None
+
+
 class SandboxException(Exception):
     """Base exception for the arker.e2b compat layer."""
 

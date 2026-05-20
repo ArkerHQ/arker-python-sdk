@@ -13,9 +13,11 @@ import pytest
 
 from arker.e2b import (
     CommandExitException,
+    CommandHandle,
     CommandResult,
     EntryInfo,
     FileType,
+    ProcessInfo,
     Sandbox,
 )
 from arker.e2b._commands import wrap_command
@@ -98,12 +100,177 @@ def test_commands_run_raises_on_nonzero_exit() -> None:
     assert info.value.result.stderr == "nope"
 
 
-def test_commands_run_background_unsupported_in_phase_a() -> None:
+def _bg_run_response(run_id: str = "run_xyz") -> dict:
+    return {"run_id": run_id, "completed": False}
+
+
+def _run_status(run_id: str, stdout: str = "", stderr: str = "", exit_code: int | None = None, completed: bool = False) -> dict:
+    return {
+        "run_id": run_id,
+        "stdout": _b64(stdout),
+        "stdout_encoding": "base64",
+        "stderr": _b64(stderr),
+        "stderr_encoding": "base64",
+        "exit_code": exit_code,
+        "completed": completed,
+        "tunnels": [],
+    }
+
+
+def test_commands_run_background_returns_handle() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        with pytest.raises(NotImplementedError):
-            sbx.commands.run("sleep 5", background=True)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            _bg_run_response("run_a"),
+        )
+        handle = sbx.commands.run("sleep 5", background=True)
+
+    assert isinstance(handle, CommandHandle)
+    assert handle.pid == 1
+    assert sbx._bg_runs[1][0] == "run_a"
+
+
+def test_handle_wait_polls_until_complete(monkeypatch) -> None:
+    monkeypatch.setattr("arker.e2b._handle.time.sleep", lambda _s: None)
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            _bg_run_response("run_a"),
+        )
+        handle = sbx.commands.run("echo done", background=True)
+
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_a" in url,
+            200,
+            _run_status("run_a", stdout="part1", completed=False),
+        )
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_a" in url,
+            200,
+            _run_status("run_a", stdout="part1done", exit_code=0, completed=True),
+        )
+
+        chunks: list[str] = []
+        result = handle.wait(on_stdout=chunks.append)
+
+    assert result.exit_code == 0
+    assert result.stdout == "part1done"
+    assert chunks == ["part1", "done"]
+
+
+def test_handle_wait_raises_on_nonzero(monkeypatch) -> None:
+    monkeypatch.setattr("arker.e2b._handle.time.sleep", lambda _s: None)
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            _bg_run_response("run_b"),
+        )
+        handle = sbx.commands.run("false", background=True)
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_b" in url,
+            200,
+            _run_status("run_b", stderr="err", exit_code=2, completed=True),
+        )
+        with pytest.raises(CommandExitException) as info:
+            handle.wait()
+
+    assert info.value.exit_code == 2
+
+
+def test_handle_kill_cancels_and_forgets() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            _bg_run_response("run_c"),
+        )
+        handle = sbx.commands.run("sleep 99", background=True)
+        transport.add_json(
+            lambda method, url: method == "DELETE" and "/runs/run_c" in url,
+            200,
+            {"cancelled": True},
+        )
+        assert handle.kill() is True
+
+    assert sbx._bg_runs == {}
+
+
+def test_commands_list_returns_registered_runs() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            _bg_run_response("run_d"),
+        )
+        sbx.commands.run("sleep 1", background=True)
+        listing = sbx.commands.list()
+
+    assert len(listing) == 1
+    assert isinstance(listing[0], ProcessInfo)
+    assert listing[0].tag == "run_d"
+
+
+def test_commands_connect_reconstructs_handle() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            _bg_run_response("run_e"),
+        )
+        handle = sbx.commands.run("sleep 1", background=True)
+        again = sbx.commands.connect(handle.pid)
+
+    assert again.pid == handle.pid
+    assert again._run_id == "run_e"
+
+
+def test_commands_send_stdin_is_silent_noop(caplog) -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        # Should not raise even if pid doesn't exist
+        sbx.commands.send_stdin(99, "hello")
+
+
+def test_handle_iter_yields_deltas(monkeypatch) -> None:
+    monkeypatch.setattr("arker.e2b._handle.time.sleep", lambda _s: None)
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_child/run"),
+            200,
+            _bg_run_response("run_f"),
+        )
+        handle = sbx.commands.run("echo a; sleep 1; echo b", background=True)
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_f" in url,
+            200,
+            _run_status("run_f", stdout="a\n", completed=False),
+        )
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_f" in url,
+            200,
+            _run_status("run_f", stdout="a\nb\n", exit_code=0, completed=True),
+        )
+        chunks = list(handle)
+
+    assert chunks == ["a\n", "b\n"]
 
 
 def test_files_write_then_read_text(monkeypatch) -> None:

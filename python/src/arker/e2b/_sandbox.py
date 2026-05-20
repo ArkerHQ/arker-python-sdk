@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from ..computer import Arker, ArkerError, Computer
 from ._commands import Commands
 from ._files import Filesystem
+from ._handle import CommandHandle
 
 if TYPE_CHECKING:
     pass
@@ -72,9 +73,24 @@ class Sandbox:
         self._timeout = timeout
         self._metadata = dict(metadata or {})
         self._default_envs: dict[str, str] = dict(envs or {})
+        self._bg_runs: dict[int, tuple[str, str]] = {}  # pid -> (run_id, cmd)
+        self._next_pid = 1
 
         self.commands = Commands(self)
         self.files = Filesystem(self)
+
+    def _register_run(self, run_id: str, cmd: str) -> CommandHandle:
+        pid = self._next_pid
+        self._next_pid += 1
+        self._bg_runs[pid] = (run_id, cmd)
+        return CommandHandle(self, pid, run_id, cmd)
+
+    def _run_id_for(self, pid: int) -> str | None:
+        entry = self._bg_runs.get(pid)
+        return entry[0] if entry else None
+
+    def _forget_pid(self, pid: int) -> None:
+        self._bg_runs.pop(pid, None)
 
     @property
     def sandbox_id(self) -> str:

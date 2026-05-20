@@ -20,22 +20,26 @@ async variant arrive in later phases.
 
 from ._commands import Commands
 from ._files import Filesystem
+from ._handle import CommandHandle
 from ._sandbox import Sandbox
 from ._types import (
     CommandExitException,
     CommandResult,
     EntryInfo,
     FileType,
+    ProcessInfo,
     SandboxException,
 )
 
 __all__ = [
     "CommandExitException",
+    "CommandHandle",
     "CommandResult",
     "Commands",
     "EntryInfo",
     "FileType",
     "Filesystem",
+    "ProcessInfo",
     "Sandbox",
     "SandboxException",
 ]
