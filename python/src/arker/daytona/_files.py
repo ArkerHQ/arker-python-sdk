@@ -1,24 +1,25 @@
 """`sandbox.fs` namespace.
 
-Phase A: upload_file, download_file (Arker sync API native).
-Phase B: list_files, delete_file, create_folder, find_files, get_file_info,
-         move_files, set_file_permissions (shell-shimmed via Computer.run).
+Native ops (`upload_file`, `download_file`) use Arker's `sync` HTTP API.
+Shell-shim ops (`list_files`, `delete_file`, `create_folder`, `find_files`,
+`get_file_info`, `move_files`, `set_file_permissions`) route through
+`Computer.run`.
 """
 
 from __future__ import annotations
 
 import os
 import shlex
-import stat as _stat_mod
 from typing import TYPE_CHECKING, Union
 
-from ..computer import CompletedRunResult
+from ..computer import ArkerError, CompletedRunResult
 from ._types import (
     FileInfo,
     FileSystemError,
     Match,
     ReplaceResult,
     SearchFilesResponse,
+    translate_arker_error,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ FileSource = Union[bytes, bytearray, str]
 
 
 # `find ... -printf "%f|%y|%s|%m|%u|%g|%T@\n"` — one line per entry.
+# We keep `mode` as the literal octal string daytona returns ("644", "755").
 _FIND_FMT = "%f|%y|%s|%m|%u|%g|%T@\\n"
 
 
@@ -40,10 +42,9 @@ def _parse_find_line(line: str) -> FileInfo | None:
         size = int(size_s) if size_s else 0
     except ValueError:
         size = 0
-    try:
-        mode = int(mode_s, 8) if mode_s else 0
-    except ValueError:
-        mode = 0
+    # Keep `mode` as the raw octal string. daytona's toolbox API returns
+    # it that way; converting to int would diverge.
+    mode = mode_s or ""
     is_dir = kind == "d"
     return FileInfo(
         name=name,
@@ -53,7 +54,7 @@ def _parse_find_line(line: str) -> FileInfo | None:
         owner=owner,
         group=group,
         mod_time=mtime_s,
-        permissions=_stat_mod.filemode(mode | (_stat_mod.S_IFDIR if is_dir else 0)) if mode else "",
+        permissions=mode,  # daytona populates both fields with the same octal
     )
 
 
@@ -69,16 +70,20 @@ class FileSystem:
         remote_path: str,
         timeout: int = 30 * 60,
     ) -> None:
-        if isinstance(file, (bytes, bytearray)):
-            self._sandbox._computer.sync.write_file(remote_path, bytes(file))
-            return
-        if isinstance(file, str):
-            if os.path.exists(file) and os.path.isfile(file):
-                with open(file, "rb") as fh:
-                    self._sandbox._computer.sync.write_file(remote_path, fh.read())
+        del timeout
+        try:
+            if isinstance(file, (bytes, bytearray)):
+                self._sandbox._computer.sync.write_file(remote_path, bytes(file))
                 return
-            self._sandbox._computer.sync.write_file(remote_path, file)
-            return
+            if isinstance(file, str):
+                if os.path.exists(file) and os.path.isfile(file):
+                    with open(file, "rb") as fh:
+                        self._sandbox._computer.sync.write_file(remote_path, fh.read())
+                    return
+                self._sandbox._computer.sync.write_file(remote_path, file)
+                return
+        except ArkerError as error:
+            raise translate_arker_error(error) from error
         raise FileSystemError(f"unsupported file argument type: {type(file).__name__}")
 
     def download_file(
@@ -87,14 +92,18 @@ class FileSystem:
         local_path: str | None = None,
         timeout: int = 30 * 60,
     ) -> bytes | None:
-        data = self._sandbox._computer.sync.read_file(remote_path)
+        del timeout
+        try:
+            data = self._sandbox._computer.sync.read_file(remote_path)
+        except ArkerError as error:
+            raise translate_arker_error(error) from error
         if local_path is None:
             return data
         with open(local_path, "wb") as fh:
             fh.write(data)
         return None
 
-    # ---- Shell-shim (Phase B) ----
+    # ---- Shell-shim ----
 
     def list_files(self, path: str) -> list[FileInfo]:
         stdout, _, exit_code = self._shell(
@@ -111,7 +120,8 @@ class FileSystem:
                 entries.append(parsed)
         return entries
 
-    def create_folder(self, path: str, mode: str = "755") -> None:
+    def create_folder(self, path: str, mode: str) -> None:
+        """Create a folder. `mode` is REQUIRED to match daytona's signature."""
         _, stderr, exit_code = self._shell(
             f"mkdir -m {shlex.quote(mode)} -p {shlex.quote(path)}"
         )
@@ -158,13 +168,15 @@ class FileSystem:
             )
 
     def find_files(self, path: str, pattern: str) -> list[Match]:
-        """Grep recursively under `path` for lines matching regex `pattern`.
+        """Grep recursively under `path` for lines matching `pattern`.
 
-        daytona's find_files searches file CONTENT (grep-style), not filenames.
+        daytona's regex flavor is RE2 (Go regexp). We use `grep -rnE` which
+        is POSIX ERE — patterns that rely on RE2-only constructs (e.g. `\\d`
+        as a digit shorthand) won't match. See pending notes in __init__.py.
         """
         cmd = f"grep -rnE --no-messages {shlex.quote(pattern)} {shlex.quote(path)}"
         stdout, _, exit_code = self._shell(cmd)
-        # grep exit 1 = no matches; not an error.
+        # grep exit 1 = no matches.
         if exit_code not in (0, 1):
             raise FileSystemError(f"find_files failed: exit {exit_code}")
         matches: list[Match] = []
@@ -201,11 +213,9 @@ class FileSystem:
             if exit_code != 0:
                 raise FileSystemError(f"chown failed: {stderr.strip()}")
 
-    # ---- Not implemented in Phase B (loud) ----
+    # ---- Not implemented (loud) ----
 
     def search_files(self, path: str, pattern: str) -> SearchFilesResponse:
-        # TODO(arker-daytona): pin search_files semantics (filename vs content
-        # match, glob vs regex) and implement. See pending #7.
         raise NotImplementedError(
             "arker.daytona: fs.search_files is not implemented — "
             "use fs.find_files (content grep) or fs.list_files for now."
@@ -217,8 +227,6 @@ class FileSystem:
         pattern: str,
         new_value: str,
     ) -> list[ReplaceResult]:
-        # TODO(arker-daytona): wire to sed -E once daytona's regex flavor is
-        # pinned; mismatched flavors can silently corrupt files.
         raise NotImplementedError(
             "arker.daytona: fs.replace_in_files is not implemented — "
             "regex flavor mismatch risk."
@@ -232,14 +240,12 @@ class FileSystem:
 
     def upload_file_stream(self, *args, **kwargs) -> None:
         raise NotImplementedError(
-            "arker.daytona: fs.upload_file_stream is not implemented — "
-            "Arker's sync API chunks internally; exposing chunk callbacks is a follow-up."
+            "arker.daytona: fs.upload_file_stream is not implemented."
         )
 
     def download_file_stream(self, *args, **kwargs):
         raise NotImplementedError(
-            "arker.daytona: fs.download_file_stream is not implemented — "
-            "Arker's sync API returns whole files."
+            "arker.daytona: fs.download_file_stream is not implemented."
         )
 
     def download_files(self, *args, **kwargs):
@@ -250,7 +256,10 @@ class FileSystem:
     # ---- Internals ----
 
     def _shell(self, cmd: str) -> tuple[str, str, int]:
-        result = self._sandbox._computer.run(cmd)
+        try:
+            result = self._sandbox._computer.run(cmd)
+        except ArkerError as error:
+            raise translate_arker_error(error) from error
         if not isinstance(result, CompletedRunResult):
             raise FileSystemError(f"unexpected run result type {type(result).__name__}")
         return (

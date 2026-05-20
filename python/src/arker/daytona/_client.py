@@ -1,4 +1,17 @@
-"""`Daytona` client — backed by `arker.Arker`."""
+"""`Daytona` client — backed by `arker.Arker`.
+
+Surface matches the upstream `daytonaio/daytona` Python SDK:
+- `Daytona.create(params=None)` accepts `CreateSandboxFromSnapshotParams` or
+  `CreateSandboxFromImageParams` (positional). Bare `.create()` still works
+  (forks the default golden) for parity with `daytona.create()`.
+- `Daytona.delete(sandbox)`, `Daytona.start(sandbox)`, `Daytona.stop(sandbox)`
+  take the Sandbox *object* (matching daytona).
+- `Daytona.list()` returns `PaginatedSandboxes` with `.items`, `.total`, `.page`,
+  `.total_pages` — supports `daytona.list().items` destructuring.
+- `Daytona.get(sandbox_id)` returns a `Sandbox` (404 → DaytonaNotFoundError).
+- No `Daytona.find()` — that method doesn't exist in upstream daytona.
+- `Daytona.remove(id)` is deprecated alias for `delete(get(id))`.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +21,14 @@ from typing import Any
 
 from ..computer import Arker, ArkerError, VmInfo
 from ._sandbox import Sandbox
-from ._types import DaytonaConfig, SandboxNotFoundError
+from ._types import (
+    CreateSandboxFromImageParams,
+    CreateSandboxFromSnapshotParams,
+    DaytonaConfig,
+    DaytonaNotFoundError,
+    PaginatedSandboxes,
+    translate_arker_error,
+)
 
 logger = logging.getLogger("arker.daytona")
 
@@ -24,92 +44,168 @@ def _resolve_template(template: str | None) -> str:
 
 def _build_arker(config: DaytonaConfig | None) -> Arker:
     api_key = config.api_key if config else None
-    # `target` is daytona-speak for region; pass through if it looks like one.
     region: str | None = None
     if config and config.target and config.target not in {"us", "eu"}:
         region = config.target
     return Arker(api_key=api_key, region=region)
 
 
+def _resolve_create_params(
+    params: Any,
+    *,
+    image: str | None,
+    name: str | None,
+    env: dict[str, str] | None,
+    env_vars: dict[str, str] | None,
+    labels: dict[str, str] | None,
+    snapshot: str | None,
+) -> tuple[str, str | None, dict[str, str], dict[str, str]]:
+    """Returns (source_template, name, env_vars, labels) from a params
+    object or loose kwargs. Centralises the create() input normalisation
+    so the typed `params=` path and the legacy kwarg path don't drift."""
+    p_snapshot: str | None = snapshot
+    p_image: str | None = image
+    p_name: str | None = name
+    p_env: dict[str, str] = dict(env_vars or env or {})
+    p_labels: dict[str, str] = dict(labels or {})
+
+    if isinstance(params, CreateSandboxFromSnapshotParams):
+        p_snapshot = params.snapshot or p_snapshot
+        p_name = params.name or p_name
+        if params.env_vars:
+            p_env.update(params.env_vars)
+        if params.labels:
+            p_labels.update(params.labels)
+    elif isinstance(params, CreateSandboxFromImageParams):
+        p_image = params.image or p_image
+        p_name = params.name or p_name
+        if params.env_vars:
+            p_env.update(params.env_vars)
+        if params.labels:
+            p_labels.update(params.labels)
+
+    source = _resolve_template(p_snapshot or p_image)
+    return source, p_name, p_env, p_labels
+
+
 class Daytona:
-    """daytona.Daytona drop-in.
-
-    Construct with a `DaytonaConfig` (or rely on environment variables for
-    the underlying Arker client). All sandbox creation/listing flows go
-    through this object.
-    """
-
     def __init__(self, config: DaytonaConfig | None = None, *, _arker: Arker | None = None) -> None:
         self._config = config or DaytonaConfig()
         self._arker = _arker or _build_arker(self._config)
 
     # ---- Lifecycle ----
 
-    def create(self, *, image: str | None = None, name: str | None = None, env: dict[str, str] | None = None, labels: dict[str, str] | None = None) -> Sandbox:
-        """Fork an Arker VM from a golden and wrap as `Sandbox`.
+    def create(
+        self,
+        params: CreateSandboxFromSnapshotParams | CreateSandboxFromImageParams | None = None,
+        *,
+        timeout: float = 60,
+        # Legacy/extra kwargs accepted for back-compat with our earlier Phase A signature.
+        image: str | None = None,
+        name: str | None = None,
+        env: dict[str, str] | None = None,
+        env_vars: dict[str, str] | None = None,
+        labels: dict[str, str] | None = None,
+        snapshot: str | None = None,
+    ) -> Sandbox:
+        """Fork an Arker VM from a snapshot/image and return a Sandbox.
 
-        `image` overrides the default template; if omitted, uses
-        `$ARKER_DAYTONA_DEFAULT_TEMPLATE` or `"base"`. `env` and `labels`
-        are stored on the returned Sandbox (Arker doesn't persist them
-        server-side — see pending #1 / #2 in `__init__.py`).
+        Canonical daytona form:
+            daytona.create(CreateSandboxFromSnapshotParams(snapshot="py-base",
+                                                            env_vars={"K": "V"}))
+        Legacy form (still supported):
+            daytona.create(image="py-base", env_vars={"K": "V"})
         """
-        source = _resolve_template(image)
-        computer = self._arker.vm(source).fork(name=name)
-        return Sandbox(self._arker, computer, env=env, labels=labels, snapshot=source)
+        del timeout  # we don't enforce a fork timeout client-side
+        source, vm_name, p_env, p_labels = _resolve_create_params(
+            params,
+            image=image,
+            name=name,
+            env=env,
+            env_vars=env_vars,
+            labels=labels,
+            snapshot=snapshot,
+        )
+        try:
+            computer = self._arker.vm(source).fork(name=vm_name)
+        except ArkerError as error:
+            raise translate_arker_error(error) from error
+        return Sandbox(self._arker, computer, env=p_env, labels=p_labels, snapshot=source)
 
     def get(self, sandbox_id: str) -> Sandbox:
         try:
             info = self._arker.get(sandbox_id)
         except ArkerError as error:
-            raise SandboxNotFoundError(f"sandbox {sandbox_id!r}: {error.message}") from error
+            raise translate_arker_error(error) from error
         return Sandbox(
             self._arker,
             self._arker.vm(info.vm_id),
             snapshot=info.source_golden,
         )
 
-    def list(self) -> list[Sandbox]:
+    def list(
+        self,
+        labels: dict[str, str] | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+    ) -> PaginatedSandboxes:
+        """Returns a `PaginatedSandboxes` wrapper. Daytona stores labels
+        server-side and filters there; Arker doesn't, so we ignore the
+        `labels` arg today and return everything (see pending #1).
+        `page`/`limit` are accepted for signature parity and applied
+        client-side."""
+        del labels  # not honored — Arker doesn't store metadata server-side
         try:
             vms = self._arker.list().vms
         except ArkerError:
-            return []
-        return [self._sandbox_for_info(vm) for vm in vms]
+            return PaginatedSandboxes(items=[], total=0, page=page or 1, total_pages=0)
 
-    def find(self, **filters: Any) -> Sandbox | None:
-        """Filter by VM properties. Arker doesn't index metadata server-side,
-        so the filter runs client-side over `Daytona.list()`. Supported keys:
-        `id`, `name`, `snapshot` (template).
-        """
-        for sbx in self.list():
-            ok = True
-            for key, expected in filters.items():
-                actual: Any
-                if key == "id":
-                    actual = sbx.id
-                elif key == "name":
-                    actual = None
-                    try:
-                        actual = self._arker.get(sbx.id).name
-                    except ArkerError:
-                        actual = None
-                elif key == "snapshot":
-                    actual = sbx.snapshot
-                else:
-                    actual = None
-                if actual != expected:
-                    ok = False
-                    break
-            if ok:
-                return sbx
-        return None
+        sandboxes = [self._sandbox_for_info(vm) for vm in vms]
+        total = len(sandboxes)
+        effective_limit = limit if limit and limit > 0 else total or 1
+        effective_page = page if page and page > 0 else 1
+        start = (effective_page - 1) * effective_limit
+        end = start + effective_limit
+        page_items = sandboxes[start:end]
+        total_pages = max(1, (total + effective_limit - 1) // effective_limit)
+        return PaginatedSandboxes(
+            items=page_items,
+            total=total,
+            page=effective_page,
+            total_pages=total_pages,
+        )
+
+    def delete(self, sandbox: Sandbox, timeout: float = 60) -> None:
+        """Daytona-canonical: takes a Sandbox object, not an id."""
+        del timeout
+        try:
+            sandbox._computer.delete()
+        except ArkerError as error:
+            raise translate_arker_error(error) from error
+
+    def start(self, sandbox: Sandbox, timeout: float = 60) -> None:
+        del sandbox, timeout
+        logger.debug("arker.daytona: Daytona.start — no-op; Arker VMs are running on fork")
+
+    def stop(self, sandbox: Sandbox, timeout: float = 60) -> None:
+        del sandbox, timeout
+        logger.debug("arker.daytona: Daytona.stop — no-op; Arker has no VM stop state")
 
     def remove(self, sandbox_id: str) -> None:
+        """Deprecated: not in upstream daytona. Use `daytona.delete(sandbox)`."""
+        import warnings
+        warnings.warn(
+            "Daytona.remove(id) is not in upstream daytona; use "
+            "Daytona.delete(sandbox). This alias may be removed.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         try:
             self._arker.vm(sandbox_id).delete()
         except ArkerError as error:
-            raise SandboxNotFoundError(f"sandbox {sandbox_id!r}: {error.message}") from error
+            raise translate_arker_error(error) from error
 
-    # ---- Context manager (matches daytona's blessed pattern) ----
+    # ---- Context manager ----
 
     def __enter__(self) -> "Daytona":
         return self

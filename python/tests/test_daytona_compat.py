@@ -12,12 +12,18 @@ import pytest
 
 from arker.daytona import (
     CodeRunParams,
+    CreateSandboxFromImageParams,
+    CreateSandboxFromSnapshotParams,
     Daytona,
+    DaytonaAuthenticationError,
     DaytonaConfig,
+    DaytonaNotFoundError,
+    DaytonaRateLimitError,
     ExecuteResponse,
     FileInfo,
     FileSystemError,
     Match,
+    PaginatedSandboxes,
     Sandbox,
     SandboxNotFoundError,
     SandboxState,
@@ -335,7 +341,8 @@ def test_fs_list_files_parses_find_output() -> None:
         ("readme.txt", False, 42, "alice"),
         ("src", True, 4096, "alice"),
     ]
-    assert entries[1].mode == 0o755
+    # daytona returns `mode` as the octal string ("755"), not an int.
+    assert entries[1].mode == "755"
 
 
 def test_fs_create_folder_invokes_mkdir() -> None:
@@ -354,7 +361,7 @@ def test_fs_create_folder_raises_on_failure() -> None:
         sbx = _make_sandbox(transport)
         _add_shell(transport, "vm_daytona", stderr="permission denied", exit_code=1)
         with pytest.raises(FileSystemError, match="create_folder"):
-            sbx.fs.create_folder("/no/way")
+            sbx.fs.create_folder("/no/way", "755")
 
 
 def test_fs_delete_file_recursive_uses_rf() -> None:
@@ -499,8 +506,8 @@ def test_session_create_and_list() -> None:
     sids = {s.session_id for s in sessions}
     assert "s1" in sids
     s1 = next(s for s in sessions if s.session_id == "s1")
-    assert s1.state == "ready"
-    assert s1.cwd == "/home/user"
+    # daytona's Session has only `session_id` + `commands` — no `state`/`cwd`.
+    assert s1.commands == []
 
 
 def test_session_get_raises_when_missing() -> None:
@@ -551,7 +558,7 @@ def test_session_execute_async_returns_cmd_id_without_output() -> None:
             {"run_id": "run_async_1", "completed": False, "tunnels": []},
         )
         resp = sbx.process.execute_session_command(
-            "s2", SessionExecuteRequest(command="sleep 1", runAsync=True),
+            "s2", SessionExecuteRequest(command="sleep 1", run_async=True),
         )
     assert resp.cmd_id == "run_async_1"
     assert resp.output is None
@@ -570,7 +577,7 @@ def test_session_get_command_logs_polls_for_async() -> None:
             {"run_id": "run_async_2", "completed": False, "tunnels": []},
         )
         sbx.process.execute_session_command(
-            "s3", SessionExecuteRequest(command="sleep 1", runAsync=True),
+            "s3", SessionExecuteRequest(command="sleep 1", run_async=True),
         )
         # Then ask for logs — should poll run_status.
         transport.add_json(
@@ -589,7 +596,8 @@ def test_session_get_command_logs_polls_for_async() -> None:
         )
         logs = sbx.process.get_session_command_logs("s3", "run_async_2")
     assert logs.stdout == "partial"
-    assert logs.exit_code is None
+    # daytona's SessionCommandLogsResponse has no exit_code (it's on Command).
+    assert logs.output == "partial"
 
 
 def test_session_delete_is_local() -> None:
@@ -616,7 +624,7 @@ def test_session_async_command_recorded_in_session_commands() -> None:
             200,
             {"run_id": "run_y", "completed": False, "tunnels": []},
         )
-        sbx.process.execute_session_command("s5", SessionExecuteRequest(command="x", runAsync=True))
+        sbx.process.execute_session_command("s5", SessionExecuteRequest(command="x", run_async=True))
         cmd = sbx.process.get_session_command("s5", "run_y")
     assert cmd.command == "x"
     assert cmd.id == "run_y"
@@ -654,6 +662,209 @@ def test_process_send_session_command_input_raises() -> None:
         sbx = _make_sandbox(transport)
         with pytest.raises(NotImplementedError, match="send_session_command_input"):
             sbx.process.send_session_command_input("s", "c", "x")
+
+
+def test_create_with_snapshot_params() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/py-base/fork"),
+        200,
+        {"vm_id": "vm_snap", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        sbx = d.create(CreateSandboxFromSnapshotParams(
+            snapshot="py-base",
+            env_vars={"FOO": "bar"},
+            labels={"env": "test"},
+        ))
+    assert sbx.id == "vm_snap"
+    assert sbx.env == {"FOO": "bar"}
+    assert sbx.labels == {"env": "test"}
+
+
+def test_create_with_image_params() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/my-img/fork"),
+        200,
+        {"vm_id": "vm_img", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        sbx = d.create(CreateSandboxFromImageParams(image="my-img"))
+    assert sbx.id == "vm_img"
+
+
+def test_daytona_delete_takes_sandbox_object() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_daytona"),
+            200,
+            {"deleted": True},
+        )
+        d = _make_daytona(transport)
+        d.delete(sbx)
+
+
+def test_daytona_start_stop_are_noops() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        d = _make_daytona(transport)
+        before = len(transport.calls)
+        d.start(sbx)
+        d.stop(sbx)
+        assert len(transport.calls) == before
+
+
+def test_daytona_list_returns_paginated() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms"),
+        200,
+        {
+            "vms": [
+                {"vm_id": f"vm_{i}", "owner_id": "o", "created_at": "now",
+                 "state": "running", "sessions": []}
+                for i in range(5)
+            ],
+        },
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        page = d.list()
+    assert isinstance(page, PaginatedSandboxes)
+    assert page.total == 5
+    assert len(page.items) == 5
+    assert page.page == 1
+    assert page.total_pages == 1
+    # Iteration works too.
+    assert len(list(page)) == 5
+
+
+def test_daytona_list_pagination() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms"),
+        200,
+        {
+            "vms": [
+                {"vm_id": f"vm_{i}", "owner_id": "o", "created_at": "now",
+                 "state": "running", "sessions": []}
+                for i in range(5)
+            ],
+        },
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        page = d.list(limit=2, page=2)
+    assert page.total == 5
+    assert page.page == 2
+    assert page.total_pages == 3
+    assert [s.id for s in page.items] == ["vm_2", "vm_3"]
+
+
+def test_arker_404_translates_to_daytona_not_found_error() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/missing"),
+        404,
+        {"code": "not_found", "message": "no such vm"},
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        with pytest.raises(DaytonaNotFoundError) as info:
+            d.get("missing")
+    assert info.value.status_code == 404
+
+
+def test_arker_401_translates_to_auth_error() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/x"),
+        401,
+        {"code": "unauthorized", "message": "bad key"},
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        with pytest.raises(DaytonaAuthenticationError):
+            d.get("x")
+
+
+def test_arker_429_translates_to_rate_limit_error() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/x"),
+        429,
+        {"code": "rate_limit", "message": "slow down"},
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        with pytest.raises(DaytonaRateLimitError):
+            d.get("x")
+
+
+def test_session_execute_response_includes_stdout_stderr() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s")
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_daytona/run"),
+            200,
+            _completed_run(stdout="out\n", stderr="err\n"),
+        )
+        resp = sbx.process.execute_session_command("s", SessionExecuteRequest(command="x"))
+    # daytona's response has separate stdout/stderr + combined output.
+    assert resp.stdout == "out\n"
+    assert resp.stderr == "err\n"
+    assert resp.output == "out\nerr\n"
+    assert resp.exit_code == 0
+
+
+def test_session_command_logs_has_output_field() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s")
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_daytona/run"),
+            200,
+            _completed_run(stdout="out\n"),
+        )
+        resp = sbx.process.execute_session_command("s", SessionExecuteRequest(command="x"))
+        logs = sbx.process.get_session_command_logs("s", resp.cmd_id)
+    # `output` is the canonical combined stream.
+    assert hasattr(logs, "output")
+    assert logs.output == "out\n"
+
+
+def test_session_execute_request_var_async_deprecated_alias() -> None:
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        req = SessionExecuteRequest(command="x", var_async=True)
+    assert req.run_async is True
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+
+
+def test_artifacts_charts_default_to_empty_list() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_daytona/run"),
+            200,
+            _completed_run(stdout="ok"),
+        )
+        resp = sbx.process.exec("true")
+    # Real daytona returns [] (iterable); not None.
+    assert resp.artifacts is not None
+    assert resp.artifacts.charts == []
 
 
 def test_async_daytona_full_round_trip() -> None:

@@ -1,6 +1,12 @@
 import { Arker, ArkerError, type ArkerOptions } from "../index.js";
 import { Sandbox } from "./sandbox.js";
-import { type DaytonaConfig, SandboxNotFoundError } from "./types.js";
+import {
+  type CreateSandboxFromImageParams,
+  type CreateSandboxFromSnapshotParams,
+  type DaytonaConfig,
+  PaginatedSandboxes,
+  translateArkerError,
+} from "./types.js";
 
 const DEFAULT_TEMPLATE_ENV = "ARKER_DAYTONA_DEFAULT_TEMPLATE";
 const DEFAULT_TEMPLATE = "base";
@@ -16,21 +22,28 @@ function resolveTemplate(template?: string): string {
 function buildArkerOptions(config: DaytonaConfig | undefined): ArkerOptions {
   const out: ArkerOptions = {};
   if (config?.apiKey) out.apiKey = config.apiKey;
-  // daytona's `target` is "us"/"eu" (cluster) or a region; if it looks like a
-  // region (e.g. "aws-us-west-2"), forward it.
   if (config?.target && config.target !== "us" && config.target !== "eu") {
     out.region = config.target;
   }
   return out;
 }
 
-export interface CreateOpts {
+function isSnapshotParams(value: unknown): value is CreateSandboxFromSnapshotParams {
+  return typeof value === "object" && value !== null && "snapshot" in (value as object);
+}
+
+function isImageParams(value: unknown): value is CreateSandboxFromImageParams {
+  return typeof value === "object" && value !== null && "image" in (value as object);
+}
+
+/** Legacy keyword-style options accepted alongside the params object. */
+export interface LegacyCreateOpts {
   image?: string;
+  snapshot?: string;
   name?: string;
   env?: Record<string, string>;
+  envVars?: Record<string, string>;
   labels?: Record<string, string>;
-  /** Test escape: inject a pre-constructed Arker client. */
-  _arker?: Arker;
 }
 
 export class Daytona {
@@ -42,15 +55,48 @@ export class Daytona {
     this.arker = opts._arker ?? new Arker(buildArkerOptions(this.config));
   }
 
-  async create(opts: CreateOpts = {}): Promise<Sandbox> {
-    const source = resolveTemplate(opts.image);
-    const name = opts.name;
-    const computer = await this.arker.vm(source).fork(name ? { name } : {});
-    return new Sandbox(this.arker, computer, {
-      env: opts.env,
-      labels: opts.labels,
-      snapshot: source,
-    });
+  /**
+   * Fork an Arker VM. Canonical daytona form takes a params object:
+   *
+   *   daytona.create({ snapshot: "py-base", envVars: { K: "V" } } as CreateSandboxFromSnapshotParams)
+   *
+   * Legacy keyword form is also supported for back-compat with Phase A.
+   */
+  async create(
+    paramsOrOpts?: CreateSandboxFromSnapshotParams | CreateSandboxFromImageParams | LegacyCreateOpts,
+  ): Promise<Sandbox> {
+    let snapshot: string | undefined;
+    let image: string | undefined;
+    let name: string | undefined;
+    const envVars: Record<string, string> = {};
+    const labels: Record<string, string> = {};
+
+    if (isSnapshotParams(paramsOrOpts)) {
+      snapshot = paramsOrOpts.snapshot;
+      name = paramsOrOpts.name;
+      Object.assign(envVars, paramsOrOpts.envVars ?? {});
+      Object.assign(labels, paramsOrOpts.labels ?? {});
+    } else if (isImageParams(paramsOrOpts)) {
+      image = paramsOrOpts.image;
+      name = paramsOrOpts.name;
+      Object.assign(envVars, paramsOrOpts.envVars ?? {});
+      Object.assign(labels, paramsOrOpts.labels ?? {});
+    } else if (paramsOrOpts != null) {
+      const legacy = paramsOrOpts as LegacyCreateOpts;
+      snapshot = legacy.snapshot;
+      image = legacy.image;
+      name = legacy.name;
+      Object.assign(envVars, legacy.envVars ?? legacy.env ?? {});
+      Object.assign(labels, legacy.labels ?? {});
+    }
+
+    const source = resolveTemplate(snapshot ?? image);
+    try {
+      const computer = await this.arker.vm(source).fork(name ? { name } : {});
+      return new Sandbox(this.arker, computer, { env: envVars, labels, snapshot: source });
+    } catch (error) {
+      throw translateArkerError(error);
+    }
   }
 
   async get(sandboxId: string): Promise<Sandbox> {
@@ -58,62 +104,65 @@ export class Daytona {
       const info = (await this.arker.get(sandboxId)) as { source_golden?: string };
       return new Sandbox(this.arker, this.arker.vm(sandboxId), { snapshot: info.source_golden });
     } catch (error) {
-      if (error instanceof ArkerError) {
-        throw new SandboxNotFoundError(`sandbox ${sandboxId}: ${error.message}`);
-      }
-      throw error;
+      throw translateArkerError(error);
     }
   }
 
-  async list(): Promise<Sandbox[]> {
+  /**
+   * Returns a `PaginatedSandboxes` wrapper. Daytona stores labels server-side
+   * and filters there; Arker doesn't, so the `labels` arg is currently ignored.
+   * `page`/`limit` paginate client-side.
+   */
+  async list(opts: { labels?: Record<string, string>; page?: number; limit?: number } = {}): Promise<PaginatedSandboxes<Sandbox>> {
+    void opts.labels;
+    let vms: Array<{ vm_id?: string; source_golden?: string }> = [];
     try {
       const response = (await this.arker.list()) as { vms?: Array<{ vm_id?: string; source_golden?: string }> };
-      const vms = response.vms ?? [];
-      return vms
-        .filter((vm) => typeof vm.vm_id === "string")
-        .map((vm) =>
-          new Sandbox(this.arker, this.arker.vm(vm.vm_id!), { snapshot: vm.source_golden ?? undefined }),
-        );
+      vms = response.vms ?? [];
     } catch (error) {
-      if (error instanceof ArkerError) return [];
-      throw error;
+      if (!(error instanceof ArkerError)) throw error;
+    }
+
+    const sandboxes = vms
+      .filter((vm) => typeof vm.vm_id === "string")
+      .map((vm) =>
+        new Sandbox(this.arker, this.arker.vm(vm.vm_id!), { snapshot: vm.source_golden ?? undefined }),
+      );
+    const total = sandboxes.length;
+    const limit = opts.limit && opts.limit > 0 ? opts.limit : total || 1;
+    const page = opts.page && opts.page > 0 ? opts.page : 1;
+    const start = (page - 1) * limit;
+    const items = sandboxes.slice(start, start + limit);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    return new PaginatedSandboxes(items, total, page, totalPages);
+  }
+
+  /** Daytona-canonical: take the Sandbox object. */
+  async delete(sandbox: Sandbox, _timeout: number = 60): Promise<void> {
+    try {
+      await sandbox._computer.delete();
+    } catch (error) {
+      throw translateArkerError(error);
     }
   }
 
-  async find(filters: { id?: string; name?: string; snapshot?: string }): Promise<Sandbox | null> {
-    const list = await this.list();
-    for (const sbx of list) {
-      if (filters.id != null && sbx.id !== filters.id) continue;
-      if (filters.name != null) {
-        try {
-          const info = (await this.arker.get(sbx.id)) as { name?: string };
-          if (info.name !== filters.name) continue;
-        } catch {
-          continue;
-        }
-      }
-      if (filters.snapshot != null) {
-        const snap = await sbx.getSnapshot();
-        if (snap !== filters.snapshot) continue;
-      }
-      return sbx;
-    }
-    return null;
+  async start(_sandbox: Sandbox, _timeout: number = 60): Promise<void> {
+    // No-op: Arker VMs are running on fork.
   }
 
+  async stop(_sandbox: Sandbox, _timeout: number = 60): Promise<void> {
+    // No-op: Arker has no stopped state.
+  }
+
+  /** @deprecated Not in upstream daytona; use `Daytona.delete(sandbox)`. */
   async remove(sandboxId: string): Promise<void> {
     try {
       await this.arker.vm(sandboxId).delete();
     } catch (error) {
-      if (error instanceof ArkerError) {
-        throw new SandboxNotFoundError(`sandbox ${sandboxId}: ${error.message}`);
-      }
-      throw error;
+      throw translateArkerError(error);
     }
   }
 
-  /** Symmetry with daytona's API; nothing to release on our side (the
-   * underlying Arker client uses global `fetch`). */
   async close(): Promise<void> {
     // no-op
   }

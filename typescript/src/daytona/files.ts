@@ -1,6 +1,13 @@
 import type { CompletedRunResult } from "../index.js";
 import type { Sandbox } from "./sandbox.js";
-import { type FileInfo, FileSystemError, type Match, type ReplaceResult, type SearchFilesResponse } from "./types.js";
+import {
+  type FileInfo,
+  FileSystemError,
+  type Match,
+  type ReplaceResult,
+  type SearchFilesResponse,
+  translateArkerError,
+} from "./types.js";
 
 // `find ... -printf "%f|%y|%s|%m|%u|%g|%T@\n"` — one line per entry.
 const FIND_FMT = "%f|%y|%s|%m|%u|%g|%T@\\n";
@@ -24,7 +31,8 @@ function parseFindLine(line: string): FileInfo | null {
   if (parts.length < 7) return null;
   const [name, kind, sizeStr, modeStr, owner, group, mtimeStr] = parts;
   const size = Number(sizeStr) || 0;
-  const mode = parseInt(modeStr ?? "", 8) || 0;
+  // Daytona returns `mode` as the literal octal string ("755"). Keep it as-is.
+  const mode = modeStr ?? "";
   return {
     name: name ?? "",
     isDir: kind === "d",
@@ -33,7 +41,7 @@ function parseFindLine(line: string): FileInfo | null {
     owner: owner ?? "",
     group: group ?? "",
     modTime: mtimeStr ?? "",
-    permissions: "",
+    permissions: mode,
   };
 }
 
@@ -49,23 +57,27 @@ export class FileSystem {
   // ---- Native (Arker sync API) ----
 
   async uploadFile(file: FileSource, remotePath: string): Promise<void> {
-    if (file instanceof Uint8Array) {
-      await this.sbx._computer.sync.writeFile(remotePath, file);
-      return;
-    }
-    if (typeof file === "string") {
-      // Try local path; if it doesn't resolve as a file, treat as inline content.
-      // In TS we don't have a great local-file probe without `fs`, so we
-      // assume inline content. Use a Buffer/Uint8Array if the user wants to
-      // upload disk contents.
-      await this.sbx._computer.sync.writeFile(remotePath, file);
-      return;
+    try {
+      if (file instanceof Uint8Array) {
+        await this.sbx._computer.sync.writeFile(remotePath, file);
+        return;
+      }
+      if (typeof file === "string") {
+        await this.sbx._computer.sync.writeFile(remotePath, file);
+        return;
+      }
+    } catch (error) {
+      throw translateArkerError(error);
     }
     throw new FileSystemError(`unsupported file argument type`);
   }
 
   async downloadFile(remotePath: string): Promise<Uint8Array> {
-    return await this.sbx._computer.sync.readFile(remotePath);
+    try {
+      return await this.sbx._computer.sync.readFile(remotePath);
+    } catch (error) {
+      throw translateArkerError(error);
+    }
   }
 
   // ---- Shell-shim ----
@@ -84,7 +96,8 @@ export class FileSystem {
     return entries;
   }
 
-  async createFolder(path: string, mode: string = "755"): Promise<void> {
+  /** Create a folder. `mode` is REQUIRED to match daytona's signature. */
+  async createFolder(path: string, mode: string): Promise<void> {
     const { stderr, exitCode } = await this.shell(`mkdir -m ${shellQuote(mode)} -p ${shellQuote(path)}`);
     if (exitCode !== 0) {
       throw new FileSystemError(`createFolder(${path}) failed: ${stderr.trim() || `exit ${exitCode}`}`);

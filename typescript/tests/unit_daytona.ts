@@ -5,10 +5,17 @@ import assert from "node:assert/strict";
 
 import { Arker } from "../src/index.js";
 import {
+  type CreateSandboxFromImageParams,
+  type CreateSandboxFromSnapshotParams,
   Daytona,
+  DaytonaAuthenticationError,
+  DaytonaNotFoundError,
+  DaytonaRateLimitError,
   type ExecuteResponse,
   FileSystemError,
   type Match,
+  PaginatedSandboxes,
+  type Sandbox,
   SandboxNotFoundError,
   SandboxState,
   type Session,
@@ -137,8 +144,10 @@ async function testList(): Promise<void> {
     },
   );
   const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
-  const items = await d.list();
-  assert.deepEqual(items.map((s) => s.id), ["vm_a", "vm_b"]);
+  const page = await d.list();
+  assert.deepEqual(page.items.map((s) => s.id), ["vm_a", "vm_b"]);
+  assert.equal(page.total, 2);
+  assert.equal(page.page, 1);
 }
 
 async function testRemove(): Promise<void> {
@@ -203,7 +212,8 @@ async function testListFiles(): Promise<void> {
   assert.equal(entries[0]!.name, "readme.txt");
   assert.equal(entries[0]!.size, 42);
   assert.equal(entries[1]!.isDir, true);
-  assert.equal(entries[1]!.mode, 0o755);
+  // daytona returns `mode` as the octal string ("755"), not an int.
+  assert.equal(entries[1]!.mode, "755");
 }
 
 async function testCreateFolderAndDelete(): Promise<void> {
@@ -277,7 +287,8 @@ async function testSessionListReflectsRemote(): Promise<void> {
   const sessions: Session[] = await sbx.process.listSessions();
   const s1 = sessions.find((s) => s.sessionId === "s1");
   assert.ok(s1);
-  assert.equal(s1!.state, "ready");
+  // daytona's Session has only sessionId + commands.
+  assert.deepEqual(s1!.commands, []);
 }
 
 async function testExecuteSessionCommandSync(): Promise<void> {
@@ -363,6 +374,145 @@ async function testUnsupportedSurfacesThrow(): Promise<void> {
   await assert.rejects(() => sbx.process.getEntrypointSession(), /entrypoint/);
 }
 
+// ----- Phase F: canonical daytona surface -----
+
+async function testCreateWithSnapshotParams(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/py-base/fork`,
+    200,
+    { vm_id: "vm_snap", owner_id: "o", created_at: "now", sessions: [{ session_id: "s0", state: "ready", cwd: "/home/user" }] },
+  );
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  const params: CreateSandboxFromSnapshotParams = {
+    snapshot: "py-base",
+    envVars: { FOO: "bar" },
+    labels: { env: "test" },
+  };
+  const sbx = await d.create(params);
+  assert.equal(sbx.id, "vm_snap");
+  assert.deepEqual(sbx.env, { FOO: "bar" });
+  assert.deepEqual(sbx.labels, { env: "test" });
+}
+
+async function testCreateWithImageParams(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/my-img/fork`,
+    200,
+    { vm_id: "vm_img", owner_id: "o", created_at: "now", sessions: [] },
+  );
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  const params: CreateSandboxFromImageParams = { image: "my-img" };
+  const sbx = await d.create(params);
+  assert.equal(sbx.id, "vm_img");
+}
+
+async function testDaytonaDeleteTakesSandbox(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  fetch.addJson(
+    (m, u) => m === "DELETE" && u === `${BASE}/v1/vms/vm_daytona`,
+    200,
+    { deleted: true },
+  );
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  await d.delete(sbx);
+}
+
+async function testListReturnsPaginated(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms`,
+    200,
+    {
+      vms: Array.from({ length: 5 }, (_, i) => ({
+        vm_id: `vm_${i}`, owner_id: "o", created_at: "now", state: "running", sessions: [],
+      })),
+    },
+  );
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  const page = await d.list({ limit: 2, page: 2 });
+  assert.ok(page instanceof PaginatedSandboxes);
+  assert.equal(page.total, 5);
+  assert.equal(page.page, 2);
+  assert.equal(page.totalPages, 3);
+  assert.deepEqual(page.items.map((s: Sandbox) => s.id), ["vm_2", "vm_3"]);
+}
+
+async function testArkerErrorTranslation(): Promise<void> {
+  // 404 -> DaytonaNotFoundError
+  let fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms/missing`,
+    404,
+    { code: "not_found", message: "no" },
+  );
+  let d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  await assert.rejects(() => d.get("missing"), DaytonaNotFoundError);
+
+  // 401 -> DaytonaAuthenticationError
+  fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms/x`,
+    401,
+    { code: "unauthorized", message: "bad key" },
+  );
+  d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  await assert.rejects(() => d.get("x"), DaytonaAuthenticationError);
+
+  // 429 -> DaytonaRateLimitError
+  fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms/x`,
+    429,
+    { code: "rate_limit", message: "slow" },
+  );
+  d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  await assert.rejects(() => d.get("x"), DaytonaRateLimitError);
+}
+
+async function testSessionExecuteResponseFields(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  sbx.process.createSession("s");
+  addShell(fetch, "vm_daytona", "out\n", "err\n");
+  const resp = await sbx.process.executeSessionCommand("s", { command: "x" });
+  assert.equal(resp.stdout, "out\n");
+  assert.equal(resp.stderr, "err\n");
+  assert.equal(resp.output, "out\nerr\n");
+  assert.equal(resp.exitCode, 0);
+}
+
+async function testSessionCommandLogsHasOutput(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  sbx.process.createSession("s");
+  addShell(fetch, "vm_daytona", "out\n");
+  const resp = await sbx.process.executeSessionCommand("s", { command: "x" });
+  const logs = await sbx.process.getSessionCommandLogs("s", resp.cmdId);
+  assert.equal(logs.output, "out\n");
+  assert.equal(logs.stdout, "out\n");
+}
+
+async function testArtifactsChartsIsEmptyArray(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  addShell(fetch, "vm_daytona", "ok");
+  const resp = await sbx.process.exec("true");
+  assert.deepEqual(resp.artifacts?.charts, []);
+}
+
+async function testCreateFolderRequiresMode(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  addShell(fetch, "vm_daytona");
+  // mode is required — TS enforces at compile time; runtime call must include it.
+  await sbx.fs.createFolder("/work/new", "700");
+  const body = JSON.parse(fetch.calls[fetch.calls.length - 1]!.body!);
+  assert.equal(body.command, "mkdir -m '700' -p '/work/new'");
+}
+
 // ----- Run -----
 
 await testCreateForks();
@@ -386,5 +536,14 @@ await testSandboxState();
 await testSetLabelsLocal();
 await testStartStopAreNoops();
 await testUnsupportedSurfacesThrow();
+await testCreateWithSnapshotParams();
+await testCreateWithImageParams();
+await testDaytonaDeleteTakesSandbox();
+await testListReturnsPaginated();
+await testArkerErrorTranslation();
+await testSessionExecuteResponseFields();
+await testSessionCommandLogsHasOutput();
+await testArtifactsChartsIsEmptyArray();
+await testCreateFolderRequiresMode();
 
 console.log("PASS unit_daytona");

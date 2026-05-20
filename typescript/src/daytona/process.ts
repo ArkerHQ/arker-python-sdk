@@ -1,8 +1,8 @@
-import type { BackgroundRunResult, CompletedRunResult } from "../index.js";
+import { ArkerError, type BackgroundRunResult, type CompletedRunResult } from "../index.js";
 import type { Sandbox } from "./sandbox.js";
 import {
-  type Command,
   type CodeRunParams,
+  type Command,
   type ExecuteResponse,
   ProcessError,
   type Session,
@@ -10,6 +10,7 @@ import {
   type SessionExecuteRequest,
   type SessionExecuteResponse,
   SessionNotFoundError,
+  translateArkerError,
 } from "./types.js";
 
 const LANGUAGE_RUNTIME: Record<string, [string, string]> = {
@@ -71,11 +72,14 @@ export interface ExecOpts {
   timeout?: number;
 }
 
+function resolveRunAsync(req: SessionExecuteRequest): boolean {
+  // Accept all three field names daytona's API has used over time.
+  return req.async ?? req.runAsync ?? req.varAsync ?? false;
+}
+
 export class Process {
   private readonly sbx: Sandbox;
-  /** Tracked sessions (Arker creates them on first run; we mirror state). */
-  private readonly sessions = new Map<string, { commands: Command[] }>();
-  /** Foreground command-log cache: cmdId -> logs. */
+  private readonly sessions = new Map<string, Command[]>();
   private readonly commandLogs = new Map<string, SessionCommandLogsResponse>();
 
   constructor(sbx: Sandbox) {
@@ -85,9 +89,12 @@ export class Process {
   async exec(command: string, opts: ExecOpts = {}): Promise<ExecuteResponse> {
     const mergedEnv = { ...this.sbx._env, ...(opts.env ?? {}) };
     const wrapped = wrapCommand(command, opts.cwd, mergedEnv);
-    const result = (await this.sbx._computer.run(wrapped, {
-      timeout: opts.timeout,
-    })) as CompletedRunResult;
+    let result: CompletedRunResult;
+    try {
+      result = (await this.sbx._computer.run(wrapped, { timeout: opts.timeout })) as CompletedRunResult;
+    } catch (error) {
+      throw translateArkerError(error);
+    }
     if (result.type !== "completed") {
       throw new ProcessError(`unexpected run type ${result.type}`);
     }
@@ -95,14 +102,18 @@ export class Process {
     return {
       exitCode: result.exitCode,
       result: stdout,
-      artifacts: { stdout, charts: null },
+      artifacts: { stdout, charts: [] },
     };
   }
 
   async codeRun(code: string, params?: CodeRunParams, timeout?: number): Promise<ExecuteResponse> {
     const [interp, ext] = LANGUAGE_RUNTIME["python"]!;
     const scratch = `/tmp/arker-daytona-${randHex(8)}.${ext}`;
-    await this.sbx._computer.sync.writeFile(scratch, code);
+    try {
+      await this.sbx._computer.sync.writeFile(scratch, code);
+    } catch (error) {
+      throw translateArkerError(error);
+    }
     try {
       const argv = params?.argv?.map(shellQuote).join(" ") ?? "";
       const extraEnv = params?.env ?? {};
@@ -121,29 +132,25 @@ export class Process {
   // ---- Sessions ----
 
   createSession(sessionId: string): void {
-    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { commands: [] });
+    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, []);
   }
 
   async listSessions(): Promise<Session[]> {
-    let remote: Record<string, { state?: string; cwd?: string }> = {};
+    let remoteIds = new Set<string>();
     try {
       const info = (await this.sbx._arker.get(this.sbx._computer.id)) as {
-        sessions?: Array<{ session_id?: string; state?: string; cwd?: string }>;
+        sessions?: Array<{ session_id?: string }>;
       };
       for (const s of info.sessions ?? []) {
-        if (typeof s.session_id === "string") {
-          remote[s.session_id] = { state: s.state, cwd: s.cwd };
-        }
+        if (typeof s.session_id === "string") remoteIds.add(s.session_id);
       }
     } catch {
-      remote = {};
+      remoteIds = new Set();
     }
-    const sids = new Set<string>([...Object.keys(remote), ...this.sessions.keys()]);
+    const sids = new Set<string>([...remoteIds, ...this.sessions.keys()]);
     return Array.from(sids).map((sid) => ({
       sessionId: sid,
-      state: remote[sid]?.state ?? "unknown",
-      cwd: remote[sid]?.cwd ?? "/home/user",
-      commands: this.sessions.get(sid)?.commands ?? [],
+      commands: [...(this.sessions.get(sid) ?? [])],
     }));
   }
 
@@ -154,8 +161,7 @@ export class Process {
     return found;
   }
 
-  /** Local-only — Arker's session-delete isn't exposed by the SDK yet.
-   * TODO(arker-daytona): wire to DELETE /v1/vms/{id}/sessions/{sid}. */
+  /** Local-only — Arker SDK doesn't expose session-delete yet. */
   deleteSession(sessionId: string): void {
     this.sessions.delete(sessionId);
   }
@@ -165,58 +171,69 @@ export class Process {
     req: SessionExecuteRequest,
     timeout?: number,
   ): Promise<SessionExecuteResponse> {
-    const wrapped = wrapCommand(req.command, req.cwd, req.env);
-    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, { commands: [] });
-    const asyncRun = req.async ?? req.runAsync ?? false;
+    if (!this.sessions.has(sessionId)) this.sessions.set(sessionId, []);
+    const runAsync = resolveRunAsync(req);
 
-    if (asyncRun) {
-      const result = (await this.sbx._computer.run(wrapped, {
-        background: true,
+    let result;
+    try {
+      result = await this.sbx._computer.run(req.command, {
+        ...(runAsync ? { background: true } : {}),
         session_id: sessionId,
         timeout,
-      })) as BackgroundRunResult;
-      if (result.type !== "background") {
-        throw new ProcessError(`async session run returned ${result.type}`);
-      }
-      const cmdId = result.runId;
-      this.sessions.get(sessionId)!.commands.push({ id: cmdId, command: req.command, exitCode: null });
-      return { cmdId, output: null, exitCode: null };
+      });
+    } catch (error) {
+      throw translateArkerError(error);
     }
 
-    const result = (await this.sbx._computer.run(wrapped, {
-      session_id: sessionId,
-      timeout,
-    })) as CompletedRunResult;
-    if (result.type !== "completed") {
-      throw new ProcessError(`sync session run returned ${result.type}`);
+    if (runAsync) {
+      const bg = result as BackgroundRunResult;
+      if (bg.type !== "background") {
+        throw new ProcessError(`async session run returned ${bg.type}`);
+      }
+      this.sessions.get(sessionId)!.push({ id: bg.runId, command: req.command, exitCode: null });
+      return {
+        cmdId: bg.runId,
+        exitCode: null,
+        output: null,
+        stdout: null,
+        stderr: null,
+      };
+    }
+
+    const completed = result as CompletedRunResult;
+    if (completed.type !== "completed") {
+      throw new ProcessError(`sync session run returned ${completed.type}`);
     }
     const cmdId = randHex(8);
-    const stdout = decode(result.stdout);
-    const stderr = decode(result.stderr);
-    this.commandLogs.set(cmdId, { stdout, stderr, exitCode: result.exitCode });
-    this.sessions.get(sessionId)!.commands.push({
+    const stdout = decode(completed.stdout);
+    const stderr = decode(completed.stderr);
+    const output = stdout + stderr;
+    this.commandLogs.set(cmdId, { output, stdout, stderr });
+    this.sessions.get(sessionId)!.push({
       id: cmdId,
       command: req.command,
-      exitCode: result.exitCode,
+      exitCode: completed.exitCode,
     });
-    return { cmdId, output: stdout, exitCode: result.exitCode };
+    return { cmdId, exitCode: completed.exitCode, output, stdout, stderr };
   }
 
   getSessionCommand(sessionId: string, commandId: string): Command {
-    const sess = this.sessions.get(sessionId);
-    if (!sess) throw new SessionNotFoundError(`session ${sessionId} not found`);
-    const cmd = sess.commands.find((c) => c.id === commandId);
+    const commands = this.sessions.get(sessionId);
+    if (!commands) throw new SessionNotFoundError(`session ${sessionId} not found`);
+    const cmd = commands.find((c) => c.id === commandId);
     if (!cmd) throw new SessionNotFoundError(`command ${commandId} not found in session ${sessionId}`);
     return cmd;
   }
 
-  async getSessionCommandLogs(sessionId: string, commandId: string): Promise<SessionCommandLogsResponse> {
+  async getSessionCommandLogs(_sessionId: string, commandId: string): Promise<SessionCommandLogsResponse> {
     const cached = this.commandLogs.get(commandId);
     if (cached) return cached;
-    // Background path: commandId == runId; poll once.
-    const status = await this.sbx._computer.runStatus(commandId).catch((error) => {
+    let status;
+    try {
+      status = await this.sbx._computer.runStatus(commandId);
+    } catch (error) {
       throw new SessionNotFoundError(`command ${commandId} not found: ${(error as Error).message}`);
-    });
+    }
     const stdout = decode(decodeStreamBytes(
       (status as { stdout: unknown }).stdout,
       (status as { stdout_encoding?: unknown }).stdout_encoding,
@@ -225,7 +242,7 @@ export class Process {
       (status as { stderr: unknown }).stderr,
       (status as { stderr_encoding?: unknown }).stderr_encoding,
     ));
-    return { stdout, stderr, exitCode: (status as { exit_code?: number | null }).exit_code ?? null };
+    return { output: stdout + stderr, stdout, stderr };
   }
 
   // ---- Not implemented (loud) ----
@@ -233,12 +250,12 @@ export class Process {
   async getEntrypointSession(): Promise<Session> {
     throw new Error(
       "arker.daytona: process.getEntrypointSession is not implemented — " +
-        "Arker has no entrypoint-session concept; use createSession + executeSessionCommand.",
+        "Arker has no entrypoint-session concept.",
     );
   }
 
   async getEntrypointLogs(): Promise<SessionCommandLogsResponse> {
-    throw new Error("arker.daytona: process.getEntrypointLogs is not implemented (no entrypoint session).");
+    throw new Error("arker.daytona: process.getEntrypointLogs is not implemented.");
   }
 
   async getEntrypointLogsAsync(..._args: unknown[]): Promise<void> {
@@ -247,25 +264,20 @@ export class Process {
 
   async getSessionCommandLogsAsync(..._args: unknown[]): Promise<void> {
     throw new Error(
-      "arker.daytona: process.getSessionCommandLogsAsync is not implemented — " +
-        "live streaming needs WS; poll getSessionCommandLogs instead.",
+      "arker.daytona: process.getSessionCommandLogsAsync is not implemented — needs WS streaming.",
     );
   }
 
   async sendSessionCommandInput(..._args: unknown[]): Promise<void> {
     throw new Error(
-      "arker.daytona: process.sendSessionCommandInput is not implemented — " +
-        "Arker has no non-PTY stdin primitive.",
+      "arker.daytona: process.sendSessionCommandInput is not implemented — no non-PTY stdin primitive.",
     );
   }
 
   // ---- PTY sessions (need WS) ----
 
   private readonly ptyUnsupported = (): never => {
-    throw new Error(
-      "arker.daytona: PTY sessions require a WebSocket client we haven't " +
-        "shipped yet.",
-    );
+    throw new Error("arker.daytona: PTY sessions require a WebSocket client we haven't shipped yet.");
   };
 
   async createPtySession(..._args: unknown[]): Promise<never> { return this.ptyUnsupported(); }
@@ -274,4 +286,7 @@ export class Process {
   async getPtySessionInfo(..._args: unknown[]): Promise<never> { return this.ptyUnsupported(); }
   async killPtySession(..._args: unknown[]): Promise<never> { return this.ptyUnsupported(); }
   async resizePtySession(..._args: unknown[]): Promise<never> { return this.ptyUnsupported(); }
+
+  // Use ArkerError import to satisfy TS (re-exporting helper).
+  static _arkerErrorTag = ArkerError;
 }

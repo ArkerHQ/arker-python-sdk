@@ -1,14 +1,14 @@
 /**
  * Drop-in compatibility shim for the daytona TypeScript SDK, backed by Arker VMs.
  *
- * Usage:
+ * Canonical usage:
  *
- *     import { Daytona, type DaytonaConfig } from "@arker-ai/sdk/daytona";
+ *     import { Daytona, CreateSandboxFromSnapshotParams } from "@arker-ai/sdk/daytona";
  *
  *     const daytona = new Daytona({ apiKey: "ark_live_..." });
- *     const sbx = await daytona.create();
- *     const resp = await sbx.process.exec("echo hi");
- *     await sbx.delete();
+ *     const sbx = await daytona.create({ snapshot: "py-base", envVars: { FOO: "bar" } });
+ *     const resp = await sbx.process.exec("echo $FOO");
+ *     for (const s of (await daytona.list()).items) await daytona.delete(s);
  *
  * Pending work (mirrors `python/src/arker/daytona/__init__.py`):
  *
@@ -24,9 +24,11 @@
  *   8. `git`, `lsp`, `computerUse`, `codeInterpreter` sub-namespaces — not implemented.
  *   9. `deleteSession` is local-only (Arker SDK doesn't expose session-delete).
  *  10. sandbox id format (Arker ULIDs vs daytona's IDs) — cannot fix in shim.
+ *  11. `findFiles` regex flavor: we use grep -E (POSIX ERE); daytona uses RE2.
+ *      `\d` won't match against our shim.
  */
 
-export { Daytona, type CreateOpts } from "./client.js";
+export { Daytona, type LegacyCreateOpts } from "./client.js";
 export { Sandbox } from "./sandbox.js";
 export { Process, type ExecOpts, wrapCommand } from "./process.js";
 export { FileSystem } from "./files.js";
@@ -34,13 +36,24 @@ export {
   type Chart,
   type CodeRunParams,
   type Command,
+  type CreateSandboxFromImageParams,
+  type CreateSandboxFromSnapshotParams,
   type DaytonaConfig,
+  DaytonaAuthenticationError,
+  DaytonaAuthorizationError,
+  DaytonaConflictError,
+  DaytonaConnectionError,
   DaytonaError,
+  DaytonaNotFoundError,
+  DaytonaRateLimitError,
+  DaytonaTimeoutError,
+  DaytonaValidationError,
   type ExecuteResponse,
   type ExecutionArtifacts,
   type FileInfo,
   FileSystemError,
   type Match,
+  PaginatedSandboxes,
   ProcessError,
   type ReplaceResult,
   SandboxNotFoundError,
@@ -51,4 +64,5 @@ export {
   type SessionExecuteRequest,
   type SessionExecuteResponse,
   SessionNotFoundError,
+  translateArkerError,
 } from "./types.js";
