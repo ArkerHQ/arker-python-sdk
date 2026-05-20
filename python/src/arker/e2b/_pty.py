@@ -4,6 +4,10 @@ Interactive PTY requires a WebSocket client (Arker exposes the PTY via the
 `ws_url` returned from `run(session_id=…)`), and the SDK has no WS client
 yet. All methods raise NotImplementedError until that lands — loud so callers
 discover the gap immediately instead of silently dropping input.
+
+TODO(arker-e2b): wire up real PTY when the core SDK ships a WS helper.
+Includes session-delete (`DELETE /v1/vms/{id}/sessions/{sid}`) so `pty.kill`
+actually cleans up server-side. See pending-work item #4 in __init__.py.
 """
 
 from __future__ import annotations

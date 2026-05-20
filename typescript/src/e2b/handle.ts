@@ -55,6 +55,10 @@ export interface WaitOptions {
 /**
  * Handle for a background run. Live-streaming is approximated by polling
  * `runStatus` and yielding deltas — true streaming requires WS support.
+ *
+ * TODO(arker-e2b): per-line streaming via the `ws_url` Arker returns from
+ * `run`. Needs a WS client in core SDK. See pending-work item #3 in
+ * index.ts.
  */
 export class CommandHandle {
   readonly pid: number;

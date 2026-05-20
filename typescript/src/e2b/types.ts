@@ -57,7 +57,12 @@ export class SandboxException extends Error {
 
 // e2b's typed-exception hierarchy. Empty subclasses so existing
 // `catch (e) { if (e instanceof TimeoutException) ... }` patterns work.
-// Translating ArkerError -> the right subclass is a follow-up.
+//
+// TODO(arker-e2b): translate ArkerError -> the right subclass at the
+// boundary. Discriminator: ArkerError.status (HTTP) + ArkerError.code
+// ("not_found", "unauthorized", "rate_limit", ...). Wrap _arker calls
+// in the Sandbox shim and translate before re-raising. See pending-work
+// item #2 in index.ts.
 export class TimeoutException extends SandboxException { override name = "TimeoutException" }
 export class InvalidArgumentException extends SandboxException { override name = "InvalidArgumentException" }
 export class NotEnoughSpaceException extends SandboxException { override name = "NotEnoughSpaceException" }

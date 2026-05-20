@@ -67,6 +67,11 @@ class SandboxException(Exception):
 # `except TimeoutException:` patterns match; we don't (yet) translate every
 # ArkerError to the right subclass — that's a follow-up. At minimum, callers
 # can catch the base SandboxException and types-check accurately.
+#
+# TODO(arker-e2b): map ArkerError to the right subclass at the boundary.
+# Discriminator: ArkerError.status (HTTP) + ArkerError.code ("not_found",
+# "unauthorized", "rate_limit", ...). Wrap _arker calls in the Sandbox shim
+# and translate before re-raising. See pending-work item #2 in __init__.py.
 class TimeoutException(SandboxException):
     pass
 

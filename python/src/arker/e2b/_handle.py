@@ -3,8 +3,11 @@
 Wraps an Arker background run_id behind the e2b CommandHandle API:
 `.pid`, `.wait()`, `.kill()`, `.disconnect()`, `__iter__`.
 
-True live streaming requires WS — out of scope for Phase B. `__iter__` and
-`wait()` callbacks chunk the polled stdout/stderr deltas instead.
+TODO(arker-e2b): true per-line `on_stdout` / `on_stderr` streaming.
+Today `wait()` and `__iter__` poll `run_status` and emit whatever delta
+arrived since the last poll — coarser than e2b's per-line WS push. Real
+streaming uses the `ws_url` Arker already returns; needs a WS client
+in core SDK. See pending-work item #3 in __init__.py.
 """
 
 from __future__ import annotations

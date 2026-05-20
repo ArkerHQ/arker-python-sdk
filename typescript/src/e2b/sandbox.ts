@@ -8,6 +8,9 @@ const DEFAULT_TEMPLATE_ENV = "ARKER_E2B_DEFAULT_TEMPLATE";
 const DEFAULT_TEMPLATE = "base";
 
 function warnTimeoutNoop(value: number): void {
+  // TODO(arker-e2b): wire to real server-side TTL once core Arker SDK
+  // exposes a mutable VM lifetime endpoint. See pending-work item #1 in
+  // index.ts.
   // eslint-disable-next-line no-console
   console.warn(
     `arker.e2b: Sandbox timeout=${value} is stored locally only — Arker has ` +

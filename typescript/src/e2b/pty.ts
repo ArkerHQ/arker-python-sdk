@@ -12,6 +12,10 @@ const UNSUPPORTED =
  *
  * All methods throw — interactive PTY needs a WebSocket client we haven't
  * shipped yet. Loud failure keeps callers from silently dropping input.
+ *
+ * TODO(arker-e2b): wire real PTY when core SDK ships a WS helper.
+ * Includes session-delete (`DELETE /v1/vms/{id}/sessions/{sid}`) so
+ * `pty.kill` cleans up server-side. See pending-work item #4 in index.ts.
  */
 export class Pty {
   constructor(_sbx: Sandbox) {}

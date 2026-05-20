@@ -41,6 +41,9 @@ def _parse_dt(value: Any) -> _dt.datetime | None:
 
 
 def _warn_timeout_noop(value: int) -> None:
+    # TODO(arker-e2b): wire to a real server-side TTL once core Arker SDK
+    # exposes a mutable VM lifetime endpoint. e2b's `timeout` bounds billing;
+    # ours currently doesn't. See pending-work item #1 in __init__.py.
     warnings.warn(
         f"arker.e2b: Sandbox timeout={value} is stored locally only — "
         "Arker has no server-side auto-kill yet. VMs will live until "
@@ -211,6 +214,9 @@ class Sandbox:
         remotely, so the `metadata` field is always `{}`. Datetime fields
         are parsed to `datetime` to match e2b's shape; if Arker returns
         a malformed timestamp, the field stays None.
+
+        TODO(arker-e2b): honor e2b's `metadata` filter once Arker stores
+        per-VM metadata server-side. See pending-work item #8 in __init__.py.
         """
         arker = _build_arker(api_key)
         infos = arker.list().vms

@@ -4,6 +4,12 @@
  *     import { Sandbox } from "@arker-ai/sdk/e2b/code-interpreter";
  *     const sbx = await Sandbox.create();
  *     const ex = await sbx.runCode("console.log(2+2)", { language: "js" });
+ *
+ * TODO(arker-e2b): Jupyter-style stateful execution. e2b's runCode persists
+ * variables across calls via a kernel; we shell out to `<interp> /tmp/...`
+ * each call so state never carries, and `Execution.results[]` is always
+ * empty (no rich-output capture). Long-running kernel + result protocol
+ * would close the gap. See pending-work item #5 in ../index.ts.
  */
 
 import { CommandExitException, type CommandResult } from "../types.js";

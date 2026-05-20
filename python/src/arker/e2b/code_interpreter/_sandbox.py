@@ -30,7 +30,15 @@ def _runtime_for(language: str) -> tuple[str, str]:
 
 class Sandbox(BaseSandbox):
     """Drop-in for `e2b_code_interpreter.Sandbox`. Inherits all e2b.Sandbox
-    surface (commands, files, pty, kill, etc.) and adds `run_code`."""
+    surface (commands, files, pty, kill, etc.) and adds `run_code`.
+
+    TODO(arker-e2b): Jupyter-style stateful execution. e2b's `run_code`
+    persists variables across successive calls via a kernel. We shell out
+    to `<interp> /tmp/<rand>.<ext>` each call, so state never carries; and
+    `Execution.results[]` is always empty (no rich-output capture). A
+    long-running kernel process per session + result protocol would close
+    this gap. See pending-work item #5 in __init__.py.
+    """
 
     def run_code(
         self,
