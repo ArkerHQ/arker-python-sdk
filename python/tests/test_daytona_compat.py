@@ -21,6 +21,8 @@ from arker.daytona import (
     Sandbox,
     SandboxNotFoundError,
     SandboxState,
+    SessionExecuteRequest,
+    SessionNotFoundError,
 )
 
 from test_computer import FakeTransport, client, session
@@ -475,6 +477,183 @@ def test_fs_unsupported_ops_raise_not_implemented() -> None:
             sbx.fs.download_file_stream("/x")
         with pytest.raises(NotImplementedError, match="download_files"):
             sbx.fs.download_files([])
+
+
+# ----- Process sessions (Phase C) -----
+
+
+def test_session_create_and_list() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s1")
+        # list_sessions hits the VM for the latest session list:
+        transport.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_daytona"),
+            200,
+            {"vm_id": "vm_daytona", "owner_id": "o", "created_at": "now", "state": "running",
+             "sessions": [{"session_id": "s1", "state": "ready", "cwd": "/home/user"}]},
+        )
+        sessions = sbx.process.list_sessions()
+
+    sids = {s.session_id for s in sessions}
+    assert "s1" in sids
+    s1 = next(s for s in sessions if s.session_id == "s1")
+    assert s1.state == "ready"
+    assert s1.cwd == "/home/user"
+
+
+def test_session_get_raises_when_missing() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_daytona"),
+            200,
+            {"vm_id": "vm_daytona", "owner_id": "o", "created_at": "now", "state": "running", "sessions": []},
+        )
+        with pytest.raises(SessionNotFoundError):
+            sbx.process.get_session("missing")
+
+
+def test_session_execute_sync_returns_output_and_caches_logs() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s1")
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_daytona/run"),
+            200,
+            _completed_run(stdout="ok\n"),
+        )
+        resp = sbx.process.execute_session_command("s1", SessionExecuteRequest(command="echo ok"))
+        body = json.loads(transport.calls[-1]["body"])
+
+    assert resp.output == "ok\n"
+    assert resp.exit_code == 0
+    assert body.get("session_id") == "s1"
+
+    # Logs are cached for foreground runs — no extra HTTP call.
+    before = len(transport.calls)
+    logs = sbx.process.get_session_command_logs("s1", resp.cmd_id)
+    assert logs.stdout == "ok\n"
+    assert len(transport.calls) == before
+
+
+def test_session_execute_async_returns_cmd_id_without_output() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s2")
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_daytona/run"),
+            200,
+            {"run_id": "run_async_1", "completed": False, "tunnels": []},
+        )
+        resp = sbx.process.execute_session_command(
+            "s2", SessionExecuteRequest(command="sleep 1", runAsync=True),
+        )
+    assert resp.cmd_id == "run_async_1"
+    assert resp.output is None
+    assert resp.exit_code is None
+
+
+def test_session_get_command_logs_polls_for_async() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s3")
+        # Kick off the async run.
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_daytona/run"),
+            200,
+            {"run_id": "run_async_2", "completed": False, "tunnels": []},
+        )
+        sbx.process.execute_session_command(
+            "s3", SessionExecuteRequest(command="sleep 1", runAsync=True),
+        )
+        # Then ask for logs — should poll run_status.
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_async_2" in url,
+            200,
+            {
+                "run_id": "run_async_2",
+                "stdout": _b64("partial"),
+                "stdout_encoding": "base64",
+                "stderr": _b64(""),
+                "stderr_encoding": "base64",
+                "exit_code": None,
+                "completed": False,
+                "tunnels": [],
+            },
+        )
+        logs = sbx.process.get_session_command_logs("s3", "run_async_2")
+    assert logs.stdout == "partial"
+    assert logs.exit_code is None
+
+
+def test_session_delete_is_local() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s4")
+        before = len(transport.calls)
+        sbx.process.delete_session("s4")
+        # No remote DELETE — see TODO in _process.py.
+        assert len(transport.calls) == before
+        # Subsequent get_session_command should raise.
+        with pytest.raises(SessionNotFoundError):
+            sbx.process.get_session_command("s4", "any")
+
+
+def test_session_async_command_recorded_in_session_commands() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        sbx.process.create_session("s5")
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_daytona/run"),
+            200,
+            {"run_id": "run_y", "completed": False, "tunnels": []},
+        )
+        sbx.process.execute_session_command("s5", SessionExecuteRequest(command="x", runAsync=True))
+        cmd = sbx.process.get_session_command("s5", "run_y")
+    assert cmd.command == "x"
+    assert cmd.id == "run_y"
+
+
+def test_process_pty_methods_all_raise() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        for fn, args in [
+            (sbx.process.create_pty_session, ("s", )),
+            (sbx.process.connect_pty_session, ("s", )),
+            (sbx.process.list_pty_sessions, ()),
+            (sbx.process.get_pty_session_info, ("s", )),
+            (sbx.process.kill_pty_session, ("s", )),
+            (sbx.process.resize_pty_session, ("s", None)),
+        ]:
+            with pytest.raises(NotImplementedError, match="PTY sessions"):
+                fn(*args)
+
+
+def test_process_entrypoint_methods_raise() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.raises(NotImplementedError, match="entrypoint"):
+            sbx.process.get_entrypoint_session()
+        with pytest.raises(NotImplementedError, match="entrypoint"):
+            sbx.process.get_entrypoint_logs()
+
+
+def test_process_send_session_command_input_raises() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.raises(NotImplementedError, match="send_session_command_input"):
+            sbx.process.send_session_command_input("s", "c", "x")
 
 
 def test_sandbox_delete_swallows_arker_errors() -> None:

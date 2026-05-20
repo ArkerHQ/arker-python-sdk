@@ -37,8 +37,16 @@ site):
      capture not implemented (artifacts.charts is always None).
      See `_process.py:code_run`.
 
-  6. `process.create_session` and friends (stateful shell sessions, PTY
-     sessions) aren't implemented in Phase A. Use `process.exec` for now.
+  6. `process.create_session` + friends ship in Phase C (sync via
+     `Computer.run(session_id=...)`, async via background runs). Caveats:
+     - `delete_session` is local-only (Arker SDK doesn't expose
+       `DELETE /v1/vms/{id}/sessions/{sid}` yet)
+     - `get_entrypoint_session` / `get_entrypoint_logs` raise — Arker
+       has no entrypoint-session concept
+     - `get_session_command_logs_async` raises — needs WS streaming
+     - `send_session_command_input` raises — no non-PTY stdin primitive
+     - PTY-session methods (`create_pty_session`, etc.) all raise — same
+       WS dependency as e2b's pty namespace
 
   7. Some `fs` ops still raise NotImplementedError:
        - `search_files` — needs filename-vs-content semantics pinned
@@ -67,6 +75,7 @@ from ._sandbox import Sandbox
 from ._types import (
     Chart,
     CodeRunParams,
+    Command,
     DaytonaConfig,
     DaytonaError,
     ExecuteResponse,
@@ -79,11 +88,17 @@ from ._types import (
     SandboxNotFoundError,
     SandboxState,
     SearchFilesResponse,
+    Session,
+    SessionCommandLogsResponse,
+    SessionExecuteRequest,
+    SessionExecuteResponse,
+    SessionNotFoundError,
 )
 
 __all__ = [
     "Chart",
     "CodeRunParams",
+    "Command",
     "Daytona",
     "DaytonaConfig",
     "DaytonaError",
@@ -100,4 +115,9 @@ __all__ = [
     "SandboxNotFoundError",
     "SandboxState",
     "SearchFilesResponse",
+    "Session",
+    "SessionCommandLogsResponse",
+    "SessionExecuteRequest",
+    "SessionExecuteResponse",
+    "SessionNotFoundError",
 ]

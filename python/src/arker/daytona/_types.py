@@ -80,6 +80,43 @@ class ReplaceResult:
     error: str | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class SessionExecuteRequest:
+    command: str
+    runAsync: bool = False  # daytona's field is `async` — reserved word in py
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SessionExecuteResponse:
+    cmd_id: str
+    output: str | None = None
+    exit_code: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class Command:
+    id: str
+    command: str
+    exit_code: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class Session:
+    session_id: str
+    state: str
+    cwd: str
+    commands: list[Command] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(frozen=True)
+class SessionCommandLogsResponse:
+    stdout: str
+    stderr: str
+    exit_code: int | None = None
+
+
 class DaytonaError(Exception):
     """Base error for the arker.daytona compat layer."""
 
@@ -93,6 +130,10 @@ class ProcessError(DaytonaError):
 
 
 class SandboxNotFoundError(DaytonaError):
+    pass
+
+
+class SessionNotFoundError(DaytonaError):
     pass
 
 
