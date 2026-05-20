@@ -18,6 +18,7 @@ Phase A surface: lifecycle (construct / kill / connect), foreground
 async variant arrive in later phases.
 """
 
+from ._async_sandbox import AsyncSandbox
 from ._commands import Commands
 from ._files import Filesystem
 from ._handle import CommandHandle
@@ -33,6 +34,7 @@ from ._types import (
 )
 
 __all__ = [
+    "AsyncSandbox",
     "CommandExitException",
     "CommandHandle",
     "CommandResult",

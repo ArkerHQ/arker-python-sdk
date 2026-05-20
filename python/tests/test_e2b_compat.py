@@ -576,6 +576,40 @@ def test_run_code_picks_runtime_for_language() -> None:
     assert _runtime_for("unknown-lang") == ("python3", "py")  # default
 
 
+def test_async_sandbox_proxies_to_sync() -> None:
+    import asyncio
+
+    from arker.e2b import AsyncSandbox
+
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        200,
+        {"vm_id": "vm_async", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_async/run"),
+        200,
+        _completed_run(stdout="hi\n"),
+    )
+    transport.add_json(
+        lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_async"),
+        200,
+        {"deleted": True},
+    )
+
+    async def run() -> tuple[str, bool]:
+        with patch("urllib.request.urlopen", transport):
+            sbx = await AsyncSandbox.create(_arker=client())
+            r = await sbx.commands.run("echo hi")
+            killed = await sbx.kill()
+            return r.stdout, killed
+
+    stdout, killed = asyncio.run(run())
+    assert stdout == "hi\n"
+    assert killed is True
+
+
 def test_files_shimmed_ops_quote_unsafe_paths() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
