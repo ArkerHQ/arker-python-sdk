@@ -65,6 +65,16 @@ class CreateSandboxFromSnapshotParams:
 
 
 @dataclasses.dataclass(frozen=True)
+class Resources:
+    """Nested resources spec for `CreateSandboxFromImageParams.resources`,
+    matching daytona's shape."""
+    cpu: int | None = None
+    gpu: int | None = None
+    memory: int | None = None
+    disk: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
 class CreateSandboxFromImageParams:
     image: str
     env_vars: dict[str, str] | None = None
@@ -74,14 +84,18 @@ class CreateSandboxFromImageParams:
     auto_archive_interval: int | None = None
     auto_delete_interval: int | None = None
     name: str | None = None
+    resources: Resources | None = None
+    volumes: list[Any] | None = None
+    network_block_all: bool | None = None
+    network_allow_list: str | None = None
+    os_user: str | None = None
+    # Deprecated flat fields and `user` alias — kept so legacy callers don't
+    # break, but `Resources(...)` is the canonical path.
     cpu: int | None = None
     gpu: int | None = None
     memory: int | None = None
     disk: int | None = None
-    volumes: list[Any] | None = None
-    network_block_all: bool | None = None
-    network_allow_list: str | None = None
-    user: str | None = None
+    user: str | None = None  # deprecated alias for os_user
 
 
 @dataclasses.dataclass(frozen=True)
@@ -165,11 +179,13 @@ class SessionExecuteRequest:
 
 @dataclasses.dataclass(frozen=True)
 class SessionExecuteResponse:
+    """Daytona always returns string `stdout`/`stderr`/`output` (coerces None → "").
+    Mirror that to avoid TypeErrors on `len(resp.stdout)` etc."""
     cmd_id: str
     exit_code: int | None = None
-    output: str | None = None
-    stdout: str | None = None
-    stderr: str | None = None
+    output: str = ""
+    stdout: str = ""
+    stderr: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -225,8 +241,8 @@ class DaytonaError(Exception):
         self,
         message: str,
         status_code: int | None = None,
-        error_code: str | None = None,
         headers: dict[str, str] | None = None,
+        error_code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -294,7 +310,8 @@ def translate_arker_error(error: Exception) -> DaytonaError:
     code = getattr(error, "code", "internal")
     message = getattr(error, "message", str(error))
 
-    kwargs = {"status_code": status, "error_code": code}
+    # Use kwargs to dodge the positional-order trap.
+    kwargs: dict[str, Any] = {"status_code": status, "error_code": code}
     if status == 401:
         return DaytonaAuthenticationError(message, **kwargs)
     if status == 403:

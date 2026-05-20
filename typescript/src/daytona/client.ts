@@ -4,6 +4,7 @@ import {
   type CreateSandboxFromImageParams,
   type CreateSandboxFromSnapshotParams,
   type DaytonaConfig,
+  DaytonaValidationError,
   PaginatedSandboxes,
   translateArkerError,
 } from "./types.js";
@@ -100,9 +101,13 @@ export class Daytona {
   }
 
   async get(sandboxId: string): Promise<Sandbox> {
+    if (!sandboxId) throw new DaytonaValidationError("sandboxId is required");
     try {
-      const info = (await this.arker.get(sandboxId)) as { source_golden?: string };
-      return new Sandbox(this.arker, this.arker.vm(sandboxId), { snapshot: info.source_golden });
+      const info = (await this.arker.get(sandboxId)) as { source_golden?: string; state?: string };
+      return new Sandbox(this.arker, this.arker.vm(sandboxId), {
+        snapshot: info.source_golden,
+        info,
+      });
     } catch (error) {
       throw translateArkerError(error);
     }
@@ -114,19 +119,34 @@ export class Daytona {
    * `page`/`limit` paginate client-side.
    */
   async list(opts: { labels?: Record<string, string>; page?: number; limit?: number } = {}): Promise<PaginatedSandboxes<Sandbox>> {
-    void opts.labels;
-    let vms: Array<{ vm_id?: string; source_golden?: string }> = [];
+    if (opts.labels && Object.keys(opts.labels).length > 0) {
+      throw new DaytonaValidationError(
+        "Daytona.list({ labels }) is not supported by the arker.daytona shim — " +
+          "Arker doesn't store sandbox metadata server-side. Filter client-side after list().",
+      );
+    }
+    if (opts.page !== undefined && opts.page < 1) {
+      throw new DaytonaValidationError("page must be >= 1");
+    }
+    if (opts.limit !== undefined && opts.limit < 1) {
+      throw new DaytonaValidationError("limit must be >= 1");
+    }
+
+    let vms: Array<{ vm_id?: string; source_golden?: string; state?: string }> = [];
     try {
-      const response = (await this.arker.list()) as { vms?: Array<{ vm_id?: string; source_golden?: string }> };
+      const response = (await this.arker.list()) as { vms?: Array<{ vm_id?: string; source_golden?: string; state?: string }> };
       vms = response.vms ?? [];
     } catch (error) {
-      if (!(error instanceof ArkerError)) throw error;
+      throw translateArkerError(error);
     }
 
     const sandboxes = vms
       .filter((vm) => typeof vm.vm_id === "string")
       .map((vm) =>
-        new Sandbox(this.arker, this.arker.vm(vm.vm_id!), { snapshot: vm.source_golden ?? undefined }),
+        new Sandbox(this.arker, this.arker.vm(vm.vm_id!), {
+          snapshot: vm.source_golden ?? undefined,
+          info: vm,
+        }),
       );
     const total = sandboxes.length;
     const limit = opts.limit && opts.limit > 0 ? opts.limit : total || 1;
@@ -137,13 +157,10 @@ export class Daytona {
     return new PaginatedSandboxes(items, total, page, totalPages);
   }
 
-  /** Daytona-canonical: take the Sandbox object. */
-  async delete(sandbox: Sandbox, _timeout: number = 60): Promise<void> {
-    try {
-      await sandbox._computer.delete();
-    } catch (error) {
-      throw translateArkerError(error);
-    }
+  /** Daytona-canonical: take the Sandbox object. Routes through
+   * `Sandbox.delete()` so callers get the same typed error. */
+  async delete(sandbox: Sandbox, timeout: number = 60): Promise<void> {
+    await sandbox.delete(timeout);
   }
 
   async start(_sandbox: Sandbox, _timeout: number = 60): Promise<void> {

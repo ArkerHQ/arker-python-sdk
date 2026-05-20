@@ -69,7 +69,6 @@ class Process:
     def exec(
         self,
         command: str,
-        *,
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         timeout: int | None = None,
@@ -115,9 +114,12 @@ class Process:
         raise SessionNotFoundError(f"session {session_id!r} not found")
 
     def delete_session(self, session_id: str) -> None:
-        """Local-only — Arker SDK doesn't expose session-delete yet.
-        TODO(arker-daytona): wire to DELETE /v1/vms/{id}/sessions/{sid}."""
-        self._sessions.pop(session_id, None)
+        """Mirror daytona: raise DaytonaNotFoundError if session doesn't exist.
+        TODO(arker-daytona): wire to DELETE /v1/vms/{id}/sessions/{sid} once
+        the Arker SDK exposes it; today this is local-bookkeeping only."""
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"session {session_id!r} not found")
+        del self._sessions[session_id]
 
     def execute_session_command(
         self,
@@ -145,12 +147,13 @@ class Process:
                 raise ProcessError(f"async session run returned {type(result).__name__}")
             cmd_id = result.run_id
             self._sessions[session_id].append(Command(id=cmd_id, command=req.command, exit_code=None))
+            # Daytona coerces None → "" so `len(resp.stdout)` doesn't TypeError.
             return SessionExecuteResponse(
                 cmd_id=cmd_id,
                 exit_code=None,
-                output=None,
-                stdout=None,
-                stderr=None,
+                output="",
+                stdout="",
+                stderr="",
             )
 
         if not isinstance(result, CompletedRunResult):

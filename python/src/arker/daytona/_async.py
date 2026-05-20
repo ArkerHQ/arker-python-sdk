@@ -165,21 +165,30 @@ class AsyncDaytona:
     def __init__(self, config: DaytonaConfig | None = None, *, _sync: Daytona | None = None) -> None:
         self._sync = _sync or Daytona(config)
 
-    async def create(self, **kwargs: Any) -> AsyncSandbox:
-        sandbox = await _to_thread(self._sync.create, **kwargs)
+    async def create(self, params: Any = None, *, timeout: float = 60, **kwargs: Any) -> AsyncSandbox:
+        sandbox = await _to_thread(self._sync.create, params, timeout=timeout, **kwargs)
         return AsyncSandbox(sandbox)
 
     async def get(self, sandbox_id: str) -> AsyncSandbox:
         sandbox = await _to_thread(self._sync.get, sandbox_id)
         return AsyncSandbox(sandbox)
 
-    async def list(self) -> list[AsyncSandbox]:
-        sandboxes = await _to_thread(self._sync.list)
-        return [AsyncSandbox(s) for s in sandboxes]
+    async def list(
+        self,
+        labels: dict[str, str] | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+    ) -> Any:
+        return await _to_thread(self._sync.list, labels, page, limit)
 
-    async def find(self, **filters: Any) -> AsyncSandbox | None:
-        sandbox = await _to_thread(self._sync.find, **filters)
-        return AsyncSandbox(sandbox) if sandbox is not None else None
+    async def delete(self, sandbox: "AsyncSandbox", timeout: float = 60) -> None:
+        return await _to_thread(self._sync.delete, sandbox._sync, timeout)
+
+    async def start(self, sandbox: "AsyncSandbox", timeout: float = 60) -> None:
+        return await _to_thread(self._sync.start, sandbox._sync, timeout)
+
+    async def stop(self, sandbox: "AsyncSandbox", timeout: float = 60) -> None:
+        return await _to_thread(self._sync.stop, sandbox._sync, timeout)
 
     async def remove(self, sandbox_id: str) -> None:
         return await _to_thread(self._sync.remove, sandbox_id)

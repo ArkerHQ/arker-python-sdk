@@ -56,6 +56,7 @@ export {
   PaginatedSandboxes,
   ProcessError,
   type ReplaceResult,
+  type Resources,
   SandboxNotFoundError,
   SandboxState,
   type SearchFilesResponse,

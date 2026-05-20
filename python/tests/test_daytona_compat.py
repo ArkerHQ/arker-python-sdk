@@ -264,14 +264,19 @@ def test_fs_download_to_local_path(tmp_path) -> None:
 # ----- Sandbox lifecycle / state -----
 
 def test_sandbox_state_reflects_vm_state() -> None:
+    """State starts as UNKNOWN after create() and updates on explicit refresh_data().
+    Daytona's pattern: SandboxDto is built from the create response; we don't
+    have an info object from fork yet, so callers must refresh_data() to fetch."""
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
+        assert sbx.state == SandboxState.UNKNOWN
         transport.add_json(
             lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_daytona"),
             200,
             {"vm_id": "vm_daytona", "owner_id": "o", "created_at": "now", "state": "running", "sessions": []},
         )
+        sbx.refresh_data()
         assert sbx.state == SandboxState.STARTED
 
 
@@ -330,19 +335,26 @@ def test_fs_list_files_parses_find_output() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
+        # Format: name|type|size|mode-string|permissions-octal|UID|GID|mtime-string
         _add_shell(
             transport,
             "vm_daytona",
-            stdout="readme.txt|f|42|644|alice|users|1735776000.0\nsrc|d|4096|755|alice|users|1735776100.0\n",
+            stdout=(
+                "readme.txt|f|42|-rw-r--r--|644|1000|1000|2024-01-15 10:30:00\n"
+                "src|d|4096|drwxr-xr-x|755|1000|1000|2024-01-15 10:31:00\n"
+            ),
         )
         entries = sbx.fs.list_files("/work")
 
     assert [(e.name, e.is_dir, e.size, e.owner) for e in entries] == [
-        ("readme.txt", False, 42, "alice"),
-        ("src", True, 4096, "alice"),
+        ("readme.txt", False, 42, "1000"),
+        ("src", True, 4096, "1000"),
     ]
-    # daytona returns `mode` as the octal string ("755"), not an int.
-    assert entries[1].mode == "755"
+    # daytona's `mode` is the Go FileMode string; `permissions` is 4-digit octal.
+    assert entries[1].mode == "drwxr-xr-x"
+    assert entries[1].permissions == "0755"
+    assert entries[0].permissions == "0644"
+    assert entries[0].mod_time == "2024-01-15 10:30:00"
 
 
 def test_fs_create_folder_invokes_mkdir() -> None:
@@ -391,21 +403,24 @@ def test_fs_get_file_info_returns_parsed() -> None:
         _add_shell(
             transport,
             "vm_daytona",
-            stdout="x.txt|f|10|644|alice|users|1735776000.0\n",
+            stdout="x.txt|f|10|-rw-r--r--|644|1000|1000|2024-01-15 10:30:00\n",
         )
         info = sbx.fs.get_file_info("/work/x.txt")
     assert isinstance(info, FileInfo)
     assert info.name == "x.txt"
     assert info.size == 10
     assert info.is_dir is False
+    assert info.permissions == "0644"
 
 
-def test_fs_get_file_info_raises_when_missing() -> None:
+def test_fs_get_file_info_raises_not_found_when_missing() -> None:
+    from arker.daytona import DaytonaNotFoundError
+
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
-        _add_shell(transport, "vm_daytona", stderr="No such", exit_code=1)
-        with pytest.raises(FileSystemError):
+        _add_shell(transport, "vm_daytona", stderr="find: '/nope': No such file or directory", exit_code=1)
+        with pytest.raises(DaytonaNotFoundError):
             sbx.fs.get_file_info("/nope")
 
 
@@ -561,7 +576,9 @@ def test_session_execute_async_returns_cmd_id_without_output() -> None:
             "s2", SessionExecuteRequest(command="sleep 1", run_async=True),
         )
     assert resp.cmd_id == "run_async_1"
-    assert resp.output is None
+    # daytona coerces None → "" so len(resp.stdout) etc. don't TypeError.
+    assert resp.output == ""
+    assert resp.stdout == ""
     assert resp.exit_code is None
 
 
@@ -867,6 +884,105 @@ def test_artifacts_charts_default_to_empty_list() -> None:
     assert resp.artifacts.charts == []
 
 
+def test_get_empty_id_raises_validation() -> None:
+    from arker.daytona import DaytonaValidationError
+
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        with pytest.raises(DaytonaValidationError):
+            d.get("")
+    # No HTTP issued — validation happens pre-request.
+    assert transport.calls == []
+
+
+def test_list_labels_raises_validation() -> None:
+    from arker.daytona import DaytonaValidationError
+
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        with pytest.raises(DaytonaValidationError, match="labels"):
+            d.list(labels={"env": "prod"})
+    assert transport.calls == []
+
+
+def test_list_invalid_page_raises_validation() -> None:
+    from arker.daytona import DaytonaValidationError
+
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        with pytest.raises(DaytonaValidationError):
+            d.list(page=0)
+        with pytest.raises(DaytonaValidationError):
+            d.list(limit=0)
+    assert transport.calls == []
+
+
+def test_list_files_raises_not_found_on_missing_path() -> None:
+    from arker.daytona import DaytonaNotFoundError
+
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona", stderr="find: '/nope': No such file or directory", exit_code=1)
+        with pytest.raises(DaytonaNotFoundError):
+            sbx.fs.list_files("/nope")
+
+
+def test_delete_session_raises_when_missing() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.raises(SessionNotFoundError):
+            sbx.process.delete_session("never-existed")
+
+
+def test_exec_accepts_positional_cwd_and_env() -> None:
+    """daytona's exec(command, cwd, env, timeout) is positional-or-keyword."""
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona", stdout="ok")
+        # Positional cwd + env — would TypeError on Phase F shim.
+        sbx.process.exec("ls", "/tmp", {"X": "1"})
+        body = json.loads(transport.calls[-1]["body"])
+    assert "cd /tmp &&" in body["command"]
+    assert "env X=1" in body["command"]
+
+
+def test_find_files_uses_literal_substring_not_regex() -> None:
+    """daytona's daemon uses strings.Contains (substring), not regex."""
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona", stdout="/work/a.py:1:def foo():\n")
+        sbx.fs.find_files("/work", "def foo")
+        body = json.loads(transport.calls[-1]["body"])
+    # Must be `grep -rnF` (fixed-string), not `-rnE` (regex).
+    assert "grep -rnF" in body["command"]
+
+
+def test_resources_is_accepted_on_image_params() -> None:
+    from arker.daytona import Resources
+
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/my-img/fork"),
+        200,
+        {"vm_id": "vm_img", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    with patch("urllib.request.urlopen", transport):
+        d = _make_daytona(transport)
+        sbx = d.create(CreateSandboxFromImageParams(
+            image="my-img",
+            resources=Resources(cpu=2, memory=4),
+            os_user="root",
+        ))
+    assert sbx.id == "vm_img"
+
+
 def test_async_daytona_full_round_trip() -> None:
     import asyncio
 
@@ -906,7 +1022,11 @@ def test_async_daytona_full_round_trip() -> None:
     assert output == "hi\n"
 
 
-def test_sandbox_delete_swallows_arker_errors() -> None:
+def test_sandbox_delete_raises_typed_error_on_failure() -> None:
+    """daytona's delete raises typed errors — silent swallow masks VM leaks
+    and breaks retry loops. Phase G fixed this to raise DaytonaError."""
+    from arker.daytona import DaytonaError
+
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
@@ -915,5 +1035,5 @@ def test_sandbox_delete_swallows_arker_errors() -> None:
             500,
             {"code": "internal", "message": "boom"},
         )
-        # Should not raise; daytona's delete is fire-and-forget.
-        sbx.delete()
+        with pytest.raises(DaytonaError):
+            sbx.delete()

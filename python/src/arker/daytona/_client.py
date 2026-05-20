@@ -26,6 +26,7 @@ from ._types import (
     CreateSandboxFromSnapshotParams,
     DaytonaConfig,
     DaytonaNotFoundError,
+    DaytonaValidationError,
     PaginatedSandboxes,
     translate_arker_error,
 )
@@ -83,6 +84,9 @@ def _resolve_create_params(
             p_env.update(params.env_vars)
         if params.labels:
             p_labels.update(params.labels)
+        # `Resources(...)` is the canonical nested path; flat `cpu`/`memory`/...
+        # are still accepted (deprecated). The shim only consumes name+env+labels
+        # for now — resource overrides are forwarded once Arker SDK accepts them.
 
     source = _resolve_template(p_snapshot or p_image)
     return source, p_name, p_env, p_labels
@@ -133,6 +137,8 @@ class Daytona:
         return Sandbox(self._arker, computer, env=p_env, labels=p_labels, snapshot=source)
 
     def get(self, sandbox_id: str) -> Sandbox:
+        if not sandbox_id:
+            raise DaytonaValidationError("sandbox_id is required")
         try:
             info = self._arker.get(sandbox_id)
         except ArkerError as error:
@@ -141,6 +147,7 @@ class Daytona:
             self._arker,
             self._arker.vm(info.vm_id),
             snapshot=info.source_golden,
+            info=info,
         )
 
     def list(
@@ -149,16 +156,29 @@ class Daytona:
         page: int | None = None,
         limit: int | None = None,
     ) -> PaginatedSandboxes:
-        """Returns a `PaginatedSandboxes` wrapper. Daytona stores labels
-        server-side and filters there; Arker doesn't, so we ignore the
-        `labels` arg today and return everything (see pending #1).
-        `page`/`limit` are accepted for signature parity and applied
-        client-side."""
-        del labels  # not honored — Arker doesn't store metadata server-side
+        """Returns a `PaginatedSandboxes` wrapper.
+
+        Raises `DaytonaValidationError` for:
+          - `labels=` non-empty (Arker doesn't store metadata server-side,
+            so filtering it would silently drop sandboxes — better to fail
+            loud than mislead the caller across tenancy boundaries)
+          - `page < 1` or `limit < 1`
+        """
+        if labels:
+            raise DaytonaValidationError(
+                "Daytona.list(labels=...) is not supported by the arker.daytona "
+                "shim — Arker doesn't store sandbox metadata server-side. "
+                "Pass labels=None and filter client-side after list()."
+            )
+        if page is not None and page < 1:
+            raise DaytonaValidationError("page must be >= 1")
+        if limit is not None and limit < 1:
+            raise DaytonaValidationError("limit must be >= 1")
+
         try:
             vms = self._arker.list().vms
-        except ArkerError:
-            return PaginatedSandboxes(items=[], total=0, page=page or 1, total_pages=0)
+        except ArkerError as error:
+            raise translate_arker_error(error) from error
 
         sandboxes = [self._sandbox_for_info(vm) for vm in vms]
         total = len(sandboxes)
@@ -176,12 +196,10 @@ class Daytona:
         )
 
     def delete(self, sandbox: Sandbox, timeout: float = 60) -> None:
-        """Daytona-canonical: takes a Sandbox object, not an id."""
-        del timeout
-        try:
-            sandbox._computer.delete()
-        except ArkerError as error:
-            raise translate_arker_error(error) from error
+        """Daytona-canonical: takes a Sandbox object, not an id. Raises
+        DaytonaError (or subclass) on failure — routes through
+        `Sandbox.delete()` so the customer sees the same typed error."""
+        sandbox.delete(timeout=timeout)
 
     def start(self, sandbox: Sandbox, timeout: float = 60) -> None:
         del sandbox, timeout
@@ -220,4 +238,5 @@ class Daytona:
             self._arker,
             self._arker.vm(info.vm_id),
             snapshot=info.source_golden,
+            info=info,
         )

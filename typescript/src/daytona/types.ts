@@ -53,6 +53,14 @@ export interface CreateSandboxFromSnapshotParams {
   user?: string;
 }
 
+/** Nested resources spec for `CreateSandboxFromImageParams.resources`. */
+export interface Resources {
+  cpu?: number;
+  gpu?: number;
+  memory?: number;
+  disk?: number;
+}
+
 export interface CreateSandboxFromImageParams {
   image: string;
   envVars?: Record<string, string>;
@@ -62,13 +70,17 @@ export interface CreateSandboxFromImageParams {
   autoArchiveInterval?: number;
   autoDeleteInterval?: number;
   name?: string;
+  resources?: Resources;
+  volumes?: unknown[];
+  networkBlockAll?: boolean;
+  networkAllowList?: string;
+  osUser?: string;
+  /** @deprecated flat resource fields — pass `resources: Resources(...)` instead. */
   cpu?: number;
   gpu?: number;
   memory?: number;
   disk?: number;
-  volumes?: unknown[];
-  networkBlockAll?: boolean;
-  networkAllowList?: string;
+  /** @deprecated alias for `osUser`. */
   user?: string;
 }
 
@@ -135,9 +147,10 @@ export interface SessionExecuteRequest {
 export interface SessionExecuteResponse {
   cmdId: string;
   exitCode: number | null;
-  output: string | null;
-  stdout: string | null;
-  stderr: string | null;
+  /** Always a string in daytona — empty for async submit, never null. */
+  output: string;
+  stdout: string;
+  stderr: string;
 }
 
 export interface Command {
@@ -184,12 +197,18 @@ export class PaginatedSandboxes<T> {
 
 // ---- Exception hierarchy ----
 
+export interface DaytonaErrorOptions {
+  statusCode?: number;
+  headers?: Record<string, string>;
+  errorCode?: string;
+}
+
 export class DaytonaError extends Error {
   readonly statusCode?: number;
   readonly errorCode?: string;
   readonly headers: Record<string, string>;
 
-  constructor(message: string, opts: { statusCode?: number; errorCode?: string; headers?: Record<string, string> } = {}) {
+  constructor(message: string, opts: DaytonaErrorOptions = {}) {
     super(message);
     this.name = "DaytonaError";
     this.statusCode = opts.statusCode;

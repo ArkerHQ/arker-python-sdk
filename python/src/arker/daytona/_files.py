@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Union
 
 from ..computer import ArkerError, CompletedRunResult
 from ._types import (
+    DaytonaNotFoundError,
     FileInfo,
     FileSystemError,
     Match,
@@ -28,33 +29,36 @@ if TYPE_CHECKING:
 FileSource = Union[bytes, bytearray, str]
 
 
-# `find ... -printf "%f|%y|%s|%m|%u|%g|%T@\n"` — one line per entry.
-# We keep `mode` as the literal octal string daytona returns ("644", "755").
-_FIND_FMT = "%f|%y|%s|%m|%u|%g|%T@\\n"
+# `find ... -printf "%f|%y|%s|%M|%m|%U|%G|%TY-%Tm-%Td %TH:%TM:%TS\n"`
+# Daytona's daemon returns:
+#   - mode = Go FileMode string ("-rw-r--r--", "drwxr-xr-x")  → find's %M
+#   - permissions = "0644" (zero-padded 4-digit octal)         → find's %m, we left-pad
+#   - mod_time = "2024-01-15 10:30:00..." (RFC 3339-ish)       → find's %T fmt
+#   - owner/group = numeric UID/GID strings                    → find's %U/%G
+_FIND_FMT = "%f|%y|%s|%M|%m|%U|%G|%TY-%Tm-%Td %TH:%TM:%TS\\n"
 
 
 def _parse_find_line(line: str) -> FileInfo | None:
     parts = line.split("|")
-    if len(parts) < 7:
+    if len(parts) < 8:
         return None
-    name, kind, size_s, mode_s, owner, group, mtime_s = parts[:7]
+    name, kind, size_s, mode_s, perm_s, owner, group, mtime_s = parts[:8]
     try:
         size = int(size_s) if size_s else 0
     except ValueError:
         size = 0
-    # Keep `mode` as the raw octal string. daytona's toolbox API returns
-    # it that way; converting to int would diverge.
-    mode = mode_s or ""
     is_dir = kind == "d"
+    # Pad permissions to 4-digit zero-padded octal: "644" → "0644".
+    perms = perm_s.zfill(4) if perm_s else ""
     return FileInfo(
         name=name,
         is_dir=is_dir,
         size=size,
-        mode=mode,
-        owner=owner,
-        group=group,
-        mod_time=mtime_s,
-        permissions=mode,  # daytona populates both fields with the same octal
+        mode=mode_s,              # Go-FileMode-string form ("-rw-r--r--")
+        owner=owner,               # numeric UID string
+        group=group,               # numeric GID string
+        mod_time=mtime_s,          # "YYYY-MM-DD HH:MM:SS"
+        permissions=perms,         # "0644"
     )
 
 
@@ -106,11 +110,15 @@ class FileSystem:
     # ---- Shell-shim ----
 
     def list_files(self, path: str) -> list[FileInfo]:
-        stdout, _, exit_code = self._shell(
+        stdout, stderr, exit_code = self._shell(
             f"find {shlex.quote(path)} -maxdepth 1 -mindepth 1 -printf {shlex.quote(_FIND_FMT)}"
         )
         if exit_code != 0:
-            return []
+            # Match daytona daemon: 404 on missing path. Find prints "No such
+            # file or directory" to stderr in that case.
+            if "No such" in stderr or "cannot access" in stderr.lower():
+                raise DaytonaNotFoundError(f"path {path!r} not found", status_code=404)
+            raise FileSystemError(f"list_files({path!r}) failed: {stderr.strip()}")
         entries: list[FileInfo] = []
         for line in stdout.splitlines():
             if not line:
@@ -141,6 +149,8 @@ class FileSystem:
             f"find {shlex.quote(path)} -maxdepth 0 -printf {shlex.quote(_FIND_FMT)}"
         )
         if exit_code != 0 or not stdout.strip():
+            if "No such" in stderr or "cannot access" in stderr.lower():
+                raise DaytonaNotFoundError(f"path {path!r} not found", status_code=404)
             raise FileSystemError(
                 f"get_file_info({path!r}) failed: {stderr.strip() or 'not found'}"
             )
@@ -168,13 +178,12 @@ class FileSystem:
             )
 
     def find_files(self, path: str, pattern: str) -> list[Match]:
-        """Grep recursively under `path` for lines matching `pattern`.
+        """Grep recursively under `path` for lines containing `pattern`.
 
-        daytona's regex flavor is RE2 (Go regexp). We use `grep -rnE` which
-        is POSIX ERE — patterns that rely on RE2-only constructs (e.g. `\\d`
-        as a digit shorthand) won't match. See pending notes in __init__.py.
+        Daytona's daemon does LITERAL substring matching (`strings.Contains`),
+        not regex. We use `grep -rnF` (fixed-string) to match that semantics.
         """
-        cmd = f"grep -rnE --no-messages {shlex.quote(pattern)} {shlex.quote(path)}"
+        cmd = f"grep -rnF --no-messages {shlex.quote(pattern)} {shlex.quote(path)}"
         stdout, _, exit_code = self._shell(cmd)
         # grep exit 1 = no matches.
         if exit_code not in (0, 1):

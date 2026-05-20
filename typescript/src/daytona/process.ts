@@ -161,8 +161,12 @@ export class Process {
     return found;
   }
 
-  /** Local-only — Arker SDK doesn't expose session-delete yet. */
+  /** Mirror daytona: raise on missing session. Local-bookkeeping only until
+   * the Arker SDK exposes DELETE /v1/vms/{id}/sessions/{sid}. */
   deleteSession(sessionId: string): void {
+    if (!this.sessions.has(sessionId)) {
+      throw new SessionNotFoundError(`session ${sessionId} not found`);
+    }
     this.sessions.delete(sessionId);
   }
 
@@ -191,12 +195,13 @@ export class Process {
         throw new ProcessError(`async session run returned ${bg.type}`);
       }
       this.sessions.get(sessionId)!.push({ id: bg.runId, command: req.command, exitCode: null });
+      // Daytona coerces None → "" — keep strings non-null so len(...) doesn't crash.
       return {
         cmdId: bg.runId,
         exitCode: null,
-        output: null,
-        stdout: null,
-        stderr: null,
+        output: "",
+        stdout: "",
+        stderr: "",
       };
     }
 

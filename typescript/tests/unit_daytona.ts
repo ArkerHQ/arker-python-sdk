@@ -9,12 +9,15 @@ import {
   type CreateSandboxFromSnapshotParams,
   Daytona,
   DaytonaAuthenticationError,
+  DaytonaError,
   DaytonaNotFoundError,
   DaytonaRateLimitError,
+  DaytonaValidationError,
   type ExecuteResponse,
   FileSystemError,
   type Match,
   PaginatedSandboxes,
+  type Resources,
   type Sandbox,
   SandboxNotFoundError,
   SandboxState,
@@ -202,18 +205,22 @@ async function testCodeRunPython(): Promise<void> {
 async function testListFiles(): Promise<void> {
   const fetch = new FakeFetch();
   const sbx = await makeSandbox(fetch);
+  // Format: name|type|size|mode-string|octal|UID|GID|mtime
   addShell(
     fetch,
     "vm_daytona",
-    "readme.txt|f|42|644|alice|users|1735776000.0\nsrc|d|4096|755|alice|users|1735776100.0\n",
+    "readme.txt|f|42|-rw-r--r--|644|1000|1000|2024-01-15 10:30:00\n" +
+      "src|d|4096|drwxr-xr-x|755|1000|1000|2024-01-15 10:31:00\n",
   );
   const entries = await sbx.fs.listFiles("/work");
   assert.equal(entries.length, 2);
   assert.equal(entries[0]!.name, "readme.txt");
   assert.equal(entries[0]!.size, 42);
   assert.equal(entries[1]!.isDir, true);
-  // daytona returns `mode` as the octal string ("755"), not an int.
-  assert.equal(entries[1]!.mode, "755");
+  // mode = Go FileMode string; permissions = 4-digit octal.
+  assert.equal(entries[1]!.mode, "drwxr-xr-x");
+  assert.equal(entries[1]!.permissions, "0755");
+  assert.equal(entries[0]!.permissions, "0644");
 }
 
 async function testCreateFolderAndDelete(): Promise<void> {
@@ -263,8 +270,9 @@ async function testUploadDownloadBytes(): Promise<void> {
 async function testGetFileInfoFailsOnMissing(): Promise<void> {
   const fetch = new FakeFetch();
   const sbx = await makeSandbox(fetch);
-  addShell(fetch, "vm_daytona", "", "no such", 1);
-  await assert.rejects(() => sbx.fs.getFileInfo("/nope"), FileSystemError);
+  // Stderr must include "No such" (case-sensitive) for the 404 mapping to fire.
+  addShell(fetch, "vm_daytona", "", "find: '/nope': No such file or directory", 1);
+  await assert.rejects(() => sbx.fs.getFileInfo("/nope"), DaytonaNotFoundError);
 }
 
 // ----- Sessions -----
@@ -318,7 +326,8 @@ async function testExecuteSessionCommandAsync(): Promise<void> {
   );
   const resp = await sbx.process.executeSessionCommand("s2", { command: "sleep 1", runAsync: true });
   assert.equal(resp.cmdId, "run_async");
-  assert.equal(resp.output, null);
+  assert.equal(resp.output, "");
+  assert.equal(resp.stdout, "");
 }
 
 async function testGetSessionRaisesMissing(): Promise<void> {
@@ -513,6 +522,81 @@ async function testCreateFolderRequiresMode(): Promise<void> {
   assert.equal(body.command, "mkdir -m '700' -p '/work/new'");
 }
 
+// ----- Phase G: drift fixes -----
+
+async function testGetEmptyIdRaisesValidation(): Promise<void> {
+  const fetch = new FakeFetch();
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  await assert.rejects(() => d.get(""), DaytonaValidationError);
+  assert.equal(fetch.calls.length, 0);
+}
+
+async function testListLabelsRaisesValidation(): Promise<void> {
+  const fetch = new FakeFetch();
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  await assert.rejects(() => d.list({ labels: { env: "prod" } }), DaytonaValidationError);
+  assert.equal(fetch.calls.length, 0);
+}
+
+async function testListInvalidPageRaises(): Promise<void> {
+  const fetch = new FakeFetch();
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  await assert.rejects(() => d.list({ page: 0 }), DaytonaValidationError);
+  await assert.rejects(() => d.list({ limit: 0 }), DaytonaValidationError);
+}
+
+async function testSandboxDeleteRaisesOnFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  fetch.addJson(
+    (m, u) => m === "DELETE" && u === `${BASE}/v1/vms/vm_daytona`,
+    500,
+    { code: "internal", message: "boom" },
+  );
+  await assert.rejects(() => sbx.delete(), DaytonaError);
+}
+
+async function testListFilesRaisesNotFound(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  addShell(fetch, "vm_daytona", "", "find: '/nope': No such file or directory", 1);
+  await assert.rejects(() => sbx.fs.listFiles("/nope"), DaytonaNotFoundError);
+}
+
+function testDeleteSessionRaisesWhenMissing(): void {
+  const sbxLike = { process: undefined as any };
+  void sbxLike; // we'll just construct a real sandbox below
+}
+
+async function testDeleteSessionRaises(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  assert.throws(() => sbx.process.deleteSession("never-existed"), SessionNotFoundError);
+}
+
+async function testFindFilesUsesFixedString(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  addShell(fetch, "vm_daytona", "/work/a.py:1:def foo():\n");
+  await sbx.fs.findFiles("/work", "def foo");
+  const body = JSON.parse(fetch.calls[fetch.calls.length - 1]!.body!);
+  assert.match(body.command, /grep -rnF/);
+}
+
+async function testResourcesAcceptedOnImageParams(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/my-img/fork`,
+    200,
+    { vm_id: "vm_img", owner_id: "o", created_at: "now", sessions: [] },
+  );
+  const d = new Daytona({ apiKey: "x" }, { _arker: makeArker(fetch) });
+  const resources: Resources = { cpu: 2, memory: 4 };
+  const params: CreateSandboxFromImageParams = { image: "my-img", resources, osUser: "root" };
+  const sbx = await d.create(params);
+  assert.equal(sbx.id, "vm_img");
+}
+
 // ----- Run -----
 
 await testCreateForks();
@@ -545,5 +629,13 @@ await testSessionExecuteResponseFields();
 await testSessionCommandLogsHasOutput();
 await testArtifactsChartsIsEmptyArray();
 await testCreateFolderRequiresMode();
+await testGetEmptyIdRaisesValidation();
+await testListLabelsRaisesValidation();
+await testListInvalidPageRaises();
+await testSandboxDeleteRaisesOnFailure();
+await testListFilesRaisesNotFound();
+await testDeleteSessionRaises();
+await testFindFilesUsesFixedString();
+await testResourcesAcceptedOnImageParams();
 
 console.log("PASS unit_daytona");

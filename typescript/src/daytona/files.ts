@@ -1,6 +1,7 @@
 import type { CompletedRunResult } from "../index.js";
 import type { Sandbox } from "./sandbox.js";
 import {
+  DaytonaNotFoundError,
   type FileInfo,
   FileSystemError,
   type Match,
@@ -9,8 +10,10 @@ import {
   translateArkerError,
 } from "./types.js";
 
-// `find ... -printf "%f|%y|%s|%m|%u|%g|%T@\n"` — one line per entry.
-const FIND_FMT = "%f|%y|%s|%m|%u|%g|%T@\\n";
+// Match daytona's daemon shape: mode = Go FileMode string ("-rw-r--r--"),
+// permissions = "0644" 4-digit octal, owner/group = numeric UID/GID,
+// mod_time = formatted timestamp.
+const FIND_FMT = "%f|%y|%s|%M|%m|%U|%G|%TY-%Tm-%Td %TH:%TM:%TS\\n";
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -28,20 +31,19 @@ function basename(path: string): string {
 
 function parseFindLine(line: string): FileInfo | null {
   const parts = line.split("|");
-  if (parts.length < 7) return null;
-  const [name, kind, sizeStr, modeStr, owner, group, mtimeStr] = parts;
+  if (parts.length < 8) return null;
+  const [name, kind, sizeStr, modeStr, permStr, owner, group, mtimeStr] = parts;
   const size = Number(sizeStr) || 0;
-  // Daytona returns `mode` as the literal octal string ("755"). Keep it as-is.
-  const mode = modeStr ?? "";
+  const perms = (permStr ?? "").padStart(4, "0");
   return {
     name: name ?? "",
     isDir: kind === "d",
     size,
-    mode,
-    owner: owner ?? "",
-    group: group ?? "",
-    modTime: mtimeStr ?? "",
-    permissions: mode,
+    mode: modeStr ?? "",          // Go-FileMode form ("-rw-r--r--")
+    owner: owner ?? "",           // numeric UID
+    group: group ?? "",           // numeric GID
+    modTime: mtimeStr ?? "",      // "YYYY-MM-DD HH:MM:SS"
+    permissions: perms,           // 4-digit octal
   };
 }
 
@@ -83,10 +85,15 @@ export class FileSystem {
   // ---- Shell-shim ----
 
   async listFiles(path: string): Promise<FileInfo[]> {
-    const { stdout, exitCode } = await this.shell(
+    const { stdout, stderr, exitCode } = await this.shell(
       `find ${shellQuote(path)} -maxdepth 1 -mindepth 1 -printf ${shellQuote(FIND_FMT)}`,
     );
-    if (exitCode !== 0) return [];
+    if (exitCode !== 0) {
+      if (stderr.includes("No such") || stderr.toLowerCase().includes("cannot access")) {
+        throw new DaytonaNotFoundError(`path ${path} not found`, { statusCode: 404 });
+      }
+      throw new FileSystemError(`listFiles(${path}) failed: ${stderr.trim()}`);
+    }
     const entries: FileInfo[] = [];
     for (const line of stdout.split("\n")) {
       if (!line) continue;
@@ -96,7 +103,6 @@ export class FileSystem {
     return entries;
   }
 
-  /** Create a folder. `mode` is REQUIRED to match daytona's signature. */
   async createFolder(path: string, mode: string): Promise<void> {
     const { stderr, exitCode } = await this.shell(`mkdir -m ${shellQuote(mode)} -p ${shellQuote(path)}`);
     if (exitCode !== 0) {
@@ -117,6 +123,9 @@ export class FileSystem {
       `find ${shellQuote(path)} -maxdepth 0 -printf ${shellQuote(FIND_FMT)}`,
     );
     if (exitCode !== 0 || !stdout.trim()) {
+      if (stderr.includes("No such") || stderr.toLowerCase().includes("cannot access")) {
+        throw new DaytonaNotFoundError(`path ${path} not found`, { statusCode: 404 });
+      }
       throw new FileSystemError(`getFileInfo(${path}) failed: ${stderr.trim() || "not found"}`);
     }
     const parsed = parseFindLine(stdout.split("\n")[0]!);
@@ -131,8 +140,9 @@ export class FileSystem {
     }
   }
 
+  /** Substring (literal) match — daytona's daemon uses strings.Contains. */
   async findFiles(path: string, pattern: string): Promise<Match[]> {
-    const cmd = `grep -rnE --no-messages ${shellQuote(pattern)} ${shellQuote(path)}`;
+    const cmd = `grep -rnF --no-messages ${shellQuote(pattern)} ${shellQuote(path)}`;
     const { stdout, exitCode } = await this.shell(cmd);
     // grep exit 1 = no matches; not an error.
     if (exitCode !== 0 && exitCode !== 1) {
