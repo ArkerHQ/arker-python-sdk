@@ -40,10 +40,14 @@ site):
   6. `process.create_session` and friends (stateful shell sessions, PTY
      sessions) aren't implemented in Phase A. Use `process.exec` for now.
 
-  7. `fs` advanced ops (find_files, replace_in_files, search_files,
-     set_file_permissions, upload_files batch, download_files batch,
-     upload_file_stream, download_file_stream) aren't implemented in
-     Phase A. Use upload_file / download_file.
+  7. Some `fs` ops still raise NotImplementedError:
+       - `search_files` — needs filename-vs-content semantics pinned
+       - `replace_in_files` — needs daytona regex flavor pinned vs sed -E
+       - `upload_files` / `download_files` batch — loop the single-file ops
+       - `upload_file_stream` / `download_file_stream` — Arker's sync API
+         chunks internally; exposing chunk callbacks is a follow-up
+     `list_files`, `delete_file`, `create_folder`, `find_files`,
+     `get_file_info`, `move_files`, `set_file_permissions` work (Phase B).
 
   8. `git`, `lsp`, `computer_use`, `code_interpreter` sub-namespaces
      aren't implemented at all (Phase A scope). Accessing them raises
@@ -67,10 +71,14 @@ from ._types import (
     DaytonaError,
     ExecuteResponse,
     ExecutionArtifacts,
+    FileInfo,
     FileSystemError,
+    Match,
     ProcessError,
+    ReplaceResult,
     SandboxNotFoundError,
     SandboxState,
+    SearchFilesResponse,
 )
 
 __all__ = [
@@ -81,11 +89,15 @@ __all__ = [
     "DaytonaError",
     "ExecuteResponse",
     "ExecutionArtifacts",
+    "FileInfo",
     "FileSystem",
     "FileSystemError",
+    "Match",
     "Process",
     "ProcessError",
+    "ReplaceResult",
     "Sandbox",
     "SandboxNotFoundError",
     "SandboxState",
+    "SearchFilesResponse",
 ]

@@ -15,6 +15,9 @@ from arker.daytona import (
     Daytona,
     DaytonaConfig,
     ExecuteResponse,
+    FileInfo,
+    FileSystemError,
+    Match,
     Sandbox,
     SandboxNotFoundError,
     SandboxState,
@@ -303,6 +306,175 @@ def test_sandbox_context_manager_deletes_on_exit() -> None:
         with d.create() as sbx:
             assert sbx.id == "vm_ctx"
         assert any(c["method"] == "DELETE" and c["url"].endswith("/vm_ctx") for c in transport.calls)
+
+
+# ----- Filesystem Phase B (shell-shim) -----
+
+def _add_shell(transport: FakeTransport, vm_id: str, stdout: str = "", stderr: str = "", exit_code: int = 0) -> None:
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith(f"/v1/vms/{vm_id}/run"),
+        200,
+        _completed_run(stdout=stdout, stderr=stderr, exit_code=exit_code),
+    )
+
+
+def test_fs_list_files_parses_find_output() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(
+            transport,
+            "vm_daytona",
+            stdout="readme.txt|f|42|644|alice|users|1735776000.0\nsrc|d|4096|755|alice|users|1735776100.0\n",
+        )
+        entries = sbx.fs.list_files("/work")
+
+    assert [(e.name, e.is_dir, e.size, e.owner) for e in entries] == [
+        ("readme.txt", False, 42, "alice"),
+        ("src", True, 4096, "alice"),
+    ]
+    assert entries[1].mode == 0o755
+
+
+def test_fs_create_folder_invokes_mkdir() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona")
+        sbx.fs.create_folder("/work/new", mode="700")
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "mkdir -m 700 -p /work/new"
+
+
+def test_fs_create_folder_raises_on_failure() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona", stderr="permission denied", exit_code=1)
+        with pytest.raises(FileSystemError, match="create_folder"):
+            sbx.fs.create_folder("/no/way")
+
+
+def test_fs_delete_file_recursive_uses_rf() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona")
+        sbx.fs.delete_file("/work/junk", recursive=True)
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "rm -rf /work/junk"
+
+
+def test_fs_delete_file_non_recursive_uses_f() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona")
+        sbx.fs.delete_file("/work/x.txt")
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "rm -f /work/x.txt"
+
+
+def test_fs_get_file_info_returns_parsed() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(
+            transport,
+            "vm_daytona",
+            stdout="x.txt|f|10|644|alice|users|1735776000.0\n",
+        )
+        info = sbx.fs.get_file_info("/work/x.txt")
+    assert isinstance(info, FileInfo)
+    assert info.name == "x.txt"
+    assert info.size == 10
+    assert info.is_dir is False
+
+
+def test_fs_get_file_info_raises_when_missing() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona", stderr="No such", exit_code=1)
+        with pytest.raises(FileSystemError):
+            sbx.fs.get_file_info("/nope")
+
+
+def test_fs_move_files_invokes_mv() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona")
+        sbx.fs.move_files("/a/b", "/c/d")
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "mv /a/b /c/d"
+
+
+def test_fs_find_files_parses_grep_output() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(
+            transport,
+            "vm_daytona",
+            stdout="/work/a.py:3:def foo():\n/work/b.py:17:def foo_bar():\n",
+        )
+        matches = sbx.fs.find_files("/work", "def foo")
+
+    assert matches == [
+        Match(file="/work/a.py", line=3, content="def foo():"),
+        Match(file="/work/b.py", line=17, content="def foo_bar():"),
+    ]
+
+
+def test_fs_find_files_returns_empty_on_no_match() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        # grep exit code 1 = no matches; we treat as not-an-error
+        _add_shell(transport, "vm_daytona", exit_code=1)
+        assert sbx.fs.find_files("/work", "xyz") == []
+
+
+def test_fs_set_file_permissions_mode_only() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona")
+        sbx.fs.set_file_permissions("/work/x", mode="755")
+        body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "chmod 755 /work/x"
+
+
+def test_fs_set_file_permissions_owner_and_group() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        _add_shell(transport, "vm_daytona")  # chmod
+        _add_shell(transport, "vm_daytona")  # chown
+        sbx.fs.set_file_permissions("/work/x", mode="600", owner="alice", group="staff")
+        body_chmod = json.loads(transport.calls[-2]["body"])
+        body_chown = json.loads(transport.calls[-1]["body"])
+    assert body_chmod["command"] == "chmod 600 /work/x"
+    assert body_chown["command"] == "chown alice:staff /work/x"
+
+
+def test_fs_unsupported_ops_raise_not_implemented() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.raises(NotImplementedError, match="search_files"):
+            sbx.fs.search_files("/work", "x")
+        with pytest.raises(NotImplementedError, match="replace_in_files"):
+            sbx.fs.replace_in_files(["/x"], "a", "b")
+        with pytest.raises(NotImplementedError, match="upload_files"):
+            sbx.fs.upload_files([])
+        with pytest.raises(NotImplementedError, match="upload_file_stream"):
+            sbx.fs.upload_file_stream(b"", "/x")
+        with pytest.raises(NotImplementedError, match="download_file_stream"):
+            sbx.fs.download_file_stream("/x")
+        with pytest.raises(NotImplementedError, match="download_files"):
+            sbx.fs.download_files([])
 
 
 def test_sandbox_delete_swallows_arker_errors() -> None:

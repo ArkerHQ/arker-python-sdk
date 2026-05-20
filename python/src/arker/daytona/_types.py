@@ -49,6 +49,37 @@ class ExecuteResponse:
     artifacts: ExecutionArtifacts | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class FileInfo:
+    name: str
+    is_dir: bool
+    size: int = 0
+    mode: int = 0
+    owner: str = ""
+    group: str = ""
+    mod_time: str = ""
+    permissions: str = ""
+
+
+@dataclasses.dataclass(frozen=True)
+class Match:
+    file: str
+    line: int
+    content: str
+
+
+@dataclasses.dataclass(frozen=True)
+class SearchFilesResponse:
+    files: list[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class ReplaceResult:
+    file: str
+    success: bool
+    error: str | None = None
+
+
 class DaytonaError(Exception):
     """Base error for the arker.daytona compat layer."""
 
