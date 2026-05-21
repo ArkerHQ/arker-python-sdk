@@ -92,19 +92,29 @@ def test_sandboxes_create_with_template_id() -> None:
     assert sbx.id == "vm_t"
 
 
-def test_sandboxes_get_attaches_to_existing() -> None:
+def test_sandboxes_get_returns_metadata_info() -> None:
+    """codesandbox: `sandboxes.get(id)` returns metadata (SandboxInfo), not
+    a connectable Sandbox. Use `resume(id)` for the latter."""
+    from arker.codesandbox import SandboxInfo
+
     transport = FakeTransport()
     transport.add_json(
         lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_existing"),
         200,
-        {"vm_id": "vm_existing", "owner_id": "o", "created_at": "now",
-         "state": "running", "sessions": []},
+        {"vm_id": "vm_existing", "owner_id": "o",
+         "created_at": "2026-01-15T10:30:00Z",
+         "state": "running", "sessions": [], "name": "my-sandbox"},
     )
     with patch("urllib.request.urlopen", transport):
         csb = _make_csb(transport)
-        sbx = csb.sandboxes.get("vm_existing")
-    assert sbx.id == "vm_existing"
-    assert sbx.bootupType == BootupType.RUNNING
+        info = csb.sandboxes.get("vm_existing")
+    assert isinstance(info, SandboxInfo)
+    assert info.id == "vm_existing"
+    assert info.title == "my-sandbox"
+    # created_at is a datetime, with camelCase alias too.
+    import datetime as _dt
+    assert isinstance(info.created_at, _dt.datetime)
+    assert info.createdAt == info.created_at
 
 
 def test_sandboxes_get_404_raises_not_found() -> None:
@@ -243,12 +253,17 @@ def test_sandbox_update_tier_raises() -> None:
             sbx.updateTier(None)
 
 
-def test_sandbox_update_hibernation_timeout_warns() -> None:
+def test_sandbox_update_hibernation_timeout_is_silent() -> None:
+    """codesandbox doesn't warn either — match it. Local storage only."""
+    import warnings as _warnings
+
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _create_sandbox(transport)
-        with pytest.warns(UserWarning, match="local"):
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
             sbx.updateHibernationTimeout(300)
+        assert not caught, f"unexpected warnings: {caught}"
 
 
 # ----- Commands -----
@@ -388,11 +403,16 @@ def test_fs_readdir_parses_find_output() -> None:
             _completed(stdout="readme.txt|f\nsrc|d\nlinky|l\n"),
         )
         entries = client_obj.fs.readdir("/sandbox")
+    # codesandbox: type is only "file" | "directory"; symlinks carry
+    # `is_symlink=True` and `type` set to the resolved kind ("file" is
+    # the best we can do without lstat).
     assert entries == [
         ReaddirEntry(name="readme.txt", type="file", is_symlink=False),
         ReaddirEntry(name="src", type="directory", is_symlink=False),
-        ReaddirEntry(name="linky", type="symlink", is_symlink=True),
+        ReaddirEntry(name="linky", type="file", is_symlink=True),
     ]
+    # camelCase alias works too.
+    assert entries[2].isSymlink is True
 
 
 def test_fs_stat_parses_find_output() -> None:
@@ -442,7 +462,8 @@ def test_fs_remove_recursive() -> None:
     assert body["command"] == "rm -rf /sandbox/junk"
 
 
-def test_fs_rename_uses_mv() -> None:
+def test_fs_rename_default_no_clobber() -> None:
+    """codesandbox default: overwrite=False (no clobber). We use `mv -n`."""
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _create_sandbox(transport)
@@ -454,10 +475,25 @@ def test_fs_rename_uses_mv() -> None:
         )
         client_obj.fs.rename("/a", "/b")
         body = json.loads(transport.calls[-1]["body"])
+    assert body["command"] == "mv -n /a /b"
+
+
+def test_fs_rename_overwrite_true_clobbers() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _create_sandbox(transport)
+        client_obj = sbx.connect()
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_csb/run"),
+            200,
+            _completed(),
+        )
+        client_obj.fs.rename("/a", "/b", overwrite=True)
+        body = json.loads(transport.calls[-1]["body"])
     assert body["command"] == "mv /a /b"
 
 
-def test_fs_copy_uses_cp() -> None:
+def test_fs_copy_default_no_clobber() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _create_sandbox(transport)
@@ -468,6 +504,22 @@ def test_fs_copy_uses_cp() -> None:
             _completed(),
         )
         client_obj.fs.copy("/src", "/dst", recursive=True)
+        body = json.loads(transport.calls[-1]["body"])
+    # Default overwrite=False → `cp -r -n`.
+    assert body["command"] == "cp -r -n /src /dst"
+
+
+def test_fs_copy_overwrite_true_clobbers() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _create_sandbox(transport)
+        client_obj = sbx.connect()
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_csb/run"),
+            200,
+            _completed(),
+        )
+        client_obj.fs.copy("/src", "/dst", recursive=True, overwrite=True)
         body = json.loads(transport.calls[-1]["body"])
     assert body["command"] == "cp -r /src /dst"
 
@@ -491,6 +543,119 @@ def test_fs_download_raises_not_implemented() -> None:
 
 
 # ----- Unsupported namespaces -----
+
+def test_list_response_always_has_pagination_and_has_more() -> None:
+    """codesandbox invariant: pagination + hasMore always present."""
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms"),
+        200,
+        {
+            "vms": [
+                {"vm_id": f"vm_{i}", "owner_id": "o", "created_at": "now",
+                 "state": "running", "sessions": []}
+                for i in range(5)
+            ],
+        },
+    )
+    with patch("urllib.request.urlopen", transport):
+        csb = _make_csb(transport)
+        resp = csb.sandboxes.list({"pagination": {"page": 1, "pageSize": 2}})
+    assert resp.pagination is not None
+    assert resp.has_more is True
+    assert resp.hasMore is True
+    assert resp.pagination.next_page == 2
+    assert resp.pagination.nextPage == 2  # camelCase alias
+
+
+def test_list_response_has_more_false_when_exhausted() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms"),
+        200,
+        {
+            "vms": [
+                {"vm_id": "vm_0", "owner_id": "o", "created_at": "now",
+                 "state": "running", "sessions": []}
+            ],
+        },
+    )
+    with patch("urllib.request.urlopen", transport):
+        csb = _make_csb(transport)
+        resp = csb.sandboxes.list({"pagination": {"page": 1, "pageSize": 10}})
+    assert resp.has_more is False
+    assert resp.pagination.next_page is None
+
+
+def test_list_unsupported_filters_raise() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        csb = _make_csb(transport)
+        with pytest.raises(CodeSandboxError, match="status"):
+            csb.sandboxes.list({"status": "running"})
+        with pytest.raises(CodeSandboxError, match="orderBy"):
+            csb.sandboxes.list({"orderBy": "updated_at"})
+        with pytest.raises(CodeSandboxError, match="direction"):
+            csb.sandboxes.list({"direction": "asc"})
+
+
+def test_fs_stat_has_is_symlink_field() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _create_sandbox(transport)
+        client_obj = sbx.connect()
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_csb/run"),
+            200,
+            _completed(stdout="l|10|1735776100.0|1735776000.0|1735776200.0\n"),
+        )
+        info = client_obj.fs.stat("/sandbox/link")
+    assert info.is_symlink is True
+    assert info.isSymlink is True  # camelCase alias
+
+
+def test_writefile_overwrite_false_raises_when_exists() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _create_sandbox(transport)
+        client_obj = sbx.connect()
+        # `test -e` returns exit_code=0; we encode stdout="0\n" to indicate exists.
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_csb/run"),
+            200,
+            _completed(stdout="0\n"),
+        )
+        with pytest.raises(CodeSandboxError, match="overwrite"):
+            client_obj.fs.writeTextFile("/x.txt", "data", {"overwrite": False})
+
+
+def test_writefile_create_false_raises_when_missing() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _create_sandbox(transport)
+        client_obj = sbx.connect()
+        # test -e returns 1 → encode as stdout="1\n".
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_csb/run"),
+            200,
+            _completed(stdout="1\n"),
+        )
+        with pytest.raises(CodeSandboxError, match="create=False"):
+            client_obj.fs.writeTextFile("/x.txt", "data", {"create": False})
+
+
+def test_create_with_non_default_privacy_warns() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
+        200,
+        {"vm_id": "vm_p", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    with patch("urllib.request.urlopen", transport):
+        csb = _make_csb(transport)
+        with pytest.warns(UserWarning, match="privacy"):
+            csb.sandboxes.create({"privacy": "private"})
+
 
 def test_shells_namespace_raises() -> None:
     transport = FakeTransport()

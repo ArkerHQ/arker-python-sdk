@@ -58,16 +58,10 @@ class Sandbox:
         )
 
     def updateHibernationTimeout(self, timeout_seconds: int) -> None:  # noqa: N802
-        """Codesandbox's hibernation timeout — local-only warning since
-        Arker has no SDK-level VM TTL."""
-        import warnings
-
-        warnings.warn(
-            f"arker.codesandbox: updateHibernationTimeout({timeout_seconds}) "
-            "is stored locally only — Arker has no server-side hibernation "
-            "or auto-stop yet. VMs live until explicitly killed.",
-            stacklevel=2,
-        )
+        """Stored locally — Arker has no server-side hibernation. Matches
+        codesandbox: silent success. (Documented behavior in __init__.py;
+        no warning because codesandbox doesn't warn either, and a warning
+        on every call would leak into customer logs.)"""
         self._hibernation_timeout_seconds = timeout_seconds
 
     update_tier = updateTier

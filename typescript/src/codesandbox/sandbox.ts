@@ -33,13 +33,9 @@ export class Sandbox {
     );
   }
 
-  /** Local-only — Arker has no server-side hibernation. */
+  /** Stored locally — Arker has no server-side hibernation. Silent success
+   * (matches codesandbox, which also doesn't warn). */
   async updateHibernationTimeout(timeoutSeconds: number): Promise<void> {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `arker.codesandbox: updateHibernationTimeout(${timeoutSeconds}) is stored locally only — ` +
-        `Arker has no server-side hibernation. VMs live until explicitly killed.`,
-    );
     this._hibernationTimeoutSeconds = timeoutSeconds;
   }
 

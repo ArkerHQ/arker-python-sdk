@@ -30,6 +30,26 @@ export interface ListOpts {
   limit?: number;
   pagination?: { page?: number; pageSize?: number };
   orderBy?: string;
+  direction?: "asc" | "desc";
+  status?: string;
+}
+
+function parseDate(value: unknown): Date | null {
+  if (typeof value !== "string" || !value) return null;
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function _vmToInfo(vm: { vm_id?: string; name?: string; created_at?: string; last_activity?: string }): SandboxInfo {
+  return {
+    id: String(vm.vm_id ?? ""),
+    title: vm.name ?? null,
+    description: null,
+    tags: [],
+    privacy: "public-hosts",
+    createdAt: parseDate(vm.created_at),
+    updatedAt: parseDate(vm.last_activity),
+  };
 }
 
 export interface CodeSandboxOpts {
@@ -56,6 +76,14 @@ export class Sandboxes {
 
   async create(opts: CreateSandboxOpts = {}): Promise<Sandbox> {
     const template = resolveTemplate(opts.id);
+    if (opts.privacy && opts.privacy !== "public-hosts") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `arker.codesandbox: sandboxes.create({privacy: ${JSON.stringify(opts.privacy)}}) is not enforced — ` +
+          `Arker doesn't store per-VM privacy. The sandbox is accessible to anyone with the VM id. ` +
+          `Set up network policies on Arker if you need access control.`,
+      );
+    }
     try {
       const computer = await this._arker.vm(template).fork(opts.title ? { name: opts.title } : {});
       return new Sandbox(this._arker, computer, "FORK", this._arker.region ?? "");
@@ -64,12 +92,18 @@ export class Sandboxes {
     }
   }
 
-  async get(sandboxId: string): Promise<Sandbox> {
+  /** Returns SandboxInfo (matches @codesandbox/sdk). For a connectable
+   * Sandbox handle, use `resume(id)`. */
+  async get(sandboxId: string): Promise<SandboxInfo> {
     if (!sandboxId) throw new CodeSandboxError("sandbox_id is required");
     try {
-      const info = (await this._arker.get(sandboxId)) as { state?: string };
-      const bootup = info.state === "running" ? "RUNNING" : "CLEAN";
-      return new Sandbox(this._arker, this._arker.vm(sandboxId), bootup, this._arker.region ?? "");
+      const info = (await this._arker.get(sandboxId)) as {
+        vm_id?: string;
+        name?: string;
+        created_at?: string;
+        last_activity?: string;
+      };
+      return _vmToInfo(info);
     } catch (error) {
       throw translateArkerError(error);
     }
@@ -127,40 +161,43 @@ export class Sandboxes {
         "arker.codesandbox: sandboxes.list({tags}) is not supported — Arker doesn't store sandbox tags server-side.",
       );
     }
+    for (const k of ["status", "orderBy", "direction"] as const) {
+      if (opts[k]) {
+        throw new CodeSandboxError(
+          `arker.codesandbox: sandboxes.list({${k}}) is not supported — ` +
+            `Arker's list endpoint doesn't honor it.`,
+        );
+      }
+    }
     let vms: Array<{ vm_id?: string; name?: string; created_at?: string; last_activity?: string }> = [];
     try {
       const response = (await this._arker.list()) as { vms?: typeof vms };
       vms = response.vms ?? [];
     } catch (error) {
       if (!(error instanceof ArkerError)) throw error;
-      return { sandboxes: [], totalCount: 0 };
+      return {
+        sandboxes: [],
+        totalCount: 0,
+        pagination: { currentPage: 1, nextPage: null, pageSize: opts.limit ?? 50 },
+        hasMore: false,
+      };
     }
     const infos: SandboxInfo[] = vms
       .filter((vm) => typeof vm.vm_id === "string")
-      .map((vm) => ({
-        id: vm.vm_id!,
-        title: vm.name ?? null,
-        description: null,
-        tags: [],
-        privacy: "public-hosts",
-        createdAt: vm.created_at ?? null,
-        updatedAt: vm.last_activity ?? null,
-      }));
+      .map(_vmToInfo);
     const total = infos.length;
-    if (opts.pagination) {
-      const page = Math.max(1, opts.pagination.page ?? 1);
-      const pageSize = Math.max(1, opts.pagination.pageSize ?? 50);
-      const start = (page - 1) * pageSize;
-      const items = infos.slice(start, start + pageSize);
-      const nextPage = start + pageSize < total ? page + 1 : null;
-      return {
-        sandboxes: items,
-        totalCount: total,
-        pagination: { currentPage: page, nextPage, pageSize },
-      };
-    }
-    const limit = opts.limit ?? 50;
-    return { sandboxes: infos.slice(0, limit), totalCount: total };
+    const page = Math.max(1, opts.pagination?.page ?? 1);
+    const pageSize = Math.max(1, opts.pagination?.pageSize ?? opts.limit ?? 50);
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const items = infos.slice(start, end);
+    const nextPage = end < total ? page + 1 : null;
+    return {
+      sandboxes: items,
+      totalCount: total,
+      pagination: { currentPage: page, nextPage, pageSize },
+      hasMore: end < total,
+    };
   }
 
   /** @deprecated alias for `create({ id })`. */

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 import os
 from typing import Any
@@ -16,6 +17,15 @@ from ._types import (
     SandboxListResponse,
     translate_arker_error,
 )
+
+
+def _parse_dt(value: Any) -> _dt.datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 logger = logging.getLogger("arker.codesandbox")
 
@@ -49,15 +59,26 @@ class Sandboxes:
         self,
         opts: dict | None = None,
     ) -> Sandbox:
-        """Fork a template into a new Sandbox. Codesandbox's `opts` includes:
-        - `id`: template id (we map to Arker golden)
-        - `title`/`description`/`tags`/`path`/`privacy`: codesandbox-only metadata
-        - `vmTier`, `automaticWakeupConfig`, `hibernationTimeoutSeconds`,
-          `ipcountry`: codesandbox-only routing/sizing
+        """Fork a template into a new Sandbox.
+
+        Most opts are accepted but ignored — see pending notes. Notable:
+        `privacy` (when set to non-default) emits a warning, since silently
+        defaulting to `public-hosts` would be a security-sensitive surprise.
         """
+        import warnings
+
         opts = opts or {}
         template_id = _resolve_template(opts.get("id"))
         title = opts.get("title")
+        privacy = opts.get("privacy")
+        if privacy and privacy != "public-hosts":
+            warnings.warn(
+                f"arker.codesandbox: sandboxes.create(privacy={privacy!r}) is not "
+                "enforced — Arker doesn't store per-VM privacy. The sandbox is "
+                "accessible to anyone with the VM id. Set up network policies on "
+                "Arker if you need access control.",
+                stacklevel=2,
+            )
         try:
             computer = self._arker.vm(template_id).fork(name=title)
         except ArkerError as error:
@@ -69,20 +90,17 @@ class Sandboxes:
             cluster=self._arker.region or "",
         )
 
-    def get(self, sandbox_id: str) -> Sandbox:
+    def get(self, sandbox_id: str) -> SandboxInfo:
+        """Returns metadata (matches `@codesandbox/sdk`). For a connectable
+        Sandbox, use `sandboxes.resume(id)` or hold the Sandbox returned by
+        `sandboxes.create()` / `restart()` directly."""
         if not sandbox_id:
             raise CodeSandboxError("sandbox_id is required")
         try:
             info = self._arker.get(sandbox_id)
         except ArkerError as error:
             raise translate_arker_error(error) from error
-        bootup = BootupType.RUNNING if info.state == "running" else BootupType.CLEAN
-        return Sandbox(
-            self._arker,
-            self._arker.vm(info.vm_id),
-            bootup_type=bootup,
-            cluster=self._arker.region or "",
-        )
+        return _vm_to_info(info)
 
     def resume(self, sandbox_id: str) -> Sandbox:
         """Codesandbox: wakes up from hibernation. Arker has no hibernation —
@@ -151,15 +169,21 @@ class Sandboxes:
         )
 
     def list(self, opts: dict | None = None) -> SandboxListResponse:
-        """Codesandbox: list sandboxes with optional tag filter + pagination.
-        Tags aren't stored server-side in Arker — we honor `limit` and
-        `pagination.page/pageSize` client-side."""
+        """List sandboxes. Pagination is always populated (matches codesandbox
+        invariant). Unsupported filters (`tags`, `status`, `orderBy`,
+        `direction`) raise instead of silently dropping."""
         opts = opts or {}
         if opts.get("tags"):
             raise CodeSandboxError(
                 "arker.codesandbox: sandboxes.list({tags}) is not supported — "
                 "Arker doesn't store sandbox tags server-side. Filter client-side."
             )
+        for unsupported in ("status", "orderBy", "direction"):
+            if opts.get(unsupported):
+                raise CodeSandboxError(
+                    f"arker.codesandbox: sandboxes.list({{{unsupported}}}) is "
+                    "not supported — Arker's list endpoint doesn't honor it."
+                )
         try:
             vms = self._arker.list().vms
         except ArkerError as error:
@@ -167,27 +191,22 @@ class Sandboxes:
 
         infos = [_vm_to_info(vm) for vm in vms]
         total = len(infos)
-        pagination_opts = opts.get("pagination")
-        if pagination_opts:
-            page = max(1, int(pagination_opts.get("page", 1)))
-            page_size = max(1, int(pagination_opts.get("pageSize", 50)))
-            start = (page - 1) * page_size
-            page_items = infos[start:start + page_size]
-            next_page = page + 1 if start + page_size < total else None
-            return SandboxListResponse(
-                sandboxes=page_items,
-                total_count=total,
-                pagination=PaginationInfo(
-                    current_page=page,
-                    next_page=next_page,
-                    page_size=page_size,
-                ),
-            )
-        limit = int(opts.get("limit", 50))
+        pagination_opts = opts.get("pagination") or {}
+        page = max(1, int(pagination_opts.get("page", 1)))
+        page_size = max(1, int(pagination_opts.get("pageSize") or opts.get("limit", 50)))
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_items = infos[start:end]
+        next_page = page + 1 if end < total else None
         return SandboxListResponse(
-            sandboxes=infos[:limit],
+            sandboxes=page_items,
             total_count=total,
-            pagination=None,
+            pagination=PaginationInfo(
+                current_page=page,
+                next_page=next_page,
+                page_size=page_size,
+            ),
+            has_more=end < total,
         )
 
     def fork(self, sandbox_id: str, opts: dict | None = None) -> Sandbox:
@@ -231,6 +250,6 @@ def _vm_to_info(vm: VmInfo) -> SandboxInfo:
         description=None,
         tags=[],
         privacy="public-hosts",
-        created_at=vm.created_at,
-        updated_at=vm.last_activity,
+        created_at=_parse_dt(vm.created_at),
+        updated_at=_parse_dt(vm.last_activity),
     )

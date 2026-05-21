@@ -13,8 +13,9 @@ export interface SandboxInfo {
   description?: string | null;
   tags: string[];
   privacy: string;
-  createdAt?: string | null;
-  updatedAt?: string | null;
+  /** Matches `@codesandbox/sdk`: real `Date` instances, not raw strings. */
+  createdAt?: Date | null;
+  updatedAt?: Date | null;
 }
 
 export interface PaginationInfo {
@@ -26,21 +27,28 @@ export interface PaginationInfo {
 export interface SandboxListResponse {
   sandboxes: SandboxInfo[];
   totalCount: number;
-  pagination?: PaginationInfo;
+  /** Matches codesandbox: pagination is always present (not optional). */
+  pagination: PaginationInfo;
+  /** Matches codesandbox: `hasMore` is the canonical "more pages?" flag. */
+  hasMore: boolean;
 }
 
 export interface ReaddirEntry {
   name: string;
-  type: "file" | "directory" | "symlink";
+  /** Matches codesandbox: only "file" / "directory". Symlinks carry
+   * `isSymlink: true` and `type` set to the resolved kind. */
+  type: "file" | "directory";
   isSymlink: boolean;
 }
 
 export interface FSStatResult {
-  type: "file" | "directory" | "symlink";
+  type: "file" | "directory";
   size: number;
   atime: number;
   mtime: number;
   ctime: number;
+  /** Matches codesandbox: symlinks are flagged separately from `type`. */
+  isSymlink: boolean;
 }
 
 export interface Command {

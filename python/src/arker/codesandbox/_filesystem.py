@@ -31,11 +31,16 @@ _READDIR_FMT = "%f|%y\\n"
 
 
 def _kind_to_type(kind: str) -> str:
+    # Symlinks: `kind == "l"`. We don't resolve through to the target here;
+    # codesandbox's daemon does. Best approximation: treat as "file" and let
+    # the `is_symlink` flag carry the truth (matches their FileInfo shape).
     if kind == "d":
         return "directory"
-    if kind == "l":
-        return "symlink"
     return "file"
+
+
+def _is_symlink(kind: str) -> bool:
+    return kind == "l"
 
 
 class Filesystem:
@@ -55,18 +60,36 @@ class Filesystem:
     def readTextFile(self, path: str) -> str:  # noqa: N802
         return self.readFile(path).decode("utf-8", errors="replace")
 
-    def writeFile(self, path: str, content: bytes) -> None:  # noqa: N802
+    def writeFile(self, path: str, content: bytes, opts: dict | None = None) -> None:  # noqa: N802
+        self._apply_write_opts(path, opts)
         try:
             self._client._sandbox._computer.sync.write_file(path, bytes(content))
         except ArkerError as error:
             raise translate_arker_error(error) from error
 
     def writeTextFile(self, path: str, content: str, opts: dict | None = None) -> None:  # noqa: N802
-        del opts  # `createIfNotExists` and friends — accepted but unused
+        self._apply_write_opts(path, opts)
         try:
             self._client._sandbox._computer.sync.write_file(path, content)
         except ArkerError as error:
             raise translate_arker_error(error) from error
+
+    def _apply_write_opts(self, path: str, opts: dict | None) -> None:
+        """Honor codesandbox's `{create, overwrite}` semantics. Default for
+        both is True (matches @codesandbox/sdk)."""
+        if not opts:
+            return
+        create = opts.get("create", True)
+        overwrite = opts.get("overwrite", True)
+        if create and overwrite:
+            return
+        # Need to check existence to enforce either flag.
+        exists_stdout, _, exists_code = self._shell(f"test -e {shlex.quote(path)}; echo $?")
+        exists = exists_stdout.strip() == "0"
+        if exists and not overwrite:
+            raise CodeSandboxError(f"writeFile({path!r}): file exists and overwrite=False")
+        if not exists and not create:
+            raise CodeSandboxError(f"writeFile({path!r}): file does not exist and create=False")
 
     # Snake-case aliases for users coming from the Python conventions.
     read_file = readFile
@@ -90,7 +113,7 @@ class Filesystem:
             entries.append(ReaddirEntry(
                 name=name,
                 type=_kind_to_type(kind),
-                is_symlink=kind == "l",
+                is_symlink=_is_symlink(kind),
             ))
         return entries
 
@@ -110,6 +133,7 @@ class Filesystem:
             atime=float(atime_s) if atime_s else 0.0,
             mtime=float(mtime_s) if mtime_s else 0.0,
             ctime=float(ctime_s) if ctime_s else 0.0,
+            is_symlink=_is_symlink(kind),
         )
 
     def mkdir(self, path: str, recursive: bool = False) -> None:
@@ -125,18 +149,25 @@ class Filesystem:
             raise CodeSandboxError(f"remove({path!r}) failed: {stderr.strip()}")
 
     def rename(self, from_path: str, to_path: str, overwrite: bool = False) -> None:
-        del overwrite  # `mv` overwrites by default
-        _, stderr, exit_code = self._shell(
-            f"mv {shlex.quote(from_path)} {shlex.quote(to_path)}"
-        )
+        """Default `overwrite=False` matches `@codesandbox/sdk` — silent
+        clobber would be a data-loss footgun."""
+        parts = ["mv"]
+        if not overwrite:
+            parts.append("-n")
+        parts.extend([shlex.quote(from_path), shlex.quote(to_path)])
+        _, stderr, exit_code = self._shell(" ".join(parts))
         if exit_code != 0:
             raise CodeSandboxError(f"rename failed: {stderr.strip()}")
 
-    def copy(self, from_path: str, to_path: str, recursive: bool = False) -> None:
-        flag = "-r" if recursive else ""
-        _, stderr, exit_code = self._shell(
-            f"cp {flag} {shlex.quote(from_path)} {shlex.quote(to_path)}".strip()
-        )
+    def copy(self, from_path: str, to_path: str, recursive: bool = False, overwrite: bool = False) -> None:
+        """Default `overwrite=False` matches `@codesandbox/sdk`."""
+        parts = ["cp"]
+        if recursive:
+            parts.append("-r")
+        if not overwrite:
+            parts.append("-n")
+        parts.extend([shlex.quote(from_path), shlex.quote(to_path)])
+        _, stderr, exit_code = self._shell(" ".join(parts))
         if exit_code != 0:
             raise CodeSandboxError(f"copy failed: {stderr.strip()}")
 

@@ -18,10 +18,15 @@ function decode(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 }
 
-function kindToType(kind: string): "file" | "directory" | "symlink" {
+function kindToType(kind: string): "file" | "directory" {
+  // Symlinks: resolved-kind best-effort approximation; the `isSymlink`
+  // flag carries the real bit (matches @codesandbox/sdk).
   if (kind === "d") return "directory";
-  if (kind === "l") return "symlink";
   return "file";
+}
+
+function isSymlinkKind(kind: string): boolean {
+  return kind === "l";
 }
 
 /** Mirrors `@codesandbox/sdk` SandboxClient.fs. */
@@ -46,7 +51,8 @@ export class Filesystem {
     return decode(await this.readFile(path));
   }
 
-  async writeFile(path: string, content: Uint8Array): Promise<void> {
+  async writeFile(path: string, content: Uint8Array, opts: { create?: boolean; overwrite?: boolean } = {}): Promise<void> {
+    await this.applyWriteOpts(path, opts);
     try {
       await this.client._sandbox._computer.sync.writeFile(path, content);
     } catch (error) {
@@ -54,11 +60,26 @@ export class Filesystem {
     }
   }
 
-  async writeTextFile(path: string, content: string, _opts: Record<string, unknown> = {}): Promise<void> {
+  async writeTextFile(path: string, content: string, opts: { create?: boolean; overwrite?: boolean } = {}): Promise<void> {
+    await this.applyWriteOpts(path, opts);
     try {
       await this.client._sandbox._computer.sync.writeFile(path, content);
     } catch (error) {
       throw translateArkerError(error);
+    }
+  }
+
+  private async applyWriteOpts(path: string, opts: { create?: boolean; overwrite?: boolean }): Promise<void> {
+    const create = opts.create ?? true;
+    const overwrite = opts.overwrite ?? true;
+    if (create && overwrite) return;
+    const { stdout } = await this.shell(`test -e ${shellQuote(path)}; echo $?`);
+    const exists = stdout.trim() === "0";
+    if (exists && !overwrite) {
+      throw new CodeSandboxError(`writeFile(${path}): file exists and overwrite=false`);
+    }
+    if (!exists && !create) {
+      throw new CodeSandboxError(`writeFile(${path}): file does not exist and create=false`);
     }
   }
 
@@ -75,7 +96,7 @@ export class Filesystem {
       const lastPipe = line.lastIndexOf("|");
       const name = line.slice(0, lastPipe);
       const kind = line.slice(lastPipe + 1);
-      entries.push({ name, type: kindToType(kind), isSymlink: kind === "l" });
+      entries.push({ name, type: kindToType(kind), isSymlink: isSymlinkKind(kind) });
     }
     return entries;
   }
@@ -96,6 +117,7 @@ export class Filesystem {
       atime: Number(atimeStr) || 0,
       mtime: Number(mtimeStr) || 0,
       ctime: Number(ctimeStr) || 0,
+      isSymlink: isSymlinkKind(kind ?? ""),
     };
   }
 
@@ -111,16 +133,20 @@ export class Filesystem {
     if (exitCode !== 0) throw new CodeSandboxError(`remove(${path}) failed: ${stderr.trim()}`);
   }
 
-  async rename(from: string, to: string, _overwrite: boolean = false): Promise<void> {
-    const { stderr, exitCode } = await this.shell(`mv ${shellQuote(from)} ${shellQuote(to)}`);
+  async rename(from: string, to: string, overwrite: boolean = false): Promise<void> {
+    const parts = ["mv"];
+    if (!overwrite) parts.push("-n");
+    parts.push(shellQuote(from), shellQuote(to));
+    const { stderr, exitCode } = await this.shell(parts.join(" "));
     if (exitCode !== 0) throw new CodeSandboxError(`rename failed: ${stderr.trim()}`);
   }
 
-  async copy(from: string, to: string, recursive: boolean = false): Promise<void> {
-    const flag = recursive ? "-r" : "";
-    const { stderr, exitCode } = await this.shell(
-      `cp ${flag} ${shellQuote(from)} ${shellQuote(to)}`.trim(),
-    );
+  async copy(from: string, to: string, recursive: boolean = false, overwrite: boolean = false): Promise<void> {
+    const parts = ["cp"];
+    if (recursive) parts.push("-r");
+    if (!overwrite) parts.push("-n");
+    parts.push(shellQuote(from), shellQuote(to));
+    const { stderr, exitCode } = await this.shell(parts.join(" "));
     if (exitCode !== 0) throw new CodeSandboxError(`copy failed: ${stderr.trim()}`);
   }
 

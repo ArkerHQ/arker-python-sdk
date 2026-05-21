@@ -96,17 +96,20 @@ async function testCreateWithTemplateId(): Promise<void> {
   assert.equal(sbx.id, "vm_t");
 }
 
-async function testGetReturnsSandbox(): Promise<void> {
+async function testGetReturnsMetadataInfo(): Promise<void> {
+  // codesandbox: sandboxes.get(id) returns SandboxInfo, not a connectable Sandbox.
   const f = new FakeFetch();
   f.addJson(
     (m, u) => m === "GET" && u === `${BASE}/v1/vms/vm_x`,
     200,
-    { vm_id: "vm_x", owner_id: "o", created_at: "now", state: "running", sessions: [] },
+    { vm_id: "vm_x", owner_id: "o", created_at: "2026-01-15T10:30:00Z", state: "running", sessions: [], name: "my-sandbox" },
   );
   const csb = new CodeSandbox(undefined, { _arker: makeArker(f) });
-  const sbx = await csb.sandboxes.get("vm_x");
-  assert.equal(sbx.id, "vm_x");
-  assert.equal(sbx.bootupType, "RUNNING");
+  const info = await csb.sandboxes.get("vm_x");
+  assert.equal(info.id, "vm_x");
+  assert.equal(info.title, "my-sandbox");
+  // createdAt is a real Date.
+  assert.ok(info.createdAt instanceof Date);
 }
 
 async function testGet404Throws(): Promise<void> {
@@ -259,10 +262,11 @@ async function testReaddirParses(): Promise<void> {
     200, completedRun("readme.txt|f\nsrc|d\nlinky|l\n"),
   );
   const entries: ReaddirEntry[] = await client.fs.readdir("/sandbox");
+  // codesandbox: type is "file" | "directory" only; symlinks carry isSymlink: true.
   assert.deepEqual(entries, [
     { name: "readme.txt", type: "file", isSymlink: false },
     { name: "src", type: "directory", isSymlink: false },
-    { name: "linky", type: "symlink", isSymlink: true },
+    { name: "linky", type: "file", isSymlink: true },
   ]);
 }
 
@@ -294,7 +298,8 @@ async function testCopyRecursive(): Promise<void> {
   f.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_csb/run`, 200, completedRun());
   await client.fs.copy("/src", "/dst", true);
   const body = JSON.parse(f.calls[f.calls.length - 1]!.body!);
-  assert.equal(body.command, "cp -r '/src' '/dst'");
+  // Default overwrite=false → `cp -r -n` (no clobber, matches codesandbox).
+  assert.equal(body.command, "cp -r -n '/src' '/dst'");
 }
 
 async function testWatchThrows(): Promise<void> {
@@ -326,11 +331,88 @@ async function testHostsThrows(): Promise<void> {
   assert.throws(() => csb.hosts.token(), /hosts/);
 }
 
+async function testListPaginationAlwaysPresent(): Promise<void> {
+  const f = new FakeFetch();
+  f.addJson(
+    (m, u) => m === "GET" && u === `${BASE}/v1/vms`,
+    200,
+    {
+      vms: Array.from({ length: 3 }, (_, i) => ({
+        vm_id: `vm_${i}`, owner_id: "o", created_at: "now",
+        state: "running", sessions: [],
+      })),
+    },
+  );
+  const csb = new CodeSandbox(undefined, { _arker: makeArker(f) });
+  // No pagination arg — pagination should still be returned.
+  const resp = await csb.sandboxes.list();
+  assert.ok(resp.pagination);
+  assert.equal(resp.pagination.currentPage, 1);
+  assert.equal(resp.hasMore, false);
+}
+
+async function testListUnsupportedFiltersThrow(): Promise<void> {
+  const f = new FakeFetch();
+  const csb = new CodeSandbox(undefined, { _arker: makeArker(f) });
+  await assert.rejects(() => csb.sandboxes.list({ status: "running" }), /status/);
+  await assert.rejects(() => csb.sandboxes.list({ orderBy: "updated_at" }), /orderBy/);
+  await assert.rejects(() => csb.sandboxes.list({ direction: "asc" }), /direction/);
+}
+
+async function testStatHasIsSymlink(): Promise<void> {
+  const f = new FakeFetch();
+  const { client } = await makeSandboxAndClient(f);
+  f.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_csb/run`,
+    200, completedRun("l|10|1735776100.0|1735776000.0|1735776200.0\n"),
+  );
+  const info = await client.fs.stat("/sandbox/link");
+  assert.equal(info.isSymlink, true);
+  // type is the resolved kind ("file" as best-effort), not "symlink".
+  assert.equal(info.type, "file");
+}
+
+async function testWriteFileOverwriteFalseThrowsWhenExists(): Promise<void> {
+  const f = new FakeFetch();
+  const { client } = await makeSandboxAndClient(f);
+  // test -e returns 0 → encode as stdout="0\n"
+  f.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_csb/run`, 200, completedRun("0\n"));
+  await assert.rejects(
+    () => client.fs.writeTextFile("/x.txt", "data", { overwrite: false }),
+    /overwrite=false/,
+  );
+}
+
+async function testRenameDefaultNoClobber(): Promise<void> {
+  const f = new FakeFetch();
+  const { client } = await makeSandboxAndClient(f);
+  f.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_csb/run`, 200, completedRun());
+  await client.fs.rename("/a", "/b");
+  const body = JSON.parse(f.calls[f.calls.length - 1]!.body!);
+  assert.equal(body.command, "mv -n '/a' '/b'");
+}
+
+async function testCreateWithNonDefaultPrivacyWarns(): Promise<void> {
+  const f = new FakeFetch();
+  scriptFork(f);
+  const csb = new CodeSandbox(undefined, { _arker: makeArker(f) });
+  // Capture console.warn output.
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+  try {
+    await csb.sandboxes.create({ privacy: "private" });
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.ok(warnings.some((w) => w.includes("privacy")));
+}
+
 // ----- Run all -----
 
 await testCreate();
 await testCreateWithTemplateId();
-await testGetReturnsSandbox();
+await testGetReturnsMetadataInfo();
 await testGet404Throws();
 await testResumeSetsBootupResume();
 await testDelete();
@@ -351,5 +433,11 @@ await testWatchThrows();
 await testShellsThrows();
 await testPortsThrows();
 await testHostsThrows();
+await testListPaginationAlwaysPresent();
+await testListUnsupportedFiltersThrow();
+await testStatHasIsSymlink();
+await testWriteFileOverwriteFalseThrowsWhenExists();
+await testRenameDefaultNoClobber();
+await testCreateWithNonDefaultPrivacyWarns();
 
 console.log("PASS unit_codesandbox");
