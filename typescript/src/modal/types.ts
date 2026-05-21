@@ -15,7 +15,6 @@ export enum FileType {
   File = "file",
   Directory = "directory",
   Symlink = "symlink",
-  Unknown = "unknown",
 }
 
 /** Mirrors `modal.FileInfo`. `isDir()` / `isFile()` / `isSymlink()` are methods,
@@ -62,15 +61,27 @@ export class FileInfo {
   isSymlink(): boolean { return this.type === FileType.Symlink; }
 }
 
-export interface Tunnel {
-  host: string;
-  port: number;
-  unencryptedHost?: string | null;
-  unencryptedPort?: number | null;
-  /** Convenience: https://host:port */
-  url: string;
-  /** Convenience tuple. */
-  tlsSocket: [string, number];
+/** Matches `modal.Tunnel`. `.url` omits `:443` (the implicit HTTPS port). */
+export class Tunnel {
+  readonly host: string;
+  readonly port: number;
+  readonly unencryptedHost: string | null;
+  readonly unencryptedPort: number | null;
+
+  constructor(init: { host: string; port: number; unencryptedHost?: string | null; unencryptedPort?: number | null }) {
+    this.host = init.host;
+    this.port = init.port;
+    this.unencryptedHost = init.unencryptedHost ?? null;
+    this.unencryptedPort = init.unencryptedPort ?? null;
+  }
+
+  get url(): string {
+    return this.port === 443 ? `https://${this.host}` : `https://${this.host}:${this.port}`;
+  }
+
+  get tlsSocket(): [string, number] {
+    return [this.host, this.port];
+  }
 }
 
 export interface SandboxConnectCredentials {
@@ -99,10 +110,47 @@ export class FilesystemExecutionError extends SandboxError {
   override name = "FilesystemExecutionError";
 }
 
-/** Mirrors modal.exception.InvalidError — raised on relative paths in fs
- * operations and by `ContainerProcess.returncode` pre-wait. */
+/** Mirrors modal.exception.InvalidError. */
 export class InvalidError extends SandboxError {
   override name = "InvalidError";
+}
+
+// Granular filesystem exceptions — modal raises these specifically.
+export class SandboxFilesystemNotFoundError extends FilesystemExecutionError {
+  override name = "SandboxFilesystemNotFoundError";
+}
+export class SandboxFilesystemPermissionError extends FilesystemExecutionError {
+  override name = "SandboxFilesystemPermissionError";
+}
+export class SandboxFilesystemIsADirectoryError extends FilesystemExecutionError {
+  override name = "SandboxFilesystemIsADirectoryError";
+}
+export class SandboxFilesystemNotADirectoryError extends FilesystemExecutionError {
+  override name = "SandboxFilesystemNotADirectoryError";
+}
+export class SandboxFilesystemDirectoryNotEmptyError extends FilesystemExecutionError {
+  override name = "SandboxFilesystemDirectoryNotEmptyError";
+}
+export class SandboxFilesystemPathAlreadyExistsError extends FilesystemExecutionError {
+  override name = "SandboxFilesystemPathAlreadyExistsError";
+}
+export class SandboxFilesystemFileTooLargeError extends FilesystemExecutionError {
+  override name = "SandboxFilesystemFileTooLargeError";
+}
+
+/** Map a shell stderr string to the right SandboxFilesystem* subclass. */
+export function classifyFsError(stderr: string, defaultMessage: string = ""): FilesystemExecutionError {
+  const s = stderr || defaultMessage;
+  const msg = s.trim() || defaultMessage || "filesystem error";
+  const sl = s.toLowerCase();
+  if (sl.includes("no such") || sl.includes("cannot access")) return new SandboxFilesystemNotFoundError(msg);
+  if (sl.includes("permission denied")) return new SandboxFilesystemPermissionError(msg);
+  if (sl.includes("is a directory")) return new SandboxFilesystemIsADirectoryError(msg);
+  if (sl.includes("not a directory")) return new SandboxFilesystemNotADirectoryError(msg);
+  if (sl.includes("directory not empty")) return new SandboxFilesystemDirectoryNotEmptyError(msg);
+  if (sl.includes("file exists") || sl.includes("already exists")) return new SandboxFilesystemPathAlreadyExistsError(msg);
+  if (sl.includes("file too large") || sl.includes("no space")) return new SandboxFilesystemFileTooLargeError(msg);
+  return new FilesystemExecutionError(msg);
 }
 
 export function translateArkerError(error: unknown): SandboxError {

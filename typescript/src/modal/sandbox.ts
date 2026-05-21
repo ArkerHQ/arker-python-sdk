@@ -81,13 +81,19 @@ export interface CreateOpts {
 }
 
 export interface ExecOpts {
-  stdout?: StreamType | number;
-  stderr?: StreamType | number;
+  stdout?: StreamType | "pipe" | "ignore";
+  stderr?: StreamType | "pipe" | "ignore";
+  /** Modal-py canonical: seconds. */
   timeout?: number;
+  /** Modal-js canonical: milliseconds. Takes precedence over `timeout`. */
+  timeoutMs?: number;
   workdir?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | null | undefined>;
   secrets?: unknown;
+  /** Modal-py canonical (`text=true` → str, `text=false` → bytes). */
   text?: boolean;
+  /** Modal-js canonical: "text" | "binary". Maps to `text` when set. */
+  mode?: "text" | "binary";
   bufsize?: number;
   pty?: boolean;
 }
@@ -175,7 +181,6 @@ export class Sandbox {
   static async list(opts: {
     appId?: string;
     tags?: Record<string, string>;
-    includeFinished?: boolean;
     _arker?: Arker;
   } = {}): Promise<Sandbox[]> {
     if (opts.tags && Object.keys(opts.tags).length > 0) {
@@ -193,10 +198,9 @@ export class Sandbox {
       if (error instanceof ArkerError) return [];
       throw error;
     }
-    // Default to running-only (matches modal's `include_finished=False`).
-    const filtered = vms.filter((vm) => opts.includeFinished || vm.state === "running");
-    return filtered
-      .filter((vm) => typeof vm.vm_id === "string")
+    // Always running-only — matches modal's hardcoded `include_finished=False`.
+    return vms
+      .filter((vm) => vm.state === "running" && typeof vm.vm_id === "string")
       .map((vm) => new Sandbox(arker, arker.vm(vm.vm_id!)));
   }
 
@@ -219,7 +223,8 @@ export class Sandbox {
       );
     }
     let cmd = args.map(shellQuote).join(" ");
-    const mergedEnv = { ...this._env, ...(opts.env ?? {}) };
+    // Modal allows `env={"X": null}` to drop X — filter Nones before merge.
+    const mergedEnv = filterEnv({ ...this._env, ...(opts.env ?? {}) });
     if (Object.keys(mergedEnv).length > 0) {
       const envParts = Object.entries(mergedEnv).map(([k, v]) => `${shellQuote(k)}=${shellQuote(v)}`).join(" ");
       cmd = `env ${envParts} ${cmd}`;
@@ -228,16 +233,21 @@ export class Sandbox {
       cmd = `cd ${shellQuote(opts.workdir)} && ${cmd}`;
     }
 
+    // Normalize timeout (modal-js uses ms, modal-py uses seconds).
+    const timeoutSec = opts.timeoutMs != null ? Math.ceil(opts.timeoutMs / 1000) : opts.timeout;
+    // Normalize text/mode (modal-js uses `mode: "text"|"binary"`, modal-py `text: bool`).
+    const text = opts.mode != null ? opts.mode === "text" : (opts.text ?? true);
+
     let result;
     try {
-      result = (await this._computer.run(cmd, { background: true, timeout: opts.timeout })) as BackgroundRunResult;
+      result = (await this._computer.run(cmd, { background: true, timeout: timeoutSec })) as BackgroundRunResult;
     } catch (error) {
       throw translateArkerError(error);
     }
     if (result.type !== "background") {
       throw new SandboxError(`exec expected BackgroundRunResult, got ${result.type}`);
     }
-    return new ContainerProcess(this, result.runId, opts.text ?? true);
+    return new ContainerProcess(this, result.runId, text);
   }
 
   async terminate(opts: { wait?: boolean } = {}): Promise<number | null> {
@@ -252,10 +262,12 @@ export class Sandbox {
     return this._returncode;
   }
 
-  /** Block until the entrypoint command finishes. No-op if no entrypoint. */
-  async wait(_opts: { raiseOnTermination?: boolean } = {}): Promise<void> {
-    if (!this._entrypointRunId) return;
+  /** Block until the entrypoint command finishes and return its exit code.
+   * Matches modal-js: `Promise<number>`. Returns -1 if no entrypoint was given. */
+  async wait(_opts: { raiseOnTermination?: boolean } = {}): Promise<number> {
+    if (!this._entrypointRunId) return this._returncode ?? -1;
     await this.pollEntrypoint(true);
+    return this._returncode ?? -1;
   }
 
   async poll(): Promise<number | null> {
@@ -292,8 +304,8 @@ export class Sandbox {
     // No-op: we hold no connection state.
   }
 
-  async waitUntilReady(_timeout: number = 300): Promise<void> {
-    // Arker VMs are ready when fork() returns.
+  async waitUntilReady(_opts: { timeoutMs?: number } = {}): Promise<void> {
+    // Arker VMs are ready when fork() returns; timeoutMs accepted for parity.
   }
 
   // ---- Tags ----

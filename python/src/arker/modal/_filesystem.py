@@ -17,7 +17,8 @@ from ._types import (
     FilesystemExecutionError,
     FileType,
     InvalidError,
-    NotFoundError,
+    SandboxFilesystemNotFoundError,
+    classify_fs_error,
     translate_arker_error,
 )
 
@@ -34,14 +35,14 @@ PathLike = Union[str, os.PathLike]
 _FIND_FMT = "%y|%s|%m|%U|%G|%T@|%l\\n"
 
 
-def _kind_to_filetype(kind: str) -> FileType:
+def _kind_to_filetype(kind: str) -> FileType | None:
     if kind == "d":
         return FileType.DIRECTORY
     if kind == "f":
         return FileType.FILE
     if kind == "l":
         return FileType.SYMLINK
-    return FileType.UNKNOWN
+    return None  # caller filters; modal's FileType has no UNKNOWN member
 
 
 def _parse_find_line(line: str, remote_path: str) -> FileInfo | None:
@@ -50,6 +51,9 @@ def _parse_find_line(line: str, remote_path: str) -> FileInfo | None:
         return None
     kind, size_s, mode_s, owner, group, mtime_s, *rest = parts
     symlink_target = rest[0] if rest else ""
+    file_type = _kind_to_filetype(kind)
+    if file_type is None:
+        return None  # Skip pipes/sockets/etc. — modal's FileType has no slot for them.
     try:
         size = int(size_s) if size_s else 0
     except ValueError:
@@ -65,7 +69,7 @@ def _parse_find_line(line: str, remote_path: str) -> FileInfo | None:
     return FileInfo(
         name=os.path.basename(remote_path.rstrip("/")) or remote_path,
         path=remote_path,
-        type=_kind_to_filetype(kind),
+        type=file_type,
         size=size,
         mode=mode,
         permissions=mode_s.zfill(4) if mode_s else "",
@@ -77,11 +81,17 @@ def _parse_find_line(line: str, remote_path: str) -> FileInfo | None:
 
 
 def _validate_absolute(path: str, op: str) -> None:
-    """Matches modal: every fs op rejects relative paths up-front."""
-    if not isinstance(path, str) or not path:
-        raise InvalidError(f"{op}: path must be a non-empty string")
-    if not path.startswith("/"):
-        raise InvalidError(f"{op}: path must be absolute (got {path!r})")
+    """Mirrors `modal._utils.sandbox_fs_utils.validate_absolute_remote_path`.
+    Error message matches modal's so middleware that pattern-matches stays
+    working."""
+    from pathlib import PurePosixPath
+
+    if not isinstance(path, str):
+        raise InvalidError(f"Sandbox.filesystem.{op}() remote_path must be str")
+    if not PurePosixPath(path).is_absolute():
+        raise InvalidError(
+            f"Sandbox.filesystem.{op}() currently only supports absolute remote_path values"
+        )
 
 
 class SandboxFilesystem:
@@ -135,9 +145,7 @@ class SandboxFilesystem:
             f"find {shlex.quote(remote_path)} -maxdepth 1 -mindepth 1 -printf {shlex.quote('%p|' + _FIND_FMT)}"
         )
         if exit_code != 0:
-            if "No such" in stderr or "cannot access" in stderr.lower():
-                raise NotFoundError(f"path {remote_path!r} not found")
-            raise FilesystemExecutionError(f"list_files({remote_path!r}) failed: {stderr.strip()}")
+            raise classify_fs_error(stderr, f"list_files({remote_path!r}) failed")
         entries: list[FileInfo] = []
         for line in stdout.splitlines():
             if not line:
@@ -156,18 +164,14 @@ class SandboxFilesystem:
             f"mkdir {flag} {shlex.quote(remote_path)}".strip()
         )
         if exit_code != 0:
-            raise FilesystemExecutionError(
-                f"make_directory({remote_path!r}) failed: {stderr.strip()}"
-            )
+            raise classify_fs_error(stderr, f"make_directory({remote_path!r}) failed")
 
     def remove(self, remote_path: str, *, recursive: bool = False) -> None:
         _validate_absolute(remote_path, "remove")
         flag = "-rf" if recursive else "-f"
         _, stderr, exit_code = self._shell(f"rm {flag} {shlex.quote(remote_path)}")
         if exit_code != 0:
-            raise FilesystemExecutionError(
-                f"remove({remote_path!r}) failed: {stderr.strip()}"
-            )
+            raise classify_fs_error(stderr, f"remove({remote_path!r}) failed")
 
     def stat(self, remote_path: str) -> FileInfo:
         _validate_absolute(remote_path, "stat")
@@ -175,11 +179,10 @@ class SandboxFilesystem:
             f"find {shlex.quote(remote_path)} -maxdepth 0 -printf {shlex.quote(_FIND_FMT)}"
         )
         if exit_code != 0 or not stdout.strip():
-            if "No such" in stderr or "cannot access" in stderr.lower():
-                raise NotFoundError(f"path {remote_path!r} not found")
-            raise FilesystemExecutionError(
-                f"stat({remote_path!r}) failed: {stderr.strip() or 'not found'}"
-            )
+            if not stdout.strip() and exit_code == 0:
+                # find succeeded but produced no output → not found
+                raise SandboxFilesystemNotFoundError(f"path {remote_path!r} not found")
+            raise classify_fs_error(stderr, f"stat({remote_path!r}) failed")
         parsed = _parse_find_line(stdout.splitlines()[0], remote_path)
         if parsed is None:
             raise FilesystemExecutionError(f"stat({remote_path!r}): unparseable")

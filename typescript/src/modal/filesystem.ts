@@ -7,7 +7,8 @@ import {
   FileType,
   FilesystemExecutionError,
   InvalidError,
-  NotFoundError,
+  SandboxFilesystemNotFoundError,
+  classifyFsError,
   translateArkerError,
 } from "./types.js";
 
@@ -29,24 +30,26 @@ function basename(path: string): string {
   return idx < 0 ? trimmed : trimmed.slice(idx + 1);
 }
 
-function kindToFileType(kind: string): FileType {
+function kindToFileType(kind: string): FileType | null {
   if (kind === "d") return FileType.Directory;
   if (kind === "f") return FileType.File;
   if (kind === "l") return FileType.Symlink;
-  return FileType.Unknown;
+  return null; // modal's FileType has no slot for pipes/sockets/etc.
 }
 
 function parseFindLine(line: string, remotePath: string): FileInfo | null {
   const parts = line.split("|");
   if (parts.length < 6) return null;
   const [kind, sizeStr, modeStr, owner, group, mtimeStr, symlinkRaw] = parts;
+  const fileType = kindToFileType(kind ?? "");
+  if (fileType === null) return null;
   const size = Number(sizeStr) || 0;
   const mode = parseInt(modeStr ?? "", 8) || 0;
   const mtime = Number(mtimeStr) || 0;
   return new FileInfo({
     name: basename(remotePath) || remotePath,
     path: remotePath,
-    type: kindToFileType(kind ?? ""),
+    type: fileType,
     size,
     mode,
     permissions: (modeStr ?? "").padStart(4, "0"),
@@ -58,11 +61,13 @@ function parseFindLine(line: string, remotePath: string): FileInfo | null {
 }
 
 function validateAbsolute(path: string, op: string): void {
-  if (typeof path !== "string" || !path) {
-    throw new InvalidError(`${op}: path must be a non-empty string`);
+  if (typeof path !== "string") {
+    throw new InvalidError(`Sandbox.filesystem.${op}() remote_path must be a string`);
   }
   if (!path.startsWith("/")) {
-    throw new InvalidError(`${op}: path must be absolute (got ${path})`);
+    throw new InvalidError(
+      `Sandbox.filesystem.${op}() currently only supports absolute remote_path values`,
+    );
   }
 }
 
@@ -126,10 +131,7 @@ export class SandboxFilesystem {
       `find ${shellQuote(remotePath)} -maxdepth 1 -mindepth 1 -printf ${shellQuote("%p|" + FIND_FMT)}`,
     );
     if (exitCode !== 0) {
-      if (stderr.includes("No such") || stderr.toLowerCase().includes("cannot access")) {
-        throw new NotFoundError(`path ${remotePath} not found`);
-      }
-      throw new FilesystemExecutionError(`listFiles(${remotePath}) failed: ${stderr.trim()}`);
+      throw classifyFsError(stderr, `listFiles(${remotePath}) failed`);
     }
     const entries: FileInfo[] = [];
     for (const line of stdout.split("\n")) {
@@ -147,18 +149,14 @@ export class SandboxFilesystem {
     validateAbsolute(remotePath, "makeDirectory");
     const flag = opts.createParents !== false ? "-p" : "";
     const { stderr, exitCode } = await this.shell(`mkdir ${flag} ${shellQuote(remotePath)}`.trim());
-    if (exitCode !== 0) {
-      throw new FilesystemExecutionError(`makeDirectory(${remotePath}) failed: ${stderr.trim()}`);
-    }
+    if (exitCode !== 0) throw classifyFsError(stderr, `makeDirectory(${remotePath}) failed`);
   }
 
   async remove(remotePath: string, opts: { recursive?: boolean } = {}): Promise<void> {
     validateAbsolute(remotePath, "remove");
     const flag = opts.recursive ? "-rf" : "-f";
     const { stderr, exitCode } = await this.shell(`rm ${flag} ${shellQuote(remotePath)}`);
-    if (exitCode !== 0) {
-      throw new FilesystemExecutionError(`remove(${remotePath}) failed: ${stderr.trim()}`);
-    }
+    if (exitCode !== 0) throw classifyFsError(stderr, `remove(${remotePath}) failed`);
   }
 
   async stat(remotePath: string): Promise<FileInfo> {
@@ -167,10 +165,10 @@ export class SandboxFilesystem {
       `find ${shellQuote(remotePath)} -maxdepth 0 -printf ${shellQuote(FIND_FMT)}`,
     );
     if (exitCode !== 0 || !stdout.trim()) {
-      if (stderr.includes("No such") || stderr.toLowerCase().includes("cannot access")) {
-        throw new NotFoundError(`path ${remotePath} not found`);
+      if (exitCode === 0 && !stdout.trim()) {
+        throw new SandboxFilesystemNotFoundError(`path ${remotePath} not found`);
       }
-      throw new FilesystemExecutionError(`stat(${remotePath}) failed: ${stderr.trim() || "not found"}`);
+      throw classifyFsError(stderr, `stat(${remotePath}) failed`);
     }
     const parsed = parseFindLine(stdout.split("\n")[0]!, remotePath);
     if (!parsed) throw new FilesystemExecutionError(`stat(${remotePath}): unparseable`);

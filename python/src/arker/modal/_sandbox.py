@@ -370,8 +370,9 @@ class Sandbox:
             "Poll sbx.filesystem.list_files if needed."
         )
 
-    def wait_until_ready(self, timeout: int = 300) -> None:
+    def wait_until_ready(self, *, timeout: int = 300) -> None:
         # Arker VMs are ready when fork() returns. No-op.
+        # `timeout` is keyword-only — matches modal's signature.
         del timeout
         return None
 
@@ -405,16 +406,15 @@ class Sandbox:
         *,
         app_id: str | None = None,
         tags: dict[str, str] | None = None,
-        include_finished: bool = False,
         client: Any = None,
     ) -> list["Sandbox"]:
         """Modal's `list()` returns an `AsyncGenerator[Sandbox]`; ours returns
-        a plain list since we're sync-first. Defaults to running-only
-        (matches modal's `include_finished=False`).
+        a plain list since we're sync-first. Always running-only — matches
+        modal which hardcodes `include_finished=False` server-side.
 
-        `app_id` is ignored — Arker has no App concept. `tags` raises
-        `InvalidError` if non-empty, since we don't store tags server-side
-        and silently returning the full fleet would be a tenancy footgun.
+        `app_id` is ignored (no App concept in Arker). `tags` raises
+        `InvalidError` if non-empty — we don't store tags server-side and
+        silently returning the full fleet would be a tenancy footgun.
         """
         del app_id
         if tags:
@@ -428,7 +428,7 @@ class Sandbox:
             vms = arker.list().vms
         except ArkerError:
             return []
-        running = [vm for vm in vms if include_finished or vm.state == "running"]
+        running = [vm for vm in vms if vm.state == "running"]
         return [cls(arker, arker.vm(vm.vm_id)) for vm in running]
 
     def __enter__(self) -> "Sandbox":

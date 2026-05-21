@@ -20,12 +20,13 @@ class StreamType(str, enum.Enum):
     DEVNULL = "devnull"
 
 
-class FileType(str, enum.Enum):
-    """Mirrors `modal.sandbox_fs.FileType`."""
+class FileType(enum.Enum):
+    """Mirrors `modal.sandbox_fs.FileType` — exactly three members. Plain
+    `Enum` (not `str, Enum`) so `entry.type == "file"` doesn't accidentally
+    pass like it would with a str-mixed enum."""
     FILE = "file"
     DIRECTORY = "directory"
     SYMLINK = "symlink"
-    UNKNOWN = "unknown"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,6 +69,9 @@ class Tunnel:
 
     @property
     def url(self) -> str:
+        # Matches modal: omit `:443` since that's the implicit HTTPS port.
+        if self.port == 443:
+            return f"https://{self.host}"
         return f"https://{self.host}:{self.port}"
 
     @property
@@ -121,6 +125,72 @@ class NotFoundError(SandboxError, _ModalNotFound):  # type: ignore[misc, valid-t
 
 class FilesystemExecutionError(SandboxError, _ModalFsExec):  # type: ignore[misc, valid-type]
     """Mirrors `modal.exception.FilesystemExecutionError`."""
+
+
+# Specific filesystem error subclasses. Modal raises these for granular
+# cases; customer code commonly catches them individually.
+try:  # pragma: no cover
+    _ModalFsNotFound = _modal_exception.SandboxFilesystemNotFoundError  # type: ignore[attr-defined]
+    _ModalFsPerm = _modal_exception.SandboxFilesystemPermissionError  # type: ignore[attr-defined]
+    _ModalFsIsDir = _modal_exception.SandboxFilesystemIsADirectoryError  # type: ignore[attr-defined]
+    _ModalFsNotDir = _modal_exception.SandboxFilesystemNotADirectoryError  # type: ignore[attr-defined]
+    _ModalFsDirNotEmpty = _modal_exception.SandboxFilesystemDirectoryNotEmptyError  # type: ignore[attr-defined]
+    _ModalFsExists = _modal_exception.SandboxFilesystemPathAlreadyExistsError  # type: ignore[attr-defined]
+    _ModalFsTooLarge = _modal_exception.SandboxFilesystemFileTooLargeError  # type: ignore[attr-defined]
+except Exception:
+    _ModalFsNotFound = _ModalFsPerm = _ModalFsIsDir = _ModalFsNotDir = Exception
+    _ModalFsDirNotEmpty = _ModalFsExists = _ModalFsTooLarge = Exception
+
+
+class SandboxFilesystemNotFoundError(FilesystemExecutionError, _ModalFsNotFound):  # type: ignore[misc, valid-type]
+    pass
+
+
+class SandboxFilesystemPermissionError(FilesystemExecutionError, _ModalFsPerm):  # type: ignore[misc, valid-type]
+    pass
+
+
+class SandboxFilesystemIsADirectoryError(FilesystemExecutionError, _ModalFsIsDir):  # type: ignore[misc, valid-type]
+    pass
+
+
+class SandboxFilesystemNotADirectoryError(FilesystemExecutionError, _ModalFsNotDir):  # type: ignore[misc, valid-type]
+    pass
+
+
+class SandboxFilesystemDirectoryNotEmptyError(FilesystemExecutionError, _ModalFsDirNotEmpty):  # type: ignore[misc, valid-type]
+    pass
+
+
+class SandboxFilesystemPathAlreadyExistsError(FilesystemExecutionError, _ModalFsExists):  # type: ignore[misc, valid-type]
+    pass
+
+
+class SandboxFilesystemFileTooLargeError(FilesystemExecutionError, _ModalFsTooLarge):  # type: ignore[misc, valid-type]
+    pass
+
+
+def classify_fs_error(stderr: str, default_message: str = "") -> FilesystemExecutionError:
+    """Map a shell-stderr string to the right SandboxFilesystem* subclass.
+    Matches modal's daemon-side error categorization."""
+    s = stderr or default_message
+    msg = s.strip() or default_message or "filesystem error"
+    sl = s.lower()
+    if "no such" in sl or "cannot access" in sl:
+        return SandboxFilesystemNotFoundError(msg)
+    if "permission denied" in sl:
+        return SandboxFilesystemPermissionError(msg)
+    if "is a directory" in sl:
+        return SandboxFilesystemIsADirectoryError(msg)
+    if "not a directory" in sl:
+        return SandboxFilesystemNotADirectoryError(msg)
+    if "directory not empty" in sl:
+        return SandboxFilesystemDirectoryNotEmptyError(msg)
+    if "file exists" in sl or "already exists" in sl:
+        return SandboxFilesystemPathAlreadyExistsError(msg)
+    if "file too large" in sl or "no space" in sl:
+        return SandboxFilesystemFileTooLargeError(msg)
+    return FilesystemExecutionError(msg)
 
 
 class InvalidError(SandboxError, _ModalInvalid):  # type: ignore[misc, valid-type]
@@ -191,8 +261,8 @@ class Image(_ModalOpaque):
     def run_commands(self, *commands: str) -> "Image":
         return self._spawn(_op="run_commands", commands=commands)
 
-    def env(self, env_vars: dict[str, str]) -> "Image":
-        return self._spawn(_op="env", env_vars=env_vars)
+    def env(self, vars: dict[str, str]) -> "Image":  # noqa: A002 — matches modal's param name
+        return self._spawn(_op="env", env_vars=vars)
 
     def workdir(self, path: str) -> "Image":
         return self._spawn(_op="workdir", path=path)

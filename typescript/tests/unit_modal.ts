@@ -279,7 +279,8 @@ async function testFilesystemStatRaisesNotFound(): Promise<void> {
     200,
     completedRun("", "find: '/nope': No such file or directory", 1),
   );
-  await assert.rejects(() => sbx.filesystem.stat("/nope"), NotFoundError);
+  const { SandboxFilesystemNotFoundError } = await import("../src/modal/index.js");
+  await assert.rejects(() => sbx.filesystem.stat("/nope"), SandboxFilesystemNotFoundError);
 }
 
 async function testFilesystemMakeDirectoryAndRemove(): Promise<void> {
@@ -341,6 +342,66 @@ async function testExecSingleArgWithWhitespaceThrows(): Promise<void> {
   await assert.rejects(() => sbx.exec(["echo hello"]), InvalidError);
 }
 
+async function testWaitReturnsNumber(): Promise<void> {
+  const fetch = new FakeFetch();
+  scriptFork(fetch, "base", "vm_wn");
+  fetch.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_wn/run`,
+    200,
+    { run_id: "run_wn", completed: false, tunnels: [] },
+  );
+  const sbx = await Sandbox.create({ args: ["echo", "done"], _arker: makeArker(fetch) });
+  fetch.addJson(
+    (m, u) => m === "GET" && u.includes("/runs/run_wn"),
+    200,
+    runStatus("run_wn", "", "", 0, true),
+  );
+  const code = await sbx.wait();
+  assert.equal(code, 0);
+}
+
+async function testExecAcceptsModalJsAliases(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  fetch.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_modal/run`,
+    200,
+    bgRun("run_mj"),
+  );
+  // modal-js: `mode` and `timeoutMs`.
+  await sbx.exec(["echo", "hi"], { mode: "binary", timeoutMs: 5000 });
+  const body = JSON.parse(fetch.calls[fetch.calls.length - 1]!.body!);
+  // timeoutMs=5000ms → 5s passed to Arker.
+  assert.equal(body.timeout, 5);
+}
+
+async function testTunnelUrlOmits443(): Promise<void> {
+  const { Tunnel } = await import("../src/modal/index.js");
+  assert.equal(new Tunnel({ host: "x.modal.host", port: 443 }).url, "https://x.modal.host");
+  assert.equal(new Tunnel({ host: "x.modal.host", port: 8443 }).url, "https://x.modal.host:8443");
+}
+
+async function testFsPermissionDeniedClassified(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  fetch.addJson(
+    (m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_modal/run`,
+    200,
+    completedRun("", "rm: '/etc/shadow': Permission denied", 1),
+  );
+  const { SandboxFilesystemPermissionError } = await import("../src/modal/index.js");
+  await assert.rejects(() => sbx.filesystem.remove("/etc/shadow"), SandboxFilesystemPermissionError);
+}
+
+async function testValidateAbsoluteMatchesModalMessage(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  await assert.rejects(
+    () => sbx.filesystem.readText("relative/path"),
+    /only supports absolute remote_path/,
+  );
+}
+
 async function testNormalizeReturncode(): Promise<void> {
   const { normalizeReturncode } = await import("../src/modal/process.js");
   assert.equal(normalizeReturncode(0), 0);
@@ -374,5 +435,10 @@ await testSandboxListReturnsList();
 await testUnsupportedSurfaceThrows();
 await testExecSingleArgWithWhitespaceThrows();
 await testNormalizeReturncode();
+await testWaitReturnsNumber();
+await testExecAcceptsModalJsAliases();
+await testTunnelUrlOmits443();
+await testFsPermissionDeniedClassified();
+await testValidateAbsoluteMatchesModalMessage();
 
 console.log("PASS unit_modal");

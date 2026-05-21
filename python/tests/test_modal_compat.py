@@ -390,6 +390,8 @@ def test_filesystem_stat_returns_fileinfo() -> None:
 
 
 def test_filesystem_stat_raises_not_found_on_missing() -> None:
+    from arker.modal import SandboxFilesystemNotFoundError
+
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
@@ -398,7 +400,9 @@ def test_filesystem_stat_raises_not_found_on_missing() -> None:
             200,
             _completed_run(stderr="find: '/nope': No such file or directory", exit_code=1),
         )
-        with pytest.raises(NotFoundError):
+        # Modal uses SandboxFilesystemNotFoundError for fs misses (NOT the
+        # sandbox-level NotFoundError).
+        with pytest.raises(SandboxFilesystemNotFoundError):
             sbx.filesystem.stat("/nope")
 
 
@@ -719,6 +723,65 @@ def test_negative_exit_code_normalized_to_modal_signal_form() -> None:
     assert _normalize_returncode(-9) == 137  # SIGKILL
     assert _normalize_returncode(-15) == 143  # SIGTERM
     assert _normalize_returncode(None) == -1
+
+
+def test_filesystem_permission_denied_classified() -> None:
+    from arker.modal import SandboxFilesystemPermissionError
+
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
+            200,
+            _completed_run(stderr="rm: '/etc/shadow': Permission denied", exit_code=1),
+        )
+        with pytest.raises(SandboxFilesystemPermissionError):
+            sbx.filesystem.remove("/etc/shadow")
+
+
+def test_filesystem_is_a_directory_classified() -> None:
+    from arker.modal import SandboxFilesystemIsADirectoryError
+
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
+            200,
+            _completed_run(stderr="rm: '/etc': Is a directory", exit_code=1),
+        )
+        with pytest.raises(SandboxFilesystemIsADirectoryError):
+            sbx.filesystem.remove("/etc")
+
+
+def test_validate_absolute_uses_modal_message() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.raises(InvalidError, match="only supports absolute"):
+            sbx.filesystem.read_text("relative/path")
+
+
+def test_filetype_is_plain_enum_not_str_mixin() -> None:
+    from arker.modal import FileType
+    # Plain Enum: `==` against a str literal is always False.
+    assert FileType.FILE != "file"
+    assert FileType.DIRECTORY != "directory"
+    # And `UNKNOWN` should not exist on the enum.
+    assert not hasattr(FileType, "UNKNOWN")
+
+
+def test_tunnel_url_omits_443() -> None:
+    from arker.modal import Tunnel
+    assert Tunnel(host="x.modal.host", port=443).url == "https://x.modal.host"
+    assert Tunnel(host="x.modal.host", port=8443).url == "https://x.modal.host:8443"
+
+
+def test_image_env_param_named_vars() -> None:
+    """Modal's signature is `Image.env(vars=...)`; test the keyword name."""
+    img = Image.debian_slim().env(vars={"FOO": "bar"})
+    assert img is not None  # method returns a new Image
 
 
 def test_unsupported_methods_raise() -> None:
