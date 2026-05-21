@@ -13,6 +13,21 @@ from typing import TYPE_CHECKING, Iterator
 from ..computer import ArkerError
 from ._types import InvalidError, SandboxError, translate_arker_error
 
+
+def _normalize_returncode(raw: int | None) -> int:
+    """Map Arker's exit_code into modal's encoding.
+
+    Modal's convention for signal-killed processes is `128 + signal`. Many
+    runtimes report this as a negative number (Python's subprocess: `-9` for
+    SIGKILL; Go: similar). If we see a negative code, fold it to modal's
+    positive form. None means unknown/timeout → -1 (modal's sentinel).
+    """
+    if raw is None:
+        return -1
+    if raw < 0:
+        return 128 + abs(raw)
+    return raw
+
 if TYPE_CHECKING:
     from ._sandbox import Sandbox
 
@@ -142,7 +157,7 @@ class ContainerProcess:
         self._final_stdout = status.stdout
         self._final_stderr = status.stderr
         if status.completed:
-            self._returncode = status.exit_code if status.exit_code is not None else -1
+            self._returncode = _normalize_returncode(status.exit_code)
         return self._returncode
 
     def wait(self) -> int:
@@ -179,7 +194,7 @@ class ContainerProcess:
         except ArkerError as error:
             raise translate_arker_error(error) from error
         if status.completed and self._returncode is None:
-            self._returncode = status.exit_code if status.exit_code is not None else -1
+            self._returncode = _normalize_returncode(status.exit_code)
             self._final_stdout = status.stdout
             self._final_stderr = status.stderr
         return {

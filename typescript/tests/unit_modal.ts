@@ -334,6 +334,23 @@ async function testUnsupportedSurfaceThrows(): Promise<void> {
   assert.throws(() => sbx.stdout, /Sandbox.stdout is not supported/);
 }
 
+async function testExecSingleArgWithWhitespaceThrows(): Promise<void> {
+  const fetch = new FakeFetch();
+  const sbx = await makeSandbox(fetch);
+  const { InvalidError } = await import("../src/modal/index.js");
+  await assert.rejects(() => sbx.exec(["echo hello"]), InvalidError);
+}
+
+async function testNormalizeReturncode(): Promise<void> {
+  const { normalizeReturncode } = await import("../src/modal/process.js");
+  assert.equal(normalizeReturncode(0), 0);
+  assert.equal(normalizeReturncode(2), 2);
+  assert.equal(normalizeReturncode(-9), 137);
+  assert.equal(normalizeReturncode(-15), 143);
+  assert.equal(normalizeReturncode(null), -1);
+  assert.equal(normalizeReturncode(undefined), -1);
+}
+
 // ----- Run -----
 
 await testCreateForksDefault();
@@ -355,5 +372,7 @@ await testFilesystemMakeDirectoryAndRemove();
 testSetGetTagsLocal();
 await testSandboxListReturnsList();
 await testUnsupportedSurfaceThrows();
+await testExecSingleArgWithWhitespaceThrows();
+await testNormalizeReturncode();
 
 console.log("PASS unit_modal");

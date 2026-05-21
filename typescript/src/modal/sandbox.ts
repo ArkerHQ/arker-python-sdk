@@ -1,6 +1,6 @@
 import { Arker, ArkerError, type BackgroundRunResult, type Computer } from "../index.js";
 import { SandboxFilesystem } from "./filesystem.js";
-import { ContainerProcess } from "./process.js";
+import { ContainerProcess, normalizeReturncode } from "./process.js";
 import {
   type Image,
   InvalidError,
@@ -207,6 +207,17 @@ export class Sandbox {
     if (args.length === 0) {
       throw new Error("exec() requires at least one argument");
     }
+    for (const arg of args) {
+      if (typeof arg !== "string") {
+        throw new InvalidError(`exec() args must be strings, got ${typeof arg}`);
+      }
+    }
+    if (args.length === 1 && /[\s]/.test(args[0]!)) {
+      throw new InvalidError(
+        `exec() treats each arg as a separate argv element. ` +
+          `To run a shell command, use sbx.exec(["sh", "-c", ${JSON.stringify(args[0])}]).`,
+      );
+    }
     let cmd = args.map(shellQuote).join(" ");
     const mergedEnv = { ...this._env, ...(opts.env ?? {}) };
     if (Object.keys(mergedEnv).length > 0) {
@@ -264,7 +275,7 @@ export class Sandbox {
       }
       if ((status as { completed?: boolean }).completed) {
         const code = (status as { exit_code?: number | null }).exit_code;
-        this._returncode = code ?? -1;
+        this._returncode = normalizeReturncode(code);
         return this._returncode;
       }
       if (!block) return null;

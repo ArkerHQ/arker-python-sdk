@@ -17,7 +17,7 @@ from typing import Any
 
 from ..computer import Arker, ArkerError, BackgroundRunResult, Computer
 from ._filesystem import SandboxFilesystem
-from ._process import ContainerProcess
+from ._process import ContainerProcess, _normalize_returncode
 from ._types import (
     InvalidError,
     NotFoundError,
@@ -222,6 +222,18 @@ class Sandbox:
             )
         if not args:
             raise ValueError("exec() requires at least one argument")
+        # Mirror modal's argv semantics: each arg is a separate argv element.
+        # A single arg containing whitespace would fail `execve` on modal
+        # ("no such binary `echo hello`"). Reject it loudly so customers
+        # see the same failure here.
+        for arg in args:
+            if not isinstance(arg, str):
+                raise InvalidError(f"exec() args must be str, got {type(arg).__name__}")
+        if len(args) == 1 and any(ch in args[0] for ch in (" ", "\t", "\n")):
+            raise InvalidError(
+                "exec() treats each arg as a separate argv element. "
+                f"To run a shell command, use sbx.exec('sh', '-c', {args[0]!r})."
+            )
 
         cmd = " ".join(shlex.quote(arg) for arg in args)
         merged_env = _filter_env({**self._env, **(env or {})})
@@ -280,7 +292,7 @@ class Sandbox:
             except ArkerError as error:
                 raise translate_arker_error(error) from error
             if status.completed:
-                self._returncode = status.exit_code if status.exit_code is not None else -1
+                self._returncode = _normalize_returncode(status.exit_code)
                 return self._returncode
             if not block:
                 return None

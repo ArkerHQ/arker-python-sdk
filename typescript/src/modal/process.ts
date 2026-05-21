@@ -28,6 +28,15 @@ function decodeStreamBytes(value: unknown, encoding: unknown): Uint8Array {
   return new TextEncoder().encode(value);
 }
 
+/** Map Arker's exit_code into modal's `128 + signal` encoding. Negative
+ * exit codes (Python/Go subprocess convention for signal kills) become the
+ * positive form modal returns; null/undefined → -1. */
+export function normalizeReturncode(raw: number | null | undefined): number {
+  if (raw == null) return -1;
+  if (raw < 0) return 128 + Math.abs(raw);
+  return raw;
+}
+
 function readStream(status: RunStatusResponse, which: "stdout" | "stderr"): Uint8Array {
   const s = status as Record<string, unknown>;
   const value = s[which];
@@ -148,7 +157,7 @@ export class ContainerProcess {
     this.finalStdout = readStream(status, "stdout");
     this.finalStderr = readStream(status, "stderr");
     if ((status as { completed?: boolean }).completed) {
-      this._returncode = (status as { exit_code?: number | null }).exit_code ?? -1;
+      this._returncode = normalizeReturncode((status as { exit_code?: number | null }).exit_code);
     }
     return this._returncode;
   }
@@ -189,7 +198,7 @@ export class ContainerProcess {
     const stdoutBytes = readStream(status, "stdout");
     const stderrBytes = readStream(status, "stderr");
     if (completed && this._returncode === null) {
-      this._returncode = (status as { exit_code?: number | null }).exit_code ?? -1;
+      this._returncode = normalizeReturncode((status as { exit_code?: number | null }).exit_code);
       this.finalStdout = stdoutBytes;
       this.finalStderr = stderrBytes;
     }

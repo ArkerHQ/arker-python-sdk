@@ -685,6 +685,42 @@ def test_stream_reader_async_iteration(monkeypatch) -> None:
     assert lines == ["a\n", "b\n"]
 
 
+def test_exec_single_arg_with_whitespace_raises() -> None:
+    """Modal's exec(arg) does execve — `sbx.exec("echo hello")` fails as "no such
+    binary". We mirror that loudly so customers don't get free shell parsing."""
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.raises(InvalidError, match="sh.*-c"):
+            sbx.exec("echo hello")
+
+
+def test_exec_multi_arg_passes_through() -> None:
+    """Multi-arg form is fine — each arg is a separate argv element."""
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
+            200,
+            _bg_run("run_pass"),
+        )
+        # Args may contain whitespace as long as there are multiple of them.
+        sbx.exec("python", "-c", "print('hi there')")
+
+
+def test_negative_exit_code_normalized_to_modal_signal_form() -> None:
+    """Modal returns `128 + signal` for signal-killed processes; some
+    runtimes (Python subprocess, Go) report `-signal`. Map them."""
+    from arker.modal._process import _normalize_returncode
+
+    assert _normalize_returncode(0) == 0
+    assert _normalize_returncode(2) == 2
+    assert _normalize_returncode(-9) == 137  # SIGKILL
+    assert _normalize_returncode(-15) == 143  # SIGTERM
+    assert _normalize_returncode(None) == -1
+
+
 def test_unsupported_methods_raise() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
