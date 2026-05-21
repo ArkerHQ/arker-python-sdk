@@ -16,6 +16,7 @@ from arker.modal import (
     FileInfo,
     FilesystemExecutionError,
     Image,
+    InvalidError,
     NotFoundError,
     Sandbox,
     SandboxError,
@@ -149,8 +150,10 @@ def test_terminate_calls_delete() -> None:
             200,
             {"deleted": True},
         )
+        # No entrypoint → returncode is None (matches modal: terminate(wait=False)
+        # without a running primary process can't produce an exit code).
         code = sbx.terminate()
-    assert code == 0
+    assert code is None
 
 
 def test_context_manager_terminates_on_exit() -> None:
@@ -349,20 +352,25 @@ def test_filesystem_list_files_parses_find_output() -> None:
     transport = FakeTransport()
     with patch("urllib.request.urlopen", transport):
         sbx = _make_sandbox(transport)
+        # Format: path|kind|size|mode|UID|GID|mtime|symlink
         transport.add_json(
             lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
             200,
             _completed_run(stdout=(
-                "/work/readme.txt|f|42|644|1735776000.0\n"
-                "/work/src|d|4096|755|1735776100.0\n"
+                "/work/readme.txt|f|42|644|1000|1000|1735776000.0|\n"
+                "/work/src|d|4096|755|1000|1000|1735776100.0|\n"
             )),
         )
         entries = sbx.filesystem.list_files("/work")
     assert isinstance(entries[0], FileInfo)
     assert entries[0].path == "/work/readme.txt"
+    assert entries[0].name == "readme.txt"
     assert entries[0].size == 42
     assert entries[0].mode == 0o644
-    assert entries[1].is_dir is True
+    assert entries[0].permissions == "0644"
+    assert entries[0].is_file() is True
+    assert entries[1].is_dir() is True
+    assert entries[1].modified_time == 1735776100.0
 
 
 def test_filesystem_stat_returns_fileinfo() -> None:
@@ -372,10 +380,11 @@ def test_filesystem_stat_returns_fileinfo() -> None:
         transport.add_json(
             lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
             200,
-            _completed_run(stdout="f|10|644|1735776000.0\n"),
+            _completed_run(stdout="f|10|644|1000|1000|1735776000.0|\n"),
         )
         info = sbx.filesystem.stat("/tmp/x")
-    assert info.is_dir is False
+    assert info.is_dir() is False
+    assert info.is_file() is True
     assert info.size == 10
     assert info.mode == 0o644
 
@@ -484,6 +493,196 @@ def test_sandbox_list_returns_list() -> None:
     with patch.dict(os.environ, _arker_env(), clear=False), patch("urllib.request.urlopen", transport):
         items = Sandbox.list()
     assert [s.object_id for s in items] == ["vm_a", "vm_b"]
+
+
+# ----- Phase G drift fixes -----
+
+def test_create_with_entrypoint_auto_spawns() -> None:
+    """modal.Sandbox.create("sleep", "5") runs that as the primary process.
+    Our shim spawns it as a background run and binds wait/poll/returncode."""
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
+        200,
+        {"vm_id": "vm_ep", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_ep/run"),
+        200,
+        {"run_id": "run_ep", "completed": False, "tunnels": []},
+    )
+    with patch.dict(os.environ, _arker_env(), clear=False), patch("urllib.request.urlopen", transport):
+        sbx = Sandbox.create("sleep", "5")
+        assert sbx._entrypoint_run_id == "run_ep"
+        body = json.loads(transport.calls[-1]["body"])
+    # shlex.quote leaves plain alphanumerics unquoted.
+    assert body["command"] == "sleep 5"
+    assert body["background"] is True
+
+
+def test_wait_blocks_on_entrypoint(monkeypatch) -> None:
+    monkeypatch.setattr("arker.modal._sandbox.time.sleep", lambda _s: None)
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
+        200,
+        {"vm_id": "vm_w", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_w/run"),
+        200,
+        {"run_id": "run_w", "completed": False, "tunnels": []},
+    )
+    with patch.dict(os.environ, _arker_env(), clear=False), patch("urllib.request.urlopen", transport):
+        sbx = Sandbox.create("echo", "done")
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_w" in url,
+            200,
+            _run_status("run_w", exit_code=0, completed=True),
+        )
+        sbx.wait()
+        # returncode is the entrypoint's exit code.
+        assert sbx.returncode == 0
+
+
+def test_poll_returns_none_then_exit_code() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/base/fork"),
+        200,
+        {"vm_id": "vm_p", "owner_id": "o", "created_at": "now", "sessions": [session()]},
+    )
+    transport.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_p/run"),
+        200,
+        {"run_id": "run_p", "completed": False, "tunnels": []},
+    )
+    with patch.dict(os.environ, _arker_env(), clear=False), patch("urllib.request.urlopen", transport):
+        sbx = Sandbox.create("sleep", "5")
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_p" in url,
+            200,
+            _run_status("run_p", completed=False),
+        )
+        assert sbx.poll() is None
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_p" in url,
+            200,
+            _run_status("run_p", exit_code=42, completed=True),
+        )
+        assert sbx.poll() == 42
+
+
+def test_returncode_raises_invalid_error_pre_wait() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
+            200,
+            _bg_run("run_rc"),
+        )
+        proc = sbx.exec("sleep", "5")
+        with pytest.raises(InvalidError, match="wait\\(\\)"):
+            _ = proc.returncode
+
+
+def test_fileinfo_has_methods_not_field() -> None:
+    info = FileInfo(name="x", path="/x", type=FileInfo.__annotations__["type"].__args__[0] if False else None)  # type: ignore[arg-type]
+    # The above is a syntax trick — easier: construct directly.
+    from arker.modal import FileType
+    info = FileInfo(name="x", path="/x", type=FileType.FILE, size=10)
+    # Methods, not fields.
+    assert callable(info.is_dir)
+    assert info.is_file() is True
+    assert info.is_dir() is False
+
+
+def test_image_methods_return_new_instance() -> None:
+    base = Image.debian_slim()
+    a = base.pip_install("torch")
+    b = base.pip_install("tensorflow")
+    assert a is not base
+    assert b is not base
+    assert a is not b
+
+
+def test_filesystem_validates_absolute_paths() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        with pytest.raises(InvalidError, match="absolute"):
+            sbx.filesystem.read_text("relative/path")
+        with pytest.raises(InvalidError, match="absolute"):
+            sbx.filesystem.write_text("data", "relative/path")
+        with pytest.raises(InvalidError, match="absolute"):
+            sbx.filesystem.list_files("relative")
+        with pytest.raises(InvalidError, match="absolute"):
+            sbx.filesystem.stat("relative")
+
+
+def test_env_none_values_filtered() -> None:
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        # `env={"FOO": None}` should drop FOO, not inject "env FOO=None".
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
+            200,
+            _bg_run("run_env"),
+        )
+        sbx.exec("env", env={"FOO": None, "BAR": "value"})  # type: ignore[dict-item]
+        body = json.loads(transport.calls[-1]["body"])
+    assert "FOO" not in body["command"]
+    assert "BAR=value" in body["command"]
+
+
+def test_list_filters_running_by_default() -> None:
+    transport = FakeTransport()
+    transport.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms"),
+        200,
+        {
+            "vms": [
+                {"vm_id": "vm_run", "owner_id": "o", "created_at": "now", "state": "running", "sessions": []},
+                {"vm_id": "vm_dead", "owner_id": "o", "created_at": "now", "state": "stopped", "sessions": []},
+            ],
+        },
+    )
+    with patch.dict(os.environ, _arker_env(), clear=False), patch("urllib.request.urlopen", transport):
+        items = Sandbox.list()
+    # Default: running-only.
+    assert [s.object_id for s in items] == ["vm_run"]
+
+
+def test_list_tags_raises_invalid() -> None:
+    with patch.dict(os.environ, _arker_env(), clear=False):
+        with pytest.raises(InvalidError, match="tags"):
+            Sandbox.list(tags={"env": "prod"})
+
+
+def test_stream_reader_async_iteration(monkeypatch) -> None:
+    import asyncio
+    monkeypatch.setattr("arker.modal._process.time.sleep", lambda _s: None)
+    transport = FakeTransport()
+    with patch("urllib.request.urlopen", transport):
+        sbx = _make_sandbox(transport)
+        transport.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_modal/run"),
+            200,
+            _bg_run("run_aiter"),
+        )
+        proc = sbx.exec("sh", "-c", "echo a; echo b")
+        transport.add_json(
+            lambda method, url: method == "GET" and "/runs/run_aiter" in url,
+            200,
+            _run_status("run_aiter", stdout="a\nb\n", exit_code=0, completed=True),
+        )
+
+        async def consume() -> list[str]:
+            return [line async for line in proc.stdout]
+        lines = asyncio.run(consume())
+    assert lines == ["a\n", "b\n"]
 
 
 def test_unsupported_methods_raise() -> None:

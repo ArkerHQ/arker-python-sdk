@@ -3,6 +3,7 @@ import { SandboxFilesystem } from "./filesystem.js";
 import { ContainerProcess } from "./process.js";
 import {
   type Image,
+  InvalidError,
   SandboxError,
   type StreamType,
   type Tunnel,
@@ -14,6 +15,17 @@ const DEFAULT_TEMPLATE = "base";
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function filterEnv(env?: Record<string, string | null | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!env) return out;
+  for (const [k, v] of Object.entries(env)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
 }
 
 function resolveTemplate(image?: Image | string | null): string {
@@ -29,11 +41,15 @@ function resolveTemplate(image?: Image | string | null): string {
 }
 
 export interface CreateOpts {
+  /** Entrypoint command — matches modal's variadic `Sandbox.create(*args, ...)`.
+   * Pass as an array; we'll spawn it as a background run on fork. `wait()`,
+   * `poll()`, `terminate()`, and `returncode` then bind to that process. */
+  args?: string[];
   app?: unknown;
   name?: string;
   tags?: Record<string, string>;
   image?: Image | string;
-  env?: Record<string, string>;
+  env?: Record<string, string | null | undefined>;
   secrets?: unknown;
   networkFileSystems?: unknown;
   timeout?: number;
@@ -79,17 +95,23 @@ export interface ExecOpts {
 export class Sandbox {
   readonly _arker: Arker;
   readonly _computer: Computer;
-  private readonly _env: Record<string, string>;
+  readonly _env: Record<string, string>;
   private _tags: Record<string, string>;
   private _returncode: number | null = null;
+  private _entrypointRunId: string | null = null;
 
   readonly filesystem: SandboxFilesystem;
 
-  constructor(arker: Arker, computer: Computer, opts: { env?: Record<string, string>; tags?: Record<string, string> } = {}) {
+  constructor(arker: Arker, computer: Computer, opts: {
+    env?: Record<string, string | null | undefined>;
+    tags?: Record<string, string>;
+    entrypointRunId?: string | null;
+  } = {}) {
     this._arker = arker;
     this._computer = computer;
-    this._env = { ...(opts.env ?? {}) };
+    this._env = filterEnv(opts.env);
     this._tags = { ...(opts.tags ?? {}) };
+    this._entrypointRunId = opts.entrypointRunId ?? null;
     this.filesystem = new SandboxFilesystem(this);
   }
 
@@ -107,12 +129,35 @@ export class Sandbox {
     }
     const arker = opts._arker ?? new Arker({});
     const source = resolveTemplate(opts.image);
+    let computer;
     try {
-      const computer = await arker.vm(source).fork(opts.name ? { name: opts.name } : {});
-      return new Sandbox(arker, computer, { env: opts.env, tags: opts.tags });
+      computer = await arker.vm(source).fork(opts.name ? { name: opts.name } : {});
     } catch (error) {
       throw translateArkerError(error);
     }
+
+    let entrypointRunId: string | null = null;
+    if (opts.args && opts.args.length > 0) {
+      let cmd = opts.args.map(shellQuote).join(" ");
+      const mergedEnv = filterEnv(opts.env);
+      if (Object.keys(mergedEnv).length > 0) {
+        const envParts = Object.entries(mergedEnv).map(([k, v]) => `${shellQuote(k)}=${shellQuote(v)}`).join(" ");
+        cmd = `env ${envParts} ${cmd}`;
+      }
+      if (opts.workdir) cmd = `cd ${shellQuote(opts.workdir)} && ${cmd}`;
+      try {
+        const result = await computer.run(cmd, { background: true });
+        if (result.type === "background") entrypointRunId = result.runId;
+      } catch (error) {
+        throw translateArkerError(error);
+      }
+    }
+
+    return new Sandbox(arker, computer, {
+      env: opts.env,
+      tags: opts.tags,
+      entrypointRunId,
+    });
   }
 
   static async fromId(sandboxId: string, opts: { _arker?: Arker } = {}): Promise<Sandbox> {
@@ -127,17 +172,32 @@ export class Sandbox {
     );
   }
 
-  static async list(_opts: { appId?: string; tags?: Record<string, string>; _arker?: Arker } = {}): Promise<Sandbox[]> {
-    const arker = _opts._arker ?? new Arker({});
+  static async list(opts: {
+    appId?: string;
+    tags?: Record<string, string>;
+    includeFinished?: boolean;
+    _arker?: Arker;
+  } = {}): Promise<Sandbox[]> {
+    if (opts.tags && Object.keys(opts.tags).length > 0) {
+      throw new InvalidError(
+        "Sandbox.list({ tags }) is not supported by the arker.modal shim — " +
+          "Arker doesn't store sandbox tags server-side. Filter client-side after list().",
+      );
+    }
+    const arker = opts._arker ?? new Arker({});
+    let vms: Array<{ vm_id?: string; state?: string }> = [];
     try {
-      const response = (await arker.list()) as { vms?: Array<{ vm_id?: string }> };
-      return (response.vms ?? [])
-        .filter((vm) => typeof vm.vm_id === "string")
-        .map((vm) => new Sandbox(arker, arker.vm(vm.vm_id!)));
+      const response = (await arker.list()) as { vms?: Array<{ vm_id?: string; state?: string }> };
+      vms = response.vms ?? [];
     } catch (error) {
       if (error instanceof ArkerError) return [];
       throw error;
     }
+    // Default to running-only (matches modal's `include_finished=False`).
+    const filtered = vms.filter((vm) => opts.includeFinished || vm.state === "running");
+    return filtered
+      .filter((vm) => typeof vm.vm_id === "string")
+      .map((vm) => new Sandbox(arker, arker.vm(vm.vm_id!)));
   }
 
   async exec(args: string[], opts: ExecOpts = {}): Promise<ContainerProcess> {
@@ -169,22 +229,48 @@ export class Sandbox {
     return new ContainerProcess(this, result.runId, opts.text ?? true);
   }
 
-  async terminate(_wait: boolean = false): Promise<number | null> {
+  async terminate(opts: { wait?: boolean } = {}): Promise<number | null> {
+    if (opts.wait && this._entrypointRunId) {
+      await this.pollEntrypoint(true);
+    }
     try {
       await this._computer.delete();
     } catch (error) {
       throw translateArkerError(error);
     }
-    if (this._returncode === null) this._returncode = 0;
     return this._returncode;
   }
 
-  async wait(_raiseOnTermination: boolean = true): Promise<void> {
-    // No-op: Arker VMs don't auto-terminate based on an entrypoint.
+  /** Block until the entrypoint command finishes. No-op if no entrypoint. */
+  async wait(_opts: { raiseOnTermination?: boolean } = {}): Promise<void> {
+    if (!this._entrypointRunId) return;
+    await this.pollEntrypoint(true);
   }
 
-  poll(): number | null {
-    return this._returncode;
+  async poll(): Promise<number | null> {
+    if (!this._entrypointRunId) return this._returncode;
+    return this.pollEntrypoint(false);
+  }
+
+  private async pollEntrypoint(block: boolean): Promise<number | null> {
+    if (this._returncode !== null) return this._returncode;
+    let delay = 200;
+    while (true) {
+      let status;
+      try {
+        status = await this._computer.runStatus(this._entrypointRunId!);
+      } catch (error) {
+        throw translateArkerError(error);
+      }
+      if ((status as { completed?: boolean }).completed) {
+        const code = (status as { exit_code?: number | null }).exit_code;
+        this._returncode = code ?? -1;
+        return this._returncode;
+      }
+      if (!block) return null;
+      await sleep(delay);
+      delay = Math.min(1000, delay * 1.5);
+    }
   }
 
   hydrate(_client?: unknown): Sandbox {

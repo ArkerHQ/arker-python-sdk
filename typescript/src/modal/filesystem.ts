@@ -3,15 +3,17 @@ import { promises as fs } from "node:fs";
 import type { CompletedRunResult } from "../index.js";
 import type { Sandbox } from "./sandbox.js";
 import {
-  type FileInfo,
+  FileInfo,
+  FileType,
   FilesystemExecutionError,
+  InvalidError,
   NotFoundError,
   translateArkerError,
 } from "./types.js";
 
-// `find ... -printf "%y|%s|%m|%T@\n"` — modal's FileInfo has path, isDir,
-// size, mode (int), mtime (float).
-const FIND_FMT = "%y|%s|%m|%T@\\n";
+// Modal's FileInfo: name, path, type, size, mode, permissions, owner, group,
+// modifiedTime, symlinkTarget. Find format: kind|size|mode|UID|GID|mtime|symlink.
+const FIND_FMT = "%y|%s|%m|%U|%G|%T@|%l\\n";
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -21,20 +23,47 @@ function decode(bytes: Uint8Array): string {
   return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 }
 
+function basename(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return idx < 0 ? trimmed : trimmed.slice(idx + 1);
+}
+
+function kindToFileType(kind: string): FileType {
+  if (kind === "d") return FileType.Directory;
+  if (kind === "f") return FileType.File;
+  if (kind === "l") return FileType.Symlink;
+  return FileType.Unknown;
+}
+
 function parseFindLine(line: string, remotePath: string): FileInfo | null {
   const parts = line.split("|");
-  if (parts.length < 4) return null;
-  const [kind, sizeStr, modeStr, mtimeStr] = parts;
+  if (parts.length < 6) return null;
+  const [kind, sizeStr, modeStr, owner, group, mtimeStr, symlinkRaw] = parts;
   const size = Number(sizeStr) || 0;
   const mode = parseInt(modeStr ?? "", 8) || 0;
   const mtime = Number(mtimeStr) || 0;
-  return {
+  return new FileInfo({
+    name: basename(remotePath) || remotePath,
     path: remotePath,
-    isDir: kind === "d",
+    type: kindToFileType(kind ?? ""),
     size,
     mode,
-    mtime,
-  };
+    permissions: (modeStr ?? "").padStart(4, "0"),
+    owner: owner ?? "",
+    group: group ?? "",
+    modifiedTime: mtime,
+    symlinkTarget: symlinkRaw ? symlinkRaw : null,
+  });
+}
+
+function validateAbsolute(path: string, op: string): void {
+  if (typeof path !== "string" || !path) {
+    throw new InvalidError(`${op}: path must be a non-empty string`);
+  }
+  if (!path.startsWith("/")) {
+    throw new InvalidError(`${op}: path must be absolute (got ${path})`);
+  }
 }
 
 export class SandboxFilesystem {
@@ -47,6 +76,7 @@ export class SandboxFilesystem {
   // ---- Native (Arker sync API) ----
 
   async readBytes(remotePath: string): Promise<Uint8Array> {
+    validateAbsolute(remotePath, "readBytes");
     try {
       return await this.sbx._computer.sync.readFile(remotePath);
     } catch (error) {
@@ -59,6 +89,7 @@ export class SandboxFilesystem {
   }
 
   async writeBytes(data: Uint8Array, remotePath: string): Promise<void> {
+    validateAbsolute(remotePath, "writeBytes");
     try {
       await this.sbx._computer.sync.writeFile(remotePath, data);
     } catch (error) {
@@ -67,6 +98,7 @@ export class SandboxFilesystem {
   }
 
   async writeText(data: string, remotePath: string): Promise<void> {
+    validateAbsolute(remotePath, "writeText");
     try {
       await this.sbx._computer.sync.writeFile(remotePath, data);
     } catch (error) {
@@ -75,11 +107,13 @@ export class SandboxFilesystem {
   }
 
   async copyFromLocal(localPath: string, remotePath: string): Promise<void> {
+    validateAbsolute(remotePath, "copyFromLocal");
     const data = await fs.readFile(localPath);
     await this.writeBytes(new Uint8Array(data), remotePath);
   }
 
   async copyToLocal(remotePath: string, localPath: string): Promise<void> {
+    validateAbsolute(remotePath, "copyToLocal");
     const data = await this.readBytes(remotePath);
     await fs.writeFile(localPath, data);
   }
@@ -87,6 +121,7 @@ export class SandboxFilesystem {
   // ---- Shell-shim ----
 
   async listFiles(remotePath: string): Promise<FileInfo[]> {
+    validateAbsolute(remotePath, "listFiles");
     const { stdout, stderr, exitCode } = await this.shell(
       `find ${shellQuote(remotePath)} -maxdepth 1 -mindepth 1 -printf ${shellQuote("%p|" + FIND_FMT)}`,
     );
@@ -108,16 +143,18 @@ export class SandboxFilesystem {
     return entries;
   }
 
-  async makeDirectory(remotePath: string, createParents: boolean = true): Promise<void> {
-    const flag = createParents ? "-p" : "";
+  async makeDirectory(remotePath: string, opts: { createParents?: boolean } = {}): Promise<void> {
+    validateAbsolute(remotePath, "makeDirectory");
+    const flag = opts.createParents !== false ? "-p" : "";
     const { stderr, exitCode } = await this.shell(`mkdir ${flag} ${shellQuote(remotePath)}`.trim());
     if (exitCode !== 0) {
       throw new FilesystemExecutionError(`makeDirectory(${remotePath}) failed: ${stderr.trim()}`);
     }
   }
 
-  async remove(remotePath: string, recursive: boolean = false): Promise<void> {
-    const flag = recursive ? "-rf" : "-f";
+  async remove(remotePath: string, opts: { recursive?: boolean } = {}): Promise<void> {
+    validateAbsolute(remotePath, "remove");
+    const flag = opts.recursive ? "-rf" : "-f";
     const { stderr, exitCode } = await this.shell(`rm ${flag} ${shellQuote(remotePath)}`);
     if (exitCode !== 0) {
       throw new FilesystemExecutionError(`remove(${remotePath}) failed: ${stderr.trim()}`);
@@ -125,6 +162,7 @@ export class SandboxFilesystem {
   }
 
   async stat(remotePath: string): Promise<FileInfo> {
+    validateAbsolute(remotePath, "stat");
     const { stdout, stderr, exitCode } = await this.shell(
       `find ${shellQuote(remotePath)} -maxdepth 0 -printf ${shellQuote(FIND_FMT)}`,
     );

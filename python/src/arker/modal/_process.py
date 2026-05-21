@@ -11,7 +11,7 @@ import time
 from typing import TYPE_CHECKING, Iterator
 
 from ..computer import ArkerError
-from ._types import SandboxError, translate_arker_error
+from ._types import InvalidError, SandboxError, translate_arker_error
 
 if TYPE_CHECKING:
     from ._sandbox import Sandbox
@@ -66,6 +66,23 @@ class StreamReader:
             time.sleep(delay)
             delay = _next_delay(delay)
 
+    async def __aiter__(self):
+        """Async iteration. Matches modal's `async for line in proc.stdout`.
+
+        Wraps the sync poll loop in `asyncio.to_thread` so the event loop
+        stays responsive while we wait for the next poll cycle.
+        """
+        import asyncio
+
+        # Use a fresh sync iterator and bridge it to async via thread.
+        sync_iter = iter(self)
+        sentinel = object()
+        while True:
+            chunk = await asyncio.to_thread(next, sync_iter, sentinel)
+            if chunk is sentinel:
+                return
+            yield chunk
+
 
 class StreamWriter:
     """Placeholder for `sandbox.stdin`. Arker has no non-PTY stdin primitive,
@@ -104,7 +121,14 @@ class ContainerProcess:
         self.stdin = StreamWriter(self)
 
     @property
-    def returncode(self) -> int | None:
+    def returncode(self) -> int:
+        """Matches modal: raises InvalidError until the process has finished.
+        Use `.poll()` for the non-blocking check that returns None while running."""
+        if self._returncode is None:
+            raise InvalidError(
+                "You must call wait() before accessing the returncode. "
+                "To poll for the status of a running process, use poll() instead."
+            )
         return self._returncode
 
     def poll(self) -> int | None:

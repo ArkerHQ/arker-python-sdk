@@ -156,8 +156,9 @@ async function testTerminateCallsDelete(): Promise<void> {
     200,
     { deleted: true },
   );
+  // No entrypoint → returncode is null (matches modal).
   const code = await sbx.terminate();
-  assert.equal(code, 0);
+  assert.equal(code, null);
 }
 
 // ----- Execution -----
@@ -253,17 +254,21 @@ async function testFilesystemListFiles(): Promise<void> {
   fetch.addJson(
     (m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_modal/run`,
     200,
+    // path|kind|size|mode|UID|GID|mtime|symlink
     completedRun(
-      "/work/readme.txt|f|42|644|1735776000.0\n" +
-      "/work/src|d|4096|755|1735776100.0\n",
+      "/work/readme.txt|f|42|644|1000|1000|1735776000.0|\n" +
+      "/work/src|d|4096|755|1000|1000|1735776100.0|\n",
     ),
   );
   const entries: FileInfo[] = await sbx.filesystem.listFiles("/work");
   assert.equal(entries.length, 2);
   assert.equal(entries[0]!.path, "/work/readme.txt");
+  assert.equal(entries[0]!.name, "readme.txt");
   assert.equal(entries[0]!.size, 42);
   assert.equal(entries[0]!.mode, 0o644);
-  assert.equal(entries[1]!.isDir, true);
+  assert.equal(entries[0]!.permissions, "0644");
+  assert.equal(entries[0]!.isFile(), true);
+  assert.equal(entries[1]!.isDir(), true);
 }
 
 async function testFilesystemStatRaisesNotFound(): Promise<void> {
@@ -286,7 +291,7 @@ async function testFilesystemMakeDirectoryAndRemove(): Promise<void> {
   assert.equal(body.command, "mkdir -p '/work/new'");
 
   fetch.addJson((m, u) => m === "POST" && u === `${BASE}/v1/vms/vm_modal/run`, 200, completedRun());
-  await sbx.filesystem.remove("/tmp/junk", true);
+  await sbx.filesystem.remove("/tmp/junk", { recursive: true });
   body = JSON.parse(fetch.calls[fetch.calls.length - 1]!.body!);
   assert.equal(body.command, "rm -rf '/tmp/junk'");
 }

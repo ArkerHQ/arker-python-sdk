@@ -11,12 +11,55 @@ export enum StreamType {
   Devnull = "devnull",
 }
 
-export interface FileInfo {
-  path: string;
-  isDir: boolean;
-  size: number;
-  mode: number;
-  mtime: number;
+export enum FileType {
+  File = "file",
+  Directory = "directory",
+  Symlink = "symlink",
+  Unknown = "unknown",
+}
+
+/** Mirrors `modal.FileInfo`. `isDir()` / `isFile()` / `isSymlink()` are methods,
+ * not boolean fields — modal's source uses methods, and customer code expecting
+ * `info.isDir()` would `TypeError` against a boolean field. */
+export class FileInfo {
+  readonly name: string;
+  readonly path: string;
+  readonly type: FileType;
+  readonly size: number;
+  readonly mode: number;
+  readonly permissions: string;
+  readonly owner: string;
+  readonly group: string;
+  readonly modifiedTime: number;
+  readonly symlinkTarget: string | null;
+
+  constructor(init: {
+    name: string;
+    path: string;
+    type: FileType;
+    size?: number;
+    mode?: number;
+    permissions?: string;
+    owner?: string;
+    group?: string;
+    modifiedTime?: number;
+    symlinkTarget?: string | null;
+  }) {
+    this.name = init.name;
+    this.path = init.path;
+    this.type = init.type;
+    this.size = init.size ?? 0;
+    this.mode = init.mode ?? 0;
+    this.permissions = init.permissions ?? "";
+    this.owner = init.owner ?? "";
+    this.group = init.group ?? "";
+    this.modifiedTime = init.modifiedTime ?? 0;
+    this.symlinkTarget = init.symlinkTarget ?? null;
+  }
+
+  isFile(): boolean { return this.type === FileType.File; }
+  isDir(): boolean { return this.type === FileType.Directory; }
+  isSymlink(): boolean { return this.type === FileType.Symlink; }
 }
 
 export interface Tunnel {
@@ -56,6 +99,12 @@ export class FilesystemExecutionError extends SandboxError {
   override name = "FilesystemExecutionError";
 }
 
+/** Mirrors modal.exception.InvalidError — raised on relative paths in fs
+ * operations and by `ContainerProcess.returncode` pre-wait. */
+export class InvalidError extends SandboxError {
+  override name = "InvalidError";
+}
+
 export function translateArkerError(error: unknown): SandboxError {
   if (error instanceof SandboxError) return error;
   const status = (error as { status?: number }).status ?? 0;
@@ -91,11 +140,16 @@ export class Image extends ModalOpaque {
     return new Image({ _recipe: "from_dockerfile", path, ...opts });
   }
 
-  aptInstall(..._packages: string[]): Image { return this; }
-  pipInstall(..._packages: string[]): Image { return this; }
-  runCommands(..._commands: string[]): Image { return this; }
-  env(_envVars: Record<string, string>): Image { return this; }
-  workdir(_path: string): Image { return this; }
+  // Each builder returns a NEW Image — matches modal's immutability.
+  private spawn(extra: Record<string, unknown>): Image {
+    return new Image({ ...this._kwargs, _base: this, ...extra });
+  }
+
+  aptInstall(...packages: string[]): Image { return this.spawn({ _op: "apt_install", packages }); }
+  pipInstall(...packages: string[]): Image { return this.spawn({ _op: "pip_install", packages }); }
+  runCommands(...commands: string[]): Image { return this.spawn({ _op: "run_commands", commands }); }
+  env(envVars: Record<string, string>): Image { return this.spawn({ _op: "env", envVars }); }
+  workdir(path: string): Image { return this.spawn({ _op: "workdir", path }); }
 }
 
 export class Secret extends ModalOpaque {

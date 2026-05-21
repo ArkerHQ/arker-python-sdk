@@ -25,9 +25,11 @@ export { ContainerProcess, StreamReader, StreamWriter } from "./process.js";
 export { SandboxFilesystem } from "./filesystem.js";
 export {
   App,
-  type FileInfo,
+  FileInfo,
+  FileType,
   FilesystemExecutionError,
   Image,
+  InvalidError,
   NetworkFileSystem,
   NotFoundError,
   type SandboxConnectCredentials,

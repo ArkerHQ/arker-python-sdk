@@ -12,12 +12,14 @@ import logging
 import os
 import secrets as _secrets
 import shlex
+import time
 from typing import Any
 
 from ..computer import Arker, ArkerError, BackgroundRunResult, Computer
 from ._filesystem import SandboxFilesystem
 from ._process import ContainerProcess
 from ._types import (
+    InvalidError,
     NotFoundError,
     SandboxError,
     StreamType,
@@ -51,6 +53,13 @@ def _build_arker(client: Any) -> Arker:
     return Arker()
 
 
+def _filter_env(env: dict[str, str | None] | None) -> dict[str, str]:
+    """Modal's `env` allows None values (drop that var). Mirror it."""
+    if not env:
+        return {}
+    return {k: v for k, v in env.items() if v is not None}
+
+
 class Sandbox:
     """Drop-in for `modal.Sandbox`. Many ctor kwargs are no-ops here — see
     `__init__.py` for the catalogue."""
@@ -62,12 +71,16 @@ class Sandbox:
         *,
         env: dict[str, str] | None = None,
         tags: dict[str, str] | None = None,
+        entrypoint_run_id: str | None = None,
     ) -> None:
         self._arker = arker
         self._computer = computer
-        self._env: dict[str, str] = dict(env or {})
+        self._env: dict[str, str] = _filter_env(env)
         self._tags: dict[str, str] = dict(tags or {})
         self._returncode: int | None = None
+        # The entrypoint run_id (if `Sandbox.create(*args, ...)` was passed
+        # entrypoint args). poll/wait/terminate/returncode bind to this.
+        self._entrypoint_run_id: str | None = entrypoint_run_id
         self.filesystem = SandboxFilesystem(self)
 
     # ---- Properties ----
@@ -124,14 +137,17 @@ class Sandbox:
         Most kwargs are accepted but ignored. `image` resolves to an Arker
         golden (modal's `Image.debian_slim()` etc. opaque-pass; we use the
         image's tag if present, else the default template).
+
+        Variadic `*args` is the entrypoint command (matches modal's API).
+        When provided, we auto-spawn it as a background run on the VM and
+        bind `wait()` / `poll()` / `terminate()` / `returncode` to it.
+        Without args, those methods are no-ops (matches our earlier behavior).
         """
-        # The variadic `*args` slot in real modal is the entrypoint command;
-        # if provided, store it for an initial exec. We don't auto-spawn.
-        del args, secrets, network_file_systems, gpu, cloud, region, cpu, memory
+        del secrets, network_file_systems, gpu, cloud, region, cpu, memory
         del block_network, outbound_cidr_allowlist, inbound_cidr_allowlist, volumes
         del pty, encrypted_ports, h2_ports, unencrypted_ports, custom_domain, proxy
         del include_oidc_identity_token, readiness_probe, verbose, experimental_options
-        del environment_name, idle_timeout, workdir, app, timeout
+        del environment_name, idle_timeout, app, timeout
 
         arker = _build_arker(client)
         source = _resolve_template(image)
@@ -139,7 +155,27 @@ class Sandbox:
             computer = arker.vm(source).fork(name=name)
         except ArkerError as error:
             raise translate_arker_error(error) from error
-        return cls(arker, computer, env=env, tags=tags)
+
+        entrypoint_run_id: str | None = None
+        if args:
+            # Build the entrypoint command and spawn it as a background run.
+            cmd = " ".join(shlex.quote(str(arg)) for arg in args)
+            merged_env = _filter_env({**(env or {})})
+            if merged_env:
+                env_parts = " ".join(
+                    f"{shlex.quote(k)}={shlex.quote(v)}" for k, v in merged_env.items()
+                )
+                cmd = f"env {env_parts} {cmd}"
+            if workdir:
+                cmd = f"cd {shlex.quote(workdir)} && {cmd}"
+            try:
+                result = computer.run(cmd, background=True)
+            except ArkerError as error:
+                raise translate_arker_error(error) from error
+            if isinstance(result, BackgroundRunResult):
+                entrypoint_run_id = result.run_id
+
+        return cls(arker, computer, env=env, tags=tags, entrypoint_run_id=entrypoint_run_id)
 
     @classmethod
     def from_id(cls, sandbox_id: str, client: Any = None) -> "Sandbox":
@@ -188,7 +224,7 @@ class Sandbox:
             raise ValueError("exec() requires at least one argument")
 
         cmd = " ".join(shlex.quote(arg) for arg in args)
-        merged_env = {**self._env, **(env or {})}
+        merged_env = _filter_env({**self._env, **(env or {})})
         if merged_env:
             env_parts = " ".join(f"{shlex.quote(k)}={shlex.quote(v)}" for k, v in merged_env.items())
             cmd = f"env {env_parts} {cmd}"
@@ -205,29 +241,51 @@ class Sandbox:
 
     # ---- Lifecycle ----
 
-    def terminate(self, wait: bool = False) -> int | None:
-        """Terminate the sandbox. Mirrors modal's `terminate(wait=False)`.
-        Returns the returncode (or None if non-blocking and not known)."""
-        del wait
+    def terminate(self, *, wait: bool = False) -> int | None:
+        """Terminate the sandbox. If `wait=True` and an entrypoint was given to
+        `create(*args)`, block until that process finishes and return its
+        exit code. Without an entrypoint we return None (no exit code to give)."""
+        if wait and self._entrypoint_run_id is not None:
+            # Drain the entrypoint first so returncode reflects what actually ran.
+            self._poll_entrypoint(block=True)
         try:
             self._computer.delete()
         except ArkerError as error:
             raise translate_arker_error(error) from error
-        if self._returncode is None:
-            self._returncode = 0
         return self._returncode
 
     def wait(self, raise_on_termination: bool = True) -> None:
-        """Block until the sandbox finishes. For our shim, this returns
-        immediately because Arker VMs don't have a "finished" state —
-        a real `wait()` would track the sandbox's primary process.
-        We document this in pending notes."""
+        """Block until the entrypoint process finishes. If no entrypoint was
+        given to `create()`, returns immediately (Arker VMs don't auto-terminate)."""
         del raise_on_termination
-        logger.debug("arker.modal: Sandbox.wait() — no-op; Arker VMs don't auto-terminate")
+        if self._entrypoint_run_id is None:
+            logger.debug("arker.modal: Sandbox.wait() — no entrypoint; nothing to wait for")
+            return
+        self._poll_entrypoint(block=True)
 
     def poll(self) -> int | None:
-        """Return the exit code or None if running. Mirrors modal."""
-        return self._returncode
+        """Return the entrypoint's exit code, or None if still running / no entrypoint."""
+        if self._entrypoint_run_id is None:
+            return self._returncode
+        return self._poll_entrypoint(block=False)
+
+    def _poll_entrypoint(self, *, block: bool) -> int | None:
+        if self._returncode is not None:
+            return self._returncode
+        assert self._entrypoint_run_id is not None
+        delay = 0.2
+        while True:
+            try:
+                status = self._computer.run_status(self._entrypoint_run_id)
+            except ArkerError as error:
+                raise translate_arker_error(error) from error
+            if status.completed:
+                self._returncode = status.exit_code if status.exit_code is not None else -1
+                return self._returncode
+            if not block:
+                return None
+            time.sleep(delay)
+            delay = min(1.0, delay * 1.5)
 
     def hydrate(self, client: Any = None) -> "Sandbox":
         """Refresh the local object from the server. For our shim, no-op
@@ -246,7 +304,7 @@ class Sandbox:
         """Local-only — Arker doesn't store tags server-side. Returns a copy."""
         return dict(self._tags)
 
-    def set_tags(self, tags: dict[str, str], client: Any = None) -> None:
+    def set_tags(self, tags: dict[str, str], *, client: Any = None) -> None:
         del client
         self._tags = dict(tags)
 
@@ -332,22 +390,34 @@ class Sandbox:
     @classmethod
     def list(
         cls,
+        *,
         app_id: str | None = None,
         tags: dict[str, str] | None = None,
+        include_finished: bool = False,
         client: Any = None,
     ) -> list["Sandbox"]:
         """Modal's `list()` returns an `AsyncGenerator[Sandbox]`; ours returns
-        a plain list since we're sync-first. Iterating works the same.
+        a plain list since we're sync-first. Defaults to running-only
+        (matches modal's `include_finished=False`).
 
-        `app_id` and `tags` are ignored — Arker has neither concept.
+        `app_id` is ignored — Arker has no App concept. `tags` raises
+        `InvalidError` if non-empty, since we don't store tags server-side
+        and silently returning the full fleet would be a tenancy footgun.
         """
-        del app_id, tags
+        del app_id
+        if tags:
+            raise InvalidError(
+                "Sandbox.list(tags=...) is not supported by the arker.modal "
+                "shim — Arker doesn't store sandbox tags server-side. Filter "
+                "client-side after Sandbox.list()."
+            )
         arker = _build_arker(client)
         try:
             vms = arker.list().vms
         except ArkerError:
             return []
-        return [cls(arker, arker.vm(vm.vm_id)) for vm in vms]
+        running = [vm for vm in vms if include_finished or vm.state == "running"]
+        return [cls(arker, arker.vm(vm.vm_id)) for vm in running]
 
     def __enter__(self) -> "Sandbox":
         return self

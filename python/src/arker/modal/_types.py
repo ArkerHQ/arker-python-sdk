@@ -20,14 +20,41 @@ class StreamType(str, enum.Enum):
     DEVNULL = "devnull"
 
 
+class FileType(str, enum.Enum):
+    """Mirrors `modal.sandbox_fs.FileType`."""
+    FILE = "file"
+    DIRECTORY = "directory"
+    SYMLINK = "symlink"
+    UNKNOWN = "unknown"
+
+
 @dataclasses.dataclass(frozen=True)
 class FileInfo:
-    """Mirrors `modal.FileInfo` returned by `filesystem.list_files()` / `.stat()`."""
+    """Mirrors `modal.FileInfo`. `is_dir()` is a METHOD (modal); the dataclass
+    field is `_kind` so we can keep the method name canonical.
+
+    Field set matches modal: name, path, type, size, mode, permissions, owner,
+    group, modified_time, symlink_target.
+    """
+    name: str
     path: str
-    is_dir: bool
+    type: FileType
     size: int = 0
     mode: int = 0
-    mtime: float = 0.0
+    permissions: str = ""
+    owner: str = ""
+    group: str = ""
+    modified_time: float = 0.0
+    symlink_target: str | None = None
+
+    def is_file(self) -> bool:
+        return self.type is FileType.FILE
+
+    def is_dir(self) -> bool:
+        return self.type is FileType.DIRECTORY
+
+    def is_symlink(self) -> bool:
+        return self.type is FileType.SYMLINK
 
 
 @dataclasses.dataclass(frozen=True)
@@ -57,22 +84,48 @@ class SandboxConnectCredentials:
 
 
 # ---- Exceptions ----
+#
+# Best-effort: subclass `modal.exception.*` when modal is installed so
+# `except modal.exception.NotFoundError:` blocks in customer code catch
+# our errors. When modal isn't installed, fall back to plain hierarchy.
+try:  # pragma: no cover — depends on whether `modal` is importable
+    from modal import exception as _modal_exception  # type: ignore[import-not-found]
+    _ModalErrorBase = _modal_exception.Error  # type: ignore[attr-defined]
+    _ModalNotFound = _modal_exception.NotFoundError  # type: ignore[attr-defined]
+    _ModalTimeout = _modal_exception.SandboxTimeoutError  # type: ignore[attr-defined]
+    _ModalFsExec = _modal_exception.FilesystemExecutionError  # type: ignore[attr-defined]
+    _ModalInvalid = _modal_exception.InvalidError  # type: ignore[attr-defined]
+except Exception:
+    _ModalErrorBase = Exception
+    _ModalNotFound = Exception
+    _ModalTimeout = Exception
+    _ModalFsExec = Exception
+    _ModalInvalid = Exception
 
 
-class SandboxError(Exception):
-    """Base exception for the arker.modal compat layer."""
+class SandboxError(_ModalErrorBase):  # type: ignore[misc, valid-type]
+    """Base exception for the arker.modal compat layer.
+
+    Subclasses `modal.exception.Error` when modal is installed so existing
+    `except modal.exception.Error:` blocks catch our exceptions.
+    """
 
 
-class SandboxTimeoutError(SandboxError):
+class SandboxTimeoutError(SandboxError, _ModalTimeout):  # type: ignore[misc, valid-type]
     pass
 
 
-class NotFoundError(SandboxError):
+class NotFoundError(SandboxError, _ModalNotFound):  # type: ignore[misc, valid-type]
     pass
 
 
-class FilesystemExecutionError(SandboxError):
-    """Mirrors `modal.exception.FilesystemExecutionError` raised by filesystem ops."""
+class FilesystemExecutionError(SandboxError, _ModalFsExec):  # type: ignore[misc, valid-type]
+    """Mirrors `modal.exception.FilesystemExecutionError`."""
+
+
+class InvalidError(SandboxError, _ModalInvalid):  # type: ignore[misc, valid-type]
+    """Mirrors `modal.exception.InvalidError` — raised by `ContainerProcess.returncode`
+    pre-wait and by filesystem ops on relative paths."""
 
 
 def translate_arker_error(error: Exception) -> SandboxError:
@@ -123,21 +176,26 @@ class Image(_ModalOpaque):
     def from_dockerfile(cls, path: str, *args: Any, **kwargs: Any) -> "Image":
         return cls(_recipe="from_dockerfile", path=path, **kwargs)
 
+    # Each builder returns a NEW Image — matches modal's immutability so
+    # `base = Image.debian_slim(); a = base.pip_install("x"); b = base.pip_install("y")`
+    # produces three distinct objects.
+    def _spawn(self, **kwargs: Any) -> "Image":
+        return Image(_base=self, **kwargs)
+
     def apt_install(self, *packages: str) -> "Image":
-        # Returns self to keep chained-recipe syntax working.
-        return self
+        return self._spawn(_op="apt_install", packages=packages)
 
     def pip_install(self, *packages: str, **kwargs: Any) -> "Image":
-        return self
+        return self._spawn(_op="pip_install", packages=packages, **kwargs)
 
     def run_commands(self, *commands: str) -> "Image":
-        return self
+        return self._spawn(_op="run_commands", commands=commands)
 
     def env(self, env_vars: dict[str, str]) -> "Image":
-        return self
+        return self._spawn(_op="env", env_vars=env_vars)
 
     def workdir(self, path: str) -> "Image":
-        return self
+        return self._spawn(_op="workdir", path=path)
 
 
 class Secret(_ModalOpaque):

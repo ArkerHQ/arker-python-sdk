@@ -1,6 +1,6 @@
 import type { RunStatusResponse } from "../index.js";
 import type { Sandbox } from "./sandbox.js";
-import { translateArkerError } from "./types.js";
+import { InvalidError, translateArkerError } from "./types.js";
 
 const POLL_BASE_MS = 200;
 const POLL_MAX_MS = 1_000;
@@ -125,7 +125,15 @@ export class ContainerProcess {
     this.stdin = new StreamWriter();
   }
 
-  get returncode(): number | null {
+  /** Matches modal: throws InvalidError until `.wait()` resolves.
+   * Use `.poll()` for the non-throwing check that returns null while running. */
+  get returncode(): number {
+    if (this._returncode === null) {
+      throw new InvalidError(
+        "You must call wait() before accessing the returncode. " +
+          "To poll for the status of a running process, use poll() instead.",
+      );
+    }
     return this._returncode;
   }
 

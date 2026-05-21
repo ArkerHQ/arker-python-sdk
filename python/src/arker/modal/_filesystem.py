@@ -15,6 +15,8 @@ from ..computer import ArkerError, CompletedRunResult
 from ._types import (
     FileInfo,
     FilesystemExecutionError,
+    FileType,
+    InvalidError,
     NotFoundError,
     translate_arker_error,
 )
@@ -25,17 +27,29 @@ if TYPE_CHECKING:
 PathLike = Union[str, os.PathLike]
 
 
-# `find ... -printf "%y|%s|%m|%T@\n"` — one line per entry. Modal's FileInfo
-# has path, is_dir, size, mode (int), mtime (float). Owner/group/permissions
-# aren't on modal's FileInfo, so we skip them.
-_FIND_FMT = "%y|%s|%m|%T@\\n"
+# Matches modal's FileInfo field set: name, path, type, size, mode,
+# permissions, owner, group, modified_time, symlink_target.
+# `%y|%s|%m|%U|%G|%T@|%l\n` — kind, size, octal-mode, numeric UID, numeric
+# GID, mtime, symlink target.
+_FIND_FMT = "%y|%s|%m|%U|%G|%T@|%l\\n"
+
+
+def _kind_to_filetype(kind: str) -> FileType:
+    if kind == "d":
+        return FileType.DIRECTORY
+    if kind == "f":
+        return FileType.FILE
+    if kind == "l":
+        return FileType.SYMLINK
+    return FileType.UNKNOWN
 
 
 def _parse_find_line(line: str, remote_path: str) -> FileInfo | None:
-    parts = line.split("|")
-    if len(parts) < 4:
+    parts = line.split("|", 6)
+    if len(parts) < 6:
         return None
-    kind, size_s, mode_s, mtime_s = parts[:4]
+    kind, size_s, mode_s, owner, group, mtime_s, *rest = parts
+    symlink_target = rest[0] if rest else ""
     try:
         size = int(size_s) if size_s else 0
     except ValueError:
@@ -49,12 +63,25 @@ def _parse_find_line(line: str, remote_path: str) -> FileInfo | None:
     except ValueError:
         mtime = 0.0
     return FileInfo(
+        name=os.path.basename(remote_path.rstrip("/")) or remote_path,
         path=remote_path,
-        is_dir=kind == "d",
+        type=_kind_to_filetype(kind),
         size=size,
         mode=mode,
-        mtime=mtime,
+        permissions=mode_s.zfill(4) if mode_s else "",
+        owner=owner,
+        group=group,
+        modified_time=mtime,
+        symlink_target=symlink_target or None,
     )
+
+
+def _validate_absolute(path: str, op: str) -> None:
+    """Matches modal: every fs op rejects relative paths up-front."""
+    if not isinstance(path, str) or not path:
+        raise InvalidError(f"{op}: path must be a non-empty string")
+    if not path.startswith("/"):
+        raise InvalidError(f"{op}: path must be absolute (got {path!r})")
 
 
 class SandboxFilesystem:
@@ -66,6 +93,7 @@ class SandboxFilesystem:
     # ---- Native (Arker sync API) ----
 
     def read_bytes(self, remote_path: str) -> bytes:
+        _validate_absolute(remote_path, "read_bytes")
         try:
             return self._sandbox._computer.sync.read_file(remote_path)
         except ArkerError as error:
@@ -75,22 +103,26 @@ class SandboxFilesystem:
         return self.read_bytes(remote_path).decode("utf-8", errors="replace")
 
     def write_bytes(self, data: bytes | bytearray | memoryview, remote_path: str) -> None:
+        _validate_absolute(remote_path, "write_bytes")
         try:
             self._sandbox._computer.sync.write_file(remote_path, bytes(data))
         except ArkerError as error:
             raise translate_arker_error(error) from error
 
     def write_text(self, data: str, remote_path: str) -> None:
+        _validate_absolute(remote_path, "write_text")
         try:
             self._sandbox._computer.sync.write_file(remote_path, data)
         except ArkerError as error:
             raise translate_arker_error(error) from error
 
     def copy_from_local(self, local_path: PathLike, remote_path: str) -> None:
+        _validate_absolute(remote_path, "copy_from_local")
         with open(os.fspath(local_path), "rb") as fh:
             self.write_bytes(fh.read(), remote_path)
 
     def copy_to_local(self, remote_path: str, local_path: PathLike) -> None:
+        _validate_absolute(remote_path, "copy_to_local")
         data = self.read_bytes(remote_path)
         with open(os.fspath(local_path), "wb") as fh:
             fh.write(data)
@@ -98,6 +130,7 @@ class SandboxFilesystem:
     # ---- Shell-shim ----
 
     def list_files(self, remote_path: str) -> list[FileInfo]:
+        _validate_absolute(remote_path, "list_files")
         stdout, stderr, exit_code = self._shell(
             f"find {shlex.quote(remote_path)} -maxdepth 1 -mindepth 1 -printf {shlex.quote('%p|' + _FIND_FMT)}"
         )
@@ -116,7 +149,8 @@ class SandboxFilesystem:
                 entries.append(parsed)
         return entries
 
-    def make_directory(self, remote_path: str, create_parents: bool = True) -> None:
+    def make_directory(self, remote_path: str, *, create_parents: bool = True) -> None:
+        _validate_absolute(remote_path, "make_directory")
         flag = "-p" if create_parents else ""
         _, stderr, exit_code = self._shell(
             f"mkdir {flag} {shlex.quote(remote_path)}".strip()
@@ -126,7 +160,8 @@ class SandboxFilesystem:
                 f"make_directory({remote_path!r}) failed: {stderr.strip()}"
             )
 
-    def remove(self, remote_path: str, recursive: bool = False) -> None:
+    def remove(self, remote_path: str, *, recursive: bool = False) -> None:
+        _validate_absolute(remote_path, "remove")
         flag = "-rf" if recursive else "-f"
         _, stderr, exit_code = self._shell(f"rm {flag} {shlex.quote(remote_path)}")
         if exit_code != 0:
@@ -135,6 +170,7 @@ class SandboxFilesystem:
             )
 
     def stat(self, remote_path: str) -> FileInfo:
+        _validate_absolute(remote_path, "stat")
         stdout, stderr, exit_code = self._shell(
             f"find {shlex.quote(remote_path)} -maxdepth 0 -printf {shlex.quote(_FIND_FMT)}"
         )
