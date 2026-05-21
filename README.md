@@ -2,15 +2,17 @@
 
 <img src="./assets/banner.png" alt="Arker" width="480" />
 
-<br/><br/>
+<br><br/>
+
+[Docs](https://arker.ai/docs) · [Benchmarks](https://arker.ai/benchmarks) · [Console](https://arker.ai/console)
 
 [![PyPI](https://img.shields.io/pypi/v/arker.svg?style=flat-square&label=pypi)](https://pypi.org/project/arker/)
 [![npm](https://img.shields.io/npm/v/@arker-ai/sdk.svg?style=flat-square&label=npm)](https://www.npmjs.com/package/@arker-ai/sdk)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square)](./LICENSE)
 
-[Docs](https://arker.ai/docs) · [Benchmarks](https://arker.ai/benchmarks) · [Console](https://arker.ai/console)
-
 </div>
+
+<br><br/>
 
 
 ### Authentication
