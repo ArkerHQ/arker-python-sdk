@@ -2,7 +2,7 @@
 
 <img src="./assets/banner.png" alt="Arker" width="480" />
 
-<br><br/>
+<br>
 
 [Docs](https://arker.ai/docs) · [Benchmarks](https://arker.ai/benchmarks) · [Console](https://arker.ai/console)
 
