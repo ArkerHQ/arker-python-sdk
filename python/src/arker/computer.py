@@ -45,23 +45,10 @@ class RetryOptions:
 @dataclasses.dataclass(frozen=True)
 class Session:
     session_id: str
-    state: str
+    state: str  # "idle" | "running"
     cwd: str
-
-
-@dataclasses.dataclass(frozen=True)
-class GoldenInfo:
-    vm_id: str
-    name: str
-    source_golden: str
-    memory_mib: int | None = None
-    vcpu_count: int | None = None
-    disk_mib: int | None = None
-
-
-@dataclasses.dataclass(frozen=True)
-class ListGoldensResponse:
-    goldens: list[GoldenInfo]
+    session_idx: int = 0
+    started_at: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,11 +56,13 @@ class Vm:
     vm_id: str
     owner_id: str
     created_at: str
-    state: str
+    state: str  # "idle" | "running"
     sessions: list[Session]
     name: str | None = None
     source_golden: str | None = None
-    last_activity: str | None = None
+    region: str | None = None
+    provider: str | None = None
+    started_at: str | None = None
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
@@ -101,9 +90,7 @@ class ListVmsResponse:
 VmSummary = Vm
 VmList = ListVmsResponse
 
-# Backwards-compat aliases — these were the type names before the
-# `VmInfo → Vm` / `SessionInfo → Session` / `RunStatusResponse → Run`
-# rename. Drop in a future major release once downstream users update.
+# Backwards-compat aliases — pre-rename names. Drop in a future major.
 VmInfo = Vm
 SessionInfo = Session
 
@@ -114,7 +101,6 @@ class ForkVmResponse:
     owner_id: str
     created_at: str
     sessions: list[Session]
-    ssh_private_key: str | None = None
     tunnels: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     network: dict[str, Any] | None = None
 
@@ -131,47 +117,85 @@ class CompletedRunResult:
     stderr: bytes
     stderr_encoding: str
     exit_code: int
-    completed: bool = True
     type: str = "completed"
 
 
 @dataclasses.dataclass(frozen=True)
 class BackgroundRunResult:
     run_id: str
-    completed: bool
     tunnels: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     network: dict[str, Any] | None = None
     type: str = "background"
 
 
-@dataclasses.dataclass(frozen=True)
-class PtyRunResult:
-    session_id: str
-    ws_url: str
-    pty: bool = True
-    type: str = "pty"
-
-
-RunResult = CompletedRunResult | BackgroundRunResult | PtyRunResult
+RunResult = CompletedRunResult | BackgroundRunResult
 
 
 @dataclasses.dataclass(frozen=True)
 class Run:
     run_id: str
+    state: str  # "running" | "completed" | "cancelled"
+    started_at: str
     stdout: bytes
     stdout_encoding: str
     stderr: bytes
     stderr_encoding: str
-    exit_code: int | None
-    completed: bool
     tunnels: list[dict[str, Any]]
+    exit_code: int | None = None
+    session_id: str | None = None
+    command: str | None = None
+    completed_at: str | None = None
     network: dict[str, Any] | None = None
     retry_count: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
+class RunSummary:
+    """Strict field-subset of `Run` — every field is present on `Run`."""
+    run_id: str
+    state: str
+    started_at: str
+    exit_code: int | None = None
+    session_id: str | None = None
+    command: str | None = None
+    completed_at: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class ListRunsResponse:
+    runs: list[RunSummary]
+
+
+@dataclasses.dataclass(frozen=True)
 class CancelRunResponse:
     cancelled: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class Filesystem:
+    filesystem_id: str
+    name: str
+    owner_id: str
+    created_at: str
+    size_bytes: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class ListFilesystemsResponse:
+    filesystems: list[Filesystem]
+
+
+@dataclasses.dataclass(frozen=True)
+class DeleteFilesystemResponse:
+    deleted: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class SyncCreateResponse:
+    ok: bool
+    op: str
+    filesystem: Filesystem
+    mount_path: str
 
 
 @dataclasses.dataclass(eq=False)
@@ -213,6 +237,7 @@ class Arker:
         self._burst_base_url = _normalize_base_url(resolved_burst_base_url) if resolved_burst_base_url else None
         self._region = _normalize_region(resolved_region) if resolved_region else None
         self._retry = _normalize_retry(retry)
+        self.filesystems = Filesystems(self)
 
     @property
     def base_url(self) -> str:
@@ -228,10 +253,6 @@ class Arker:
 
     def vm(self, vm_id: str) -> "Computer":
         return Computer(self, vm_id, self._base_url_for(vm_id))
-
-    def goldens(self) -> ListGoldensResponse:
-        payload = self._request("GET", "/v1/goldens")
-        return ListGoldensResponse([_golden_info(item) for item in payload.get("goldens", [])])
 
     def list(self) -> ListVmsResponse:
         payload = self._request("GET", "/v1/vms")
@@ -307,6 +328,19 @@ class Arker:
         return self._base_url
 
 
+class Filesystems:
+    def __init__(self, client: Arker) -> None:
+        self._client = client
+
+    def list(self) -> ListFilesystemsResponse:
+        payload = self._client._request("GET", "/v1/filesystems")
+        return ListFilesystemsResponse([_filesystem(item) for item in payload.get("filesystems", [])])
+
+    def delete(self, filesystem_id: str) -> DeleteFilesystemResponse:
+        payload = self._client._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}")
+        return DeleteFilesystemResponse(deleted=bool(payload.get("deleted")))
+
+
 class Computer:
     def __init__(self, client: Arker, vm_id: str, base_url: str | None = None) -> None:
         self._client = client
@@ -346,35 +380,31 @@ class Computer:
         command: str,
         *,
         session_id: str | None = None,
+        session_idx: int | None = None,
         background: bool | None = None,
         timeout: int | None = None,
         end_symbol: str | None = None,
-        mounts: list[dict[str, Any]] | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         network: dict[str, Any] | None = None,
         release: str | None = None,
         signal: str | None = None,
-        runtime: str | None = None,
-        runtime_override: str | None = None,
         idempotency_key: str | None = None,
     ) -> RunResult:
         body = {
             "command": command,
             "session_id": session_id,
+            "session_idx": session_idx,
             "background": background,
             "timeout": timeout,
             "end_symbol": end_symbol,
-            "mounts": mounts,
             "vcpu_count": vcpu_count,
             "memory_mib": memory_mib,
             "disk_mib": disk_mib,
             "network": network,
             "release": release,
             "signal": signal,
-            "runtime": runtime,
-            "runtime_override": runtime_override,
         }
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return _run_response(self._client._request(
@@ -420,6 +450,41 @@ class Sync:
             self._write_inline(path, payload)
         else:
             self._write_presigned(path, payload)
+
+    def create(
+        self,
+        *,
+        mount_path: str,
+        filesystem_id: str | None = None,
+        filesystem_name: str | None = None,
+        create_if_missing: bool = False,
+    ) -> SyncCreateResponse:
+        """Ensure a `Filesystem` exists and bind-mount it into this VM at `mount_path`.
+
+        Bidirectional by virtue of being a mount — there is no separate
+        sync-direction parameter.
+        """
+        payload = self._client._request(
+            "POST",
+            self._path(),
+            {
+                "op": "create",
+                "mount_path": mount_path,
+                "filesystem_id": filesystem_id,
+                "filesystem_name": filesystem_name,
+                "create_if_missing": create_if_missing,
+            },
+            base_url=self._vm.base_url,
+        )
+        fs = payload.get("filesystem")
+        if not isinstance(fs, dict):
+            raise ArkerError("internal", "create response missing filesystem", 200)
+        return SyncCreateResponse(
+            ok=bool(payload.get("ok")),
+            op=str(payload.get("op", "create")),
+            filesystem=_filesystem(fs),
+            mount_path=str(payload.get("mount_path", "")),
+        )
 
     def _path(self) -> str:
         return f"{_vm_path(self._vm.id)}/sync"
@@ -649,17 +714,18 @@ def _session_info(payload: dict[str, Any]) -> Session:
         session_id=str(payload["session_id"]),
         state=str(payload["state"]),
         cwd=str(payload["cwd"]),
+        session_idx=int(payload.get("session_idx") or 0),
+        started_at=_optional_str(payload.get("started_at")),
     )
 
 
-def _golden_info(payload: dict[str, Any]) -> GoldenInfo:
-    return GoldenInfo(
-        vm_id=str(payload["vm_id"]),
+def _filesystem(payload: dict[str, Any]) -> Filesystem:
+    return Filesystem(
+        filesystem_id=str(payload["filesystem_id"]),
         name=str(payload["name"]),
-        source_golden=str(payload["source_golden"]),
-        memory_mib=_optional_int(payload.get("memory_mib")),
-        vcpu_count=_optional_int(payload.get("vcpu_count")),
-        disk_mib=_optional_int(payload.get("disk_mib")),
+        owner_id=str(payload["owner_id"]),
+        created_at=str(payload["created_at"]),
+        size_bytes=_optional_int(payload.get("size_bytes")),
     )
 
 
@@ -672,22 +738,12 @@ def _vm_info(payload: dict[str, Any]) -> Vm:
         sessions=[_session_info(item) for item in payload.get("sessions", [])],
         name=_optional_str(payload.get("name")),
         source_golden=_optional_str(payload.get("source_golden")),
-        last_activity=_optional_str(payload.get("last_activity")),
+        region=_optional_str(payload.get("region")),
+        provider=_optional_str(payload.get("provider")),
+        started_at=_optional_str(payload.get("started_at")),
         vcpu_count=_optional_int(payload.get("vcpu_count")),
         memory_mib=_optional_int(payload.get("memory_mib")),
         disk_mib=_optional_int(payload.get("disk_mib")),
-    )
-
-
-def _fork_response(payload: dict[str, Any]) -> ForkVmResponse:
-    return ForkVmResponse(
-        vm_id=str(payload["vm_id"]),
-        owner_id=str(payload["owner_id"]),
-        created_at=str(payload["created_at"]),
-        sessions=[_session_info(item) for item in payload.get("sessions", [])],
-        ssh_private_key=_optional_str(payload.get("ssh_private_key")),
-        tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
-        network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
     )
 
 
@@ -700,8 +756,6 @@ def _fork_vm_id(payload: dict[str, Any]) -> str:
 
 def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(payload.get("stdout"), str):
-        if payload.get("completed") is not True:
-            raise ArkerError("internal", "completed run response must have completed=true", 200)
         return CompletedRunResult(
             stdout=_decode_bytes(str(payload["stdout"]), str(payload["stdout_encoding"])),
             stdout_encoding=str(payload["stdout_encoding"]),
@@ -713,15 +767,8 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(payload.get("run_id"), str):
         return BackgroundRunResult(
             run_id=str(payload["run_id"]),
-            completed=bool(payload.get("completed")),
             tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
             network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
-        )
-
-    if payload.get("pty") is True:
-        return PtyRunResult(
-            session_id=str(payload["session_id"]),
-            ws_url=str(payload["ws_url"]),
         )
 
     raise ArkerError("internal", "unrecognized run response shape", 200)
@@ -731,13 +778,17 @@ def _run_status_response(payload: dict[str, Any]) -> Run:
     retry_count = payload.get("retry_count")
     return Run(
         run_id=str(payload["run_id"]),
+        state=str(payload["state"]),
+        started_at=str(payload["started_at"]),
         stdout=_decode_bytes(str(payload["stdout"]), str(payload["stdout_encoding"])),
         stdout_encoding=str(payload["stdout_encoding"]),
         stderr=_decode_bytes(str(payload["stderr"]), str(payload["stderr_encoding"])),
         stderr_encoding=str(payload["stderr_encoding"]),
-        exit_code=_optional_int(payload.get("exit_code")),
-        completed=bool(payload.get("completed")),
         tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
+        exit_code=_optional_int(payload.get("exit_code")),
+        session_id=_optional_str(payload.get("session_id")),
+        command=_optional_str(payload.get("command")),
+        completed_at=_optional_str(payload.get("completed_at")),
         network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
         retry_count=int(retry_count) if isinstance(retry_count, int) else 0,
     )

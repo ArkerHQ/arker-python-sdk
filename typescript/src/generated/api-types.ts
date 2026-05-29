@@ -4,22 +4,6 @@
  */
 
 export interface paths {
-    "/v1/goldens": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["listGoldens"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/vms": {
         parameters: {
             query?: never;
@@ -65,7 +49,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Fork a VM or golden source. Optional network, disk, and resource overrides may return ErrorResponse code "unsupported_operation" on backends that do not support those options. */
+        /** @description Fork a VM. Optional network, disk, and resource overrides may return ErrorResponse code "unsupported_operation" on backends that do not support those options. */
         post: operations["forkVm"];
         delete?: never;
         options?: never;
@@ -84,7 +68,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code "unsupported_operation". When the optional Idempotency-Key header is provided, retrying with the same key returns the original run; a different request body under the same key returns ErrorResponse code "conflict" with the original run_id. */
+        /** @description Run a command. Foreground command execution is required; optional background, session, resource, network, signal, and release behavior may return ErrorResponse code "unsupported_operation". */
         post: operations["runVm"];
         delete?: never;
         options?: never;
@@ -153,26 +137,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/sessions/{sid}/resize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-                sid: components["parameters"]["SessionId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Resize a PTY session. Backends without PTY sessions return ErrorResponse code "unsupported_operation". */
-        post: operations["resizePty"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/vms/{id}/resize": {
         parameters: {
             query?: never;
@@ -203,9 +167,63 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Read or write files. Basic sync is part of the public API; backend-specific large-file or presigned sync limitations return ErrorResponse code "unsupported_operation". */
+        /**
+         * @description Multi-op endpoint over the VM's filesystem.
+         *
+         *     - `read` reads a file from the VM filesystem.
+         *     - `write` writes one or more files (inline chunks or presigned uploads).
+         *     - `create` ensures a `Filesystem` exists (creating one if necessary, when
+         *       `create_if_missing: true`) and bind-mounts it into the VM at `mount_path`.
+         *       Bidirectional by virtue of being a mount — there is no separate
+         *       sync-direction parameter.
+         */
         post: operations["syncVm"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/filesystems": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description List persistent filesystems owned by the authenticated caller's
+         *     organization. Filesystems are created implicitly via
+         *     `POST /v1/vms/{id}/sync` with `op: "create"` and persist independently
+         *     of any single VM.
+         */
+        get: operations["listFilesystems"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/filesystems/{filesystem_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                filesystem_id: components["parameters"]["FilesystemId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * @description Delete a persistent filesystem. The filesystem must not be mounted by
+         *     any VM at the time of deletion. Backends without filesystem persistence
+         *     return ErrorResponse code "unsupported_operation".
+         */
+        delete: operations["deleteFilesystem"];
         options?: never;
         head?: never;
         patch?: never;
@@ -225,6 +243,23 @@ export interface components {
             /** @description Human-readable error message. */
             message: string;
         };
+        /**
+         * @description Unified lifecycle state for a VM or a Session. `idle` means the
+         *     VM/session exists but no command is currently executing; `running`
+         *     means a command is in flight.
+         * @enum {string}
+         */
+        VmState: "idle" | "running";
+        SessionState: components["schemas"]["VmState"];
+        /**
+         * @description Unified lifecycle state for a Run. `cancelled` covers both client
+         *     cancellation and server-side abort. Failure is NOT a state — failed
+         *     runs land in `completed` with a non-zero `exit_code`.
+         * @enum {string}
+         */
+        RunState: "running" | "completed" | "cancelled";
+        /** @enum {string} */
+        TunnelState: "pending" | "active" | "closed";
         NetworkPolicy: components["schemas"]["NetworkPolicyOpen"] | components["schemas"]["NetworkPolicyBlocked"] | components["schemas"]["NetworkPolicyAllow"] | components["schemas"]["NetworkPolicyBlock"];
         NetworkPolicyOpen: {
             /** @constant */
@@ -250,33 +285,24 @@ export interface components {
             image?: string | null;
             network?: components["schemas"]["NetworkPolicyInput"] | null;
             /** @default true */
-            disk?: boolean;
+            disk: boolean;
             vcpu_count?: number | null;
             memory_mib?: number | null;
             max_memory_mib?: number | null;
             disk_mib?: number | null;
-            /**
-             * @description Request a durable VM. If the underlying host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Use for long-running or non-idempotent work. Forked children default to non-durable. Backends without durability support return ErrorResponse code "unsupported_operation".
-             * @default false
-             */
             durable?: boolean | null;
         };
         Session: {
             session_id: string;
-            state: string;
+            /** @default 0 */
+            session_idx: number;
+            state: components["schemas"]["SessionState"];
             cwd: string;
+            /** @description Wall-clock timestamp the session was most recently started. */
+            started_at?: string | null;
         };
-        ListSessionsResponse: components["schemas"]["Session"][];
-        GoldenInfo: {
-            vm_id: string;
-            name: string;
-            source_golden: string;
-            memory_mib?: number | null;
-            vcpu_count?: number | null;
-            disk_mib?: number | null;
-        };
-        ListGoldensResponse: {
-            goldens: components["schemas"]["GoldenInfo"][];
+        ListSessionsResponse: {
+            sessions: components["schemas"]["Session"][];
         };
         Vm: {
             vm_id: string;
@@ -284,8 +310,22 @@ export interface components {
             created_at: string;
             name?: string | null;
             source_golden?: string | null;
-            state: string;
-            last_activity?: string | null;
+            state: components["schemas"]["VmState"];
+            /**
+             * @description Backend region the VM lives in (e.g. `us-west-2`). With `provider`
+             *     this fully addresses the VM's routing target:
+             *     `https://{provider}-{region}.arker.ai/...`.
+             */
+            region?: string | null;
+            /**
+             * @description Backend provider — `aws` for arkerd-managed host-backed VMs,
+             *     `aws-burst` for Lambda-managed VMs. Together with `region`
+             *     this is enough to construct the per-VM backend URL.
+             * @enum {string|null}
+             */
+            provider?: "aws" | "aws-burst" | null;
+            /** @description Wall-clock timestamp the VM was most recently started (cold-boot or restored from snapshot). */
+            started_at?: string | null;
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
@@ -299,9 +339,10 @@ export interface components {
             owner_id: string;
             created_at: string;
             sessions: components["schemas"]["Session"][];
-            ssh_private_key?: string | null;
-            tunnels?: components["schemas"]["RunTunnelStatus"][];
-            network?: components["schemas"]["RunNetworkStatus"] | null;
+            tunnels?: components["schemas"]["TunnelStatus"][];
+            network?: components["schemas"]["NetworkStatus"] | null;
+            /** @description Identifier of the worker host that owns this VM. Set by workers so a router can populate its DbCache without a PlanetScale lookup. Optional for backwards compatibility — single-host deployments and pre-split clients may omit / ignore it. */
+            host_id?: string | null;
         };
         DeleteVmResponse: {
             deleted: boolean;
@@ -309,124 +350,121 @@ export interface components {
         DeleteSessionResponse: {
             deleted: boolean;
         };
-        MountRequest: {
-            uri: string;
-            mount_point: string;
-            /** @default dir */
-            format?: string;
-        };
-        /** @description Foreground command execution is the portable baseline. Optional session, background, mount, resource, network, signal, release, and runtime fields may return ErrorResponse code "unsupported_operation" on backends that do not support them. */
+        /** @description Foreground command execution is the portable baseline. Optional session, background, resource, network, signal, and release fields may return ErrorResponse code "unsupported_operation" on backends that do not support them. */
         RunRequest: {
             /** @description Optional persistent session id. Backends without persistent sessions return unsupported_operation when this is requested. */
             session_id?: string | null;
+            /** @description Optional session selector by integer index instead of ULID. Mutually exclusive with session_id. */
+            session_idx?: number | null;
             command: string;
             /**
              * @description Run asynchronously. Backends without background execution return unsupported_operation and must not silently run the command synchronously.
              * @default false
              */
-            background?: boolean;
+            background: boolean;
             timeout?: number | null;
             /** @default auto */
-            end_symbol?: string | null;
-            /**
-             * @description Optional external mounts. Backends without mount support return unsupported_operation when this is non-empty.
-             * @default []
-             */
-            mounts?: components["schemas"]["MountRequest"][];
+            end_symbol: string | null;
             /** @description Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested. */
             vcpu_count?: number | null;
-            /** @description Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested. */
             memory_mib?: number | null;
-            /** @description Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested. */
             disk_mib?: number | null;
             /** @description Optional network/tunnel request. Backends without networking support return unsupported_operation when this is requested. */
-            network?: components["schemas"]["RunNetworkRequest"] | null;
+            network?: components["schemas"]["NetworkRequest"] | null;
             /** @description Optional release selection. Backends without release selection support return unsupported_operation when this is requested. */
             release?: string | null;
             /** @description Optional session signal. Backends without signal support return unsupported_operation when this is requested. */
             signal?: string | null;
-            /** @description Optional runtime selection. Backends without runtime selection support return unsupported_operation when this is requested. */
-            runtime?: string | null;
-            /** @description Optional runtime override. Backends without runtime overrides return unsupported_operation when this is requested. */
-            runtime_override?: string | null;
         };
-        RunNetworkRequest: {
-            inbound?: components["schemas"]["RunInboundRequest"] | null;
+        NetworkRequest: {
+            inbound?: components["schemas"]["InboundRequest"] | null;
         };
-        RunInboundRequest: {
+        InboundRequest: {
             /** @default {} */
-            ports?: {
-                [key: string]: components["schemas"]["RunInboundPortRequest"];
+            ports: {
+                [key: string]: components["schemas"]["InboundPortRequest"];
             };
         };
-        RunInboundPortRequest: {
+        InboundPortRequest: {
             /** @default private */
-            visibility?: string;
+            visibility: string;
             /** @default http */
-            protocol?: string;
+            protocol: string;
         };
-        /** @description Successful run result. BackgroundRunResponse and PtyRunResponse are returned only by backends that support those modes; unsupported modes return ErrorResponse code "unsupported_operation". */
-        RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"] | components["schemas"]["PtyRunResponse"];
+        /** @description Successful run result. BackgroundRunResponse is returned only by backends that support background runs; unsupported modes return ErrorResponse code "unsupported_operation". */
+        RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
             stdout: string;
             stdout_encoding: string;
             stderr: string;
             stderr_encoding: string;
             exit_code: number;
-            completed: boolean;
+            /** @description Which dispatch backend ran this command ("brush" or "fc"). Optional. */
+            dispatch?: string | null;
         };
         BackgroundRunResponse: {
             run_id: string;
-            completed: boolean;
             /** @default [] */
-            tunnels?: components["schemas"]["RunTunnelStatus"][];
-            network?: components["schemas"]["RunNetworkStatus"] | null;
-        };
-        PtyRunResponse: {
-            /** @constant */
-            pty: true;
-            session_id: string;
-            ws_url: string;
+            tunnels: components["schemas"]["TunnelStatus"][];
+            network?: components["schemas"]["NetworkStatus"] | null;
         };
         Run: {
             run_id: string;
+            session_id?: string | null;
+            command?: string | null;
+            state: components["schemas"]["RunState"];
+            started_at: string;
+            completed_at?: string | null;
+            exit_code: number | null;
             stdout: string;
             stdout_encoding: string;
             stderr: string;
             stderr_encoding: string;
+            tunnels: components["schemas"]["TunnelStatus"][];
+            network?: components["schemas"]["NetworkStatus"] | null;
+            /** @default 0 */
+            retry_count: number;
+        };
+        /**
+         * @description Listing record for `GET /v1/vms/{id}/runs`. Every field is also
+         *     present on `Run` with the same name and type — `RunSummary` is a
+         *     strict field-subset of `Run`.
+         */
+        RunSummary: {
+            run_id: string;
+            session_id?: string | null;
+            command?: string | null;
+            state: components["schemas"]["RunState"];
+            started_at: string;
+            completed_at?: string | null;
             exit_code: number | null;
-            completed: boolean;
-            tunnels: components["schemas"]["RunTunnelStatus"][];
-            network?: components["schemas"]["RunNetworkStatus"] | null;
-            /**
-             * @description Number of times this run has been automatically retried after an infrastructure failure. 0 for runs that completed without interruption. Backends without durability support omit this field; clients should treat it as 0 when absent.
-             * @default 0
-             */
-            retry_count?: number;
         };
-        RunNetworkStatus: {
-            inbound: components["schemas"]["RunInboundStatus"];
+        ListRunsResponse: {
+            runs: components["schemas"]["RunSummary"][];
         };
-        RunInboundStatus: {
+        NetworkStatus: {
+            inbound: components["schemas"]["InboundStatus"];
+        };
+        InboundStatus: {
             ports: {
-                [key: string]: components["schemas"]["RunInboundPortStatus"];
+                [key: string]: components["schemas"]["InboundPortStatus"];
             };
         };
-        RunInboundPortStatus: {
+        InboundPortStatus: {
             requested: string;
             observed: string;
             effective: string;
             protocol: string;
             url?: string | null;
         };
-        RunTunnelStatus: {
+        TunnelStatus: {
             /** @default  */
-            run_id?: string;
+            run_id: string;
             port: number;
             visibility: string;
             protocol: string;
             url?: string | null;
-            status: string;
+            state: components["schemas"]["TunnelState"];
             message?: string | null;
         };
         CancelRunResponse: {
@@ -439,14 +477,6 @@ export interface components {
             } | null;
             cwd?: string | null;
         };
-        /** @description Resize a PTY session. Backends without PTY sessions return unsupported_operation. */
-        ResizePtyRequest: {
-            cols: number;
-            rows: number;
-        };
-        ResizePtyResponse: {
-            resized: boolean;
-        };
         /** @description Resize VM resources. Backends without VM resize support return unsupported_operation. */
         ResizeRequest: {
             vcpu_count?: number | null;
@@ -456,7 +486,25 @@ export interface components {
         ResizeResponse: {
             ok: boolean;
         };
-        SyncRequest: components["schemas"]["SyncReadRequest"] | components["schemas"]["SyncWriteRequest"];
+        /**
+         * @description Org-scoped persistent filesystem. Created implicitly via
+         *     `POST /v1/vms/{id}/sync { op: "create", ... }` and managed via
+         *     `GET /v1/filesystems` and `DELETE /v1/filesystems/{filesystem_id}`.
+         */
+        Filesystem: {
+            filesystem_id: string;
+            name: string;
+            owner_id: string;
+            created_at: string;
+            size_bytes?: number | null;
+        };
+        ListFilesystemsResponse: {
+            filesystems: components["schemas"]["Filesystem"][];
+        };
+        DeleteFilesystemResponse: {
+            deleted: boolean;
+        };
+        SyncRequest: components["schemas"]["SyncReadRequest"] | components["schemas"]["SyncWriteRequest"] | components["schemas"]["SyncCreateRequest"];
         SyncReadRequest: {
             /** @constant */
             op: "read";
@@ -466,6 +514,23 @@ export interface components {
             /** @constant */
             op: "write";
             writes: components["schemas"]["SyncWriteEntry"][];
+        };
+        /**
+         * @description Ensure a filesystem exists (creating one if requested) and bind-mount
+         *     it into this VM at `mount_path`. Bidirectional by virtue of being a
+         *     mount.
+         */
+        SyncCreateRequest: {
+            /** @constant */
+            op: "create";
+            /** @description Address an existing filesystem by ID. Mutually exclusive with filesystem_name + create_if_missing. */
+            filesystem_id?: string | null;
+            /** @description Address a filesystem by user-assigned name within the calling org. Combined with create_if_missing=true will create the filesystem if no filesystem with that name exists. */
+            filesystem_name?: string | null;
+            /** @default false */
+            create_if_missing: boolean;
+            /** @description VM-side path to mount the filesystem under. */
+            mount_path: string;
         };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
@@ -477,14 +542,14 @@ export interface components {
             end: number;
             sha256?: string | null;
             /** @default false */
-            is_secret?: boolean;
+            is_secret: boolean;
         };
         SyncPresignedWriteRequest: {
             path: string;
             size: number;
             presigned: boolean;
             /** @default false */
-            is_secret?: boolean;
+            is_secret: boolean;
         };
         SyncPresignedWriteCommit: {
             path: string;
@@ -492,7 +557,14 @@ export interface components {
             upload_id: string;
             sha256?: string | null;
         };
-        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"];
+        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncCreateResponse"];
+        SyncCreateResponse: {
+            ok: boolean;
+            /** @constant */
+            op: "create";
+            filesystem: components["schemas"]["Filesystem"];
+            mount_path: string;
+        };
         SyncReadResponse: components["schemas"]["SyncReadInlineResponse"] | components["schemas"]["SyncReadPresignedResponse"];
         SyncReadInlineResponse: {
             ok: boolean;
@@ -580,8 +652,7 @@ export interface components {
         VmId: string;
         RunId: string;
         SessionId: string;
-        /** @description Optional idempotency key for safe retries of POST /v1/vms/{id}/run. A retry with the same key and the same request returns the original run. A different request under the same key returns ErrorResponse code "conflict" with the original run_id. Keys expire 24h after the run completes. */
-        IdempotencyKey: string;
+        FilesystemId: string;
     };
     requestBodies: never;
     headers: never;
@@ -589,30 +660,21 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    listGoldens: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Available golden VM sources for this endpoint. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListGoldensResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     listVms: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Narrow to a single backend region (e.g. `us-west-2`). When omitted,
+                 *     the response aggregates across every configured region.
+                 */
+                region?: string;
+                /**
+                 * @description Narrow to a single backend provider. `aws` returns only
+                 *     arkerd-managed (host-backed) VMs; `aws-burst` returns only
+                 *     Lambda-managed VMs. When omitted, both are returned merged.
+                 */
+                provider?: "aws" | "aws-burst";
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -708,10 +770,7 @@ export interface operations {
     runVm: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Optional idempotency key for safe retries of POST /v1/vms/{id}/run. A retry with the same key and the same request returns the original run. A different request under the same key returns ErrorResponse code "conflict" with the original run_id. Keys expire 24h after the run completes. */
-                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
-            };
+            header?: never;
             path: {
                 id: components["parameters"]["VmId"];
             };
@@ -863,35 +922,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    resizePty: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-                sid: components["parameters"]["SessionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ResizePtyRequest"];
-            };
-        };
-        responses: {
-            /** @description Resize result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResizePtyResponse"];
-                };
-            };
-            422: components["responses"]["UnsupportedOperation"];
-            default: components["responses"]["Error"];
-        };
-    };
     resizeVm: {
         parameters: {
             query?: never;
@@ -945,6 +975,50 @@ export interface operations {
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
+    listFilesystems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Org-scoped persistent filesystems. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListFilesystemsResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteFilesystem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                filesystem_id: components["parameters"]["FilesystemId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delete result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteFilesystemResponse"];
+                };
+            };
             default: components["responses"]["Error"];
         };
     };

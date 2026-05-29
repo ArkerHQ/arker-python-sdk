@@ -52,27 +52,31 @@ export interface ArkerOptions {
   retry?: RetryOptions | false;
 }
 
+// ── State enums ────────────────────────────────────────────────────
+export type VmState = ApiSchema<"VmState">;
+export type SessionState = ApiSchema<"SessionState">;
+export type RunState = ApiSchema<"RunState">;
+export type TunnelState = ApiSchema<"TunnelState">;
+
+// ── Core resources ─────────────────────────────────────────────────
 export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
 export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
 export type ForkRequest = ApiSchema<"ForkRequest">;
 export type ForkOptions = ForkRequest;
 export type Session = ApiSchema<"Session">;
-export type GoldenInfo = ApiSchema<"GoldenInfo">;
-export type ListGoldensResponse = ApiSchema<"ListGoldensResponse">;
 export type Vm = ApiSchema<"Vm">;
 export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
 export type ListSessionsResponse = ApiSchema<"ListSessionsResponse">;
-export type VmSummary = Vm;
-export type VmList = ListVmsResponse;
-
-/** @deprecated Use `Vm`. */
-export type VmInfo = Vm;
-/** @deprecated Use `Session`. */
-export type SessionInfo = Session;
 export type ForkVmResponse = ApiSchema<"ForkVmResponse">;
 export type DeleteVmResponse = ApiSchema<"DeleteVmResponse">;
 export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
-export type MountRequest = ApiSchema<"MountRequest">;
+
+// ── Filesystems ────────────────────────────────────────────────────
+export type Filesystem = ApiSchema<"Filesystem">;
+export type ListFilesystemsResponse = ApiSchema<"ListFilesystemsResponse">;
+export type DeleteFilesystemResponse = ApiSchema<"DeleteFilesystemResponse">;
+
+// ── Runs ───────────────────────────────────────────────────────────
 export type RunRequest = ApiSchema<"RunRequest">;
 export type RunOptions = Omit<RunRequest, "command"> & {
   /**
@@ -84,19 +88,21 @@ export type RunOptions = Omit<RunRequest, "command"> & {
    */
   idempotencyKey?: string;
 };
-export type RunInboundPortRequest = ApiSchema<"RunInboundPortRequest">;
-export type RunNetworkRequest = ApiSchema<"RunNetworkRequest">;
-export type RunTunnelStatus = ApiSchema<"RunTunnelStatus">;
-export type RunNetworkStatus = ApiSchema<"RunNetworkStatus">;
+export type InboundPortRequest = ApiSchema<"InboundPortRequest">;
+export type NetworkRequest = ApiSchema<"NetworkRequest">;
+export type TunnelStatus = ApiSchema<"TunnelStatus">;
+export type NetworkStatus = ApiSchema<"NetworkStatus">;
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
-export type PtyRunResponse = ApiSchema<"PtyRunResponse">;
 export type RawRunResponse = RunResponse;
+export type Run = ApiSchema<"Run">;
+export type RunSummary = ApiSchema<"RunSummary">;
+export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
+export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
 export interface CompletedRunResult {
   type: "completed";
-  completed: true;
   stdout: Uint8Array;
   stdoutEncoding: string;
   stderr: Uint8Array;
@@ -106,35 +112,26 @@ export interface CompletedRunResult {
 
 export interface BackgroundRunResult {
   type: "background";
-  completed: boolean;
   runId: string;
-  tunnels: RunTunnelStatus[];
-  network?: RunNetworkStatus | null;
+  tunnels: TunnelStatus[];
+  network?: NetworkStatus | null;
 }
 
-export interface PtyRunResult {
-  type: "pty";
-  pty: true;
-  sessionId: string;
-  wsUrl: string;
-}
+export type RunResult = CompletedRunResult | BackgroundRunResult;
 
-export type RunResult = CompletedRunResult | BackgroundRunResult | PtyRunResult;
-
-export type Run = ApiSchema<"Run">;
-/** @deprecated Use `Run`. */
-export type RunStatusResponse = Run;
-export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
+// ── Sessions / resize ──────────────────────────────────────────────
 export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
-export type ResizePtyRequest = ApiSchema<"ResizePtyRequest">;
-export type ResizePtyResponse = ApiSchema<"ResizePtyResponse">;
 export type ResizeRequest = ApiSchema<"ResizeRequest">;
 export type ResizeResponse = ApiSchema<"ResizeResponse">;
+
+// ── Sync ───────────────────────────────────────────────────────────
 export type SyncRequest = ApiSchema<"SyncRequest">;
 export type SyncResponse = ApiSchema<"SyncResponse">;
 export type SyncReadResponse = ApiSchema<"SyncReadResponse">;
 export type SyncReadInlineResponse = ApiSchema<"SyncReadInlineResponse">;
 export type SyncReadPresignedResponse = ApiSchema<"SyncReadPresignedResponse">;
+export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
+export type SyncCreateResponse = ApiSchema<"SyncCreateResponse">;
 export type SyncByteRange = ApiSchema<"SyncByteRange">;
 export type ErrorResponse = ApiSchema<"ErrorResponse">;
 export type SyncChunkWriteResult = ApiSchema<"SyncChunkWriteResult">;
@@ -142,6 +139,22 @@ export type SyncPresignedWriteRequestResult = ApiSchema<"SyncPresignedWriteReque
 export type SyncCommitWriteResult = ApiSchema<"SyncCommitWriteResult">;
 export type SyncWriteResult = ApiSchema<"SyncWriteResult">;
 export type SyncWriteResponse = ApiSchema<"SyncWriteResponse">;
+
+// ── Back-compat aliases (deprecated, will be removed) ──────────────
+/** @deprecated Use `Vm`. */
+export type VmInfo = Vm;
+/** @deprecated Use `Session`. */
+export type SessionInfo = Session;
+/** @deprecated Use `Run`. */
+export type RunStatusResponse = Run;
+/** @deprecated Use `NetworkRequest`. */
+export type RunNetworkRequest = NetworkRequest;
+/** @deprecated Use `NetworkStatus`. */
+export type RunNetworkStatus = NetworkStatus;
+/** @deprecated Use `InboundPortRequest`. */
+export type RunInboundPortRequest = InboundPortRequest;
+/** @deprecated Use `TunnelStatus`. */
+export type RunTunnelStatus = TunnelStatus;
 
 interface RetryConfig {
   attempts: number;
@@ -171,6 +184,7 @@ export class Arker {
   readonly baseUrl: string;
   readonly burstBaseUrl?: string;
   readonly region?: string;
+  readonly filesystems: Filesystems;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryConfig;
@@ -191,16 +205,13 @@ export class Arker {
     this.region = region ? normalizeRegion(region) : undefined;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retry = normalizeRetry(opts.retry);
+    this.filesystems = new Filesystems(this);
 
     if (!this.fetchImpl) throw new Error("fetch is required in this runtime");
   }
 
   vm(vmId: string): Computer {
     return new Computer(this, vmId, this._baseUrlFor(vmId));
-  }
-
-  async goldens(): Promise<ListGoldensResponse> {
-    return this._request("GET", "/v1/goldens");
   }
 
   async list(): Promise<ListVmsResponse> {
@@ -298,6 +309,23 @@ export class Arker {
   }
 }
 
+export class Filesystems {
+  /** @internal */
+  readonly _client: Arker;
+
+  constructor(client: Arker) {
+    this._client = client;
+  }
+
+  async list(): Promise<ListFilesystemsResponse> {
+    return this._client._request("GET", "/v1/filesystems");
+  }
+
+  async delete(filesystemId: string): Promise<DeleteFilesystemResponse> {
+    return this._client._request("DELETE", `/v1/filesystems/${pathSegment(filesystemId)}`);
+  }
+}
+
 export class Computer {
   readonly id: string;
   readonly baseUrl: string;
@@ -378,6 +406,31 @@ export class Sync {
     } else {
       await this.writePresigned(path, bytes);
     }
+  }
+
+  /**
+   * Ensure a `Filesystem` exists (creating one if requested) and bind-mount
+   * it into this VM at `mountPath`. Bidirectional by virtue of being a
+   * mount — there is no separate sync-direction parameter.
+   */
+  async create(request: {
+    mountPath: string;
+    filesystemId?: string;
+    filesystemName?: string;
+    createIfMissing?: boolean;
+  }): Promise<SyncCreateResponse> {
+    return this._vm._client._request<SyncCreateResponse>(
+      "POST",
+      this.path(),
+      {
+        op: "create",
+        mount_path: request.mountPath,
+        filesystem_id: request.filesystemId,
+        filesystem_name: request.filesystemName,
+        create_if_missing: request.createIfMissing ?? false,
+      },
+      this._vm.baseUrl,
+    );
   }
 
   private path(): string {
@@ -547,12 +600,8 @@ function parseRunResponse(payload: unknown): RunResult {
     const stdoutEncoding = stringField(body.stdout_encoding, "run response.stdout_encoding");
     const stderr = stringValue(body.stderr, "run response.stderr");
     const stderrEncoding = stringField(body.stderr_encoding, "run response.stderr_encoding");
-    if (body.completed !== true) {
-      throw new ArkerError("internal", "completed run response must have completed=true", 200);
-    }
     return {
       type: "completed",
-      completed: true,
       stdout: decodeBytes(stdout, stdoutEncoding),
       stdoutEncoding,
       stderr: decodeBytes(stderr, stderrEncoding),
@@ -564,19 +613,9 @@ function parseRunResponse(payload: unknown): RunResult {
   if (typeof body.run_id === "string") {
     return {
       type: "background",
-      completed: Boolean(body.completed),
       runId: body.run_id,
-      tunnels: Array.isArray(body.tunnels) ? body.tunnels as RunTunnelStatus[] : [],
-      network: isObject(body.network) ? body.network as unknown as RunNetworkStatus : null,
-    };
-  }
-
-  if (body.pty === true) {
-    return {
-      type: "pty",
-      pty: true,
-      sessionId: stringField(body.session_id, "run response.session_id"),
-      wsUrl: stringField(body.ws_url, "run response.ws_url"),
+      tunnels: Array.isArray(body.tunnels) ? body.tunnels as TunnelStatus[] : [],
+      network: isObject(body.network) ? body.network as unknown as NetworkStatus : null,
     };
   }
 

@@ -11,30 +11,35 @@
       "url": "https://aws-us-west-2.arker.ai"
     }
   ],
+  "x-arker-source": "arker-app/shared/arker-api-contract",
   "paths": {
-    "/v1/goldens": {
-      "get": {
-        "operationId": "listGoldens",
-        "responses": {
-          "200": {
-            "description": "Available golden VM sources for this endpoint.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListGoldensResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
     "/v1/vms": {
       "get": {
         "operationId": "listVms",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "region",
+            "required": false,
+            "description": "Narrow to a single backend region (e.g. `us-west-2`). When omitted,\nthe response aggregates across every configured region.\n",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "description": "Narrow to a single backend provider. `aws` returns only\narkerd-managed (host-backed) VMs; `aws-burst` returns only\nLambda-managed VMs. When omitted, both are returned merged.\n",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "aws",
+                "aws-burst"
+              ]
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "VMs visible to the authenticated caller.",
@@ -131,7 +136,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Fork a VM or golden source. Optional network, disk, and resource overrides may return ErrorResponse code \"unsupported_operation\" on backends that do not support those options."
+        "description": "Fork a VM. Optional network, disk, and resource overrides may return ErrorResponse code \"unsupported_operation\" on backends that do not support those options."
       }
     },
     "/v1/vms/{id}/run": {
@@ -142,11 +147,6 @@
       ],
       "post": {
         "operationId": "runVm",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/IdempotencyKey"
-          }
-        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -175,7 +175,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Run a command. Foreground command execution is required; optional background, session, PTY, mount, resource, network, signal, release, and runtime behavior may return ErrorResponse code \"unsupported_operation\". When the optional Idempotency-Key header is provided, retrying with the same key returns the original run; a different request body under the same key returns ErrorResponse code \"conflict\" with the original run_id."
+        "description": "Run a command. Foreground command execution is required; optional background, session, resource, network, signal, and release behavior may return ErrorResponse code \"unsupported_operation\"."
       }
     },
     "/v1/vms/{id}/runs/{run_id}": {
@@ -325,48 +325,6 @@
         "description": "Delete a persistent session. Backends without persistent sessions return ErrorResponse code \"unsupported_operation\"."
       }
     },
-    "/v1/vms/{id}/sessions/{sid}/resize": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
-        },
-        {
-          "$ref": "#/components/parameters/SessionId"
-        }
-      ],
-      "post": {
-        "operationId": "resizePty",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResizePtyRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Resize result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResizePtyResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "$ref": "#/components/responses/UnsupportedOperation"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "description": "Resize a PTY session. Backends without PTY sessions return ErrorResponse code \"unsupported_operation\"."
-      }
-    },
     "/v1/vms/{id}/resize": {
       "parameters": [
         {
@@ -442,7 +400,54 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read or write files. Basic sync is part of the public API; backend-specific large-file or presigned sync limitations return ErrorResponse code \"unsupported_operation\"."
+        "description": "Multi-op endpoint over the VM's filesystem.\n\n- `read` reads a file from the VM filesystem.\n- `write` writes one or more files (inline chunks or presigned uploads).\n- `create` ensures a `Filesystem` exists (creating one if necessary, when\n  `create_if_missing: true`) and bind-mounts it into the VM at `mount_path`.\n  Bidirectional by virtue of being a mount \u2014 there is no separate\n  sync-direction parameter.\n"
+      }
+    },
+    "/v1/filesystems": {
+      "get": {
+        "operationId": "listFilesystems",
+        "responses": {
+          "200": {
+            "description": "Org-scoped persistent filesystems.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListFilesystemsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "List persistent filesystems owned by the authenticated caller's\norganization. Filesystems are created implicitly via\n`POST /v1/vms/{id}/sync` with `op: \"create\"` and persist independently\nof any single VM.\n"
+      }
+    },
+    "/v1/filesystems/{filesystem_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/FilesystemId"
+        }
+      ],
+      "delete": {
+        "operationId": "deleteFilesystem",
+        "responses": {
+          "200": {
+            "description": "Delete result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteFilesystemResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Delete a persistent filesystem. The filesystem must not be mounted by\nany VM at the time of deletion. Backends without filesystem persistence\nreturn ErrorResponse code \"unsupported_operation\".\n"
       }
     }
   },
@@ -472,14 +477,12 @@
           "type": "string"
         }
       },
-      "IdempotencyKey": {
-        "name": "Idempotency-Key",
-        "in": "header",
-        "required": false,
-        "description": "Optional idempotency key for safe retries of POST /v1/vms/{id}/run. A retry with the same key and the same request returns the original run. A different request under the same key returns ErrorResponse code \"conflict\" with the original run_id. Keys expire 24h after the run completes.",
+      "FilesystemId": {
+        "name": "filesystem_id",
+        "in": "path",
+        "required": true,
         "schema": {
-          "type": "string",
-          "maxLength": 64
+          "type": "string"
         }
       }
     },
@@ -536,6 +539,34 @@
           }
         },
         "description": "Standard API error. Backends use code \"unsupported_operation\" when the request is valid but names an operation or option this backend cannot support."
+      },
+      "VmState": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "running"
+        ],
+        "description": "Unified lifecycle state for a VM or a Session. `idle` means the\nVM/session exists but no command is currently executing; `running`\nmeans a command is in flight.\n"
+      },
+      "SessionState": {
+        "$ref": "#/components/schemas/VmState"
+      },
+      "RunState": {
+        "type": "string",
+        "enum": [
+          "running",
+          "completed",
+          "cancelled"
+        ],
+        "description": "Unified lifecycle state for a Run. `cancelled` covers both client\ncancellation and server-side abort. Failure is NOT a state \u2014 failed\nruns land in `completed` with a non-zero `exit_code`.\n"
+      },
+      "TunnelState": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "active",
+          "closed"
+        ]
       },
       "NetworkPolicy": {
         "oneOf": [
@@ -691,9 +722,7 @@
             "type": [
               "boolean",
               "null"
-            ],
-            "default": false,
-            "description": "Request a durable VM. If the underlying host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Use for long-running or non-idempotent work. Forked children default to non-durable. Backends without durability support return ErrorResponse code \"unsupported_operation\"."
+            ]
           }
         }
       },
@@ -709,73 +738,37 @@
           "session_id": {
             "type": "string"
           },
+          "session_idx": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
           "state": {
-            "type": "string"
+            "$ref": "#/components/schemas/SessionState"
           },
           "cwd": {
             "type": "string"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Wall-clock timestamp the session was most recently started."
           }
         }
       },
       "ListSessionsResponse": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/Session"
-        }
-      },
-      "GoldenInfo": {
         "type": "object",
         "required": [
-          "vm_id",
-          "name",
-          "source_golden"
+          "sessions"
         ],
         "additionalProperties": false,
         "properties": {
-          "vm_id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "source_golden": {
-            "type": "string"
-          },
-          "memory_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
-          "vcpu_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 255
-          },
-          "disk_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          }
-        }
-      },
-      "ListGoldensResponse": {
-        "type": "object",
-        "required": [
-          "goldens"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "goldens": {
+          "sessions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GoldenInfo"
+              "$ref": "#/components/schemas/Session"
             }
           }
         }
@@ -813,13 +806,33 @@
             ]
           },
           "state": {
-            "type": "string"
+            "$ref": "#/components/schemas/VmState"
           },
-          "last_activity": {
+          "region": {
+            "description": "Backend region the VM lives in (e.g. `us-west-2`). With `provider`\nthis fully addresses the VM's routing target:\n`https://{provider}-{region}.arker.ai/...`.\n",
             "type": [
               "string",
               "null"
             ]
+          },
+          "provider": {
+            "description": "Backend provider \u2014 `aws` for arkerd-managed host-backed VMs,\n`aws-burst` for Lambda-managed VMs. Together with `region`\nthis is enough to construct the per-VM backend URL.\n",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aws",
+              "aws-burst",
+              null
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Wall-clock timestamp the VM was most recently started (cold-boot or restored from snapshot)."
           },
           "vcpu_count": {
             "type": [
@@ -891,26 +904,27 @@
               "$ref": "#/components/schemas/Session"
             }
           },
-          "ssh_private_key": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "tunnels": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RunTunnelStatus"
+              "$ref": "#/components/schemas/TunnelStatus"
             }
           },
           "network": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/RunNetworkStatus"
+                "$ref": "#/components/schemas/NetworkStatus"
               },
               {
                 "type": "null"
               }
+            ]
+          },
+          "host_id": {
+            "description": "Identifier of the worker host that owns this VM. Set by workers so a router can populate its DbCache without a PlanetScale lookup. Optional for backwards compatibility \u2014 single-host deployments and pre-split clients may omit / ignore it.\n",
+            "type": [
+              "string",
+              "null"
             ]
           }
         }
@@ -939,26 +953,6 @@
           }
         }
       },
-      "MountRequest": {
-        "type": "object",
-        "required": [
-          "uri",
-          "mount_point"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "uri": {
-            "type": "string"
-          },
-          "mount_point": {
-            "type": "string"
-          },
-          "format": {
-            "type": "string",
-            "default": "dir"
-          }
-        }
-      },
       "RunRequest": {
         "type": "object",
         "required": [
@@ -972,6 +966,14 @@
               "null"
             ],
             "description": "Optional persistent session id. Backends without persistent sessions return unsupported_operation when this is requested."
+          },
+          "session_idx": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Optional session selector by integer index instead of ULID. Mutually exclusive with session_id."
           },
           "command": {
             "type": "string"
@@ -995,14 +997,6 @@
             ],
             "default": "auto"
           },
-          "mounts": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/MountRequest"
-            },
-            "default": [],
-            "description": "Optional external mounts. Backends without mount support return unsupported_operation when this is non-empty."
-          },
           "vcpu_count": {
             "type": [
               "integer",
@@ -1017,21 +1011,19 @@
               "integer",
               "null"
             ],
-            "minimum": 0,
-            "description": "Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested."
+            "minimum": 0
           },
           "disk_mib": {
             "type": [
               "integer",
               "null"
             ],
-            "minimum": 0,
-            "description": "Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested."
+            "minimum": 0
           },
           "network": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/RunNetworkRequest"
+                "$ref": "#/components/schemas/NetworkRequest"
               },
               {
                 "type": "null"
@@ -1052,32 +1044,18 @@
               "null"
             ],
             "description": "Optional session signal. Backends without signal support return unsupported_operation when this is requested."
-          },
-          "runtime": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional runtime selection. Backends without runtime selection support return unsupported_operation when this is requested."
-          },
-          "runtime_override": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional runtime override. Backends without runtime overrides return unsupported_operation when this is requested."
           }
         },
-        "description": "Foreground command execution is the portable baseline. Optional session, background, mount, resource, network, signal, release, and runtime fields may return ErrorResponse code \"unsupported_operation\" on backends that do not support them."
+        "description": "Foreground command execution is the portable baseline. Optional session, background, resource, network, signal, and release fields may return ErrorResponse code \"unsupported_operation\" on backends that do not support them."
       },
-      "RunNetworkRequest": {
+      "NetworkRequest": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "inbound": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/RunInboundRequest"
+                "$ref": "#/components/schemas/InboundRequest"
               },
               {
                 "type": "null"
@@ -1086,20 +1064,20 @@
           }
         }
       },
-      "RunInboundRequest": {
+      "InboundRequest": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "ports": {
             "type": "object",
             "additionalProperties": {
-              "$ref": "#/components/schemas/RunInboundPortRequest"
+              "$ref": "#/components/schemas/InboundPortRequest"
             },
             "default": {}
           }
         }
       },
-      "RunInboundPortRequest": {
+      "InboundPortRequest": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
@@ -1120,12 +1098,9 @@
           },
           {
             "$ref": "#/components/schemas/BackgroundRunResponse"
-          },
-          {
-            "$ref": "#/components/schemas/PtyRunResponse"
           }
         ],
-        "description": "Successful run result. BackgroundRunResponse and PtyRunResponse are returned only by backends that support those modes; unsupported modes return ErrorResponse code \"unsupported_operation\"."
+        "description": "Successful run result. BackgroundRunResponse is returned only by backends that support background runs; unsupported modes return ErrorResponse code \"unsupported_operation\"."
       },
       "CompletedRunResponse": {
         "type": "object",
@@ -1134,8 +1109,7 @@
           "stdout_encoding",
           "stderr",
           "stderr_encoding",
-          "exit_code",
-          "completed"
+          "exit_code"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1154,36 +1128,36 @@
           "exit_code": {
             "type": "integer"
           },
-          "completed": {
-            "type": "boolean"
+          "dispatch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which dispatch backend ran this command (\"brush\" or \"fc\"). Optional."
           }
         }
       },
       "BackgroundRunResponse": {
         "type": "object",
         "required": [
-          "run_id",
-          "completed"
+          "run_id"
         ],
         "additionalProperties": false,
         "properties": {
           "run_id": {
             "type": "string"
           },
-          "completed": {
-            "type": "boolean"
-          },
           "tunnels": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RunTunnelStatus"
+              "$ref": "#/components/schemas/TunnelStatus"
             },
             "default": []
           },
           "network": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/RunNetworkStatus"
+                "$ref": "#/components/schemas/NetworkStatus"
               },
               {
                 "type": "null"
@@ -1192,42 +1166,53 @@
           }
         }
       },
-      "PtyRunResponse": {
-        "type": "object",
-        "required": [
-          "pty",
-          "session_id",
-          "ws_url"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "pty": {
-            "const": true
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "ws_url": {
-            "type": "string"
-          }
-        }
-      },
       "Run": {
         "type": "object",
         "required": [
           "run_id",
+          "state",
+          "started_at",
+          "exit_code",
           "stdout",
           "stdout_encoding",
           "stderr",
           "stderr_encoding",
-          "exit_code",
-          "completed",
           "tunnels"
         ],
         "additionalProperties": false,
         "properties": {
           "run_id": {
             "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "stdout": {
             "type": "string"
@@ -1241,25 +1226,16 @@
           "stderr_encoding": {
             "type": "string"
           },
-          "exit_code": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "completed": {
-            "type": "boolean"
-          },
           "tunnels": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/RunTunnelStatus"
+              "$ref": "#/components/schemas/TunnelStatus"
             }
           },
           "network": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/RunNetworkStatus"
+                "$ref": "#/components/schemas/NetworkStatus"
               },
               {
                 "type": "null"
@@ -1269,12 +1245,72 @@
           "retry_count": {
             "type": "integer",
             "minimum": 0,
-            "default": 0,
-            "description": "Number of times this run has been automatically retried after an infrastructure failure. 0 for runs that completed without interruption. Backends without durability support omit this field; clients should treat it as 0 when absent."
+            "default": 0
           }
         }
       },
-      "RunNetworkStatus": {
+      "RunSummary": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "state",
+          "started_at",
+          "exit_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "description": "Listing record for `GET /v1/vms/{id}/runs`. Every field is also\npresent on `Run` with the same name and type \u2014 `RunSummary` is a\nstrict field-subset of `Run`.\n"
+      },
+      "ListRunsResponse": {
+        "type": "object",
+        "required": [
+          "runs"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunSummary"
+            }
+          }
+        }
+      },
+      "NetworkStatus": {
         "type": "object",
         "required": [
           "inbound"
@@ -1282,11 +1318,11 @@
         "additionalProperties": false,
         "properties": {
           "inbound": {
-            "$ref": "#/components/schemas/RunInboundStatus"
+            "$ref": "#/components/schemas/InboundStatus"
           }
         }
       },
-      "RunInboundStatus": {
+      "InboundStatus": {
         "type": "object",
         "required": [
           "ports"
@@ -1296,12 +1332,12 @@
           "ports": {
             "type": "object",
             "additionalProperties": {
-              "$ref": "#/components/schemas/RunInboundPortStatus"
+              "$ref": "#/components/schemas/InboundPortStatus"
             }
           }
         }
       },
-      "RunInboundPortStatus": {
+      "InboundPortStatus": {
         "type": "object",
         "required": [
           "requested",
@@ -1331,13 +1367,13 @@
           }
         }
       },
-      "RunTunnelStatus": {
+      "TunnelStatus": {
         "type": "object",
         "required": [
           "port",
           "visibility",
           "protocol",
-          "status"
+          "state"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1362,8 +1398,8 @@
               "null"
             ]
           },
-          "status": {
-            "type": "string"
+          "state": {
+            "$ref": "#/components/schemas/TunnelState"
           },
           "message": {
             "type": [
@@ -1411,39 +1447,6 @@
         },
         "description": "Create a persistent session. Backends without persistent sessions return unsupported_operation."
       },
-      "ResizePtyRequest": {
-        "type": "object",
-        "required": [
-          "cols",
-          "rows"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "cols": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535
-          },
-          "rows": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535
-          }
-        },
-        "description": "Resize a PTY session. Backends without PTY sessions return unsupported_operation."
-      },
-      "ResizePtyResponse": {
-        "type": "object",
-        "required": [
-          "resized"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "resized": {
-            "type": "boolean"
-          }
-        }
-      },
       "ResizeRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -1485,6 +1488,65 @@
           }
         }
       },
+      "Filesystem": {
+        "type": "object",
+        "required": [
+          "filesystem_id",
+          "name",
+          "owner_id",
+          "created_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "filesystem_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "description": "Org-scoped persistent filesystem. Created implicitly via\n`POST /v1/vms/{id}/sync { op: \"create\", ... }` and managed via\n`GET /v1/filesystems` and `DELETE /v1/filesystems/{filesystem_id}`.\n"
+      },
+      "ListFilesystemsResponse": {
+        "type": "object",
+        "required": [
+          "filesystems"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "filesystems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Filesystem"
+            }
+          }
+        }
+      },
+      "DeleteFilesystemResponse": {
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        }
+      },
       "SyncRequest": {
         "oneOf": [
           {
@@ -1492,6 +1554,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncWriteRequest"
+          },
+          {
+            "$ref": "#/components/schemas/SyncCreateRequest"
           }
         ]
       },
@@ -1529,6 +1594,42 @@
             }
           }
         }
+      },
+      "SyncCreateRequest": {
+        "type": "object",
+        "required": [
+          "op",
+          "mount_path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "const": "create"
+          },
+          "filesystem_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Address an existing filesystem by ID. Mutually exclusive with filesystem_name + create_if_missing."
+          },
+          "filesystem_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Address a filesystem by user-assigned name within the calling org. Combined with create_if_missing=true will create the filesystem if no filesystem with that name exists."
+          },
+          "create_if_missing": {
+            "type": "boolean",
+            "default": false
+          },
+          "mount_path": {
+            "type": "string",
+            "description": "VM-side path to mount the filesystem under."
+          }
+        },
+        "description": "Ensure a filesystem exists (creating one if requested) and bind-mount\nit into this VM at `mount_path`. Bidirectional by virtue of being a\nmount.\n"
       },
       "SyncWriteEntry": {
         "oneOf": [
@@ -1647,8 +1748,35 @@
           },
           {
             "$ref": "#/components/schemas/SyncWriteResponse"
+          },
+          {
+            "$ref": "#/components/schemas/SyncCreateResponse"
           }
         ]
+      },
+      "SyncCreateResponse": {
+        "type": "object",
+        "required": [
+          "ok",
+          "op",
+          "filesystem",
+          "mount_path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "const": "create"
+          },
+          "filesystem": {
+            "$ref": "#/components/schemas/Filesystem"
+          },
+          "mount_path": {
+            "type": "string"
+          }
+        }
       },
       "SyncReadResponse": {
         "oneOf": [
