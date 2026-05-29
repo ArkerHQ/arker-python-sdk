@@ -372,13 +372,11 @@ export interface components {
         };
         NetworkPolicyInput: boolean | string | components["schemas"]["NetworkPolicy"];
         ForkRequest: {
-            /** @description Image name (e.g. `arkuntu`, `ubuntu`). SDK defaults `source_org_id` to the Arker org when this is set. */
-            source_image?: string | null;
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
-            /** @description VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org or one with a `public: true` VM by that name. */
+            /** @description VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org (for the public goldens `arkuntu` / `ubuntu`) or one with a `public: true` VM by that name. */
             source_vm_name?: string | null;
-            /** @description Optional explicit org context for `source_vm_name` / `source_image`. */
+            /** @description Optional explicit org context for `source_vm_name`. SDK auto-fills the Arker org when forking the public goldens. */
             source_org_id?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
             name?: string | null;

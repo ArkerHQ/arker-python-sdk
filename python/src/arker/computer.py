@@ -334,19 +334,21 @@ class Arker:
         disk_mib: int | None = None,
         durable: bool | None = None,
     ) -> "Computer":
-        """Create a new VM by forking from an image, VM id, or VM name.
+        """Create a new VM by forking from a source VM (id or name).
 
-        - ``fork(image="arkuntu")`` — fork the public arkuntu golden.
+        - ``fork(image="arkuntu")`` — ergonomic shortcut: translates to
+          ``source_vm_name="arkuntu"`` + ``source_org_id=ARKER_ORG_ID``.
         - ``fork(vm_id="vm_abc...")`` — fork by global id.
         - ``fork(vm_name="base", org_id="...")`` — fork by name within an org.
         """
-        # Auto-fill: an image-based fork without an explicit org_id targets
-        # the Arker org (where the public goldens live).
+        # `image` is purely an SDK ergonomic. On the wire there is no
+        # `source_image`; forking the public goldens (`arkuntu` /
+        # `ubuntu`) is just a name-based fork in the Arker org.
+        resolved_vm_name = vm_name if vm_name is not None else image
         resolved_org_id = org_id if org_id is not None else (ARKER_ORG_ID if image is not None else None)
         body = {
-            "source_image": image,
             "source_vm_id": vm_id,
-            "source_vm_name": vm_name,
+            "source_vm_name": resolved_vm_name,
             "source_org_id": resolved_org_id,
             "name": name,
             "public": public,

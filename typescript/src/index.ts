@@ -245,14 +245,17 @@ export class Arker {
    * - `fork({ vmId: "vm_abc..." })` — fork by global id.
    * - `fork({ vmName: "base", orgId: "..." })` — fork by name within an org.
    */
-  async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_image" | "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<Computer> {
+  async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<Computer> {
+    // `image` is purely an SDK ergonomic — on the wire we translate to
+    // a name-based fork in the Arker org. There is no `source_image`
+    // field in the contract; backends only see source_vm_id /
+    // source_vm_name + source_org_id.
+    const vmName = source.vmName ?? source.image ?? null;
+    const orgId = source.orgId ?? (source.image ? ARKER_ORG_ID : null);
     const body: ForkRequest = {
-      source_image: source.image ?? null,
       source_vm_id: source.vmId ?? null,
-      source_vm_name: source.vmName ?? null,
-      // Auto-fill: an image-based fork without an explicit org_id targets
-      // the Arker org (where the public goldens live).
-      source_org_id: source.orgId ?? (source.image ? ARKER_ORG_ID : null),
+      source_vm_name: vmName,
+      source_org_id: orgId,
       name: source.name ?? null,
       public: source.public ?? null,
       network: source.network ?? null,
