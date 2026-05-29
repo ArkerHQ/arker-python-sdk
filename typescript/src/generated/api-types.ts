@@ -4,6 +4,28 @@
  */
 
 export interface paths {
+    "/v1/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Create a new VM by forking from an image, an existing VM ID, or
+         *     a VM name within an org. Exactly one of `source_image`,
+         *     `source_vm_id`, or `source_vm_name` must be set. Forking a VM
+         *     owned by another org requires that VM to be `public: true`.
+         */
+        post: operations["fork"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vms": {
         parameters: {
             query?: never;
@@ -38,7 +60,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/fork": {
+    "/v1/vms/{id}/resize": {
         parameters: {
             query?: never;
             header?: never;
@@ -49,15 +71,19 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Fork a VM. Optional network, disk, and resource overrides may return ErrorResponse code "unsupported_operation" on backends that do not support those options. */
-        post: operations["forkVm"];
+        /**
+         * @description Resize VM resources. Per-run resource overrides can also be
+         *     passed via `RunRequest` and are independent of this endpoint;
+         *     this endpoint sets the VM's baseline allocation.
+         */
+        post: operations["resizeVm"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/run": {
+    "/v1/vms/{id}/runs": {
         parameters: {
             query?: never;
             header?: never;
@@ -66,10 +92,15 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        get: operations["listRuns"];
         put?: never;
-        /** @description Run a command. Foreground command execution is required; optional background, session, resource, network, signal, and release behavior may return ErrorResponse code "unsupported_operation". */
-        post: operations["runVm"];
+        /**
+         * @description Run a command. Foreground execution is the portable baseline.
+         *     Optional `background`, `session_id`, `network`, `signal`,
+         *     `acquire`/`release`, and per-run resource overrides may return
+         *     `unsupported_operation` on backends that don't support them.
+         */
+        post: operations["createRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -86,11 +117,9 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description Get background run status. Backends without background runs return ErrorResponse code "unsupported_operation". */
         get: operations["getRun"];
         put?: never;
         post?: never;
-        /** @description Cancel a background run. Backends without background runs return ErrorResponse code "unsupported_operation". */
         delete: operations["cancelRun"];
         options?: never;
         head?: never;
@@ -106,10 +135,8 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** @description List persistent sessions. Backends without persistent sessions return ErrorResponse code "unsupported_operation". */
         get: operations["listSessions"];
         put?: never;
-        /** @description Create a persistent session. Backends without persistent sessions return ErrorResponse code "unsupported_operation". */
         post: operations["createSession"];
         delete?: never;
         options?: never;
@@ -127,17 +154,16 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        get: operations["getSession"];
         put?: never;
         post?: never;
-        /** @description Delete a persistent session. Backends without persistent sessions return ErrorResponse code "unsupported_operation". */
         delete: operations["deleteSession"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/resize": {
+    "/v1/vms/{id}/syncs": {
         parameters: {
             query?: never;
             header?: never;
@@ -146,17 +172,42 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        get: operations["listSyncs"];
         put?: never;
-        /** @description Resize VM resources. Backends without VM resize support return ErrorResponse code "unsupported_operation". */
-        post: operations["resizeVm"];
+        /**
+         * @description Create a persistent sync: ensure a Filesystem exists (creating
+         *     one if requested) and bind-mount it into this VM at `path`.
+         *     Bidirectional by virtue of being a mount — there is no separate
+         *     sync-direction parameter. Returns `ErrorResponse` code
+         *     `conflict` if a sync already exists at `path`.
+         */
+        post: operations["createSync"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/sync": {
+    "/v1/vms/{id}/syncs/{sync_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sync_id: components["parameters"]["SyncId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getSync"];
+        put?: never;
+        post?: never;
+        delete: operations["deleteSync"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vms/{id}/syncs/read": {
         parameters: {
             query?: never;
             header?: never;
@@ -167,18 +218,65 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * @description Multi-op endpoint over the VM's filesystem.
-         *
-         *     - `read` reads a file from the VM filesystem.
-         *     - `write` writes one or more files (inline chunks or presigned uploads).
-         *     - `create` ensures a `Filesystem` exists (creating one if necessary, when
-         *       `create_if_missing: true`) and bind-mounts it into the VM at `mount_path`.
-         *       Bidirectional by virtue of being a mount — there is no separate
-         *       sync-direction parameter.
-         */
-        post: operations["syncVm"];
+        /** @description Read a file from the VM filesystem (including mounted sync paths). */
+        post: operations["syncRead"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vms/{id}/syncs/write": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Write files to the VM filesystem (including mounted sync paths). Each entry is an inline chunk or a presigned-upload step. */
+        post: operations["syncWrite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vms/{id}/tunnels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listTunnels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vms/{id}/tunnels/{port}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                port: components["parameters"]["TunnelPort"];
+            };
+            cookie?: never;
+        };
+        get: operations["getTunnel"];
+        put?: never;
+        post?: never;
+        delete: operations["deleteTunnel"];
         options?: never;
         head?: never;
         patch?: never;
@@ -191,12 +289,6 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * @description List persistent filesystems owned by the authenticated caller's
-         *     organization. Filesystems are created implicitly via
-         *     `POST /v1/vms/{id}/sync` with `op: "create"` and persist independently
-         *     of any single VM.
-         */
         get: operations["listFilesystems"];
         put?: never;
         post?: never;
@@ -215,14 +307,9 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        get: operations["getFilesystem"];
         put?: never;
         post?: never;
-        /**
-         * @description Delete a persistent filesystem. The filesystem must not be mounted by
-         *     any VM at the time of deletion. Backends without filesystem persistence
-         *     return ErrorResponse code "unsupported_operation".
-         */
         delete: operations["deleteFilesystem"];
         options?: never;
         head?: never;
@@ -233,33 +320,37 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @description Standard API error. Backends use code "unsupported_operation" when the request is valid but names an operation or option this backend cannot support. */
+        /**
+         * @description Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature.
+         * @enum {string}
+         */
+        ErrorCode: "unsupported_operation" | "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "network_error";
         ErrorResponse: {
-            /**
-             * @description Stable machine-readable error code. "unsupported_operation" means the backend does not implement the requested optional feature.
-             * @example unsupported_operation
-             */
-            code: string;
-            /** @description Human-readable error message. */
+            code: components["schemas"]["ErrorCode"];
             message: string;
         };
         /**
-         * @description Unified lifecycle state for a VM or a Session. `idle` means the
-         *     VM/session exists but no command is currently executing; `running`
-         *     means a command is in flight.
+         * @description Unified lifecycle state for a VM or a Session. `idle` means no command is currently executing; `running` means a command is in flight.
          * @enum {string}
          */
         VmState: "idle" | "running";
         SessionState: components["schemas"]["VmState"];
         /**
-         * @description Unified lifecycle state for a Run. `cancelled` covers both client
-         *     cancellation and server-side abort. Failure is NOT a state — failed
-         *     runs land in `completed` with a non-zero `exit_code`.
+         * @description Unified lifecycle state for a Run. `cancelled` covers both
+         *     client cancellation and server-side abort. Failure is NOT a
+         *     state — failed runs land in `completed` with non-zero
+         *     `exit_code`.
          * @enum {string}
          */
         RunState: "running" | "completed" | "cancelled";
+        /**
+         * @description `starting` = backend is allocating the tunnel; `open` = accepting
+         *     connections; `closed` = torn down or never came up.
+         * @enum {string}
+         */
+        TunnelState: "starting" | "open" | "closed";
         /** @enum {string} */
-        TunnelState: "pending" | "active" | "closed";
+        ResourceKind: "cpu" | "memory" | "disk";
         NetworkPolicy: components["schemas"]["NetworkPolicyOpen"] | components["schemas"]["NetworkPolicyBlocked"] | components["schemas"]["NetworkPolicyAllow"] | components["schemas"]["NetworkPolicyBlock"];
         NetworkPolicyOpen: {
             /** @constant */
@@ -281,9 +372,21 @@ export interface components {
         };
         NetworkPolicyInput: boolean | string | components["schemas"]["NetworkPolicy"];
         ForkRequest: {
+            /** @description Image name (e.g. `arkuntu`, `ubuntu`). SDK defaults `source_org_id` to the Arker org when this is set. */
+            source_image?: string | null;
+            /** @description Global VM identifier. Org is inferred from the row. */
+            source_vm_id?: string | null;
+            /** @description VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org or one with a `public: true` VM by that name. */
+            source_vm_name?: string | null;
+            /** @description Optional explicit org context for `source_vm_name` / `source_image`. */
+            source_org_id?: string | null;
+            /** @description Optional name for the new VM, scoped to the caller's org. */
             name?: string | null;
-            image?: string | null;
+            /** @description Make the new VM publicly forkable from other orgs. */
+            public?: boolean | null;
             network?: components["schemas"]["NetworkPolicyInput"] | null;
+            /** @description Optional inbound tunnel allocation at fork time. */
+            tunnels?: components["schemas"]["InboundRequest"] | null;
             /** @default true */
             disk: boolean;
             vcpu_count?: number | null;
@@ -298,51 +401,46 @@ export interface components {
             session_idx: number;
             state: components["schemas"]["SessionState"];
             cwd: string;
-            /** @description Wall-clock timestamp the session was most recently started. */
+            /** @description Optional environment-variable overrides for this session. */
+            env?: {
+                [key: string]: string;
+            } | null;
             started_at?: string | null;
         };
         ListSessionsResponse: {
             sessions: components["schemas"]["Session"][];
+            next_cursor?: string | null;
         };
         Vm: {
             vm_id: string;
-            owner_id: string;
+            /** @description Org that owns this VM. */
+            owner_org_id: string;
             created_at: string;
+            /** @description VM name, scoped to `owner_org_id`. */
             name?: string | null;
-            source_golden?: string | null;
+            /** @description When `true`, other orgs can fork this VM (but cannot run on it). */
+            public: boolean;
+            /** @description ID of the root (deepest-ancestor) source VM, if this VM was created by a chain of forks. None for VMs forked directly from an image. */
+            root_source_vm_id?: string | null;
+            /** @description Name of the root source VM. Populated together with `root_source_vm_id`. */
+            root_source_vm_name?: string | null;
             state: components["schemas"]["VmState"];
-            /**
-             * @description Backend region the VM lives in (e.g. `us-west-2`). With `provider`
-             *     this fully addresses the VM's routing target:
-             *     `https://{provider}-{region}.arker.ai/...`.
-             */
             region?: string | null;
-            /**
-             * @description Backend provider — `aws` for arkerd-managed host-backed VMs,
-             *     `aws-burst` for Lambda-managed VMs. Together with `region`
-             *     this is enough to construct the per-VM backend URL.
-             * @enum {string|null}
-             */
+            /** @enum {string|null} */
             provider?: "aws" | "aws-burst" | null;
-            /** @description Wall-clock timestamp the VM was most recently started (cold-boot or restored from snapshot). */
             started_at?: string | null;
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
+            /** @description Worker host that owns this VM. Used by routers to populate caches without a fresh PlanetScale lookup. */
+            worker_id?: string | null;
             sessions: components["schemas"]["Session"][];
+            tunnels?: components["schemas"]["Tunnel"][];
+            network?: components["schemas"]["NetworkStatus"] | null;
         };
         ListVmsResponse: {
             vms: components["schemas"]["Vm"][];
-        };
-        ForkVmResponse: {
-            vm_id: string;
-            owner_id: string;
-            created_at: string;
-            sessions: components["schemas"]["Session"][];
-            tunnels?: components["schemas"]["TunnelStatus"][];
-            network?: components["schemas"]["NetworkStatus"] | null;
-            /** @description Identifier of the worker host that owns this VM. Set by workers so a router can populate its DbCache without a PlanetScale lookup. Optional for backwards compatibility — single-host deployments and pre-split clients may omit / ignore it. */
-            host_id?: string | null;
+            next_cursor?: string | null;
         };
         DeleteVmResponse: {
             deleted: boolean;
@@ -350,30 +448,33 @@ export interface components {
         DeleteSessionResponse: {
             deleted: boolean;
         };
-        /** @description Foreground command execution is the portable baseline. Optional session, background, resource, network, signal, and release fields may return ErrorResponse code "unsupported_operation" on backends that do not support them. */
         RunRequest: {
-            /** @description Optional persistent session id. Backends without persistent sessions return unsupported_operation when this is requested. */
             session_id?: string | null;
-            /** @description Optional session selector by integer index instead of ULID. Mutually exclusive with session_id. */
             session_idx?: number | null;
             command: string;
-            /**
-             * @description Run asynchronously. Backends without background execution return unsupported_operation and must not silently run the command synchronously.
-             * @default false
-             */
+            /** @default false */
             background: boolean;
             timeout?: number | null;
             /** @default auto */
             end_symbol: string | null;
-            /** @description Optional per-run resource override. Backends without resource override support return unsupported_operation when this is requested. */
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
-            /** @description Optional network/tunnel request. Backends without networking support return unsupported_operation when this is requested. */
             network?: components["schemas"]["NetworkRequest"] | null;
-            /** @description Optional release selection. Backends without release selection support return unsupported_operation when this is requested. */
+            /**
+             * @description Comma-separated list of resources to ensure are
+             *     pre-allocated (warm) before the run starts. Values: `cpu`,
+             *     `memory`, `disk`. Example: `"cpu,memory"`.
+             */
+            acquire?: string | null;
+            /**
+             * @description Comma-separated list of resources to release after the run
+             *     finishes. Values: `cpu`, `memory`, `disk`. `"cpu"` frees
+             *     vCPU but keeps memory hot for the next run on this VM;
+             *     `"cpu,memory,disk"` is a full release (closest to a
+             *     suspend).
+             */
             release?: string | null;
-            /** @description Optional session signal. Backends without signal support return unsupported_operation when this is requested. */
             signal?: string | null;
         };
         NetworkRequest: {
@@ -391,21 +492,24 @@ export interface components {
             /** @default http */
             protocol: string;
         };
-        /** @description Successful run result. BackgroundRunResponse is returned only by backends that support background runs; unsupported modes return ErrorResponse code "unsupported_operation". */
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
             stdout: string;
+            /**
+             * @description TODO(encoding-normalize): goal is to always emit utf-8 from
+             *     every source so this field becomes unnecessary. Until then
+             *     the SDK uses it to decode.
+             */
             stdout_encoding: string;
             stderr: string;
             stderr_encoding: string;
             exit_code: number;
-            /** @description Which dispatch backend ran this command ("brush" or "fc"). Optional. */
             dispatch?: string | null;
         };
         BackgroundRunResponse: {
             run_id: string;
             /** @default [] */
-            tunnels: components["schemas"]["TunnelStatus"][];
+            tunnels: components["schemas"]["Tunnel"][];
             network?: components["schemas"]["NetworkStatus"] | null;
         };
         Run: {
@@ -420,16 +524,11 @@ export interface components {
             stdout_encoding: string;
             stderr: string;
             stderr_encoding: string;
-            tunnels: components["schemas"]["TunnelStatus"][];
+            tunnels: components["schemas"]["Tunnel"][];
             network?: components["schemas"]["NetworkStatus"] | null;
             /** @default 0 */
             retry_count: number;
         };
-        /**
-         * @description Listing record for `GET /v1/vms/{id}/runs`. Every field is also
-         *     present on `Run` with the same name and type — `RunSummary` is a
-         *     strict field-subset of `Run`.
-         */
         RunSummary: {
             run_id: string;
             session_id?: string | null;
@@ -441,6 +540,7 @@ export interface components {
         };
         ListRunsResponse: {
             runs: components["schemas"]["RunSummary"][];
+            next_cursor?: string | null;
         };
         NetworkStatus: {
             inbound: components["schemas"]["InboundStatus"];
@@ -457,80 +557,72 @@ export interface components {
             protocol: string;
             url?: string | null;
         };
-        TunnelStatus: {
-            /** @default  */
-            run_id: string;
+        Tunnel: {
+            /** @description The VM this tunnel belongs to. Always populated, including when embedded in `Run.tunnels`. */
+            vm_id: string;
+            /** @description Unique-per-VM identifier. */
             port: number;
+            /** @description The Run that opened this tunnel, if any. Tunnels allocated at fork time have `run_id: null`. */
+            run_id?: string | null;
             visibility: string;
             protocol: string;
             url?: string | null;
             state: components["schemas"]["TunnelState"];
             message?: string | null;
+            started_at?: string | null;
+        };
+        ListTunnelsResponse: {
+            tunnels: components["schemas"]["Tunnel"][];
+            next_cursor?: string | null;
+        };
+        DeleteTunnelResponse: {
+            deleted: boolean;
         };
         CancelRunResponse: {
             cancelled: boolean;
         };
-        /** @description Create a persistent session. Backends without persistent sessions return unsupported_operation. */
         CreateSessionRequest: {
             env?: {
                 [key: string]: string;
             } | null;
             cwd?: string | null;
         };
-        /** @description Resize VM resources. Backends without VM resize support return unsupported_operation. */
         ResizeRequest: {
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
         };
         ResizeResponse: {
-            ok: boolean;
+            resized: boolean;
         };
-        /**
-         * @description Org-scoped persistent filesystem. Created implicitly via
-         *     `POST /v1/vms/{id}/sync { op: "create", ... }` and managed via
-         *     `GET /v1/filesystems` and `DELETE /v1/filesystems/{filesystem_id}`.
-         */
-        Filesystem: {
+        Sync: {
+            sync_id: string;
+            vm_id: string;
             filesystem_id: string;
-            name: string;
-            owner_id: string;
+            /** @description VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`. */
+            path: string;
             created_at: string;
-            size_bytes?: number | null;
         };
-        ListFilesystemsResponse: {
-            filesystems: components["schemas"]["Filesystem"][];
+        ListSyncsResponse: {
+            syncs: components["schemas"]["Sync"][];
+            next_cursor?: string | null;
         };
-        DeleteFilesystemResponse: {
+        DeleteSyncResponse: {
             deleted: boolean;
         };
-        SyncRequest: components["schemas"]["SyncReadRequest"] | components["schemas"]["SyncWriteRequest"] | components["schemas"]["SyncCreateRequest"];
-        SyncReadRequest: {
-            /** @constant */
-            op: "read";
-            path: string;
-        };
-        SyncWriteRequest: {
-            /** @constant */
-            op: "write";
-            writes: components["schemas"]["SyncWriteEntry"][];
-        };
-        /**
-         * @description Ensure a filesystem exists (creating one if requested) and bind-mount
-         *     it into this VM at `mount_path`. Bidirectional by virtue of being a
-         *     mount.
-         */
         SyncCreateRequest: {
-            /** @constant */
-            op: "create";
-            /** @description Address an existing filesystem by ID. Mutually exclusive with filesystem_name + create_if_missing. */
             filesystem_id?: string | null;
-            /** @description Address a filesystem by user-assigned name within the calling org. Combined with create_if_missing=true will create the filesystem if no filesystem with that name exists. */
             filesystem_name?: string | null;
             /** @default false */
             create_if_missing: boolean;
-            /** @description VM-side path to mount the filesystem under. */
-            mount_path: string;
+            /** @description VM-side path. Returns `ErrorResponse` code `conflict` if a sync already exists at this path. */
+            path: string;
+        };
+        SyncReadRequest: {
+            path: string;
+        };
+        SyncWriteRequest: {
+            writes: components["schemas"]["SyncWriteEntry"][];
         };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
@@ -557,28 +649,14 @@ export interface components {
             upload_id: string;
             sha256?: string | null;
         };
-        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncCreateResponse"];
-        SyncCreateResponse: {
-            ok: boolean;
-            /** @constant */
-            op: "create";
-            filesystem: components["schemas"]["Filesystem"];
-            mount_path: string;
-        };
         SyncReadResponse: components["schemas"]["SyncReadInlineResponse"] | components["schemas"]["SyncReadPresignedResponse"];
         SyncReadInlineResponse: {
-            ok: boolean;
-            /** @constant */
-            op: "read";
             path: string;
             size: number;
             content: string;
             encoding: string;
         };
         SyncReadPresignedResponse: {
-            ok: boolean;
-            /** @constant */
-            op: "read";
             path: string;
             size: number;
             presigned_url: string;
@@ -586,9 +664,6 @@ export interface components {
             method: string;
         };
         SyncWriteResponse: {
-            ok: boolean;
-            /** @constant */
-            op: "write";
             results: components["schemas"]["SyncWriteResult"][];
         };
         SyncWriteResult: components["schemas"]["SyncChunkWriteResult"] | components["schemas"]["SyncPresignedWriteRequestResult"] | components["schemas"]["SyncCommitWriteResult"];
@@ -627,6 +702,20 @@ export interface components {
             code: string;
             message: string;
         };
+        Filesystem: {
+            filesystem_id: string;
+            name: string;
+            owner_org_id: string;
+            created_at: string;
+            size_bytes?: number | null;
+        };
+        ListFilesystemsResponse: {
+            filesystems: components["schemas"]["Filesystem"][];
+            next_cursor?: string | null;
+        };
+        DeleteFilesystemResponse: {
+            deleted: boolean;
+        };
     };
     responses: {
         /** @description API error. */
@@ -638,7 +727,7 @@ export interface components {
                 "application/json": components["schemas"]["ErrorResponse"];
             };
         };
-        /** @description The request is valid, but this backend does not support the requested operation or option. The response body uses ErrorResponse with code "unsupported_operation". */
+        /** @description The request is valid, but this backend does not support the requested operation or option. */
         UnsupportedOperation: {
             headers: {
                 [name: string]: unknown;
@@ -652,7 +741,13 @@ export interface components {
         VmId: string;
         RunId: string;
         SessionId: string;
+        SyncId: string;
+        TunnelPort: number;
         FilesystemId: string;
+        /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
+        Cursor: string | null;
+        /** @description Max items per page. Backend caps may apply. */
+        Limit: number;
     };
     requestBodies: never;
     headers: never;
@@ -660,20 +755,49 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    fork: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForkRequest"];
+            };
+        };
+        responses: {
+            /** @description The newly created VM. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Vm"];
+                };
+            };
+            422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
     listVms: {
         parameters: {
             query?: {
-                /**
-                 * @description Narrow to a single backend region (e.g. `us-west-2`). When omitted,
-                 *     the response aggregates across every configured region.
-                 */
+                /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Max items per page. Backend caps may apply. */
+                limit?: components["parameters"]["Limit"];
+                /** @description Narrow to a single backend region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region. */
                 region?: string;
-                /**
-                 * @description Narrow to a single backend provider. `aws` returns only
-                 *     arkerd-managed (host-backed) VMs; `aws-burst` returns only
-                 *     Lambda-managed VMs. When omitted, both are returned merged.
-                 */
+                /** @description Narrow to a single backend provider. `aws` returns only arkerd-managed (host-backed) VMs; `aws-burst` returns only Lambda-managed VMs. When omitted, both are returned merged. */
                 provider?: "aws" | "aws-burst";
+                /** @description Filter by VM lifecycle state. */
+                state?: components["schemas"]["VmState"];
+                /** @description ISO 8601 timestamp; include only VMs that most recently started at or after this time. */
+                started_after?: string;
+                /** @description ISO 8601 timestamp; include only VMs that most recently started at or before this time. */
+                started_before?: string;
             };
             header?: never;
             path?: never;
@@ -739,7 +863,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    forkVm: {
+    resizeVm: {
         parameters: {
             query?: never;
             header?: never;
@@ -748,26 +872,58 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
-                "application/json": components["schemas"]["ForkRequest"];
+                "application/json": components["schemas"]["ResizeRequest"];
             };
         };
         responses: {
-            /** @description Forked VM. */
+            /** @description Resize result. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ForkVmResponse"];
+                    "application/json": components["schemas"]["ResizeResponse"];
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
-    runVm: {
+    listRuns: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Max items per page. Backend caps may apply. */
+                limit?: components["parameters"]["Limit"];
+                state?: components["schemas"]["RunState"];
+                started_after?: string;
+                started_before?: string;
+                completed_after?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runs on this VM. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListRunsResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createRun: {
         parameters: {
             query?: never;
             header?: never;
@@ -847,7 +1003,13 @@ export interface operations {
     };
     listSessions: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Max items per page. Backend caps may apply. */
+                limit?: components["parameters"]["Limit"];
+                state?: components["schemas"]["SessionState"];
+            };
             header?: never;
             path: {
                 id: components["parameters"]["VmId"];
@@ -897,6 +1059,31 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Session"];
+                };
+            };
+            422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
     deleteSession: {
         parameters: {
             query?: never;
@@ -922,7 +1109,36 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    resizeVm: {
+    listSyncs: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Max items per page. Backend caps may apply. */
+                limit?: components["parameters"]["Limit"];
+                filesystem_id?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Syncs on this VM. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListSyncsResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createSync: {
         parameters: {
             query?: never;
             header?: never;
@@ -933,24 +1149,72 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ResizeRequest"];
+                "application/json": components["schemas"]["SyncCreateRequest"];
             };
         };
         responses: {
-            /** @description Resize result. */
+            /** @description Created sync. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResizeResponse"];
+                    "application/json": components["schemas"]["Sync"];
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
-    syncVm: {
+    getSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sync_id: components["parameters"]["SyncId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sync details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Sync"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sync_id: components["parameters"]["SyncId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delete result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteSyncResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    syncRead: {
         parameters: {
             query?: never;
             header?: never;
@@ -961,26 +1225,137 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SyncRequest"];
+                "application/json": components["schemas"]["SyncReadRequest"];
             };
         };
         responses: {
-            /** @description Sync result. */
+            /** @description Read result. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SyncResponse"];
+                    "application/json": components["schemas"]["SyncReadResponse"];
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
+    syncWrite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncWriteRequest"];
+            };
+        };
+        responses: {
+            /** @description Write result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncWriteResponse"];
+                };
+            };
+            422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
+    listTunnels: {
+        parameters: {
+            query?: {
+                /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Max items per page. Backend caps may apply. */
+                limit?: components["parameters"]["Limit"];
+                state?: components["schemas"]["TunnelState"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tunnels on this VM. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListTunnelsResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    getTunnel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                port: components["parameters"]["TunnelPort"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tunnel details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Tunnel"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    deleteTunnel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                port: components["parameters"]["TunnelPort"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delete result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteTunnelResponse"];
+                };
+            };
             default: components["responses"]["Error"];
         };
     };
     listFilesystems: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
+                cursor?: components["parameters"]["Cursor"];
+                /** @description Max items per page. Backend caps may apply. */
+                limit?: components["parameters"]["Limit"];
+                name_prefix?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -999,6 +1374,29 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getFilesystem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                filesystem_id: components["parameters"]["FilesystemId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Filesystem details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Filesystem"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     deleteFilesystem: {
         parameters: {
             query?: never;
@@ -1010,7 +1408,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Delete result. */
+            /** @description Delete result. The filesystem must not be mounted by any VM (no remaining `Sync` referencing it). */
             200: {
                 headers: {
                     [name: string]: unknown;
