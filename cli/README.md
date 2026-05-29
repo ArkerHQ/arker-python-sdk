@@ -31,8 +31,8 @@ Or `~/.arker/config.json`:
 arker ls                          # list VMs
 arker rm vm_abc                   # delete a VM
 arker fork arkuntu                # fork the public golden (shortcut for vm_name in Arker org)
-arker fork --vm-id vm_abc         # fork by global id
-arker fork --vm-name base --org-id <org>  # fork by name in another org
+arker fork --source-vm-id vm_abc           # fork by global id
+arker fork --source-vm-name base --source-org-id <org>  # fork by name in another org
 arker run vm_abc "uname -a"       # run a command
 arker shell                       # interactive shell on a fresh fork
 arker shell vm_abc                # interactive shell on an existing VM

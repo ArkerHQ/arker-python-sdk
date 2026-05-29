@@ -319,9 +319,9 @@ class Arker:
     def fork(
         self,
         *,
-        vm_id: str | None = None,
-        vm_name: str | None = None,
-        org_id: str | None = None,
+        source_vm_id: str | None = None,
+        source_vm_name: str | None = None,
+        source_org_id: str | None = None,
         name: str | None = None,
         public: bool | None = None,
         network: bool | str | dict[str, Any] | None = None,
@@ -335,23 +335,25 @@ class Arker:
     ) -> "Computer":
         """Create a new VM by forking.
 
-        Exactly one of ``vm_id`` or ``vm_name`` must be set.
+        Exactly one of ``source_vm_id`` or ``source_vm_name`` must be set.
 
-        - ``fork(vm_id="vm_abc...")`` — fork by global id.
-        - ``fork(vm_name="base")`` — fork a VM by name in the caller's org.
-        - ``fork(vm_name="arkuntu", org_id=ARKER_ORG_ID)`` — fork the
-          public arkuntu golden.
+        - ``fork(source_vm_id="vm_abc...")`` — fork by global id.
+        - ``fork(source_vm_name="base")`` — fork a VM by name in the
+          caller's org.
+        - ``fork(source_vm_name="arkuntu", source_org_id=ARKER_ORG_ID)``
+          — fork the public arkuntu golden.
 
+        ``name`` (optional) is the *new* VM's name in the caller's org.
         Forking a VM in another org requires that VM to be ``public``.
         """
-        if not vm_id and not vm_name:
-            raise ArkerError("bad_request", "fork requires vm_id or vm_name", 400)
-        if vm_id and vm_name:
-            raise ArkerError("bad_request", "fork: pass only one of vm_id or vm_name", 400)
+        if not source_vm_id and not source_vm_name:
+            raise ArkerError("bad_request", "fork requires source_vm_id or source_vm_name", 400)
+        if source_vm_id and source_vm_name:
+            raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
         body = {
-            "source_vm_id": vm_id,
-            "source_vm_name": vm_name,
-            "source_org_id": org_id,
+            "source_vm_id": source_vm_id,
+            "source_vm_name": source_vm_name,
+            "source_org_id": source_org_id,
             "name": name,
             "public": public,
             "network": network,
@@ -509,8 +511,8 @@ class Computer:
         return _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
 
     def fork(self, **kwargs: Any) -> "Computer":
-        """Deprecated: prefer ``Arker.fork(vm_id=..., ...)``."""
-        return self._client.fork(vm_id=self.id, **kwargs)
+        """Deprecated: prefer ``Arker.fork(source_vm_id=..., ...)``."""
+        return self._client.fork(source_vm_id=self.id, **kwargs)
 
     def run(
         self,

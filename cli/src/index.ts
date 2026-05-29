@@ -175,33 +175,33 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
 }
 
 async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
-  // Source resolution is strict: exactly one of vmId or vmName. A
-  // positional arg without a flag is interpreted as a vmName in the
-  // Arker org (the public-goldens shortcut: `arker fork arkuntu`).
+  // Source resolution is strict: exactly one of source-vm-id or
+  // source-vm-name. A positional arg without flags is treated as a
+  // source-vm-name in the Arker org (shortcut: `arker fork arkuntu`).
   const refPositional = args.positional[0];
-  const vmIdFlag = args.flags["vm-id"] as string | undefined;
-  const vmNameFlag = args.flags["vm-name"] as string | undefined;
-  const orgIdFlag = args.flags["org-id"] as string | undefined;
+  const srcVmIdFlag = args.flags["source-vm-id"] as string | undefined;
+  const srcVmNameFlag = args.flags["source-vm-name"] as string | undefined;
+  const srcOrgIdFlag = args.flags["source-org-id"] as string | undefined;
   const name = args.flags.name as string | undefined;
   const publicFlag = boolFlag(args, "public");
 
-  let vmId: string | undefined = vmIdFlag;
-  let vmName: string | undefined = vmNameFlag;
-  let orgId: string | undefined = orgIdFlag;
+  let sourceVmId: string | undefined = srcVmIdFlag;
+  let sourceVmName: string | undefined = srcVmNameFlag;
+  let sourceOrgId: string | undefined = srcOrgIdFlag;
 
-  if (!vmId && !vmName && refPositional) {
+  if (!sourceVmId && !sourceVmName && refPositional) {
     // Shortcut: `arker fork arkuntu` → public-goldens fork.
-    vmName = refPositional;
-    if (!orgId) orgId = ARKER_ORG_ID;
+    sourceVmName = refPositional;
+    if (!sourceOrgId) sourceOrgId = ARKER_ORG_ID;
   }
 
-  if (!vmId && !vmName) {
-    die("usage: arker fork <vm_name> | --vm-id <id> | --vm-name <name> [--org-id <org>]");
+  if (!sourceVmId && !sourceVmName) {
+    die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]");
   }
   const computer = await client.fork({
-    vmId,
-    vmName,
-    orgId,
+    sourceVmId,
+    sourceVmName,
+    sourceOrgId,
     name,
     public: publicFlag,
   });
@@ -453,17 +453,21 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
 // ── Shell ──────────────────────────────────────────────────────────
 
 async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
-  // Attach to an explicit VM by id (--vm-id or a positional that looks
-  // like a vm id), otherwise fork a fresh one from a name in the Arker
-  // org (default: arkuntu).
+  // Attach to an explicit VM by id (--vm-id or a positional vm id),
+  // otherwise fork a fresh one from a source name in the Arker org
+  // (default: arkuntu).
   let computer: Computer;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
   if (vmIdArg) {
     computer = client.vm(vmIdArg);
   } else {
-    const vmName = (args.flags["vm-name"] as string | undefined) ?? "arkuntu";
-    process.stderr.write(`arker: forking ${vmName}...\n`);
-    computer = await client.fork({ vmName, orgId: ARKER_ORG_ID });
+    const sourceVmName =
+      (args.flags["source-vm-name"] as string | undefined) ?? "arkuntu";
+    process.stderr.write(`arker: forking ${sourceVmName}...\n`);
+    computer = await client.fork({
+      sourceVmName,
+      sourceOrgId: ARKER_ORG_ID,
+    });
     process.stderr.write(`arker: vm_id=${computer.id}\n`);
   }
   const rl = readline.createInterface({ input, output, prompt: "arker> " });
@@ -522,13 +526,14 @@ function usage(): never {
       "  arker <command> [args]",
       "",
       "Shortcuts:",
-      "  arker ls                                list VMs",
-      "  arker rm <vm>                           delete VM",
-      "  arker fork <vm_name>                    fork the public golden (in Arker org)",
-      "  arker fork --vm-id <id>                 fork by global id",
-      "  arker fork --vm-name <name> --org-id X  fork by name in org X",
-      "  arker run <vm> <command>                run a command",
-      "  arker shell [vm_id]                     interactive shell (forks arkuntu if no vm)",
+      "  arker ls                                       list VMs",
+      "  arker rm <vm>                                  delete VM",
+      "  arker fork <vm_name>                           fork the public golden (in Arker org)",
+      "  arker fork --source-vm-id <id>                 fork by global id",
+      "  arker fork --source-vm-name <n> --source-org-id <org>",
+      "                                                 fork by name in another org",
+      "  arker run <vm> <command>                       run a command",
+      "  arker shell [vm_id]                            interactive shell (forks arkuntu if no vm)",
       "",
       "Resources:",
       "  arker vms         <ls|get|rm|fork|run> ...",
