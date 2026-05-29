@@ -524,6 +524,7 @@ export class Computer {
     const merged: ForkRequest = {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
+      disk: request.disk ?? true,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
     return new Computer(this._client, vm.vm_id, this._client._baseUrlFor(vm.vm_id));
