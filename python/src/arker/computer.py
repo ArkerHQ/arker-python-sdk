@@ -319,7 +319,6 @@ class Arker:
     def fork(
         self,
         *,
-        image: str | None = None,
         vm_id: str | None = None,
         vm_name: str | None = None,
         org_id: str | None = None,
@@ -334,22 +333,25 @@ class Arker:
         disk_mib: int | None = None,
         durable: bool | None = None,
     ) -> "Computer":
-        """Create a new VM by forking from a source VM (id or name).
+        """Create a new VM by forking.
 
-        - ``fork(image="arkuntu")`` — ergonomic shortcut: translates to
-          ``source_vm_name="arkuntu"`` + ``source_org_id=ARKER_ORG_ID``.
+        Exactly one of ``vm_id`` or ``vm_name`` must be set.
+
         - ``fork(vm_id="vm_abc...")`` — fork by global id.
-        - ``fork(vm_name="base", org_id="...")`` — fork by name within an org.
+        - ``fork(vm_name="base")`` — fork a VM by name in the caller's org.
+        - ``fork(vm_name="arkuntu", org_id=ARKER_ORG_ID)`` — fork the
+          public arkuntu golden.
+
+        Forking a VM in another org requires that VM to be ``public``.
         """
-        # `image` is purely an SDK ergonomic. On the wire there is no
-        # `source_image`; forking the public goldens (`arkuntu` /
-        # `ubuntu`) is just a name-based fork in the Arker org.
-        resolved_vm_name = vm_name if vm_name is not None else image
-        resolved_org_id = org_id if org_id is not None else (ARKER_ORG_ID if image is not None else None)
+        if not vm_id and not vm_name:
+            raise ArkerError("bad_request", "fork requires vm_id or vm_name", 400)
+        if vm_id and vm_name:
+            raise ArkerError("bad_request", "fork: pass only one of vm_id or vm_name", 400)
         body = {
             "source_vm_id": vm_id,
-            "source_vm_name": resolved_vm_name,
-            "source_org_id": resolved_org_id,
+            "source_vm_name": vm_name,
+            "source_org_id": org_id,
             "name": name,
             "public": public,
             "network": network,

@@ -191,9 +191,12 @@ export class ArkerError extends Error {
   }
 }
 
-/** Optional source for the high-level `fork()` helper. */
+/** Source for `Arker.fork()`. Exactly one of `vmId` or `vmName` must
+ * be set. When `vmName` is set, `orgId` selects which org to look up
+ * the name in (defaults server-side to the caller's org; pass
+ * `ARKER_ORG_ID` to fork the public goldens like `"arkuntu"` /
+ * `"ubuntu"`). */
 export interface ForkSource {
-  image?: string;
   vmId?: string;
   vmName?: string;
   orgId?: string;
@@ -238,24 +241,36 @@ export class Arker {
   }
 
   /**
-   * Create a new VM by forking. Source can be addressed by image name
-   * (defaults to Arker org), global VM id, or VM name within an org.
+   * Create a new VM by forking.
    *
-   * - `fork({ image: "arkuntu" })` — fork the public arkuntu golden.
-   * - `fork({ vmId: "vm_abc..." })` — fork by global id.
-   * - `fork({ vmName: "base", orgId: "..." })` — fork by name within an org.
+   *     fork({ vmId: "vm_abc..." })                       // by global id
+   *     fork({ vmName: "base" })                          // by name in caller's org
+   *     fork({ vmName: "arkuntu", orgId: ARKER_ORG_ID })  // public golden
+   *
+   * Exactly one of `vmId` or `vmName` must be set. When `vmName` is
+   * used, `orgId` selects which org to look it up in; without it the
+   * server defaults to the caller's org. Forking a VM in another org
+   * requires that VM to be `public: true`.
    */
   async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<Computer> {
-    // `image` is purely an SDK ergonomic — on the wire we translate to
-    // a name-based fork in the Arker org. There is no `source_image`
-    // field in the contract; backends only see source_vm_id /
-    // source_vm_name + source_org_id.
-    const vmName = source.vmName ?? source.image ?? null;
-    const orgId = source.orgId ?? (source.image ? ARKER_ORG_ID : null);
+    if (!source.vmId && !source.vmName) {
+      throw new ArkerError(
+        "bad_request",
+        "fork requires vmId or vmName",
+        400,
+      );
+    }
+    if (source.vmId && source.vmName) {
+      throw new ArkerError(
+        "bad_request",
+        "fork: pass only one of vmId or vmName",
+        400,
+      );
+    }
     const body: ForkRequest = {
       source_vm_id: source.vmId ?? null,
-      source_vm_name: vmName,
-      source_org_id: orgId,
+      source_vm_name: source.vmName ?? null,
+      source_org_id: source.orgId ?? null,
       name: source.name ?? null,
       public: source.public ?? null,
       network: source.network ?? null,
@@ -267,7 +282,13 @@ export class Arker {
       disk_mib: source.disk_mib ?? null,
       durable: source.durable ?? null,
     };
-    const baseUrl = source.image && isBurstRef(source.image) && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
+    // Forks that target the public goldens by name in the Arker org
+    // go to the burst backend (ps-lambda); everything else to arkerd.
+    const useBurst =
+      source.orgId === ARKER_ORG_ID &&
+      source.vmName !== undefined &&
+      isBurstRef(source.vmName);
+    const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
     return new Computer(this, vm.vm_id, this._baseUrlFor(vm.vm_id));
   }
