@@ -962,8 +962,15 @@ def _normalize_region(region: str) -> str:
 
 
 def _compute_base_url(provider: str, region: str) -> str:
+    """The subdomain encodes provider+region.
+
+    Today both ``aws-{region}.arker.ai`` and ``aws-burst-{region}.arker.ai``
+    still resolve through the CF Worker (which dispatches based on hostname),
+    so the path includes ``/api``. When DNS is split to bypass the worker on
+    the compute subdomains, drop ``/api`` here.
+    """
     normalized = _normalize_region(region)
-    return f"https://{provider}-{normalized}.arker.ai"
+    return f"https://{provider}-{normalized}.arker.ai/api"
 
 
 def _parse_provider(value: str | None) -> str:

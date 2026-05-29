@@ -808,8 +808,14 @@ function normalizeRegion(region: string): string {
 }
 
 function computeBaseUrl(provider: "aws" | "aws-burst", region: string): string {
+  // The subdomain encodes provider+region — `https://aws-us-west-2.arker.ai`
+  // routes to arkerd in us-west-2; `https://aws-burst-us-west-2.arker.ai`
+  // routes to ps-lambda. Today both subdomains still resolve through the
+  // CF Worker (which dispatches based on hostname), so the path includes
+  // `/api`. When DNS is split to bypass the worker on the compute
+  // subdomains, drop `/api` here.
   const normalized = normalizeRegion(region);
-  return `https://${provider}-${normalized}.arker.ai`;
+  return `https://${provider}-${normalized}.arker.ai/api`;
 }
 
 function parseProvider(value: string | undefined | null): "aws" | "aws-burst" {
