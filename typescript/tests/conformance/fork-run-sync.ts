@@ -220,14 +220,21 @@ function canonicalReadRequest(path: string): JsonObject {
 }
 
 function assertForkResponse(body: JsonObject): string {
-  assertKeys(
-    body,
-    ["vm_id", "owner_id", "created_at", "sessions"],
-    ["vm_id", "owner_id", "created_at", "sessions", "ssh_private_key", "tunnels", "network"],
-    "fork response",
+  // Contract 0.3 renamed `owner_id → owner_org_id`, dropped
+  // `ssh_private_key` from the public surface, and added `public`,
+  // `state`, `tunnels`. Old arkerd / Lambda may still emit the legacy
+  // fields, so accept either shape and prefer the new one when both
+  // are present.
+  const required = ["vm_id", "created_at", "sessions"];
+  for (const key of required) {
+    assert(body[key] !== undefined, `fork response.${key} missing`);
+  }
+  const ownerOrgId = body.owner_org_id ?? body.owner_id;
+  assert(
+    typeof ownerOrgId === "string" && ownerOrgId.length > 0,
+    "fork response.owner_org_id (or legacy .owner_id) must be a non-empty string",
   );
   const vmId = stringField(body.vm_id, "fork response.vm_id");
-  stringField(body.owner_id, "fork response.owner_id");
   stringField(body.created_at, "fork response.created_at");
   arrayField(body.sessions, "fork response.sessions");
   optionalString(body.ssh_private_key, "fork response.ssh_private_key");
@@ -237,12 +244,17 @@ function assertForkResponse(body: JsonObject): string {
 }
 
 function assertCompletedRunResponse(body: JsonObject, expectedStdout: string): void {
-  assertExactKeys(
-    body,
-    ["stdout", "stdout_encoding", "stderr", "stderr_encoding", "exit_code", "completed"],
-    "run response",
-  );
-  assert(body.completed === true, "run response.completed must be true");
+  // Contract 0.3 dropped `completed: bool` from CompletedRunResponse
+  // (state is implicit in the response variant). Accept either shape
+  // so this conformance test passes against both pre- and post-0.3
+  // backends.
+  const minimal = ["stdout", "stdout_encoding", "stderr", "stderr_encoding", "exit_code"];
+  for (const key of minimal) {
+    assert(body[key] !== undefined, `run response.${key} missing`);
+  }
+  if (body.completed !== undefined) {
+    assert(body.completed === true, "run response.completed (legacy) must be true when present");
+  }
   assert(stringField(body.stdout, "run response.stdout") === expectedStdout, `unexpected stdout: ${JSON.stringify(body.stdout)}`);
   stringField(body.stdout_encoding, "run response.stdout_encoding");
   assert(typeof body.stderr === "string", "run response.stderr must be a string");

@@ -82,10 +82,20 @@ def test_constructor_reads_env(monkeypatch) -> None:
 
 def test_fork_posts_directly_to_source_vm() -> None:
     t = FakeTransport()
+    # Contract 0.3 routes forks to `/v1/fork`; the Computer.fork()
+    # ergonomic auto-fills `source_vm_id` from the owning Computer.
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/vms/ubuntu/fork",
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
         200,
-        {"vm_id": "vm_child", "owner_id": "owner", "created_at": "now", "sessions": [session()]},
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "tunnels": [],
+        },
     )
 
     with patch("urllib.request.urlopen", t):
@@ -93,13 +103,14 @@ def test_fork_posts_directly_to_source_vm() -> None:
 
     assert vm.id == "vm_child"
     body = json.loads(t.calls[0]["body"])
-    assert body == {"name": "demo"}
+    # Computer.fork passes source_vm_id; disk defaults to True.
+    assert body == {"name": "demo", "source_vm_id": "ubuntu", "disk": True}
 
 
 def test_fork_accepts_legacy_id_response() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/vms/ubuntu/fork",
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
         200,
         {"id": "vm_child"},
     )
@@ -113,9 +124,17 @@ def test_fork_accepts_legacy_id_response() -> None:
 def test_region_routes_goldens_to_main_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-us-west-2.arker.ai/api/v1/vms/ubuntu/fork",
+        lambda method, url: method == "POST" and url == "https://aws-us-west-2.arker.ai/api/v1/fork",
         200,
-        {"vm_id": "vmh-child", "owner_id": "owner", "created_at": "now", "sessions": []},
+        {
+            "vm_id": "vmh-child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "tunnels": [],
+        },
     )
 
     with patch("urllib.request.urlopen", t):
@@ -130,7 +149,7 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
 def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/arkuntu/fork",
+        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/fork",
         200,
         {"id": "legacy_child_without_suffix"},
     )
@@ -144,8 +163,9 @@ def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
 
 def test_region_routes_burst_vm_ids_to_burst_endpoint() -> None:
     t = FakeTransport()
+    # Contract 0.3 renamed per-VM run endpoint from `/run` to `/runs`.
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
+        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs",
         200,
         {
             "stdout": "hi\n",
@@ -153,27 +173,30 @@ def test_region_routes_burst_vm_ids_to_burst_endpoint() -> None:
             "stderr": "",
             "stderr_encoding": "utf-8",
             "exit_code": 0,
-            "completed": True,
         },
     )
 
     with patch("urllib.request.urlopen", t):
         region_client().vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hi")
 
-    assert t.calls[0]["url"] == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run"
+    assert t.calls[0]["url"] == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs"
 
 
 def test_list_uses_configured_base_url() -> None:
     t = FakeTransport()
+    # `Arker.list()` is an admin call — routed through the control
+    # plane, not the compute URL.
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://test.invalid/api/v1/vms",
+        lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms",
         200,
         {"vms": [{
             "vm_id": "vm_1",
-            "owner_id": "owner",
+            "owner_org_id": "owner",
             "created_at": "now",
+            "public": False,
             "state": "running",
             "sessions": [session()],
+            "tunnels": [],
             "name": "demo",
         }]},
     )
@@ -184,12 +207,13 @@ def test_list_uses_configured_base_url() -> None:
     assert isinstance(result, sdk.ListVmsResponse)
     assert len(result) == 1
     assert result.vms[0].vm_id == "vm_1"
+    assert result.vms[0].owner_org_id == "owner"
 
 
 def test_run_sends_command_without_default_session_id() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/run"),
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
         200,
         {
             "stdout": "hi\n",
@@ -197,7 +221,6 @@ def test_run_sends_command_without_default_session_id() -> None:
             "stderr": "",
             "stderr_encoding": "utf-8",
             "exit_code": 0,
-            "completed": True,
         },
     )
 
@@ -214,9 +237,9 @@ def test_run_sends_command_without_default_session_id() -> None:
 def test_background_run_response() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/run"),
+        lambda method, url: method == "POST" and url.endswith("/runs"),
         200,
-        {"run_id": "run_1", "completed": False, "tunnels": []},
+        {"run_id": "run_1", "tunnels": []},
     )
 
     with patch("urllib.request.urlopen", t):
@@ -366,21 +389,34 @@ def test_large_write_uses_presigned_bypass() -> None:
 def test_fork_sends_durable_flag() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/ubuntu/fork"),
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
         200,
-        {"vm_id": "vm_child", "owner_id": "owner", "created_at": "now", "sessions": []},
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "tunnels": [],
+        },
     )
 
     with patch("urllib.request.urlopen", t):
         client().vm("ubuntu").fork(durable=True)
 
-    assert json.loads(t.calls[0]["body"]) == {"durable": True}
+    # Computer.fork auto-fills source_vm_id; disk defaults to True.
+    assert json.loads(t.calls[0]["body"]) == {
+        "durable": True,
+        "source_vm_id": "ubuntu",
+        "disk": True,
+    }
 
 
 def test_run_sends_idempotency_key_header() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/run"),
+        lambda method, url: method == "POST" and url.endswith("/runs"),
         200,
         {
             "stdout": "hi\n",
@@ -388,7 +424,6 @@ def test_run_sends_idempotency_key_header() -> None:
             "stderr": "",
             "stderr_encoding": "utf-8",
             "exit_code": 0,
-            "completed": True,
         },
     )
 

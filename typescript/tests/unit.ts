@@ -68,22 +68,38 @@ function decode(bytes: Uint8Array): string {
 
 async function testForkPostsDirectlyToSourceVm(): Promise<void> {
   const fetch = new FakeFetch();
+  // Contract 0.3: forks go to the top-level `/v1/fork` endpoint and
+  // pass the source vm id in the body. `Computer.fork()` (the legacy
+  // ergonomic) auto-populates `source_vm_id` from the owning Computer.
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/ubuntu/fork",
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
     200,
-    { vm_id: "vm_child", owner_id: "owner", created_at: "now", sessions: [] },
+    {
+      vm_id: "vm_child",
+      owner_org_id: "owner",
+      created_at: "now",
+      public: false,
+      state: "idle",
+      sessions: [],
+      tunnels: [],
+    },
   );
 
   const vm = await client(fetch).vm("ubuntu").fork({ name: "demo" });
 
   assert.equal(vm.id, "vm_child");
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { name: "demo" });
+  assert.deepEqual(
+    JSON.parse(fetch.calls[0]!.body!),
+    { name: "demo", source_vm_id: "ubuntu", disk: true },
+  );
 }
 
 async function testForkAcceptsLegacyIdResponse(): Promise<void> {
   const fetch = new FakeFetch();
+  // Back-compat: some older backends emit `id` instead of `vm_id` —
+  // the SDK accepts either.
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/ubuntu/fork",
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
     200,
     { id: "vm_child" },
   );
@@ -109,8 +125,11 @@ async function testNestedErrorWithoutOkStillParses(): Promise<void> {
 
 async function testCompletedRunDecodesOutput(): Promise<void> {
   const fetch = new FakeFetch();
+  // Contract 0.3: per-VM runs go to `/runs` (plural). The legacy
+  // `/run` (singular) endpoint is still wired on the backend as an
+  // alias, but the SDK targets the new path.
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/run",
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
     200,
     {
       stdout: "hello\n",
@@ -118,7 +137,6 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
       stderr: "",
       stderr_encoding: "utf-8",
       exit_code: 0,
-      completed: true,
     },
   );
 
@@ -133,10 +151,21 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
 
 async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
+  // Computer.fork() always posts to `/v1/fork` on the owning VM's
+  // backend (default-provider compute URL for "ubuntu", a non-burst
+  // name).
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-us-west-2.arker.ai/api/v1/vms/ubuntu/fork",
+    (method, url) => method === "POST" && url === "https://aws-us-west-2.arker.ai/api/v1/fork",
     200,
-    { vm_id: "vmh-child", owner_id: "owner", created_at: "now", sessions: [] },
+    {
+      vm_id: "vmh-child",
+      owner_org_id: "owner",
+      created_at: "now",
+      public: false,
+      state: "idle",
+      sessions: [],
+      tunnels: [],
+    },
   );
 
   const arker = regionClient(fetch);
@@ -149,8 +178,10 @@ async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
 
 async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
+  // The "arkuntu" alias is burst-pool; Computer("arkuntu") gets the
+  // burst base URL and posts the fork there.
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/vms/arkuntu/fork",
+    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/fork",
     200,
     { id: "legacy_child_without_suffix" },
   );
@@ -164,7 +195,7 @@ async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
 async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run",
+    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs",
     200,
     {
       stdout: "hello\n",
@@ -172,32 +203,42 @@ async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
       stderr: "",
       stderr_encoding: "utf-8",
       exit_code: 0,
-      completed: true,
     },
   );
 
   await regionClient(fetch).vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hello");
 
-  assert.equal(fetch.calls[0]!.url, "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/run");
+  assert.equal(fetch.calls[0]!.url, "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs");
 }
 
 async function testForkSendsDurableFlag(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/ubuntu/fork",
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
     200,
-    { vm_id: "vm_durable", owner_id: "owner", created_at: "now", sessions: [] },
+    {
+      vm_id: "vm_durable",
+      owner_org_id: "owner",
+      created_at: "now",
+      public: false,
+      state: "idle",
+      sessions: [],
+      tunnels: [],
+    },
   );
 
   await client(fetch).vm("ubuntu").fork({ durable: true });
 
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { durable: true });
+  assert.deepEqual(
+    JSON.parse(fetch.calls[0]!.body!),
+    { durable: true, source_vm_id: "ubuntu", disk: true },
+  );
 }
 
 async function testRunSendsIdempotencyKeyHeader(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/run",
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
     200,
     {
       stdout: "hi\n",
@@ -205,7 +246,6 @@ async function testRunSendsIdempotencyKeyHeader(): Promise<void> {
       stderr: "",
       stderr_encoding: "utf-8",
       exit_code: 0,
-      completed: true,
     },
   );
 
