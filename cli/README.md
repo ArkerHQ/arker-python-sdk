@@ -1,7 +1,5 @@
 # arker CLI
 
-Command-line interface for the Arker VM API. Wraps `@arker-ai/sdk`.
-
 ## Install
 
 ```sh
@@ -13,7 +11,7 @@ npm install -g @arker-ai/cli
 ```sh
 export ARKER_API_KEY=ark_…
 export ARKER_REGION=us-west-2
-export ARKER_PROVIDER=aws            # optional; default aws (use `aws-burst` for Lambda)
+export ARKER_PROVIDER=aws            # optional; default aws (use `aws-burst` for Arkuntu)
 # export ARKER_CONTROL_BASE_URL=https://arker.ai/api   # optional override
 ```
 
@@ -27,19 +25,6 @@ Or `~/.arker/config.json`:
 }
 ```
 
-`region` + `provider` define the **compute endpoint** the CLI hits for
-fork / run / sync / per-VM operations:
-
-    https://<provider>-<region>.arker.ai
-
-so e.g. `provider=aws`, `region=us-west-2` →
-`https://aws-us-west-2.arker.ai`. Compute calls go straight to that
-host, skipping the control plane.
-
-`controlBaseUrl` (default `https://arker.ai/api`) is the CF Worker
-that handles **administrative** calls — `arker ls` (cross-provider VM
-list) and `arker fs ls / get / rm` (org-scoped filesystem ops).
-
 The legacy combined form `region=aws-us-west-2` is still accepted and
 auto-splits into `provider=aws`, `region=us-west-2`.
 
@@ -47,9 +32,9 @@ auto-splits into `provider=aws`, `region=us-west-2`.
 
 ```sh
 # Shortcuts
-arker ls                                                  # list VMs (admin → CF Worker)
-arker rm vm_abc                                           # delete a VM (compute → direct)
-arker fork arkuntu                                        # public golden in ArkerHQ
+arker ls                                                  # list VMs
+arker rm vm_abc                                           # delete a VM
+arker fork arkuntu                                        # public VM in ArkerHQ
 arker fork --source-vm-id vm_abc                          # fork by global id
 arker fork --source-vm-name base --source-org-id ArkerHQ  # fork by name in another org
 arker run vm_abc "uname -a"                               # run a command
@@ -83,26 +68,26 @@ $ arker shell
   "owner_org_id": "your_org",
   "public": false,
   "state": "idle",
-  …
+  ...
 }
 > uname -a
-Linux ubuntu 6.6.0-arkerd …
+Linux ubuntu 6.6.0-arkerd ...
 > exit
 ```
 
 Every list command takes `--cursor` and `--limit`. Append `--json` to
 get structured output for scripting.
 
-## Public goldens
+## Public VMs
 
-Public goldens live in the `ArkerHQ` org. Today:
+Public VMs live in the `ArkerHQ` org. Today:
 
-- **arkerd-backed (`provider=aws`)**: `ubuntu`, `ubuntu-small`,
+- **Ubuntu (`provider=aws`)**: `ubuntu`, `ubuntu-small`,
   `ubuntu-nodisk`, `ubuntu-nonet-nodisk`, `ubuntu-full`,
   `ubuntu-full-32`, `ubuntu-py-repl`, `ubuntu-js-repl`,
   `ubuntu-docker`, `ubuntu-chromium`, `ubuntu-servo`,
   `ubuntu-servo-py-repl`, `ubuntu-chromium-py-repl`.
-- **Lambda-backed (`provider=aws-burst`)**: `arkuntu`.
+- **Arkuntu (`provider=aws-burst`)**: `arkuntu`.
 
 To list them:
 
