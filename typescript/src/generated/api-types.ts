@@ -404,6 +404,12 @@ export interface components {
                 [key: string]: string;
             } | null;
             started_at?: string | null;
+            vm_id?: string | null;
+            vm_name?: string | null;
+            source_org_id?: string | null;
+            region?: string | null;
+            /** @enum {string|null} */
+            provider?: "aws" | "aws-burst" | null;
         };
         ListSessionsResponse: {
             sessions: components["schemas"]["Session"][];
@@ -526,6 +532,12 @@ export interface components {
             network?: components["schemas"]["NetworkStatus"] | null;
             /** @default 0 */
             retry_count: number;
+            vm_id?: string | null;
+            vm_name?: string | null;
+            source_org_id?: string | null;
+            region?: string | null;
+            /** @enum {string|null} */
+            provider?: "aws" | "aws-burst" | null;
         };
         RunSummary: {
             run_id: string;
@@ -535,6 +547,12 @@ export interface components {
             started_at: string;
             completed_at?: string | null;
             exit_code: number | null;
+            vm_id?: string | null;
+            vm_name?: string | null;
+            source_org_id?: string | null;
+            region?: string | null;
+            /** @enum {string|null} */
+            provider?: "aws" | "aws-burst" | null;
         };
         ListRunsResponse: {
             runs: components["schemas"]["RunSummary"][];
@@ -568,6 +586,11 @@ export interface components {
             state: components["schemas"]["TunnelState"];
             message?: string | null;
             started_at?: string | null;
+            vm_name?: string | null;
+            source_org_id?: string | null;
+            region?: string | null;
+            /** @enum {string|null} */
+            provider?: "aws" | "aws-burst" | null;
         };
         ListTunnelsResponse: {
             tunnels: components["schemas"]["Tunnel"][];
@@ -600,6 +623,12 @@ export interface components {
             /** @description VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`. */
             path: string;
             created_at: string;
+            vm_name?: string | null;
+            filesystem_name?: string | null;
+            source_org_id?: string | null;
+            region?: string | null;
+            /** @enum {string|null} */
+            provider?: "aws" | "aws-burst" | null;
         };
         ListSyncsResponse: {
             syncs: components["schemas"]["Sync"][];
@@ -706,6 +735,13 @@ export interface components {
             owner_org_id: string;
             created_at: string;
             size_bytes?: number | null;
+            /** @default us-west-2 */
+            region: string | null;
+            /**
+             * @default aws
+             * @enum {string|null}
+             */
+            provider: "aws" | "aws-burst" | null;
         };
         ListFilesystemsResponse: {
             filesystems: components["schemas"]["Filesystem"][];

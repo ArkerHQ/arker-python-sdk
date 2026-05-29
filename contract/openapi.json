@@ -1259,6 +1259,41 @@
               "string",
               "null"
             ]
+          },
+          "vm_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vm_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_org_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aws",
+              "aws-burst",
+              null
+            ]
           }
         }
       },
@@ -1746,6 +1781,41 @@
             "type": "integer",
             "minimum": 0,
             "default": 0
+          },
+          "vm_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vm_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_org_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aws",
+              "aws-burst",
+              null
+            ]
           }
         }
       },
@@ -1790,6 +1860,41 @@
             "type": [
               "integer",
               "null"
+            ]
+          },
+          "vm_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vm_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_org_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aws",
+              "aws-burst",
+              null
             ]
           }
         }
@@ -1925,6 +2030,35 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "vm_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_org_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aws",
+              "aws-burst",
+              null
             ]
           }
         }
@@ -2065,6 +2199,41 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "vm_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filesystem_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_org_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aws",
+              "aws-burst",
+              null
+            ]
           }
         }
       },
@@ -2556,6 +2725,25 @@
               "null"
             ],
             "minimum": 0
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": "us-west-2"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "aws",
+              "aws-burst",
+              null
+            ],
+            "default": "aws"
           }
         }
       },
