@@ -20,6 +20,13 @@ from typing import Any
 
 CHUNK_SIZE = 4 * 1024 * 1024
 
+# Org id for the "Arker" org — the org that owns the public golden VMs
+# (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
+# ``source_org_id`` to fork a public golden:
+#
+#     arker.fork(source_vm_name="ubuntu-full", source_org_id=ARKER_ORG_ID)
+ARKER_ORG_ID = "ArkerHQ"
+
 DEFAULT_RETRY_ATTEMPTS = 4
 DEFAULT_RETRY_BASE_DELAY_S = 0.2
 DEFAULT_RETRY_MAX_DELAY_S = 2.0
@@ -30,6 +37,9 @@ RETRYABLE_CODES = {"routing_unavailable", "unavailable", "temporarily_unavailabl
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_REGION_ENV = "ARKER_REGION"
+DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
+DEFAULT_PROVIDER = "aws"
+DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
 BURST_SOURCE_REFS = {"arkuntu"}
 BURST_VM_ID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$")
 
@@ -42,49 +52,61 @@ class RetryOptions:
     jitter_s: float = DEFAULT_RETRY_JITTER_S
 
 
+# ── Resources ───────────────────────────────────────────────────────
+
+
 @dataclasses.dataclass(frozen=True)
-class SessionInfo:
+class Session:
     session_id: str
-    state: str
+    state: str  # "idle" | "running"
     cwd: str
+    session_idx: int = 0
+    env: dict[str, str] | None = None
+    started_at: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
-class GoldenInfo:
+class Tunnel:
     vm_id: str
-    name: str
-    source_golden: str
-    memory_mib: int | None = None
-    vcpu_count: int | None = None
-    disk_mib: int | None = None
+    port: int
+    visibility: str
+    protocol: str
+    state: str  # "starting" | "open" | "closed"
+    run_id: str | None = None
+    url: str | None = None
+    message: str | None = None
+    started_at: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
-class ListGoldensResponse:
-    goldens: list[GoldenInfo]
-
-
-@dataclasses.dataclass(frozen=True)
-class VmInfo:
+class Vm:
     vm_id: str
-    owner_id: str
+    owner_org_id: str
     created_at: str
-    state: str
-    sessions: list[SessionInfo]
+    public: bool
+    state: str  # "idle" | "running"
+    sessions: list[Session]
     name: str | None = None
-    source_golden: str | None = None
-    last_activity: str | None = None
+    root_source_vm_id: str | None = None
+    root_source_vm_name: str | None = None
+    region: str | None = None
+    provider: str | None = None
+    started_at: str | None = None
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
+    worker_id: str | None = None
+    tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
+    network: dict[str, Any] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
 class ListVmsResponse:
-    vms: list[VmInfo]
+    vms: list[Vm]
+    next_cursor: str | None = None
 
     @property
-    def items(self) -> list[VmInfo]:
+    def items(self) -> list[Vm]:
         return self.vms
 
     @property
@@ -98,23 +120,21 @@ class ListVmsResponse:
         return len(self.vms)
 
 
-VmSummary = VmInfo
+VmSummary = Vm
 VmList = ListVmsResponse
 
-
-@dataclasses.dataclass(frozen=True)
-class ForkVmResponse:
-    vm_id: str
-    owner_id: str
-    created_at: str
-    sessions: list[SessionInfo]
-    ssh_private_key: str | None = None
-    tunnels: list[dict[str, Any]] = dataclasses.field(default_factory=list)
-    network: dict[str, Any] | None = None
+# Backwards-compat aliases — pre-rename names. Drop in a future major.
+VmInfo = Vm
+SessionInfo = Session
 
 
 @dataclasses.dataclass(frozen=True)
 class DeleteVmResponse:
+    deleted: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class DeleteSessionResponse:
     deleted: bool
 
 
@@ -125,47 +145,121 @@ class CompletedRunResult:
     stderr: bytes
     stderr_encoding: str
     exit_code: int
-    completed: bool = True
     type: str = "completed"
 
 
 @dataclasses.dataclass(frozen=True)
 class BackgroundRunResult:
     run_id: str
-    completed: bool
-    tunnels: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
     network: dict[str, Any] | None = None
     type: str = "background"
 
 
-@dataclasses.dataclass(frozen=True)
-class PtyRunResult:
-    session_id: str
-    ws_url: str
-    pty: bool = True
-    type: str = "pty"
-
-
-RunResult = CompletedRunResult | BackgroundRunResult | PtyRunResult
+RunResult = CompletedRunResult | BackgroundRunResult
 
 
 @dataclasses.dataclass(frozen=True)
-class RunStatusResponse:
+class Run:
     run_id: str
+    state: str  # "running" | "completed" | "cancelled"
+    started_at: str
     stdout: bytes
     stdout_encoding: str
     stderr: bytes
     stderr_encoding: str
-    exit_code: int | None
-    completed: bool
-    tunnels: list[dict[str, Any]]
+    tunnels: list[Tunnel]
+    exit_code: int | None = None
+    session_id: str | None = None
+    command: str | None = None
+    completed_at: str | None = None
     network: dict[str, Any] | None = None
     retry_count: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
+class RunSummary:
+    """Strict field-subset of `Run` — every field is present on `Run`."""
+    run_id: str
+    state: str
+    started_at: str
+    exit_code: int | None = None
+    session_id: str | None = None
+    command: str | None = None
+    completed_at: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class ListRunsResponse:
+    runs: list[RunSummary]
+    next_cursor: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
 class CancelRunResponse:
     cancelled: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class ListSessionsResponse:
+    sessions: list[Session]
+    next_cursor: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class ListTunnelsResponse:
+    tunnels: list[Tunnel]
+    next_cursor: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class DeleteTunnelResponse:
+    deleted: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class ResizeResponse:
+    resized: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class Filesystem:
+    filesystem_id: str
+    name: str
+    owner_org_id: str
+    created_at: str
+    size_bytes: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class ListFilesystemsResponse:
+    filesystems: list[Filesystem]
+    next_cursor: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class DeleteFilesystemResponse:
+    deleted: bool
+
+
+@dataclasses.dataclass(frozen=True)
+class SyncObject:
+    sync_id: str
+    vm_id: str
+    filesystem_id: str
+    path: str
+    created_at: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ListSyncsResponse:
+    syncs: list[SyncObject]
+    next_cursor: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class DeleteSyncResponse:
+    deleted: bool
 
 
 @dataclasses.dataclass(eq=False)
@@ -178,23 +272,40 @@ class ArkerError(Exception):
         Exception.__init__(self, f"{self.code}: {self.message}")
 
 
+# ── Client ──────────────────────────────────────────────────────────
+
+
 class Arker:
     def __init__(
         self,
         api_key: str | None = None,
         base_url: str | None = None,
         burst_base_url: str | None = None,
+        control_base_url: str | None = None,
         region: str | None = None,
+        provider: str | None = None,
         retry: RetryOptions | dict[str, Any] | bool | None = None,
     ) -> None:
         resolved_api_key = api_key or _env("ARKER_API_KEY") or _env("AUTH_KEY")
         explicit_base_url = base_url or _env("ARKER_BASE_URL")
-        resolved_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
-        resolved_base_url = explicit_base_url or (_region_base_url(resolved_region, False) if resolved_region else None)
+        raw_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
+        raw_provider = provider or _env(DEFAULT_PROVIDER_ENV) or DEFAULT_PROVIDER
+        provider_value = _parse_provider(raw_provider)
+        resolved_region, provider_from_region = _split_region(raw_region)
+        effective_provider = provider_from_region or provider_value
+
+        resolved_base_url = explicit_base_url or (
+            _compute_base_url(effective_provider, resolved_region) if resolved_region else None
+        )
         resolved_burst_base_url = (
             burst_base_url
             or _env("ARKER_BURST_BASE_URL")
-            or (_region_base_url(resolved_region, True) if resolved_region else None)
+            or (_compute_base_url("aws-burst", resolved_region) if resolved_region else None)
+        )
+        resolved_control_base_url = (
+            control_base_url
+            or _env("ARKER_CONTROL_BASE_URL")
+            or DEFAULT_CONTROL_BASE_URL
         )
 
         if not resolved_api_key:
@@ -205,8 +316,11 @@ class Arker:
         self._api_key = resolved_api_key
         self._base_url = _normalize_base_url(resolved_base_url)
         self._burst_base_url = _normalize_base_url(resolved_burst_base_url) if resolved_burst_base_url else None
+        self._control_base_url = _normalize_base_url(resolved_control_base_url)
         self._region = _normalize_region(resolved_region) if resolved_region else None
+        self._provider = effective_provider
         self._retry = _normalize_retry(retry)
+        self.filesystems = Filesystems(self)
 
     @property
     def base_url(self) -> str:
@@ -217,21 +331,106 @@ class Arker:
         return self._burst_base_url
 
     @property
+    def control_base_url(self) -> str:
+        return self._control_base_url
+
+    @property
     def region(self) -> str | None:
         return self._region
+
+    @property
+    def provider(self) -> str:
+        return self._provider
 
     def vm(self, vm_id: str) -> "Computer":
         return Computer(self, vm_id, self._base_url_for(vm_id))
 
-    def goldens(self) -> ListGoldensResponse:
-        payload = self._request("GET", "/v1/goldens")
-        return ListGoldensResponse([_golden_info(item) for item in payload.get("goldens", [])])
+    def fork(
+        self,
+        *,
+        source_vm_id: str | None = None,
+        source_vm_name: str | None = None,
+        source_org_id: str | None = None,
+        name: str | None = None,
+        public: bool | None = None,
+        network: bool | str | dict[str, Any] | None = None,
+        tunnels: dict[str, Any] | None = None,
+        disk: bool | None = None,
+        vcpu_count: int | None = None,
+        memory_mib: int | None = None,
+        max_memory_mib: int | None = None,
+        disk_mib: int | None = None,
+        durable: bool | None = None,
+    ) -> "Computer":
+        """Create a new VM by forking.
 
-    def list(self) -> ListVmsResponse:
-        payload = self._request("GET", "/v1/vms")
-        return ListVmsResponse([_vm_info(item) for item in payload.get("vms", [])])
+        Exactly one of ``source_vm_id`` or ``source_vm_name`` must be set.
 
-    def get(self, vm_id: str) -> VmInfo:
+        - ``fork(source_vm_id="vm_abc...")`` — fork by global id.
+        - ``fork(source_vm_name="base")`` — fork a VM by name in the
+          caller's org.
+        - ``fork(source_vm_name="arkuntu", source_org_id=ARKER_ORG_ID)``
+          — fork the public arkuntu golden.
+
+        ``name`` (optional) is the *new* VM's name in the caller's org.
+        Forking a VM in another org requires that VM to be ``public``.
+        """
+        if not source_vm_id and not source_vm_name:
+            raise ArkerError("bad_request", "fork requires source_vm_id or source_vm_name", 400)
+        if source_vm_id and source_vm_name:
+            raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
+        body = {
+            "source_vm_id": source_vm_id,
+            "source_vm_name": source_vm_name,
+            "source_org_id": source_org_id,
+            "name": name,
+            "public": public,
+            "network": network,
+            "tunnels": tunnels,
+            "disk": disk,
+            "vcpu_count": vcpu_count,
+            "memory_mib": memory_mib,
+            "max_memory_mib": max_memory_mib,
+            "disk_mib": disk_mib,
+            "durable": durable,
+        }
+        base_url = self._burst_base_url if (image is not None and _is_burst_ref(image) and self._burst_base_url) else self._base_url
+        payload = self._request("POST", "/v1/fork", body, base_url=base_url)
+        vm = _vm_info(payload)
+        return Computer(self, vm.vm_id, self._base_url_for(vm.vm_id))
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        region: str | None = None,
+        provider: str | None = None,
+        state: str | None = None,
+        source_org_id: str | None = None,
+        started_after: str | None = None,
+        started_before: str | None = None,
+    ) -> ListVmsResponse:
+        """Admin call — goes through the control plane so it can
+        aggregate across providers and regions.
+        """
+        path = _build_query("/v1/vms", {
+            "cursor": cursor,
+            "limit": limit,
+            "region": region,
+            "provider": provider,
+            "state": state,
+            "source_org_id": source_org_id,
+            "started_after": started_after,
+            "started_before": started_before,
+        })
+        payload = self._request("GET", path, base_url=self._control_base_url)
+        return ListVmsResponse(
+            vms=[_vm_info(item) for item in payload.get("vms", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get(self, vm_id: str) -> Vm:
         return _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
 
     def _request(
@@ -301,103 +500,324 @@ class Arker:
         return self._base_url
 
 
+class Filesystems:
+    """Admin calls — routed through the control plane (CF Worker)."""
+
+    def __init__(self, client: Arker) -> None:
+        self._client = client
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        name_prefix: str | None = None,
+    ) -> ListFilesystemsResponse:
+        path = _build_query("/v1/filesystems", {
+            "cursor": cursor,
+            "limit": limit,
+            "name_prefix": name_prefix,
+        })
+        payload = self._client._request("GET", path, base_url=self._client._control_base_url)
+        return ListFilesystemsResponse(
+            filesystems=[_filesystem(item) for item in payload.get("filesystems", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get(self, filesystem_id: str) -> Filesystem:
+        payload = self._client._request(
+            "GET",
+            f"/v1/filesystems/{_segment(filesystem_id)}",
+            base_url=self._client._control_base_url,
+        )
+        return _filesystem(payload)
+
+    def delete(self, filesystem_id: str) -> DeleteFilesystemResponse:
+        payload = self._client._request(
+            "DELETE",
+            f"/v1/filesystems/{_segment(filesystem_id)}",
+            base_url=self._client._control_base_url,
+        )
+        return DeleteFilesystemResponse(deleted=bool(payload.get("deleted")))
+
+
 class Computer:
     def __init__(self, client: Arker, vm_id: str, base_url: str | None = None) -> None:
         self._client = client
         self.id = vm_id
         self.base_url = base_url or client._base_url_for(vm_id)
-        self.sync = Sync(self)
+        self.syncs = Syncs(self)
+        self.tunnels = Tunnels(self)
+        self.runs = Runs(self)
+        self.sessions = Sessions(self)
 
-    def fork(
-        self,
-        *,
-        name: str | None = None,
-        image: str | None = None,
-        network: bool | str | dict[str, Any] | None = None,
-        disk: bool | None = None,
-        vcpu_count: int | None = None,
-        memory_mib: int | None = None,
-        max_memory_mib: int | None = None,
-        disk_mib: int | None = None,
-        durable: bool | None = None,
-    ) -> "Computer":
-        body = {
-            "name": name,
-            "image": image,
-            "network": network,
-            "disk": disk,
-            "vcpu_count": vcpu_count,
-            "memory_mib": memory_mib,
-            "max_memory_mib": max_memory_mib,
-            "disk_mib": disk_mib,
-            "durable": durable,
-        }
-        response = self._client._request("POST", f"{_vm_path(self.id)}/fork", body, base_url=self.base_url)
-        return Computer(self._client, _fork_vm_id(response), self.base_url)
+    def get(self) -> Vm:
+        return _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
+
+    def fork(self, **kwargs: Any) -> "Computer":
+        """Deprecated: prefer ``Arker.fork(source_vm_id=..., ...)``."""
+        return self._client.fork(source_vm_id=self.id, **kwargs)
 
     def run(
         self,
         command: str,
         *,
         session_id: str | None = None,
+        session_idx: int | None = None,
         background: bool | None = None,
         timeout: int | None = None,
         end_symbol: str | None = None,
-        mounts: list[dict[str, Any]] | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         network: dict[str, Any] | None = None,
-        release: str | None = None,
+        acquire: str | list[str] | None = None,
+        release: str | list[str] | None = None,
         signal: str | None = None,
-        runtime: str | None = None,
-        runtime_override: str | None = None,
         idempotency_key: str | None = None,
     ) -> RunResult:
         body = {
             "command": command,
             "session_id": session_id,
+            "session_idx": session_idx,
             "background": background,
             "timeout": timeout,
             "end_symbol": end_symbol,
-            "mounts": mounts,
             "vcpu_count": vcpu_count,
             "memory_mib": memory_mib,
             "disk_mib": disk_mib,
             "network": network,
-            "release": release,
+            "acquire": ",".join(acquire) if isinstance(acquire, list) else acquire,
+            "release": ",".join(release) if isinstance(release, list) else release,
             "signal": signal,
-            "runtime": runtime,
-            "runtime_override": runtime_override,
         }
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return _run_response(self._client._request(
             "POST",
-            f"{_vm_path(self.id)}/run",
+            f"{_vm_path(self.id)}/runs",
             body,
             base_url=self.base_url,
             extra_headers=headers,
         ))
 
-    def run_status(self, run_id: str) -> RunStatusResponse:
-        return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
-
-    def cancel_run(self, run_id: str) -> CancelRunResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url)
-        return CancelRunResponse(cancelled=bool(payload.get("cancelled")))
+    def resize(
+        self,
+        *,
+        vcpu_count: int | None = None,
+        memory_mib: int | None = None,
+        disk_mib: int | None = None,
+    ) -> ResizeResponse:
+        body = {"vcpu_count": vcpu_count, "memory_mib": memory_mib, "disk_mib": disk_mib}
+        payload = self._client._request("POST", f"{_vm_path(self.id)}/resize", body, base_url=self.base_url)
+        return ResizeResponse(resized=bool(payload.get("resized")))
 
     def delete(self) -> DeleteVmResponse:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
         return DeleteVmResponse(deleted=bool(payload.get("deleted")))
 
 
-class Sync:
+class Runs:
+    def __init__(self, vm: Computer) -> None:
+        self._vm = vm
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        state: str | None = None,
+        started_after: str | None = None,
+        started_before: str | None = None,
+        completed_after: str | None = None,
+    ) -> ListRunsResponse:
+        path = _build_query(f"{_vm_path(self._vm.id)}/runs", {
+            "cursor": cursor,
+            "limit": limit,
+            "state": state,
+            "started_after": started_after,
+            "started_before": started_before,
+            "completed_after": completed_after,
+        })
+        payload = self._vm._client._request("GET", path, base_url=self._vm.base_url)
+        return ListRunsResponse(
+            runs=[_run_summary(item) for item in payload.get("runs", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get(self, run_id: str) -> Run:
+        return _run_status_response(self._vm._client._request(
+            "GET",
+            f"{_vm_path(self._vm.id)}/runs/{_segment(run_id)}",
+            base_url=self._vm.base_url,
+        ))
+
+    def cancel(self, run_id: str) -> CancelRunResponse:
+        payload = self._vm._client._request(
+            "DELETE",
+            f"{_vm_path(self._vm.id)}/runs/{_segment(run_id)}",
+            base_url=self._vm.base_url,
+        )
+        return CancelRunResponse(cancelled=bool(payload.get("cancelled")))
+
+
+class Sessions:
+    def __init__(self, vm: Computer) -> None:
+        self._vm = vm
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        state: str | None = None,
+    ) -> ListSessionsResponse:
+        path = _build_query(f"{_vm_path(self._vm.id)}/sessions", {
+            "cursor": cursor, "limit": limit, "state": state,
+        })
+        payload = self._vm._client._request("GET", path, base_url=self._vm.base_url)
+        return ListSessionsResponse(
+            sessions=[_session_info(item) for item in payload.get("sessions", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get(self, session_id: str) -> Session:
+        payload = self._vm._client._request(
+            "GET",
+            f"{_vm_path(self._vm.id)}/sessions/{_segment(session_id)}",
+            base_url=self._vm.base_url,
+        )
+        return _session_info(payload)
+
+    def create(
+        self,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> Session:
+        payload = self._vm._client._request(
+            "POST",
+            f"{_vm_path(self._vm.id)}/sessions",
+            {"env": env, "cwd": cwd},
+            base_url=self._vm.base_url,
+        )
+        return _session_info(payload)
+
+    def delete(self, session_id: str) -> DeleteSessionResponse:
+        payload = self._vm._client._request(
+            "DELETE",
+            f"{_vm_path(self._vm.id)}/sessions/{_segment(session_id)}",
+            base_url=self._vm.base_url,
+        )
+        return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
+
+
+class Tunnels:
+    def __init__(self, vm: Computer) -> None:
+        self._vm = vm
+
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        state: str | None = None,
+    ) -> ListTunnelsResponse:
+        path = _build_query(f"{_vm_path(self._vm.id)}/tunnels", {
+            "cursor": cursor, "limit": limit, "state": state,
+        })
+        payload = self._vm._client._request("GET", path, base_url=self._vm.base_url)
+        return ListTunnelsResponse(
+            tunnels=[_tunnel(item) for item in payload.get("tunnels", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get(self, port: int) -> Tunnel:
+        payload = self._vm._client._request(
+            "GET",
+            f"{_vm_path(self._vm.id)}/tunnels/{port}",
+            base_url=self._vm.base_url,
+        )
+        return _tunnel(payload)
+
+    def delete(self, port: int) -> DeleteTunnelResponse:
+        payload = self._vm._client._request(
+            "DELETE",
+            f"{_vm_path(self._vm.id)}/tunnels/{port}",
+            base_url=self._vm.base_url,
+        )
+        return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
+
+
+class Syncs:
     def __init__(self, vm: Computer) -> None:
         self._vm = vm
         self._client = vm._client
 
+    def list(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        filesystem_id: str | None = None,
+    ) -> ListSyncsResponse:
+        path = _build_query(f"{_vm_path(self._vm.id)}/syncs", {
+            "cursor": cursor, "limit": limit, "filesystem_id": filesystem_id,
+        })
+        payload = self._client._request("GET", path, base_url=self._vm.base_url)
+        return ListSyncsResponse(
+            syncs=[_sync(item) for item in payload.get("syncs", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get(self, sync_id: str) -> SyncObject:
+        payload = self._client._request(
+            "GET",
+            f"{_vm_path(self._vm.id)}/syncs/{_segment(sync_id)}",
+            base_url=self._vm.base_url,
+        )
+        return _sync(payload)
+
+    def create(
+        self,
+        *,
+        path: str,
+        filesystem_id: str | None = None,
+        filesystem_name: str | None = None,
+        create_if_missing: bool = False,
+    ) -> SyncObject:
+        """Ensure a Filesystem exists and bind-mount it into this VM at ``path``.
+
+        Bidirectional by virtue of being a mount — there is no separate
+        sync-direction parameter.
+        """
+        payload = self._client._request(
+            "POST",
+            f"{_vm_path(self._vm.id)}/syncs",
+            {
+                "path": path,
+                "filesystem_id": filesystem_id,
+                "filesystem_name": filesystem_name,
+                "create_if_missing": create_if_missing,
+            },
+            base_url=self._vm.base_url,
+        )
+        return _sync(payload)
+
+    def delete(self, sync_id: str) -> DeleteSyncResponse:
+        payload = self._client._request(
+            "DELETE",
+            f"{_vm_path(self._vm.id)}/syncs/{_segment(sync_id)}",
+            base_url=self._vm.base_url,
+        )
+        return DeleteSyncResponse(deleted=bool(payload.get("deleted")))
+
     def read_file(self, path: str) -> bytes:
-        payload = self._client._request("POST", self._path(), {"op": "read", "path": path}, base_url=self._vm.base_url)
+        payload = self._client._request(
+            "POST",
+            f"{_vm_path(self._vm.id)}/syncs/read",
+            {"path": path},
+            base_url=self._vm.base_url,
+        )
         if "content" in payload:
             return _decode_bytes(str(payload.get("content", "")), str(payload.get("encoding", "utf-8")))
 
@@ -414,9 +834,6 @@ class Sync:
             self._write_inline(path, payload)
         else:
             self._write_presigned(path, payload)
-
-    def _path(self) -> str:
-        return f"{_vm_path(self._vm.id)}/sync"
 
     def _write_inline(self, path: str, data: bytes) -> None:
         result = self._send_one_write({
@@ -472,7 +889,12 @@ class Sync:
         last_error: dict[str, str] | None = None
 
         for attempt in range(self._client._retry.attempts):
-            payload = self._client._request("POST", self._path(), {"op": "write", "writes": [entry]}, base_url=self._vm.base_url)
+            payload = self._client._request(
+                "POST",
+                f"{_vm_path(self._vm.id)}/syncs/write",
+                {"writes": [entry]},
+                base_url=self._vm.base_url,
+            )
             results = payload.get("results")
             if not isinstance(results, list) or not results:
                 raise ArkerError("internal", "write response missing results[0]", 200)
@@ -502,6 +924,9 @@ class Sync:
         )
 
 
+# ── Helpers ─────────────────────────────────────────────────────────
+
+
 def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) -> tuple[int, bytes]:
     req = urllib.request.Request(url, method=method, headers=headers, data=data)
     try:
@@ -509,6 +934,12 @@ def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) ->
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
+
+
+def _build_query(path: str, params: dict[str, Any]) -> str:
+    pairs = [(k, str(v)) for k, v in params.items() if v is not None]
+    qs = urllib.parse.urlencode(pairs)
+    return f"{path}?{qs}" if qs else path
 
 
 def _env(name: str) -> str | None:
@@ -530,17 +961,39 @@ def _normalize_region(region: str) -> str:
     return normalized
 
 
-def _region_base_url(region: str, burst: bool) -> str:
+def _compute_base_url(provider: str, region: str) -> str:
+    """The subdomain encodes provider+region.
+
+    Today both ``aws-{region}.arker.ai`` and ``aws-burst-{region}.arker.ai``
+    still resolve through the CF Worker (which dispatches based on hostname),
+    so the path includes ``/api``. When DNS is split to bypass the worker on
+    the compute subdomains, drop ``/api`` here.
+    """
     normalized = _normalize_region(region)
-    if not burst:
-        return f"https://{normalized}.arker.ai/api"
-    return f"https://{_burst_region_host(normalized)}.arker.ai/api"
+    return f"https://{provider}-{normalized}.arker.ai/api"
 
 
-def _burst_region_host(region: str) -> str:
-    if region.startswith("aws-"):
-        return f"aws-burst-{region[len('aws-'):]}"
-    return f"{region}-burst"
+def _parse_provider(value: str | None) -> str:
+    if not value:
+        return DEFAULT_PROVIDER
+    trimmed = value.strip().lower()
+    if trimmed in ("aws-burst", "burst"):
+        return "aws-burst"
+    return "aws"
+
+
+def _split_region(value: str | None) -> tuple[str | None, str | None]:
+    """Accept either ``us-west-2`` or the legacy combined form
+    ``aws-us-west-2`` / ``aws-burst-us-west-2``.
+    """
+    if not value:
+        return None, None
+    normalized = value.strip().lower()
+    if normalized.startswith("aws-burst-"):
+        return normalized[len("aws-burst-"):], "aws-burst"
+    if normalized.startswith("aws-"):
+        return normalized[len("aws-"):], "aws"
+    return normalized, None
 
 
 def _is_burst_ref(ref: str) -> bool:
@@ -638,64 +1091,77 @@ def _assert_write_complete(result: dict[str, Any], context: str) -> None:
     raise ArkerError("internal", f"{context} did not complete", 200)
 
 
-def _session_info(payload: dict[str, Any]) -> SessionInfo:
-    return SessionInfo(
+def _session_info(payload: dict[str, Any]) -> Session:
+    env_val = payload.get("env") if isinstance(payload.get("env"), dict) else None
+    return Session(
         session_id=str(payload["session_id"]),
         state=str(payload["state"]),
         cwd=str(payload["cwd"]),
+        session_idx=int(payload.get("session_idx") or 0),
+        env=env_val,
+        started_at=_optional_str(payload.get("started_at")),
     )
 
 
-def _golden_info(payload: dict[str, Any]) -> GoldenInfo:
-    return GoldenInfo(
+def _tunnel(payload: dict[str, Any]) -> Tunnel:
+    return Tunnel(
         vm_id=str(payload["vm_id"]),
+        port=int(payload["port"]),
+        visibility=str(payload["visibility"]),
+        protocol=str(payload["protocol"]),
+        state=str(payload["state"]),
+        run_id=_optional_str(payload.get("run_id")),
+        url=_optional_str(payload.get("url")),
+        message=_optional_str(payload.get("message")),
+        started_at=_optional_str(payload.get("started_at")),
+    )
+
+
+def _filesystem(payload: dict[str, Any]) -> Filesystem:
+    return Filesystem(
+        filesystem_id=str(payload["filesystem_id"]),
         name=str(payload["name"]),
-        source_golden=str(payload["source_golden"]),
-        memory_mib=_optional_int(payload.get("memory_mib")),
-        vcpu_count=_optional_int(payload.get("vcpu_count")),
-        disk_mib=_optional_int(payload.get("disk_mib")),
+        owner_org_id=str(payload["owner_org_id"]),
+        created_at=str(payload["created_at"]),
+        size_bytes=_optional_int(payload.get("size_bytes")),
     )
 
 
-def _vm_info(payload: dict[str, Any]) -> VmInfo:
-    return VmInfo(
+def _sync(payload: dict[str, Any]) -> SyncObject:
+    return SyncObject(
+        sync_id=str(payload["sync_id"]),
         vm_id=str(payload["vm_id"]),
-        owner_id=str(payload["owner_id"]),
+        filesystem_id=str(payload["filesystem_id"]),
+        path=str(payload["path"]),
         created_at=str(payload["created_at"]),
+    )
+
+
+def _vm_info(payload: dict[str, Any]) -> Vm:
+    return Vm(
+        vm_id=str(payload["vm_id"]),
+        owner_org_id=str(payload["owner_org_id"]),
+        created_at=str(payload["created_at"]),
+        public=bool(payload.get("public", False)),
         state=str(payload["state"]),
         sessions=[_session_info(item) for item in payload.get("sessions", [])],
         name=_optional_str(payload.get("name")),
-        source_golden=_optional_str(payload.get("source_golden")),
-        last_activity=_optional_str(payload.get("last_activity")),
+        root_source_vm_id=_optional_str(payload.get("root_source_vm_id")),
+        root_source_vm_name=_optional_str(payload.get("root_source_vm_name")),
+        region=_optional_str(payload.get("region")),
+        provider=_optional_str(payload.get("provider")),
+        started_at=_optional_str(payload.get("started_at")),
         vcpu_count=_optional_int(payload.get("vcpu_count")),
         memory_mib=_optional_int(payload.get("memory_mib")),
         disk_mib=_optional_int(payload.get("disk_mib")),
-    )
-
-
-def _fork_response(payload: dict[str, Any]) -> ForkVmResponse:
-    return ForkVmResponse(
-        vm_id=str(payload["vm_id"]),
-        owner_id=str(payload["owner_id"]),
-        created_at=str(payload["created_at"]),
-        sessions=[_session_info(item) for item in payload.get("sessions", [])],
-        ssh_private_key=_optional_str(payload.get("ssh_private_key")),
-        tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
+        worker_id=_optional_str(payload.get("worker_id")),
+        tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
         network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
     )
 
 
-def _fork_vm_id(payload: dict[str, Any]) -> str:
-    value = payload.get("vm_id") or payload.get("id")
-    if not isinstance(value, str) or not value:
-        raise ArkerError("internal", "fork response.vm_id must be a non-empty string", 200)
-    return value
-
-
 def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(payload.get("stdout"), str):
-        if payload.get("completed") is not True:
-            raise ArkerError("internal", "completed run response must have completed=true", 200)
         return CompletedRunResult(
             stdout=_decode_bytes(str(payload["stdout"]), str(payload["stdout_encoding"])),
             stdout_encoding=str(payload["stdout_encoding"]),
@@ -707,33 +1173,42 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(payload.get("run_id"), str):
         return BackgroundRunResult(
             run_id=str(payload["run_id"]),
-            completed=bool(payload.get("completed")),
-            tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
+            tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
             network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
-        )
-
-    if payload.get("pty") is True:
-        return PtyRunResult(
-            session_id=str(payload["session_id"]),
-            ws_url=str(payload["ws_url"]),
         )
 
     raise ArkerError("internal", "unrecognized run response shape", 200)
 
 
-def _run_status_response(payload: dict[str, Any]) -> RunStatusResponse:
+def _run_status_response(payload: dict[str, Any]) -> Run:
     retry_count = payload.get("retry_count")
-    return RunStatusResponse(
+    return Run(
         run_id=str(payload["run_id"]),
+        state=str(payload["state"]),
+        started_at=str(payload["started_at"]),
         stdout=_decode_bytes(str(payload["stdout"]), str(payload["stdout_encoding"])),
         stdout_encoding=str(payload["stdout_encoding"]),
         stderr=_decode_bytes(str(payload["stderr"]), str(payload["stderr_encoding"])),
         stderr_encoding=str(payload["stderr_encoding"]),
+        tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
         exit_code=_optional_int(payload.get("exit_code")),
-        completed=bool(payload.get("completed")),
-        tunnels=payload.get("tunnels", []) if isinstance(payload.get("tunnels", []), list) else [],
+        session_id=_optional_str(payload.get("session_id")),
+        command=_optional_str(payload.get("command")),
+        completed_at=_optional_str(payload.get("completed_at")),
         network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
         retry_count=int(retry_count) if isinstance(retry_count, int) else 0,
+    )
+
+
+def _run_summary(payload: dict[str, Any]) -> RunSummary:
+    return RunSummary(
+        run_id=str(payload["run_id"]),
+        state=str(payload["state"]),
+        started_at=str(payload["started_at"]),
+        exit_code=_optional_int(payload.get("exit_code")),
+        session_id=_optional_str(payload.get("session_id")),
+        command=_optional_str(payload.get("command")),
+        completed_at=_optional_str(payload.get("completed_at")),
     )
 
 
@@ -743,3 +1218,6 @@ def _optional_str(value: Any) -> str | None:
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if isinstance(value, int) else None
+
+# Backwards-compat: previously RunStatusResponse.
+RunStatusResponse = Run

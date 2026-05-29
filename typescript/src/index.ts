@@ -11,6 +11,15 @@ type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"]
 
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
+/**
+ * Org id for the "Arker" org — the org that owns the public golden VMs
+ * (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
+ * `sourceOrgId` to fork a public golden:
+ *
+ *     arker.fork({ sourceVmName: "ubuntu-full", sourceOrgId: ARKER_ORG_ID })
+ */
+export const ARKER_ORG_ID = "ArkerHQ";
+
 const DEFAULT_RETRY_ATTEMPTS = 4;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
@@ -21,6 +30,9 @@ const RETRYABLE_CODES = new Set(["routing_unavailable", "unavailable", "temporar
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
+const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
+const DEFAULT_PROVIDER: "aws" | "aws-burst" = "aws";
+const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
 const BURST_SOURCE_REFS = new Set(["arkuntu"]);
 const BURST_VM_ID = /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$/;
 
@@ -45,53 +57,120 @@ export interface RetryOptions {
 
 export interface ArkerOptions {
   apiKey?: string;
-  baseUrl?: string;
-  burstBaseUrl?: string;
-  fetch?: FetchLike;
+  /** Region (e.g. `"us-west-2"`). Combined with `provider` to build the
+   * compute endpoint. Back-compat: accepts the legacy combined form
+   * `"aws-us-west-2"`. */
   region?: string;
+  /** Provider for compute calls. Defaults to `"aws"` (arkerd-managed
+   * VMs). Use `"aws-burst"` to target the Lambda burst backend
+   * directly. Has no effect on the burst-classified routing — a fork
+   * of `arkuntu` in the Arker org still goes to burst regardless. */
+  provider?: "aws" | "aws-burst";
+  /** Override the compute base URL (e.g. for internal / dev targets).
+   * If set, `provider` + `region` are ignored for compute. */
+  baseUrl?: string;
+  /** Override the burst compute base URL. */
+  burstBaseUrl?: string;
+  /** Override the control-plane URL — the CF Worker that owns
+   * administrative endpoints like `GET /v1/vms` (cross-provider list)
+   * and `/v1/filesystems`. Default `https://arker.ai/api`. */
+  controlBaseUrl?: string;
+  fetch?: FetchLike;
   retry?: RetryOptions | false;
 }
 
+// ── State enums ────────────────────────────────────────────────────
+export type VmState = ApiSchema<"VmState">;
+export type SessionState = ApiSchema<"SessionState">;
+export type RunState = ApiSchema<"RunState">;
+export type TunnelState = ApiSchema<"TunnelState">;
+export type ResourceKind = ApiSchema<"ResourceKind">;
+export type ErrorCode = ApiSchema<"ErrorCode">;
+
+// ── Core resources ─────────────────────────────────────────────────
 export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
 export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
 export type ForkRequest = ApiSchema<"ForkRequest">;
 export type ForkOptions = ForkRequest;
-export type SessionInfo = ApiSchema<"SessionInfo">;
-export type GoldenInfo = ApiSchema<"GoldenInfo">;
-export type ListGoldensResponse = ApiSchema<"ListGoldensResponse">;
-export type VmInfo = ApiSchema<"VmInfo">;
+export type Session = ApiSchema<"Session">;
+export type Vm = ApiSchema<"Vm">;
 export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
 export type ListSessionsResponse = ApiSchema<"ListSessionsResponse">;
-export type VmSummary = VmInfo;
-export type VmList = ListVmsResponse;
-export type ForkVmResponse = ApiSchema<"ForkVmResponse">;
 export type DeleteVmResponse = ApiSchema<"DeleteVmResponse">;
 export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
-export type MountRequest = ApiSchema<"MountRequest">;
+
+// ── Filesystems ────────────────────────────────────────────────────
+export type Filesystem = ApiSchema<"Filesystem">;
+export type ListFilesystemsResponse = ApiSchema<"ListFilesystemsResponse">;
+export type DeleteFilesystemResponse = ApiSchema<"DeleteFilesystemResponse">;
+
+// ── Syncs ──────────────────────────────────────────────────────────
+export type SyncObject = ApiSchema<"Sync">;
+export type ListSyncsResponse = ApiSchema<"ListSyncsResponse">;
+export type DeleteSyncResponse = ApiSchema<"DeleteSyncResponse">;
+export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
+export type SyncReadRequest = ApiSchema<"SyncReadRequest">;
+export type SyncWriteRequest = ApiSchema<"SyncWriteRequest">;
+export type SyncReadResponse = ApiSchema<"SyncReadResponse">;
+export type SyncReadInlineResponse = ApiSchema<"SyncReadInlineResponse">;
+export type SyncReadPresignedResponse = ApiSchema<"SyncReadPresignedResponse">;
+export type SyncWriteResponse = ApiSchema<"SyncWriteResponse">;
+export type SyncWriteResult = ApiSchema<"SyncWriteResult">;
+export type SyncChunkWriteResult = ApiSchema<"SyncChunkWriteResult">;
+export type SyncPresignedWriteRequestResult = ApiSchema<"SyncPresignedWriteRequestResult">;
+export type SyncCommitWriteResult = ApiSchema<"SyncCommitWriteResult">;
+export type SyncByteRange = ApiSchema<"SyncByteRange">;
+
+// ── Runs ───────────────────────────────────────────────────────────
 export type RunRequest = ApiSchema<"RunRequest">;
-export type RunOptions = Omit<RunRequest, "command"> & {
+export type RunOptions = Partial<Omit<RunRequest, "command">> & {
   /**
-   * Optional idempotency key for retrying POST /v1/vms/{id}/run.
-   * Sent as the `Idempotency-Key` HTTP header. Retries with the same
-   * key and the same semantic request return the original run; a
-   * different semantic request under the same key returns
-   * ArkerError code "conflict" with the original run_id.
+   * Optional idempotency key for retrying the run. Sent as the
+   * `Idempotency-Key` HTTP header.
    */
   idempotencyKey?: string;
 };
-export type RunInboundPortRequest = ApiSchema<"RunInboundPortRequest">;
-export type RunNetworkRequest = ApiSchema<"RunNetworkRequest">;
-export type RunTunnelStatus = ApiSchema<"RunTunnelStatus">;
-export type RunNetworkStatus = ApiSchema<"RunNetworkStatus">;
+export type InboundPortRequest = ApiSchema<"InboundPortRequest">;
+export type NetworkRequest = ApiSchema<"NetworkRequest">;
+export type Tunnel = ApiSchema<"Tunnel">;
+export type ListTunnelsResponse = ApiSchema<"ListTunnelsResponse">;
+export type DeleteTunnelResponse = ApiSchema<"DeleteTunnelResponse">;
+export type NetworkStatus = ApiSchema<"NetworkStatus">;
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
-export type PtyRunResponse = ApiSchema<"PtyRunResponse">;
-export type RawRunResponse = RunResponse;
+export type Run = ApiSchema<"Run">;
+export type RunSummary = ApiSchema<"RunSummary">;
+export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
+export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
+// ── Sessions / resize ──────────────────────────────────────────────
+export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
+export type ResizeRequest = ApiSchema<"ResizeRequest">;
+export type ResizeResponse = ApiSchema<"ResizeResponse">;
+
+// ── Errors ─────────────────────────────────────────────────────────
+export type ErrorResponse = ApiSchema<"ErrorResponse">;
+
+// ── Back-compat aliases (deprecated) ───────────────────────────────
+/** @deprecated Use `Vm`. */
+export type VmInfo = Vm;
+/** @deprecated Use `Session`. */
+export type SessionInfo = Session;
+/** @deprecated Use `Run`. */
+export type RunStatusResponse = Run;
+/** @deprecated Use `NetworkRequest`. */
+export type RunNetworkRequest = NetworkRequest;
+/** @deprecated Use `NetworkStatus`. */
+export type RunNetworkStatus = NetworkStatus;
+/** @deprecated Use `InboundPortRequest`. */
+export type RunInboundPortRequest = InboundPortRequest;
+/** @deprecated Use `Tunnel`. */
+export type RunTunnelStatus = Tunnel;
+
+// ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
   type: "completed";
-  completed: true;
   stdout: Uint8Array;
   stdoutEncoding: string;
   stderr: Uint8Array;
@@ -101,40 +180,12 @@ export interface CompletedRunResult {
 
 export interface BackgroundRunResult {
   type: "background";
-  completed: boolean;
   runId: string;
-  tunnels: RunTunnelStatus[];
-  network?: RunNetworkStatus | null;
+  tunnels: Tunnel[];
+  network?: NetworkStatus | null;
 }
 
-export interface PtyRunResult {
-  type: "pty";
-  pty: true;
-  sessionId: string;
-  wsUrl: string;
-}
-
-export type RunResult = CompletedRunResult | BackgroundRunResult | PtyRunResult;
-
-export type RunStatusResponse = ApiSchema<"RunStatusResponse">;
-export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
-export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
-export type ResizePtyRequest = ApiSchema<"ResizePtyRequest">;
-export type ResizePtyResponse = ApiSchema<"ResizePtyResponse">;
-export type ResizeRequest = ApiSchema<"ResizeRequest">;
-export type ResizeResponse = ApiSchema<"ResizeResponse">;
-export type SyncRequest = ApiSchema<"SyncRequest">;
-export type SyncResponse = ApiSchema<"SyncResponse">;
-export type SyncReadResponse = ApiSchema<"SyncReadResponse">;
-export type SyncReadInlineResponse = ApiSchema<"SyncReadInlineResponse">;
-export type SyncReadPresignedResponse = ApiSchema<"SyncReadPresignedResponse">;
-export type SyncByteRange = ApiSchema<"SyncByteRange">;
-export type ErrorResponse = ApiSchema<"ErrorResponse">;
-export type SyncChunkWriteResult = ApiSchema<"SyncChunkWriteResult">;
-export type SyncPresignedWriteRequestResult = ApiSchema<"SyncPresignedWriteRequestResult">;
-export type SyncCommitWriteResult = ApiSchema<"SyncCommitWriteResult">;
-export type SyncWriteResult = ApiSchema<"SyncWriteResult">;
-export type SyncWriteResponse = ApiSchema<"SyncWriteResponse">;
+export type RunResult = CompletedRunResult | BackgroundRunResult;
 
 interface RetryConfig {
   attempts: number;
@@ -160,10 +211,32 @@ export class ArkerError extends Error {
   }
 }
 
+/** Source for `Arker.fork()`. Exactly one of `sourceVmId` or
+ * `sourceVmName` must be set. When `sourceVmName` is set,
+ * `sourceOrgId` selects which org to look the name up in (defaults
+ * server-side to the caller's org; pass `ARKER_ORG_ID` to fork the
+ * public goldens like `"arkuntu"` / `"ubuntu"`).
+ *
+ * Distinct from the new VM's `name`, which is the *destination* name. */
+export interface ForkSource {
+  sourceVmId?: string;
+  sourceVmName?: string;
+  sourceOrgId?: string;
+}
+
 export class Arker {
+  /** Compute base URL for `provider` + `region` — used for fork/run/
+   * per-VM ops. SDK calls go straight to this host, skipping the CF
+   * Worker control plane. */
   readonly baseUrl: string;
+  /** Compute base URL for the burst provider in this region. */
   readonly burstBaseUrl?: string;
+  /** CF Worker control-plane URL — used for cross-cutting admin calls
+   * like list-VMs and filesystems. */
+  readonly controlBaseUrl: string;
   readonly region?: string;
+  readonly provider: "aws" | "aws-burst";
+  readonly filesystems: Filesystems;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryConfig;
@@ -171,9 +244,15 @@ export class Arker {
   constructor(opts: ArkerOptions = {}) {
     const apiKey = opts.apiKey ?? env("ARKER_API_KEY") ?? env("AUTH_KEY");
     const explicitBaseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
-    const region = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
-    const baseUrl = explicitBaseUrl ?? (region ? regionBaseUrl(region, false) : undefined);
-    const burstBaseUrl = opts.burstBaseUrl ?? env("ARKER_BURST_BASE_URL") ?? (region ? regionBaseUrl(region, true) : undefined);
+    const rawRegion = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
+    const rawProvider = (opts.provider as string | undefined) ?? env(DEFAULT_PROVIDER_ENV) ?? DEFAULT_PROVIDER;
+    const provider = parseProvider(rawProvider);
+    const { region, providerFromRegion } = splitRegion(rawRegion);
+    const effectiveProvider = providerFromRegion ?? provider;
+
+    const baseUrl = explicitBaseUrl ?? (region ? computeBaseUrl(effectiveProvider, region) : undefined);
+    const burstBaseUrl = opts.burstBaseUrl ?? env("ARKER_BURST_BASE_URL") ?? (region ? computeBaseUrl("aws-burst", region) : undefined);
+    const controlBaseUrl = opts.controlBaseUrl ?? env("ARKER_CONTROL_BASE_URL") ?? DEFAULT_CONTROL_BASE_URL;
 
     if (!apiKey) throw new Error("apiKey is required; pass apiKey or set ARKER_API_KEY");
     if (!baseUrl) throw new Error("region or baseUrl is required; pass region, baseUrl, ARKER_REGION, or ARKER_BASE_URL");
@@ -181,26 +260,100 @@ export class Arker {
     this.apiKey = apiKey;
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.burstBaseUrl = burstBaseUrl ? normalizeBaseUrl(burstBaseUrl) : undefined;
+    this.controlBaseUrl = normalizeBaseUrl(controlBaseUrl);
     this.region = region ? normalizeRegion(region) : undefined;
+    this.provider = effectiveProvider;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retry = normalizeRetry(opts.retry);
+    this.filesystems = new Filesystems(this);
 
     if (!this.fetchImpl) throw new Error("fetch is required in this runtime");
   }
 
+  /**
+   * Address an existing VM. Doesn't make any network calls; returns a
+   * lightweight handle.
+   */
   vm(vmId: string): Computer {
     return new Computer(this, vmId, this._baseUrlFor(vmId));
   }
 
-  async goldens(): Promise<ListGoldensResponse> {
-    return this._request("GET", "/v1/goldens");
+  /**
+   * Create a new VM by forking.
+   *
+   *     fork({ sourceVmId: "vm_abc..." })
+   *     fork({ sourceVmName: "base" })                            // caller's org
+   *     fork({ sourceVmName: "arkuntu", sourceOrgId: ARKER_ORG_ID })
+   *
+   * Exactly one of `sourceVmId` or `sourceVmName` must be set. When
+   * `sourceVmName` is used, `sourceOrgId` selects which org to look it
+   * up in; without it the server defaults to the caller's org. Forking
+   * a VM in another org requires that VM to be `public: true`. The new
+   * VM's name (in the caller's org) is passed as `name`.
+   */
+  async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<Computer> {
+    if (!source.sourceVmId && !source.sourceVmName) {
+      throw new ArkerError(
+        "bad_request",
+        "fork requires sourceVmId or sourceVmName",
+        400,
+      );
+    }
+    if (source.sourceVmId && source.sourceVmName) {
+      throw new ArkerError(
+        "bad_request",
+        "fork: pass only one of sourceVmId or sourceVmName",
+        400,
+      );
+    }
+    const body: ForkRequest = {
+      source_vm_id: source.sourceVmId ?? null,
+      source_vm_name: source.sourceVmName ?? null,
+      source_org_id: source.sourceOrgId ?? null,
+      name: source.name ?? null,
+      public: source.public ?? null,
+      network: source.network ?? null,
+      tunnels: source.tunnels ?? null,
+      disk: source.disk ?? true,
+      vcpu_count: source.vcpu_count ?? null,
+      memory_mib: source.memory_mib ?? null,
+      max_memory_mib: source.max_memory_mib ?? null,
+      disk_mib: source.disk_mib ?? null,
+      durable: source.durable ?? null,
+    };
+    // Forks that target a burst-pool name in the Arker org go to the
+    // burst backend (ps-lambda); everything else to arkerd.
+    const useBurst =
+      source.sourceOrgId === ARKER_ORG_ID &&
+      source.sourceVmName !== undefined &&
+      isBurstRef(source.sourceVmName);
+    const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
+    const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
+    return new Computer(this, vm.vm_id, this._baseUrlFor(vm.vm_id));
   }
 
-  async list(): Promise<ListVmsResponse> {
-    return this._request("GET", "/v1/vms");
+  /**
+   * List VMs visible to the authenticated caller. **Admin call** —
+   * goes through the control plane (`controlBaseUrl`) so it can
+   * aggregate across providers and regions. Pass `?provider=` /
+   * `?region=` to narrow.
+   */
+  async list(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<ListVmsResponse> {
+    return this._request("GET", buildQuery("/v1/vms", {
+      cursor: opts.cursor,
+      limit: opts.limit,
+      region: opts.region,
+      provider: opts.provider,
+      state: opts.state,
+      source_org_id: opts.sourceOrgId,
+      started_after: opts.startedAfter,
+      started_before: opts.startedBefore,
+    }), undefined, this.controlBaseUrl);
   }
 
-  async get(vmId: string): Promise<VmInfo> {
+  /** Compute call — goes direct to the backend hosting this VM (no
+   * control-plane hop). */
+  async get(vmId: string): Promise<Vm> {
     return this._request("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
   }
 
@@ -291,10 +444,59 @@ export class Arker {
   }
 }
 
+export interface ListOpts {
+  cursor?: string;
+  limit?: number;
+}
+
+export class Filesystems {
+  /** @internal */
+  readonly _client: Arker;
+
+  constructor(client: Arker) {
+    this._client = client;
+  }
+
+  /** Admin call — goes through the control plane. */
+  async list(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
+    return this._client._request(
+      "GET",
+      buildQuery("/v1/filesystems", {
+        cursor: opts.cursor,
+        limit: opts.limit,
+        name_prefix: opts.namePrefix,
+      }),
+      undefined,
+      this._client.controlBaseUrl,
+    );
+  }
+
+  async get(filesystemId: string): Promise<Filesystem> {
+    return this._client._request(
+      "GET",
+      `/v1/filesystems/${pathSegment(filesystemId)}`,
+      undefined,
+      this._client.controlBaseUrl,
+    );
+  }
+
+  async delete(filesystemId: string): Promise<DeleteFilesystemResponse> {
+    return this._client._request(
+      "DELETE",
+      `/v1/filesystems/${pathSegment(filesystemId)}`,
+      undefined,
+      this._client.controlBaseUrl,
+    );
+  }
+}
+
 export class Computer {
   readonly id: string;
   readonly baseUrl: string;
-  readonly sync: Sync;
+  readonly syncs: Syncs;
+  readonly tunnels: Tunnels;
+  readonly runs: Runs;
+  readonly sessions: Sessions;
   /** @internal */
   readonly _client: Arker;
 
@@ -302,17 +504,29 @@ export class Computer {
     this._client = client;
     this.id = vmId;
     this.baseUrl = baseUrl;
-    this.sync = new Sync(this);
+    this.syncs = new Syncs(this);
+    this.tunnels = new Tunnels(this);
+    this.runs = new Runs(this);
+    this.sessions = new Sessions(this);
   }
 
-  async fork(request: ForkOptions = {}): Promise<Computer> {
-    const response = await this._client._request<ForkVmResponse & { id?: string }>(
-      "POST",
-      `${vmPath(this.id)}/fork`,
-      request,
-      this.baseUrl,
-    );
-    return new Computer(this._client, stringField(response.vm_id ?? response.id, "fork response.vm_id"), this.baseUrl);
+  /** Refresh and return this VM's current state. */
+  async get(): Promise<Vm> {
+    return this._client._request("GET", vmPath(this.id), undefined, this.baseUrl);
+  }
+
+  /**
+   * @deprecated Use `Arker.fork({ sourceVmId: this.id, ... })`.
+   * Kept for back-compat with older user code that called `.fork()` on
+   * a Computer instance.
+   */
+  async fork(request: ForkOptions = {} as ForkOptions): Promise<Computer> {
+    const merged: ForkRequest = {
+      ...request,
+      source_vm_id: request.source_vm_id ?? this.id,
+    } as ForkRequest;
+    const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
+    return new Computer(this._client, vm.vm_id, this._client._baseUrlFor(vm.vm_id));
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
@@ -320,7 +534,7 @@ export class Computer {
     const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
     const response = await this._client._request<unknown>(
       "POST",
-      `${vmPath(this.id)}/run`,
+      `${vmPath(this.id)}/runs`,
       { ...body, command },
       this.baseUrl,
       headers,
@@ -328,12 +542,8 @@ export class Computer {
     return parseRunResponse(response);
   }
 
-  async runStatus(runId: string): Promise<RunStatusResponse> {
-    return this._client._request("GET", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
-  }
-
-  async cancelRun(runId: string): Promise<CancelRunResponse> {
-    return this._client._request("DELETE", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
+  async resize(request: ResizeRequest): Promise<ResizeResponse> {
+    return this._client._request("POST", `${vmPath(this.id)}/resize`, request, this.baseUrl);
   }
 
   async delete(): Promise<DeleteVmResponse> {
@@ -341,7 +551,7 @@ export class Computer {
   }
 }
 
-export class Sync {
+export class Runs {
   /** @internal */
   readonly _vm: Computer;
 
@@ -349,16 +559,136 @@ export class Sync {
     this._vm = vm;
   }
 
+  async list(opts: ListOpts & { state?: RunState; startedAfter?: string; startedBefore?: string; completedAfter?: string } = {}): Promise<ListRunsResponse> {
+    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/runs`, {
+      cursor: opts.cursor,
+      limit: opts.limit,
+      state: opts.state,
+      started_after: opts.startedAfter,
+      started_before: opts.startedBefore,
+      completed_after: opts.completedAfter,
+    }), undefined, this._vm.baseUrl);
+  }
+
+  async get(runId: string): Promise<Run> {
+    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/runs/${pathSegment(runId)}`, undefined, this._vm.baseUrl);
+  }
+
+  async cancel(runId: string): Promise<CancelRunResponse> {
+    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/runs/${pathSegment(runId)}`, undefined, this._vm.baseUrl);
+  }
+}
+
+export class Sessions {
+  /** @internal */
+  readonly _vm: Computer;
+
+  constructor(vm: Computer) {
+    this._vm = vm;
+  }
+
+  async list(opts: ListOpts & { state?: SessionState } = {}): Promise<ListSessionsResponse> {
+    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/sessions`, {
+      cursor: opts.cursor,
+      limit: opts.limit,
+      state: opts.state,
+    }), undefined, this._vm.baseUrl);
+  }
+
+  async get(sessionId: string): Promise<Session> {
+    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/sessions/${pathSegment(sessionId)}`, undefined, this._vm.baseUrl);
+  }
+
+  async create(request: CreateSessionRequest = {}): Promise<Session> {
+    return this._vm._client._request("POST", `${vmPath(this._vm.id)}/sessions`, request, this._vm.baseUrl);
+  }
+
+  async delete(sessionId: string): Promise<DeleteSessionResponse> {
+    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/sessions/${pathSegment(sessionId)}`, undefined, this._vm.baseUrl);
+  }
+}
+
+export class Tunnels {
+  /** @internal */
+  readonly _vm: Computer;
+
+  constructor(vm: Computer) {
+    this._vm = vm;
+  }
+
+  async list(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
+    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/tunnels`, {
+      cursor: opts.cursor,
+      limit: opts.limit,
+      state: opts.state,
+    }), undefined, this._vm.baseUrl);
+  }
+
+  async get(port: number): Promise<Tunnel> {
+    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/tunnels/${port}`, undefined, this._vm.baseUrl);
+  }
+
+  async delete(port: number): Promise<DeleteTunnelResponse> {
+    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/tunnels/${port}`, undefined, this._vm.baseUrl);
+  }
+}
+
+export class Syncs {
+  /** @internal */
+  readonly _vm: Computer;
+
+  constructor(vm: Computer) {
+    this._vm = vm;
+  }
+
+  async list(opts: ListOpts & { filesystemId?: string } = {}): Promise<ListSyncsResponse> {
+    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/syncs`, {
+      cursor: opts.cursor,
+      limit: opts.limit,
+      filesystem_id: opts.filesystemId,
+    }), undefined, this._vm.baseUrl);
+  }
+
+  async get(syncId: string): Promise<SyncObject> {
+    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/syncs/${pathSegment(syncId)}`, undefined, this._vm.baseUrl);
+  }
+
+  /**
+   * Ensure a `Filesystem` exists (creating one if requested) and
+   * bind-mount it into this VM at `path`. Bidirectional by virtue of
+   * being a mount — there is no separate sync-direction parameter.
+   */
+  async create(request: {
+    path: string;
+    filesystemId?: string;
+    filesystemName?: string;
+    createIfMissing?: boolean;
+  }): Promise<SyncObject> {
+    return this._vm._client._request<SyncObject>(
+      "POST",
+      `${vmPath(this._vm.id)}/syncs`,
+      {
+        path: request.path,
+        filesystem_id: request.filesystemId,
+        filesystem_name: request.filesystemName,
+        create_if_missing: request.createIfMissing ?? false,
+      },
+      this._vm.baseUrl,
+    );
+  }
+
+  async delete(syncId: string): Promise<DeleteSyncResponse> {
+    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/syncs/${pathSegment(syncId)}`, undefined, this._vm.baseUrl);
+  }
+
   async readFile(path: string): Promise<Uint8Array> {
     const response = await this._vm._client._request<SyncReadInlineResponse | SyncReadPresignedResponse>(
       "POST",
-      this.path(),
-      { op: "read", path },
+      `${vmPath(this._vm.id)}/syncs/read`,
+      { path },
       this._vm.baseUrl,
     );
-
     if ("content" in response) return decodeBytes(response.content, response.encoding);
-
     const signed = await this._vm._client._fetch(response.presigned_url);
     if (!signed.ok) throw new ArkerError("internal", `signed GET failed: ${signed.status}`, signed.status);
     return new Uint8Array(await signed.arrayBuffer());
@@ -371,10 +701,6 @@ export class Sync {
     } else {
       await this.writePresigned(path, bytes);
     }
-  }
-
-  private path(): string {
-    return `${vmPath(this._vm.id)}/sync`;
   }
 
   private async writeInline(path: string, data: Uint8Array): Promise<void> {
@@ -412,11 +738,9 @@ export class Sync {
 
   private async putPresigned(url: string, data: Uint8Array): Promise<void> {
     const attempts = this._vm._client._retryAttempts();
-
     for (let attempt = 0; attempt < attempts; attempt++) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), PRESIGNED_PUT_TIMEOUT_MS);
-
       try {
         const response = await this._vm._client._fetch(url, {
           method: "PUT",
@@ -424,7 +748,6 @@ export class Sync {
           signal: controller.signal,
         });
         clearTimeout(timeout);
-
         if (response.ok) return;
         if (!RETRYABLE_HTTP.has(response.status) || attempt === attempts - 1) {
           throw new ArkerError("internal", `upload PUT failed: ${response.status}`, response.status);
@@ -437,7 +760,6 @@ export class Sync {
           throw new ArkerError("network_error", `upload PUT failed: ${message}`, 0);
         }
       }
-
       await sleep(this._vm._client._retryDelay(attempt));
     }
   }
@@ -445,25 +767,32 @@ export class Sync {
   private async sendOneWrite(entry: JsonObject): Promise<SyncWriteResult> {
     let lastError: ErrorResponse | undefined;
     const attempts = this._vm._client._retryAttempts();
-
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const response = await this._vm._client._request<SyncWriteResponse>("POST", this.path(), {
-        op: "write",
+      const response = await this._vm._client._request<SyncWriteResponse>("POST", `${vmPath(this._vm.id)}/syncs/write`, {
         writes: [entry],
       }, this._vm.baseUrl);
       const result = response.results[0];
       if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
-
       const error = result.error ?? undefined;
       if (!error) return result;
-
-      lastError = error;
-      if (!isRetryable(200, error) || attempt === attempts - 1) break;
+      lastError = error as ErrorResponse;
+      if (!isRetryable(200, { code: error.code as string, message: error.message }) || attempt === attempts - 1) break;
       await sleep(this._vm._client._retryDelay(attempt));
     }
-
     throw new ArkerError(lastError?.code ?? "internal", lastError?.message ?? "write failed", 200);
   }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
+
+function buildQuery(path: string, params: Record<string, unknown>): string {
+  const usp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    usp.append(key, String(value));
+  }
+  const qs = usp.toString();
+  return qs ? `${path}?${qs}` : path;
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -478,15 +807,38 @@ function normalizeRegion(region: string): string {
   return trimmed;
 }
 
-function regionBaseUrl(region: string, burst: boolean): string {
+function computeBaseUrl(provider: "aws" | "aws-burst", region: string): string {
+  // The subdomain encodes provider+region — `https://aws-us-west-2.arker.ai`
+  // routes to arkerd in us-west-2; `https://aws-burst-us-west-2.arker.ai`
+  // routes to ps-lambda. Today both subdomains still resolve through the
+  // CF Worker (which dispatches based on hostname), so the path includes
+  // `/api`. When DNS is split to bypass the worker on the compute
+  // subdomains, drop `/api` here.
   const normalized = normalizeRegion(region);
-  if (!burst) return `https://${normalized}.arker.ai/api`;
-  return `https://${burstRegionHost(normalized)}.arker.ai/api`;
+  return `https://${provider}-${normalized}.arker.ai/api`;
 }
 
-function burstRegionHost(region: string): string {
-  if (region.startsWith("aws-")) return `aws-burst-${region.slice("aws-".length)}`;
-  return `${region}-burst`;
+function parseProvider(value: string | undefined | null): "aws" | "aws-burst" {
+  if (!value) return DEFAULT_PROVIDER;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "aws-burst" || trimmed === "burst") return "aws-burst";
+  return "aws";
+}
+
+/** Accept both the new `region`-only form ("us-west-2") and the legacy
+ * combined form ("aws-us-west-2" / "aws-burst-us-west-2"). When the
+ * combined form is used we return the embedded provider so the caller
+ * doesn't need to set both. */
+function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: "aws" | "aws-burst" } {
+  if (!value) return {};
+  const normalized = value.trim().toLowerCase();
+  if (normalized.startsWith("aws-burst-")) {
+    return { region: normalized.slice("aws-burst-".length), providerFromRegion: "aws-burst" };
+  }
+  if (normalized.startsWith("aws-")) {
+    return { region: normalized.slice("aws-".length), providerFromRegion: "aws" };
+  }
+  return { region: normalized };
 }
 
 function isBurstRef(ref: string): boolean {
@@ -498,7 +850,6 @@ function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {
   if (retry === false) {
     return { attempts: 1, baseDelayMs: 0, maxDelayMs: 0, jitterMs: 0 };
   }
-
   return {
     attempts: Math.max(1, Math.floor(retry?.attempts ?? DEFAULT_RETRY_ATTEMPTS)),
     baseDelayMs: Math.max(0, retry?.baseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS),
@@ -524,7 +875,6 @@ function pathSegment(value: string): string {
 function withoutUndefined(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutUndefined);
   if (!value || typeof value !== "object") return value;
-
   const output: JsonObject = {};
   for (const [key, entry] of Object.entries(value as JsonObject)) {
     if (entry !== undefined) output[key] = withoutUndefined(entry);
@@ -534,18 +884,13 @@ function withoutUndefined(value: unknown): unknown {
 
 function parseRunResponse(payload: unknown): RunResult {
   const body = objectPayload(payload, "run response");
-
   if (typeof body.stdout === "string") {
     const stdout = stringValue(body.stdout, "run response.stdout");
     const stdoutEncoding = stringField(body.stdout_encoding, "run response.stdout_encoding");
     const stderr = stringValue(body.stderr, "run response.stderr");
     const stderrEncoding = stringField(body.stderr_encoding, "run response.stderr_encoding");
-    if (body.completed !== true) {
-      throw new ArkerError("internal", "completed run response must have completed=true", 200);
-    }
     return {
       type: "completed",
-      completed: true,
       stdout: decodeBytes(stdout, stdoutEncoding),
       stdoutEncoding,
       stderr: decodeBytes(stderr, stderrEncoding),
@@ -553,52 +898,33 @@ function parseRunResponse(payload: unknown): RunResult {
       exitCode: numberField(body.exit_code, "run response.exit_code"),
     };
   }
-
   if (typeof body.run_id === "string") {
     return {
       type: "background",
-      completed: Boolean(body.completed),
       runId: body.run_id,
-      tunnels: Array.isArray(body.tunnels) ? body.tunnels as RunTunnelStatus[] : [],
-      network: isObject(body.network) ? body.network as unknown as RunNetworkStatus : null,
+      tunnels: Array.isArray(body.tunnels) ? body.tunnels as Tunnel[] : [],
+      network: isObject(body.network) ? body.network as unknown as NetworkStatus : null,
     };
   }
-
-  if (body.pty === true) {
-    return {
-      type: "pty",
-      pty: true,
-      sessionId: stringField(body.session_id, "run response.session_id"),
-      wsUrl: stringField(body.ws_url, "run response.ws_url"),
-    };
-  }
-
   throw new ArkerError("internal", "unrecognized run response shape", 200);
 }
 
 function parseJson(text: string): unknown {
   if (!text) return {};
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
+  try { return JSON.parse(text) as unknown; } catch { return undefined; }
 }
 
 function extractError(payload: unknown): ParsedError | undefined {
   if (!isObject(payload)) return undefined;
-
   if (typeof payload.code === "string" && typeof payload.message === "string") {
     return { code: payload.code, message: payload.message };
   }
-
   if (isObject(payload.error)) {
     return {
       code: typeof payload.error.code === "string" ? payload.error.code : "internal",
       message: typeof payload.error.message === "string" ? payload.error.message : "",
     };
   }
-
   return undefined;
 }
 
@@ -615,13 +941,9 @@ function retryDelay(retry: RetryConfig, attempt: number): number {
   return base + jitter(retry.jitterMs);
 }
 
-function jitter(maxMs: number): number {
-  return Math.floor(Math.random() * (maxMs + 1));
-}
+function jitter(maxMs: number): number { return Math.floor(Math.random() * (maxMs + 1)); }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
+async function sleep(ms: number): Promise<void> { await new Promise((resolve) => setTimeout(resolve, ms)); }
 
 function objectPayload(value: unknown, context: string): JsonObject {
   if (!isObject(value)) throw new ArkerError("internal", `${context} must be an object`, 200);
@@ -657,18 +979,15 @@ function assertWriteComplete(result: SyncWriteResult, context: string): void {
 function ulid(): string {
   const crypto = globalThis.crypto;
   if (!crypto?.getRandomValues) throw new Error("crypto.getRandomValues is required in this runtime");
-
   const time = BigInt(Date.now()) & ((1n << 48n) - 1n);
   const rand = new Uint8Array(10);
   crypto.getRandomValues(rand);
   let raw = (time << 80n) | rand.reduce((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
   const out: string[] = [];
-
   for (let i = 0; i < 26; i++) {
     out.push(ULID_ALPHABET[Number(raw & 31n)]!);
     raw >>= 5n;
   }
-
   return out.reverse().join("");
 }
 
@@ -680,7 +999,6 @@ function decodeBytes(text: string, encoding: string): Uint8Array {
 function bytesToBase64(data: Uint8Array): string {
   const buffer = bufferConstructor();
   if (buffer) return buffer.from(data).toString("base64");
-
   let binary = "";
   for (let offset = 0; offset < data.length; offset += 0x8000) {
     const chunk = data.subarray(offset, offset + 0x8000);
@@ -695,7 +1013,6 @@ function base64ToBytes(text: string): Uint8Array {
     const decoded = buffer.from(text, "base64");
     return new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.byteLength);
   }
-
   const binary = atob(text);
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
