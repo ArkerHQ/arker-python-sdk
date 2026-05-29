@@ -56,14 +56,19 @@ export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
 export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
 export type ForkRequest = ApiSchema<"ForkRequest">;
 export type ForkOptions = ForkRequest;
-export type SessionInfo = ApiSchema<"SessionInfo">;
+export type Session = ApiSchema<"Session">;
 export type GoldenInfo = ApiSchema<"GoldenInfo">;
 export type ListGoldensResponse = ApiSchema<"ListGoldensResponse">;
-export type VmInfo = ApiSchema<"VmInfo">;
+export type Vm = ApiSchema<"Vm">;
 export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
 export type ListSessionsResponse = ApiSchema<"ListSessionsResponse">;
-export type VmSummary = VmInfo;
+export type VmSummary = Vm;
 export type VmList = ListVmsResponse;
+
+/** @deprecated Use `Vm`. */
+export type VmInfo = Vm;
+/** @deprecated Use `Session`. */
+export type SessionInfo = Session;
 export type ForkVmResponse = ApiSchema<"ForkVmResponse">;
 export type DeleteVmResponse = ApiSchema<"DeleteVmResponse">;
 export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
@@ -116,7 +121,9 @@ export interface PtyRunResult {
 
 export type RunResult = CompletedRunResult | BackgroundRunResult | PtyRunResult;
 
-export type RunStatusResponse = ApiSchema<"RunStatusResponse">;
+export type Run = ApiSchema<"Run">;
+/** @deprecated Use `Run`. */
+export type RunStatusResponse = Run;
 export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
 export type ResizePtyRequest = ApiSchema<"ResizePtyRequest">;
@@ -200,7 +207,7 @@ export class Arker {
     return this._request("GET", "/v1/vms");
   }
 
-  async get(vmId: string): Promise<VmInfo> {
+  async get(vmId: string): Promise<Vm> {
     return this._request("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
   }
 
@@ -328,7 +335,7 @@ export class Computer {
     return parseRunResponse(response);
   }
 
-  async runStatus(runId: string): Promise<RunStatusResponse> {
+  async runStatus(runId: string): Promise<Run> {
     return this._client._request("GET", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
   }
 

@@ -261,12 +261,12 @@ export interface components {
              */
             durable?: boolean | null;
         };
-        SessionInfo: {
+        Session: {
             session_id: string;
             state: string;
             cwd: string;
         };
-        ListSessionsResponse: components["schemas"]["SessionInfo"][];
+        ListSessionsResponse: components["schemas"]["Session"][];
         GoldenInfo: {
             vm_id: string;
             name: string;
@@ -278,7 +278,7 @@ export interface components {
         ListGoldensResponse: {
             goldens: components["schemas"]["GoldenInfo"][];
         };
-        VmInfo: {
+        Vm: {
             vm_id: string;
             owner_id: string;
             created_at: string;
@@ -289,16 +289,16 @@ export interface components {
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
-            sessions: components["schemas"]["SessionInfo"][];
+            sessions: components["schemas"]["Session"][];
         };
         ListVmsResponse: {
-            vms: components["schemas"]["VmInfo"][];
+            vms: components["schemas"]["Vm"][];
         };
         ForkVmResponse: {
             vm_id: string;
             owner_id: string;
             created_at: string;
-            sessions: components["schemas"]["SessionInfo"][];
+            sessions: components["schemas"]["Session"][];
             ssh_private_key?: string | null;
             tunnels?: components["schemas"]["RunTunnelStatus"][];
             network?: components["schemas"]["RunNetworkStatus"] | null;
@@ -388,7 +388,7 @@ export interface components {
             session_id: string;
             ws_url: string;
         };
-        RunStatusResponse: {
+        Run: {
             run_id: string;
             stdout: string;
             stdout_encoding: string;
@@ -648,7 +648,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VmInfo"];
+                    "application/json": components["schemas"]["Vm"];
                 };
             };
             default: components["responses"]["Error"];
@@ -754,7 +754,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RunStatusResponse"];
+                    "application/json": components["schemas"]["Run"];
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
@@ -831,7 +831,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SessionInfo"];
+                    "application/json": components["schemas"]["Session"];
                 };
             };
             422: components["responses"]["UnsupportedOperation"];

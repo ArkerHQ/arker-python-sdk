@@ -43,7 +43,7 @@ class RetryOptions:
 
 
 @dataclasses.dataclass(frozen=True)
-class SessionInfo:
+class Session:
     session_id: str
     state: str
     cwd: str
@@ -65,12 +65,12 @@ class ListGoldensResponse:
 
 
 @dataclasses.dataclass(frozen=True)
-class VmInfo:
+class Vm:
     vm_id: str
     owner_id: str
     created_at: str
     state: str
-    sessions: list[SessionInfo]
+    sessions: list[Session]
     name: str | None = None
     source_golden: str | None = None
     last_activity: str | None = None
@@ -81,10 +81,10 @@ class VmInfo:
 
 @dataclasses.dataclass(frozen=True)
 class ListVmsResponse:
-    vms: list[VmInfo]
+    vms: list[Vm]
 
     @property
-    def items(self) -> list[VmInfo]:
+    def items(self) -> list[Vm]:
         return self.vms
 
     @property
@@ -98,8 +98,14 @@ class ListVmsResponse:
         return len(self.vms)
 
 
-VmSummary = VmInfo
+VmSummary = Vm
 VmList = ListVmsResponse
+
+# Backwards-compat aliases — these were the type names before the
+# `VmInfo → Vm` / `SessionInfo → Session` / `RunStatusResponse → Run`
+# rename. Drop in a future major release once downstream users update.
+VmInfo = Vm
+SessionInfo = Session
 
 
 @dataclasses.dataclass(frozen=True)
@@ -107,7 +113,7 @@ class ForkVmResponse:
     vm_id: str
     owner_id: str
     created_at: str
-    sessions: list[SessionInfo]
+    sessions: list[Session]
     ssh_private_key: str | None = None
     tunnels: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     network: dict[str, Any] | None = None
@@ -150,7 +156,7 @@ RunResult = CompletedRunResult | BackgroundRunResult | PtyRunResult
 
 
 @dataclasses.dataclass(frozen=True)
-class RunStatusResponse:
+class Run:
     run_id: str
     stdout: bytes
     stdout_encoding: str
@@ -231,7 +237,7 @@ class Arker:
         payload = self._request("GET", "/v1/vms")
         return ListVmsResponse([_vm_info(item) for item in payload.get("vms", [])])
 
-    def get(self, vm_id: str) -> VmInfo:
+    def get(self, vm_id: str) -> Vm:
         return _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
 
     def _request(
@@ -379,7 +385,7 @@ class Computer:
             extra_headers=headers,
         ))
 
-    def run_status(self, run_id: str) -> RunStatusResponse:
+    def run_status(self, run_id: str) -> Run:
         return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
 
     def cancel_run(self, run_id: str) -> CancelRunResponse:
@@ -638,8 +644,8 @@ def _assert_write_complete(result: dict[str, Any], context: str) -> None:
     raise ArkerError("internal", f"{context} did not complete", 200)
 
 
-def _session_info(payload: dict[str, Any]) -> SessionInfo:
-    return SessionInfo(
+def _session_info(payload: dict[str, Any]) -> Session:
+    return Session(
         session_id=str(payload["session_id"]),
         state=str(payload["state"]),
         cwd=str(payload["cwd"]),
@@ -657,8 +663,8 @@ def _golden_info(payload: dict[str, Any]) -> GoldenInfo:
     )
 
 
-def _vm_info(payload: dict[str, Any]) -> VmInfo:
-    return VmInfo(
+def _vm_info(payload: dict[str, Any]) -> Vm:
+    return Vm(
         vm_id=str(payload["vm_id"]),
         owner_id=str(payload["owner_id"]),
         created_at=str(payload["created_at"]),
@@ -721,9 +727,9 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     raise ArkerError("internal", "unrecognized run response shape", 200)
 
 
-def _run_status_response(payload: dict[str, Any]) -> RunStatusResponse:
+def _run_status_response(payload: dict[str, Any]) -> Run:
     retry_count = payload.get("retry_count")
-    return RunStatusResponse(
+    return Run(
         run_id=str(payload["run_id"]),
         stdout=_decode_bytes(str(payload["stdout"]), str(payload["stdout_encoding"])),
         stdout_encoding=str(payload["stdout_encoding"]),
@@ -743,3 +749,6 @@ def _optional_str(value: Any) -> str | None:
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if isinstance(value, int) else None
+
+# Backwards-compat: previously RunStatusResponse.
+RunStatusResponse = Run

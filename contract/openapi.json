@@ -66,7 +66,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/VmInfo"
+                  "$ref": "#/components/schemas/Vm"
                 }
               }
             }
@@ -195,7 +195,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunStatusResponse"
+                  "$ref": "#/components/schemas/Run"
                 }
               }
             }
@@ -278,7 +278,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionInfo"
+                  "$ref": "#/components/schemas/Session"
                 }
               }
             }
@@ -697,7 +697,7 @@
           }
         }
       },
-      "SessionInfo": {
+      "Session": {
         "type": "object",
         "required": [
           "session_id",
@@ -720,7 +720,7 @@
       "ListSessionsResponse": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/SessionInfo"
+          "$ref": "#/components/schemas/Session"
         }
       },
       "GoldenInfo": {
@@ -780,7 +780,7 @@
           }
         }
       },
-      "VmInfo": {
+      "Vm": {
         "type": "object",
         "required": [
           "vm_id",
@@ -846,7 +846,7 @@
           "sessions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/SessionInfo"
+              "$ref": "#/components/schemas/Session"
             }
           }
         }
@@ -861,7 +861,7 @@
           "vms": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/VmInfo"
+              "$ref": "#/components/schemas/Vm"
             }
           }
         }
@@ -888,7 +888,7 @@
           "sessions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/SessionInfo"
+              "$ref": "#/components/schemas/Session"
             }
           },
           "ssh_private_key": {
@@ -1212,7 +1212,7 @@
           }
         }
       },
-      "RunStatusResponse": {
+      "Run": {
         "type": "object",
         "required": [
           "run_id",
