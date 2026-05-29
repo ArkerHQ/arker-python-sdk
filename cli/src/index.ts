@@ -487,32 +487,128 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
     });
     header = await computer.get();
   }
+
+  // Persistent session: keeps cd / export / variables across lines. Without
+  // this every `computer.run` lands in a fresh PTY and cd is lost.
+  const session = await computer.sessions.create({
+    cwd: args.flags.cwd as string | undefined,
+  });
+  const sessionId = session.session_id;
+
+  const timeout = numFlag(args, "timeout");
+  const preload = args.positional.slice(vmIdArg ? 1 : 0).join(" ").trim();
+  const exitAfter = args.flags.exit === true;
+
   // Print the new VM as a get-style response, then drop into a minimal
   // `>` REPL. No prefix, no chrome.
   output.write(JSON.stringify(header, null, 2) + "\n");
-  const rl = readline.createInterface({ input, output, prompt: "> " });
-  rl.prompt();
-  for await (const line of rl) {
-    const cmd = line.trim();
-    if (!cmd) {
-      rl.prompt();
-      continue;
-    }
-    if (cmd === "exit" || cmd === "quit") break;
-    try {
-      const result = await computer.run(cmd);
-      if (result.type === "completed") {
-        process.stdout.write(new TextDecoder().decode(result.stdout));
-        if (result.stderr.length) process.stderr.write(new TextDecoder().decode(result.stderr));
-      } else {
-        out({ run_id: result.runId });
+
+  let inFlight = false;
+  let exitCode = 0;
+  try {
+    if (preload && preload !== "exit") {
+      const step = await runShellLine(computer, sessionId, preload, timeout);
+      if (step.kind === "fatal") {
+        err(`shell ended: ${step.message}`);
+        return;
       }
-    } catch (e) {
-      err(e instanceof Error ? e.message : String(e));
+      if (step.kind === "recoverable") {
+        err(`error: ${step.message}`);
+        exitCode = 1;
+      } else {
+        exitCode = step.exitCode;
+      }
     }
+    if (exitAfter || preload === "exit") {
+      process.exit(exitCode);
+    }
+
+    const rl = readline.createInterface({ input, output, prompt: "> " });
+
+    rl.on("SIGINT", () => {
+      // The v1 run API has no cancel; surface the keypress and let the
+      // current command finish (or hit --timeout).
+      if (inFlight) {
+        process.stderr.write("^C\n");
+        return;
+      }
+      process.stdout.write("^C\n");
+      rl.write(null, { ctrl: true, name: "u" });
+      rl.prompt();
+    });
+
     rl.prompt();
+    for await (const line of rl) {
+      const cmd = line.trim();
+      if (!cmd) {
+        rl.prompt();
+        continue;
+      }
+      if (cmd === "exit" || cmd === "quit") break;
+      inFlight = true;
+      const step = await runShellLine(computer, sessionId, cmd, timeout);
+      inFlight = false;
+      if (step.kind === "fatal") {
+        err(`shell ended: ${step.message}`);
+        exitCode = 1;
+        break;
+      }
+      if (step.kind === "recoverable") {
+        err(`error: ${step.message}`);
+      }
+      rl.prompt();
+    }
+    rl.close();
+  } finally {
+    // Best-effort cleanup; don't surface noise if the VM is already gone.
+    await computer.sessions.delete(sessionId).catch(() => {});
   }
-  rl.close();
+  if (exitCode !== 0) process.exit(exitCode);
+}
+
+type ShellStep =
+  | { kind: "ok"; exitCode: number }
+  | { kind: "fatal"; message: string }
+  | { kind: "recoverable"; message: string };
+
+async function runShellLine(
+  computer: Computer,
+  sessionId: string,
+  cmd: string,
+  timeout: number | undefined,
+): Promise<ShellStep> {
+  try {
+    const result = await computer.run(cmd, { session_id: sessionId, timeout });
+    if (result.type === "completed") {
+      if (result.stdout.length) process.stdout.write(new TextDecoder().decode(result.stdout));
+      if (result.stderr.length) process.stderr.write(new TextDecoder().decode(result.stderr));
+      const tail =
+        result.stderr.length > 0
+          ? result.stderr[result.stderr.length - 1]
+          : result.stdout.length > 0
+            ? result.stdout[result.stdout.length - 1]
+            : undefined;
+      if (tail !== undefined && tail !== 0x0a) process.stdout.write("\n");
+      return { kind: "ok", exitCode: result.exitCode };
+    }
+    out({ run_id: result.runId });
+    return { kind: "ok", exitCode: 0 };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const kind = classifyShellError(message, computer.id);
+    return { kind, message };
+  }
+}
+
+function classifyShellError(message: string, vmId: string): "fatal" | "recoverable" {
+  const msg = message.toLowerCase();
+  if (msg.includes("unauthor") || msg.includes("forbidden") || msg.includes("invalid api key")) {
+    return "fatal";
+  }
+  if ((msg.includes("not_found") || msg.includes("not found")) && msg.includes(vmId.toLowerCase())) {
+    return "fatal";
+  }
+  return "recoverable";
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
