@@ -12,11 +12,13 @@ type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"]
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
- * Placeholder org id for the "Arker" org — the org that owns the public
- * golden VMs (`arkuntu`, `ubuntu`, …). When the SDK sees `source_image`
- * on a fork request it auto-fills `source_org_id` with this constant.
+ * Org id for the "Arker" org — the org that owns the public golden VMs
+ * (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
+ * `sourceOrgId` to fork a public golden:
+ *
+ *     arker.fork({ sourceVmName: "ubuntu-full", sourceOrgId: ARKER_ORG_ID })
  */
-export const ARKER_ORG_ID = "org_arker";
+export const ARKER_ORG_ID = "ArkerHQ";
 
 const DEFAULT_RETRY_ATTEMPTS = 4;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
@@ -28,6 +30,9 @@ const RETRYABLE_CODES = new Set(["routing_unavailable", "unavailable", "temporar
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
+const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
+const DEFAULT_PROVIDER: "aws" | "aws-burst" = "aws";
+const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
 const BURST_SOURCE_REFS = new Set(["arkuntu"]);
 const BURST_VM_ID = /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$/;
 
@@ -52,10 +57,25 @@ export interface RetryOptions {
 
 export interface ArkerOptions {
   apiKey?: string;
-  baseUrl?: string;
-  burstBaseUrl?: string;
-  fetch?: FetchLike;
+  /** Region (e.g. `"us-west-2"`). Combined with `provider` to build the
+   * compute endpoint. Back-compat: accepts the legacy combined form
+   * `"aws-us-west-2"`. */
   region?: string;
+  /** Provider for compute calls. Defaults to `"aws"` (arkerd-managed
+   * VMs). Use `"aws-burst"` to target the Lambda burst backend
+   * directly. Has no effect on the burst-classified routing — a fork
+   * of `arkuntu` in the Arker org still goes to burst regardless. */
+  provider?: "aws" | "aws-burst";
+  /** Override the compute base URL (e.g. for internal / dev targets).
+   * If set, `provider` + `region` are ignored for compute. */
+  baseUrl?: string;
+  /** Override the burst compute base URL. */
+  burstBaseUrl?: string;
+  /** Override the control-plane URL — the CF Worker that owns
+   * administrative endpoints like `GET /v1/vms` (cross-provider list)
+   * and `/v1/filesystems`. Default `https://arker.ai/api`. */
+  controlBaseUrl?: string;
+  fetch?: FetchLike;
   retry?: RetryOptions | false;
 }
 
@@ -205,9 +225,17 @@ export interface ForkSource {
 }
 
 export class Arker {
+  /** Compute base URL for `provider` + `region` — used for fork/run/
+   * per-VM ops. SDK calls go straight to this host, skipping the CF
+   * Worker control plane. */
   readonly baseUrl: string;
+  /** Compute base URL for the burst provider in this region. */
   readonly burstBaseUrl?: string;
+  /** CF Worker control-plane URL — used for cross-cutting admin calls
+   * like list-VMs and filesystems. */
+  readonly controlBaseUrl: string;
   readonly region?: string;
+  readonly provider: "aws" | "aws-burst";
   readonly filesystems: Filesystems;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
@@ -216,9 +244,15 @@ export class Arker {
   constructor(opts: ArkerOptions = {}) {
     const apiKey = opts.apiKey ?? env("ARKER_API_KEY") ?? env("AUTH_KEY");
     const explicitBaseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
-    const region = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
-    const baseUrl = explicitBaseUrl ?? (region ? regionBaseUrl(region, false) : undefined);
-    const burstBaseUrl = opts.burstBaseUrl ?? env("ARKER_BURST_BASE_URL") ?? (region ? regionBaseUrl(region, true) : undefined);
+    const rawRegion = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
+    const rawProvider = (opts.provider as string | undefined) ?? env(DEFAULT_PROVIDER_ENV) ?? DEFAULT_PROVIDER;
+    const provider = parseProvider(rawProvider);
+    const { region, providerFromRegion } = splitRegion(rawRegion);
+    const effectiveProvider = providerFromRegion ?? provider;
+
+    const baseUrl = explicitBaseUrl ?? (region ? computeBaseUrl(effectiveProvider, region) : undefined);
+    const burstBaseUrl = opts.burstBaseUrl ?? env("ARKER_BURST_BASE_URL") ?? (region ? computeBaseUrl("aws-burst", region) : undefined);
+    const controlBaseUrl = opts.controlBaseUrl ?? env("ARKER_CONTROL_BASE_URL") ?? DEFAULT_CONTROL_BASE_URL;
 
     if (!apiKey) throw new Error("apiKey is required; pass apiKey or set ARKER_API_KEY");
     if (!baseUrl) throw new Error("region or baseUrl is required; pass region, baseUrl, ARKER_REGION, or ARKER_BASE_URL");
@@ -226,7 +260,9 @@ export class Arker {
     this.apiKey = apiKey;
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.burstBaseUrl = burstBaseUrl ? normalizeBaseUrl(burstBaseUrl) : undefined;
+    this.controlBaseUrl = normalizeBaseUrl(controlBaseUrl);
     this.region = region ? normalizeRegion(region) : undefined;
+    this.provider = effectiveProvider;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retry = normalizeRetry(opts.retry);
     this.filesystems = new Filesystems(this);
@@ -297,21 +333,26 @@ export class Arker {
   }
 
   /**
-   * List VMs visible to the authenticated caller. Aggregates across
-   * providers unless `?provider=` is set.
+   * List VMs visible to the authenticated caller. **Admin call** —
+   * goes through the control plane (`controlBaseUrl`) so it can
+   * aggregate across providers and regions. Pass `?provider=` /
+   * `?region=` to narrow.
    */
-  async list(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; startedAfter?: string; startedBefore?: string } = {}): Promise<ListVmsResponse> {
+  async list(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<ListVmsResponse> {
     return this._request("GET", buildQuery("/v1/vms", {
       cursor: opts.cursor,
       limit: opts.limit,
       region: opts.region,
       provider: opts.provider,
       state: opts.state,
+      source_org_id: opts.sourceOrgId,
       started_after: opts.startedAfter,
       started_before: opts.startedBefore,
-    }));
+    }), undefined, this.controlBaseUrl);
   }
 
+  /** Compute call — goes direct to the backend hosting this VM (no
+   * control-plane hop). */
   async get(vmId: string): Promise<Vm> {
     return this._request("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
   }
@@ -416,20 +457,36 @@ export class Filesystems {
     this._client = client;
   }
 
+  /** Admin call — goes through the control plane. */
   async list(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
-    return this._client._request("GET", buildQuery("/v1/filesystems", {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      name_prefix: opts.namePrefix,
-    }));
+    return this._client._request(
+      "GET",
+      buildQuery("/v1/filesystems", {
+        cursor: opts.cursor,
+        limit: opts.limit,
+        name_prefix: opts.namePrefix,
+      }),
+      undefined,
+      this._client.controlBaseUrl,
+    );
   }
 
   async get(filesystemId: string): Promise<Filesystem> {
-    return this._client._request("GET", `/v1/filesystems/${pathSegment(filesystemId)}`);
+    return this._client._request(
+      "GET",
+      `/v1/filesystems/${pathSegment(filesystemId)}`,
+      undefined,
+      this._client.controlBaseUrl,
+    );
   }
 
   async delete(filesystemId: string): Promise<DeleteFilesystemResponse> {
-    return this._client._request("DELETE", `/v1/filesystems/${pathSegment(filesystemId)}`);
+    return this._client._request(
+      "DELETE",
+      `/v1/filesystems/${pathSegment(filesystemId)}`,
+      undefined,
+      this._client.controlBaseUrl,
+    );
   }
 }
 
@@ -750,15 +807,32 @@ function normalizeRegion(region: string): string {
   return trimmed;
 }
 
-function regionBaseUrl(region: string, burst: boolean): string {
+function computeBaseUrl(provider: "aws" | "aws-burst", region: string): string {
   const normalized = normalizeRegion(region);
-  if (!burst) return `https://${normalized}.arker.ai/api`;
-  return `https://${burstRegionHost(normalized)}.arker.ai/api`;
+  return `https://${provider}-${normalized}.arker.ai`;
 }
 
-function burstRegionHost(region: string): string {
-  if (region.startsWith("aws-")) return `aws-burst-${region.slice("aws-".length)}`;
-  return `${region}-burst`;
+function parseProvider(value: string | undefined | null): "aws" | "aws-burst" {
+  if (!value) return DEFAULT_PROVIDER;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "aws-burst" || trimmed === "burst") return "aws-burst";
+  return "aws";
+}
+
+/** Accept both the new `region`-only form ("us-west-2") and the legacy
+ * combined form ("aws-us-west-2" / "aws-burst-us-west-2"). When the
+ * combined form is used we return the embedded provider so the caller
+ * doesn't need to set both. */
+function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: "aws" | "aws-burst" } {
+  if (!value) return {};
+  const normalized = value.trim().toLowerCase();
+  if (normalized.startsWith("aws-burst-")) {
+    return { region: normalized.slice("aws-burst-".length), providerFromRegion: "aws-burst" };
+  }
+  if (normalized.startsWith("aws-")) {
+    return { region: normalized.slice("aws-".length), providerFromRegion: "aws" };
+  }
+  return { region: normalized };
 }
 
 function isBurstRef(ref: string): boolean {

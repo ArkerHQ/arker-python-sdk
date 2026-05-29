@@ -75,6 +75,8 @@ interface CliConfig {
   apiKey?: string;
   baseUrl?: string;
   region?: string;
+  provider?: "aws" | "aws-burst";
+  controlBaseUrl?: string;
 }
 
 function readFileConfig(): CliConfig {
@@ -89,16 +91,30 @@ function readFileConfig(): CliConfig {
 
 function clientFromArgs(args: ParsedArgs): Arker {
   const file = readFileConfig();
-  const apiKey = (args.flags["api-key"] as string | undefined) ?? process.env.ARKER_API_KEY ?? file.apiKey;
-  const baseUrl = (args.flags["base-url"] as string | undefined) ?? process.env.ARKER_BASE_URL ?? file.baseUrl;
-  const region = (args.flags.region as string | undefined) ?? process.env.ARKER_REGION ?? file.region;
+  const apiKey =
+    (args.flags["api-key"] as string | undefined) ??
+    process.env.ARKER_API_KEY ??
+    file.apiKey;
+  const baseUrl =
+    (args.flags["base-url"] as string | undefined) ??
+    process.env.ARKER_BASE_URL ??
+    file.baseUrl;
+  const controlBaseUrl =
+    (args.flags["control-base-url"] as string | undefined) ??
+    process.env.ARKER_CONTROL_BASE_URL;
+  const region =
+    (args.flags.region as string | undefined) ??
+    process.env.ARKER_REGION ??
+    file.region;
+  const provider = (args.flags.provider as "aws" | "aws-burst" | undefined) ??
+    (process.env.ARKER_PROVIDER as "aws" | "aws-burst" | undefined);
   if (!apiKey) {
     die("Missing API key. Set ARKER_API_KEY or pass --api-key.");
   }
   if (!baseUrl && !region) {
-    die("Missing region. Set ARKER_REGION or pass --region (e.g. aws-us-west-2).");
+    die("Missing region. Set ARKER_REGION or pass --region (e.g. us-west-2). --provider (aws|aws-burst) defaults to aws.");
   }
-  return new Arker({ apiKey, baseUrl, region });
+  return new Arker({ apiKey, baseUrl, region, provider, controlBaseUrl });
 }
 
 // ── Output ─────────────────────────────────────────────────────────
@@ -455,22 +471,26 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
 async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   // Attach to an explicit VM by id (--vm-id or a positional vm id),
   // otherwise fork a fresh one from a source name in the Arker org
-  // (default: arkuntu).
+  // (default: ubuntu-full).
   let computer: Computer;
+  let header: Vm;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
   if (vmIdArg) {
     computer = client.vm(vmIdArg);
+    header = await computer.get();
   } else {
     const sourceVmName =
-      (args.flags["source-vm-name"] as string | undefined) ?? "arkuntu";
-    process.stderr.write(`arker: forking ${sourceVmName}...\n`);
+      (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-full";
     computer = await client.fork({
       sourceVmName,
       sourceOrgId: ARKER_ORG_ID,
     });
-    process.stderr.write(`arker: vm_id=${computer.id}\n`);
+    header = await computer.get();
   }
-  const rl = readline.createInterface({ input, output, prompt: "arker> " });
+  // Print the new VM as a get-style response, then drop into a minimal
+  // `>` REPL. No prefix, no chrome.
+  output.write(JSON.stringify(header, null, 2) + "\n");
+  const rl = readline.createInterface({ input, output, prompt: "> " });
   rl.prompt();
   for await (const line of rl) {
     const cmd = line.trim();
@@ -544,10 +564,12 @@ function usage(): never {
       "  arker filesystems <ls|get|rm> ...   (alias: fs)",
       "",
       "Flags:",
-      "  --api-key <key>     (or env ARKER_API_KEY)",
-      "  --region <region>   (or env ARKER_REGION; e.g. aws-us-west-2)",
-      "  --base-url <url>    (or env ARKER_BASE_URL)",
-      "  --json              emit JSON instead of tabular output",
+      "  --api-key <key>            (or env ARKER_API_KEY)",
+      "  --region <region>          (or env ARKER_REGION; e.g. us-west-2)",
+      "  --provider <aws|aws-burst> (or env ARKER_PROVIDER; default aws)",
+      "  --base-url <url>           override compute URL (env ARKER_BASE_URL)",
+      "  --control-base-url <url>   override CF Worker URL (env ARKER_CONTROL_BASE_URL)",
+      "  --json                     emit JSON instead of tabular output",
       "",
       `Arker org id: ${ARKER_ORG_ID}`,
     ].join("\n"),

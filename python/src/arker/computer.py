@@ -20,10 +20,12 @@ from typing import Any
 
 CHUNK_SIZE = 4 * 1024 * 1024
 
-# Placeholder org id for the "Arker" org — the org that owns the public
-# golden VMs (`arkuntu`, `ubuntu`, …). When `fork(image=...)` is called
-# the SDK auto-fills `source_org_id` with this constant.
-ARKER_ORG_ID = "org_arker"
+# Org id for the "Arker" org — the org that owns the public golden VMs
+# (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
+# ``source_org_id`` to fork a public golden:
+#
+#     arker.fork(source_vm_name="ubuntu-full", source_org_id=ARKER_ORG_ID)
+ARKER_ORG_ID = "ArkerHQ"
 
 DEFAULT_RETRY_ATTEMPTS = 4
 DEFAULT_RETRY_BASE_DELAY_S = 0.2
@@ -35,6 +37,9 @@ RETRYABLE_CODES = {"routing_unavailable", "unavailable", "temporarily_unavailabl
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_REGION_ENV = "ARKER_REGION"
+DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
+DEFAULT_PROVIDER = "aws"
+DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
 BURST_SOURCE_REFS = {"arkuntu"}
 BURST_VM_ID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$")
 
@@ -276,17 +281,31 @@ class Arker:
         api_key: str | None = None,
         base_url: str | None = None,
         burst_base_url: str | None = None,
+        control_base_url: str | None = None,
         region: str | None = None,
+        provider: str | None = None,
         retry: RetryOptions | dict[str, Any] | bool | None = None,
     ) -> None:
         resolved_api_key = api_key or _env("ARKER_API_KEY") or _env("AUTH_KEY")
         explicit_base_url = base_url or _env("ARKER_BASE_URL")
-        resolved_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
-        resolved_base_url = explicit_base_url or (_region_base_url(resolved_region, False) if resolved_region else None)
+        raw_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
+        raw_provider = provider or _env(DEFAULT_PROVIDER_ENV) or DEFAULT_PROVIDER
+        provider_value = _parse_provider(raw_provider)
+        resolved_region, provider_from_region = _split_region(raw_region)
+        effective_provider = provider_from_region or provider_value
+
+        resolved_base_url = explicit_base_url or (
+            _compute_base_url(effective_provider, resolved_region) if resolved_region else None
+        )
         resolved_burst_base_url = (
             burst_base_url
             or _env("ARKER_BURST_BASE_URL")
-            or (_region_base_url(resolved_region, True) if resolved_region else None)
+            or (_compute_base_url("aws-burst", resolved_region) if resolved_region else None)
+        )
+        resolved_control_base_url = (
+            control_base_url
+            or _env("ARKER_CONTROL_BASE_URL")
+            or DEFAULT_CONTROL_BASE_URL
         )
 
         if not resolved_api_key:
@@ -297,7 +316,9 @@ class Arker:
         self._api_key = resolved_api_key
         self._base_url = _normalize_base_url(resolved_base_url)
         self._burst_base_url = _normalize_base_url(resolved_burst_base_url) if resolved_burst_base_url else None
+        self._control_base_url = _normalize_base_url(resolved_control_base_url)
         self._region = _normalize_region(resolved_region) if resolved_region else None
+        self._provider = effective_provider
         self._retry = _normalize_retry(retry)
         self.filesystems = Filesystems(self)
 
@@ -310,8 +331,16 @@ class Arker:
         return self._burst_base_url
 
     @property
+    def control_base_url(self) -> str:
+        return self._control_base_url
+
+    @property
     def region(self) -> str | None:
         return self._region
+
+    @property
+    def provider(self) -> str:
+        return self._provider
 
     def vm(self, vm_id: str) -> "Computer":
         return Computer(self, vm_id, self._base_url_for(vm_id))
@@ -378,19 +407,24 @@ class Arker:
         region: str | None = None,
         provider: str | None = None,
         state: str | None = None,
+        source_org_id: str | None = None,
         started_after: str | None = None,
         started_before: str | None = None,
     ) -> ListVmsResponse:
+        """Admin call — goes through the control plane so it can
+        aggregate across providers and regions.
+        """
         path = _build_query("/v1/vms", {
             "cursor": cursor,
             "limit": limit,
             "region": region,
             "provider": provider,
             "state": state,
+            "source_org_id": source_org_id,
             "started_after": started_after,
             "started_before": started_before,
         })
-        payload = self._request("GET", path)
+        payload = self._request("GET", path, base_url=self._control_base_url)
         return ListVmsResponse(
             vms=[_vm_info(item) for item in payload.get("vms", [])],
             next_cursor=_optional_str(payload.get("next_cursor")),
@@ -467,6 +501,8 @@ class Arker:
 
 
 class Filesystems:
+    """Admin calls — routed through the control plane (CF Worker)."""
+
     def __init__(self, client: Arker) -> None:
         self._client = client
 
@@ -482,18 +518,26 @@ class Filesystems:
             "limit": limit,
             "name_prefix": name_prefix,
         })
-        payload = self._client._request("GET", path)
+        payload = self._client._request("GET", path, base_url=self._client._control_base_url)
         return ListFilesystemsResponse(
             filesystems=[_filesystem(item) for item in payload.get("filesystems", [])],
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
 
     def get(self, filesystem_id: str) -> Filesystem:
-        payload = self._client._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}")
+        payload = self._client._request(
+            "GET",
+            f"/v1/filesystems/{_segment(filesystem_id)}",
+            base_url=self._client._control_base_url,
+        )
         return _filesystem(payload)
 
     def delete(self, filesystem_id: str) -> DeleteFilesystemResponse:
-        payload = self._client._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}")
+        payload = self._client._request(
+            "DELETE",
+            f"/v1/filesystems/{_segment(filesystem_id)}",
+            base_url=self._client._control_base_url,
+        )
         return DeleteFilesystemResponse(deleted=bool(payload.get("deleted")))
 
 
@@ -917,17 +961,32 @@ def _normalize_region(region: str) -> str:
     return normalized
 
 
-def _region_base_url(region: str, burst: bool) -> str:
+def _compute_base_url(provider: str, region: str) -> str:
     normalized = _normalize_region(region)
-    if not burst:
-        return f"https://{normalized}.arker.ai/api"
-    return f"https://{_burst_region_host(normalized)}.arker.ai/api"
+    return f"https://{provider}-{normalized}.arker.ai"
 
 
-def _burst_region_host(region: str) -> str:
-    if region.startswith("aws-"):
-        return f"aws-burst-{region[len('aws-'):]}"
-    return f"{region}-burst"
+def _parse_provider(value: str | None) -> str:
+    if not value:
+        return DEFAULT_PROVIDER
+    trimmed = value.strip().lower()
+    if trimmed in ("aws-burst", "burst"):
+        return "aws-burst"
+    return "aws"
+
+
+def _split_region(value: str | None) -> tuple[str | None, str | None]:
+    """Accept either ``us-west-2`` or the legacy combined form
+    ``aws-us-west-2`` / ``aws-burst-us-west-2``.
+    """
+    if not value:
+        return None, None
+    normalized = value.strip().lower()
+    if normalized.startswith("aws-burst-"):
+        return normalized[len("aws-burst-"):], "aws-burst"
+    if normalized.startswith("aws-"):
+        return normalized[len("aws-"):], "aws"
+    return normalized, None
 
 
 def _is_burst_ref(ref: str) -> bool:
