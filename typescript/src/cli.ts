@@ -27,13 +27,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { Arker, ArkerError, ARKER_ORG_ID } from "@arker-ai/sdk";
+import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
 import type {
-  Computer,
+  VM,
   ResourceKind,
   RunResult,
   Vm,
-} from "@arker-ai/sdk";
+} from "./index.js";
 
 // ── Argv parsing ───────────────────────────────────────────────────
 
@@ -160,14 +160,14 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
       });
-      if (args.flags.json) return out(res);
-      for (const vm of res.vms) out(fmtVm(vm));
-      if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
+      if (args.flags.json) return out({ vms: res.vms.map((v) => v.info), next_cursor: res.nextCursor });
+      for (const vm of res.vms) out(vm.info ? fmtVm(vm.info) : vm.id);
+      if (res.nextCursor) out(`# next_cursor=${res.nextCursor}`);
       return;
     }
     case "get": {
       const id = rest[0] ?? die("usage: arker vms get <vm_id>");
-      out(await client.get(id));
+      out((await client.get(id)).info);
       return;
     }
     case "rm":
@@ -374,7 +374,7 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
     case "read": {
       if (!vm) die("usage: arker syncs read <vm_id> <path>");
       const path = rest[1] ?? die("missing path");
-      const bytes = await client.vm(vm).syncs.readFile(path);
+      const bytes = await client.vm(vm).sync(path);
       output.write(bytes);
       return;
     }
@@ -382,7 +382,7 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
       if (!vm) die("usage: arker syncs write <vm_id> <path> < file");
       const path = rest[1] ?? die("missing path");
       const buf = await readAllStdin();
-      await client.vm(vm).syncs.writeFile(path, buf);
+      await client.vm(vm).sync(path, buf);
       out(`wrote ${buf.length} bytes to ${path}`);
       return;
     }
@@ -472,12 +472,12 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   // Attach to an explicit VM by id (--vm-id or a positional vm id),
   // otherwise fork a fresh one from a source name in the Arker org
   // (default: ubuntu-full).
-  let computer: Computer;
-  let header: Vm;
+  let computer: VM;
+  let header: Vm | null;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
   if (vmIdArg) {
     computer = client.vm(vmIdArg);
-    header = await computer.get();
+    header = (await computer.get()).info;
   } else {
     const sourceVmName =
       (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-full";
@@ -485,7 +485,7 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
       sourceVmName,
       sourceOrgId: ARKER_ORG_ID,
     });
-    header = await computer.get();
+    header = (await computer.get()).info;
   }
 
   // Persistent session: keeps cd / export / variables across lines. Without
@@ -572,7 +572,7 @@ type ShellStep =
   | { kind: "recoverable"; message: string };
 
 async function runShellLine(
-  computer: Computer,
+  computer: VM,
   sessionId: string,
   cmd: string,
   timeout: number | undefined,

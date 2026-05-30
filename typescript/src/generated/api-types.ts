@@ -207,7 +207,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/syncs/read": {
+    "/v1/vms/{id}/sync": {
         parameters: {
             query?: never;
             header?: never;
@@ -218,27 +218,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Read a file from the VM filesystem (including mounted sync paths). */
-        post: operations["syncRead"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vms/{id}/syncs/write": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Write files to the VM filesystem (including mounted sync paths). Each entry is an inline chunk or a presigned-upload step. */
-        post: operations["syncWrite"];
+        /** @description Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ "op": "read", "path" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ "op": "write", "writes": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation — see `POST /v1/vms/{id}/syncs`. */
+        post: operations["sync"];
         delete?: never;
         options?: never;
         head?: never;
@@ -386,7 +367,7 @@ export interface components {
             /** @description Optional inbound tunnel allocation at fork time. */
             tunnels?: components["schemas"]["InboundRequest"] | null;
             /** @default true */
-            disk: boolean;
+            disk?: boolean;
             vcpu_count?: number | null;
             memory_mib?: number | null;
             max_memory_mib?: number | null;
@@ -396,7 +377,7 @@ export interface components {
         Session: {
             session_id: string;
             /** @default 0 */
-            session_idx: number;
+            session_idx?: number;
             state: components["schemas"]["SessionState"];
             cwd: string;
             /** @description Optional environment-variable overrides for this session. */
@@ -457,10 +438,10 @@ export interface components {
             session_idx?: number | null;
             command: string;
             /** @default false */
-            background: boolean;
+            background?: boolean;
             timeout?: number | null;
             /** @default auto */
-            end_symbol: string | null;
+            end_symbol?: string | null;
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
@@ -486,15 +467,15 @@ export interface components {
         };
         InboundRequest: {
             /** @default {} */
-            ports: {
+            ports?: {
                 [key: string]: components["schemas"]["InboundPortRequest"];
             };
         };
         InboundPortRequest: {
             /** @default private */
-            visibility: string;
+            visibility?: string;
             /** @default http */
-            protocol: string;
+            protocol?: string;
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
@@ -513,7 +494,7 @@ export interface components {
         BackgroundRunResponse: {
             run_id: string;
             /** @default [] */
-            tunnels: components["schemas"]["Tunnel"][];
+            tunnels?: components["schemas"]["Tunnel"][];
             network?: components["schemas"]["NetworkStatus"] | null;
         };
         Run: {
@@ -531,7 +512,7 @@ export interface components {
             tunnels: components["schemas"]["Tunnel"][];
             network?: components["schemas"]["NetworkStatus"] | null;
             /** @default 0 */
-            retry_count: number;
+            retry_count?: number;
             vm_id?: string | null;
             vm_name?: string | null;
             source_org_id?: string | null;
@@ -641,14 +622,18 @@ export interface components {
             filesystem_id?: string | null;
             filesystem_name?: string | null;
             /** @default false */
-            create_if_missing: boolean;
+            create_if_missing?: boolean;
             /** @description VM-side path. Returns `ErrorResponse` code `conflict` if a sync already exists at this path. */
             path: string;
         };
         SyncReadRequest: {
+            /** @constant */
+            op: "read";
             path: string;
         };
         SyncWriteRequest: {
+            /** @constant */
+            op: "write";
             writes: components["schemas"]["SyncWriteEntry"][];
         };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
@@ -661,14 +646,14 @@ export interface components {
             end: number;
             sha256?: string | null;
             /** @default false */
-            is_secret: boolean;
+            is_secret?: boolean;
         };
         SyncPresignedWriteRequest: {
             path: string;
             size: number;
             presigned: boolean;
             /** @default false */
-            is_secret: boolean;
+            is_secret?: boolean;
         };
         SyncPresignedWriteCommit: {
             path: string;
@@ -736,12 +721,12 @@ export interface components {
             created_at: string;
             size_bytes?: number | null;
             /** @default us-west-2 */
-            region: string | null;
+            region?: string | null;
             /**
              * @default aws
              * @enum {string|null}
              */
-            provider: "aws" | "aws-burst" | null;
+            provider?: "aws" | "aws-burst" | null;
         };
         ListFilesystemsResponse: {
             filesystems: components["schemas"]["Filesystem"][];
@@ -1248,7 +1233,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    syncRead: {
+    sync: {
         parameters: {
             query?: never;
             header?: never;
@@ -1259,45 +1244,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SyncReadRequest"];
+                "application/json": components["schemas"]["SyncReadRequest"] | components["schemas"]["SyncWriteRequest"];
             };
         };
         responses: {
-            /** @description Read result. */
+            /** @description Read or write result, matching the request op. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SyncReadResponse"];
-                };
-            };
-            422: components["responses"]["UnsupportedOperation"];
-            default: components["responses"]["Error"];
-        };
-    };
-    syncWrite: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SyncWriteRequest"];
-            };
-        };
-        responses: {
-            /** @description Write result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SyncWriteResponse"];
+                    "application/json": components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"];
                 };
             };
             422: components["responses"]["UnsupportedOperation"];

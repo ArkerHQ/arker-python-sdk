@@ -601,31 +601,37 @@
         }
       }
     },
-    "/v1/vms/{id}/syncs/read": {
+    "/v1/vms/{id}/sync": {
       "parameters": [
         {
           "$ref": "#/components/parameters/VmId"
         }
       ],
       "post": {
-        "operationId": "syncRead",
+        "operationId": "sync",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SyncReadRequest"
+                "oneOf": [
+                  { "$ref": "#/components/schemas/SyncReadRequest" },
+                  { "$ref": "#/components/schemas/SyncWriteRequest" }
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Read result.",
+            "description": "Read or write result, matching the request op.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SyncReadResponse"
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/SyncReadResponse" },
+                    { "$ref": "#/components/schemas/SyncWriteResponse" }
+                  ]
                 }
               }
             }
@@ -637,46 +643,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read a file from the VM filesystem (including mounted sync paths)."
-      }
-    },
-    "/v1/vms/{id}/syncs/write": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
-        }
-      ],
-      "post": {
-        "operationId": "syncWrite",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SyncWriteRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Write result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SyncWriteResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "$ref": "#/components/responses/UnsupportedOperation"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "description": "Write files to the VM filesystem (including mounted sync paths). Each entry is an inline chunk or a presigned-upload step."
+        "description": "Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ \"op\": \"read\", \"path\" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ \"op\": \"write\", \"writes\": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation — see `POST /v1/vms/{id}/syncs`."
       }
     },
     "/v1/vms/{id}/tunnels": {
@@ -2302,10 +2269,15 @@
       "SyncReadRequest": {
         "type": "object",
         "required": [
+          "op",
           "path"
         ],
         "additionalProperties": false,
         "properties": {
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
           "path": {
             "type": "string"
           }
@@ -2314,10 +2286,15 @@
       "SyncWriteRequest": {
         "type": "object",
         "required": [
+          "op",
           "writes"
         ],
         "additionalProperties": false,
         "properties": {
+          "op": {
+            "type": "string",
+            "const": "write"
+          },
           "writes": {
             "type": "array",
             "items": {

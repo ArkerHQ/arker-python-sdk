@@ -153,8 +153,6 @@ export type ResizeResponse = ApiSchema<"ResizeResponse">;
 export type ErrorResponse = ApiSchema<"ErrorResponse">;
 
 // ── Back-compat aliases (deprecated) ───────────────────────────────
-/** @deprecated Use `Vm`. */
-export type VmInfo = Vm;
 /** @deprecated Use `Session`. */
 export type SessionInfo = Session;
 /** @deprecated Use `Run`. */
@@ -274,8 +272,8 @@ export class Arker {
    * Address an existing VM. Doesn't make any network calls; returns a
    * lightweight handle.
    */
-  vm(vmId: string): Computer {
-    return new Computer(this, vmId, this._baseUrlFor(vmId));
+  vm(vmId: string): VM {
+    return new VM(this, vmId, this._baseUrlFor(vmId));
   }
 
   /**
@@ -291,7 +289,7 @@ export class Arker {
    * a VM in another org requires that VM to be `public: true`. The new
    * VM's name (in the caller's org) is passed as `name`.
    */
-  async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<Computer> {
+  async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<VM> {
     if (!source.sourceVmId && !source.sourceVmName) {
       throw new ArkerError(
         "bad_request",
@@ -331,7 +329,7 @@ export class Arker {
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
     const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
     // Child lives on the same host the fork was posted to.
-    return new Computer(this, vmId, baseUrl);
+    return new VM(this, vmId, baseUrl, vm);
   }
 
   /**
@@ -340,8 +338,8 @@ export class Arker {
    * aggregate across providers and regions. Pass `?provider=` /
    * `?region=` to narrow.
    */
-  async list(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<ListVmsResponse> {
-    return this._request("GET", buildQuery("/v1/vms", {
+  async list(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
+    const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", {
       cursor: opts.cursor,
       limit: opts.limit,
       region: opts.region,
@@ -351,12 +349,18 @@ export class Arker {
       started_after: opts.startedAfter,
       started_before: opts.startedBefore,
     }), undefined, this.controlBaseUrl);
+    const vms = (resp.vms ?? []).map((v) => {
+      const id = v.vm_id ?? (v as { id?: string }).id ?? "";
+      return new VM(this, id, this._baseUrlFor(id), v);
+    });
+    return { vms, nextCursor: resp.next_cursor ?? null };
   }
 
   /** Compute call — goes direct to the backend hosting this VM (no
-   * control-plane hop). */
-  async get(vmId: string): Promise<Vm> {
-    return this._request("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
+   * control-plane hop). Returns a handle carrying the VM's data in `.info`. */
+  async get(vmId: string): Promise<VM> {
+    const data = await this._request<Vm>("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
+    return new VM(this, vmId, this._baseUrlFor(vmId), data);
   }
 
   /** @internal */
@@ -492,9 +496,12 @@ export class Filesystems {
   }
 }
 
-export class Computer {
+export class VM {
   readonly id: string;
   readonly baseUrl: string;
+  /** Last-known VM data (from `fork`/`get`/`list`); `null` for a bare
+   * handle from `arker.vm(id)`. Call `get()` to refresh. */
+  readonly info: Vm | null;
   readonly syncs: Syncs;
   readonly tunnels: Tunnels;
   readonly runs: Runs;
@@ -502,27 +509,29 @@ export class Computer {
   /** @internal */
   readonly _client: Arker;
 
-  constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId)) {
+  constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), info: Vm | null = null) {
     this._client = client;
     this.id = vmId;
     this.baseUrl = baseUrl;
+    this.info = info;
     this.syncs = new Syncs(this);
     this.tunnels = new Tunnels(this);
     this.runs = new Runs(this);
     this.sessions = new Sessions(this);
   }
 
-  /** Refresh and return this VM's current state. */
-  async get(): Promise<Vm> {
-    return this._client._request("GET", vmPath(this.id), undefined, this.baseUrl);
+  /** Refresh this VM and return a handle carrying its current data in `.info`. */
+  async get(): Promise<VM> {
+    const data = await this._client._request<Vm>("GET", vmPath(this.id), undefined, this.baseUrl);
+    return new VM(this._client, this.id, this.baseUrl, data);
   }
 
   /**
    * @deprecated Use `Arker.fork({ sourceVmId: this.id, ... })`.
    * Kept for back-compat with older user code that called `.fork()` on
-   * a Computer instance.
+   * a VM instance.
    */
-  async fork(request: Partial<ForkRequest> = {}): Promise<Computer> {
+  async fork(request: Partial<ForkRequest> = {}): Promise<VM> {
     const merged: ForkRequest = {
       disk: true,
       ...request,
@@ -532,7 +541,7 @@ export class Computer {
     const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
     // The child is forked on the same compute host as the source, so it lives
     // on the same base URL (this.baseUrl) — not whatever the id alone implies.
-    return new Computer(this._client, vmId, this.baseUrl);
+    return new VM(this._client, vmId, this.baseUrl, vm);
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
@@ -548,6 +557,108 @@ export class Computer {
     return parseRunResponse(response);
   }
 
+  /**
+   * Read or write a file in this VM over `POST /v1/vms/{id}/sync`.
+   * Omit `data` to read; pass `data` (string or bytes) to write. The
+   * client picks inline transfer for small files and presigned uploads
+   * for large ones automatically.
+   *
+   *     const bytes = await vm.sync("/home/user/out.txt");   // read
+   *     await vm.sync("/home/user/in.txt", "hello\n");       // write
+   *
+   * To mount a standalone filesystem into the VM, use `vm.syncs.create`.
+   */
+  async sync(path: string): Promise<Uint8Array>;
+  async sync(path: string, data: Uint8Array | string): Promise<void>;
+  async sync(path: string, data?: Uint8Array | string): Promise<Uint8Array | void> {
+    if (data === undefined) return this.syncRead(path);
+    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    if (bytes.length <= CHUNK_SIZE) await this.syncWriteInline(path, bytes);
+    else await this.syncWritePresigned(path, bytes);
+  }
+
+  private async syncRead(path: string): Promise<Uint8Array> {
+    const response = await this._client._request<SyncReadInlineResponse | SyncReadPresignedResponse>(
+      "POST",
+      `${vmPath(this.id)}/sync`,
+      { op: "read", path },
+      this.baseUrl,
+    );
+    if ("content" in response) return decodeBytes(response.content, response.encoding);
+    const signed = await this._client._fetch(response.presigned_url);
+    if (!signed.ok) throw new ArkerError("internal", `signed GET failed: ${signed.status}`, signed.status);
+    return new Uint8Array(await signed.arrayBuffer());
+  }
+
+  private async syncWriteInline(path: string, data: Uint8Array): Promise<void> {
+    const result = await this.sendOneWrite({
+      path,
+      size: data.length,
+      upload_id: ulid(),
+      content: bytesToBase64(data),
+      start: 0,
+      end: data.length,
+    });
+    assertWriteComplete(result, "inline write");
+  }
+
+  private async syncWritePresigned(path: string, data: Uint8Array): Promise<void> {
+    const request = await this.sendOneWrite({ path, size: data.length, presigned: true });
+    if (!("presigned_url" in request) || !request.presigned_url || !request.upload_id) {
+      throw new ArkerError("internal", "write response missing presigned upload fields", 200);
+    }
+    await this.putPresigned(request.presigned_url, data);
+    const commit = await this.sendOneWrite({ path, size: data.length, upload_id: request.upload_id });
+    assertWriteComplete(commit, "presigned write commit");
+  }
+
+  private async putPresigned(url: string, data: Uint8Array): Promise<void> {
+    const attempts = this._client._retryAttempts();
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), PRESIGNED_PUT_TIMEOUT_MS);
+      try {
+        const response = await this._client._fetch(url, {
+          method: "PUT",
+          body: data as BodyInit,
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (response.ok) return;
+        if (!RETRYABLE_HTTP.has(response.status) || attempt === attempts - 1) {
+          throw new ArkerError("internal", `upload PUT failed: ${response.status}`, response.status);
+        }
+      } catch (error) {
+        clearTimeout(timeout);
+        if (error instanceof ArkerError) throw error;
+        if (attempt === attempts - 1) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new ArkerError("network_error", `upload PUT failed: ${message}`, 0);
+        }
+      }
+      await sleep(this._client._retryDelay(attempt));
+    }
+  }
+
+  private async sendOneWrite(entry: JsonObject): Promise<SyncWriteResult> {
+    let lastError: ErrorResponse | undefined;
+    const attempts = this._client._retryAttempts();
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, {
+        op: "write",
+        writes: [entry],
+      }, this.baseUrl);
+      const result = response.results[0];
+      if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
+      const error = result.error ?? undefined;
+      if (!error) return result;
+      lastError = error as ErrorResponse;
+      if (!isRetryable(200, { code: error.code as string, message: error.message }) || attempt === attempts - 1) break;
+      await sleep(this._client._retryDelay(attempt));
+    }
+    throw new ArkerError(lastError?.code ?? "internal", lastError?.message ?? "write failed", 200);
+  }
+
   async resize(request: ResizeRequest): Promise<ResizeResponse> {
     return this._client._request("POST", `${vmPath(this.id)}/resize`, request, this.baseUrl);
   }
@@ -559,9 +670,9 @@ export class Computer {
 
 export class Runs {
   /** @internal */
-  readonly _vm: Computer;
+  readonly _vm: VM;
 
-  constructor(vm: Computer) {
+  constructor(vm: VM) {
     this._vm = vm;
   }
 
@@ -587,9 +698,9 @@ export class Runs {
 
 export class Sessions {
   /** @internal */
-  readonly _vm: Computer;
+  readonly _vm: VM;
 
-  constructor(vm: Computer) {
+  constructor(vm: VM) {
     this._vm = vm;
   }
 
@@ -616,9 +727,9 @@ export class Sessions {
 
 export class Tunnels {
   /** @internal */
-  readonly _vm: Computer;
+  readonly _vm: VM;
 
-  constructor(vm: Computer) {
+  constructor(vm: VM) {
     this._vm = vm;
   }
 
@@ -641,9 +752,9 @@ export class Tunnels {
 
 export class Syncs {
   /** @internal */
-  readonly _vm: Computer;
+  readonly _vm: VM;
 
-  constructor(vm: Computer) {
+  constructor(vm: VM) {
     this._vm = vm;
   }
 
@@ -687,106 +798,6 @@ export class Syncs {
     return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/syncs/${pathSegment(syncId)}`, undefined, this._vm.baseUrl);
   }
 
-  async readFile(path: string): Promise<Uint8Array> {
-    const response = await this._vm._client._request<SyncReadInlineResponse | SyncReadPresignedResponse>(
-      "POST",
-      `${vmPath(this._vm.id)}/syncs/read`,
-      { path },
-      this._vm.baseUrl,
-    );
-    if ("content" in response) return decodeBytes(response.content, response.encoding);
-    const signed = await this._vm._client._fetch(response.presigned_url);
-    if (!signed.ok) throw new ArkerError("internal", `signed GET failed: ${signed.status}`, signed.status);
-    return new Uint8Array(await signed.arrayBuffer());
-  }
-
-  async writeFile(path: string, data: Uint8Array | string): Promise<void> {
-    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-    if (bytes.length <= CHUNK_SIZE) {
-      await this.writeInline(path, bytes);
-    } else {
-      await this.writePresigned(path, bytes);
-    }
-  }
-
-  private async writeInline(path: string, data: Uint8Array): Promise<void> {
-    const result = await this.sendOneWrite({
-      path,
-      size: data.length,
-      upload_id: ulid(),
-      content: bytesToBase64(data),
-      start: 0,
-      end: data.length,
-    });
-    assertWriteComplete(result, "inline write");
-  }
-
-  private async writePresigned(path: string, data: Uint8Array): Promise<void> {
-    const request = await this.sendOneWrite({
-      path,
-      size: data.length,
-      presigned: true,
-    });
-
-    if (!("presigned_url" in request) || !request.presigned_url || !request.upload_id) {
-      throw new ArkerError("internal", "write response missing presigned upload fields", 200);
-    }
-
-    await this.putPresigned(request.presigned_url, data);
-
-    const commit = await this.sendOneWrite({
-      path,
-      size: data.length,
-      upload_id: request.upload_id,
-    });
-    assertWriteComplete(commit, "presigned write commit");
-  }
-
-  private async putPresigned(url: string, data: Uint8Array): Promise<void> {
-    const attempts = this._vm._client._retryAttempts();
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), PRESIGNED_PUT_TIMEOUT_MS);
-      try {
-        const response = await this._vm._client._fetch(url, {
-          method: "PUT",
-          body: data as BodyInit,
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        if (response.ok) return;
-        if (!RETRYABLE_HTTP.has(response.status) || attempt === attempts - 1) {
-          throw new ArkerError("internal", `upload PUT failed: ${response.status}`, response.status);
-        }
-      } catch (error) {
-        clearTimeout(timeout);
-        if (error instanceof ArkerError) throw error;
-        if (attempt === attempts - 1) {
-          const message = error instanceof Error ? error.message : String(error);
-          throw new ArkerError("network_error", `upload PUT failed: ${message}`, 0);
-        }
-      }
-      await sleep(this._vm._client._retryDelay(attempt));
-    }
-  }
-
-  private async sendOneWrite(entry: JsonObject): Promise<SyncWriteResult> {
-    let lastError: ErrorResponse | undefined;
-    const attempts = this._vm._client._retryAttempts();
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      const response = await this._vm._client._request<SyncWriteResponse>("POST", `${vmPath(this._vm.id)}/syncs/write`, {
-        writes: [entry],
-      }, this._vm.baseUrl);
-      const result = response.results[0];
-      if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
-      const error = result.error ?? undefined;
-      if (!error) return result;
-      lastError = error as ErrorResponse;
-      if (!isRetryable(200, { code: error.code as string, message: error.message }) || attempt === attempts - 1) break;
-      await sleep(this._vm._client._retryDelay(attempt));
-    }
-    throw new ArkerError(lastError?.code ?? "internal", lastError?.message ?? "write failed", 200);
-  }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
