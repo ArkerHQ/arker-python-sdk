@@ -6,6 +6,9 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "arker": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -22,7 +25,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts --clean --target=node18",
+    "build": "tsup src/index.ts src/cli.ts --format esm,cjs --dts --clean --target=node18",
     "check:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts --check",
     "demo": "tsx tests/demo.ts",
     "generate:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts",

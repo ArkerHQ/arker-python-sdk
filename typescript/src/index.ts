@@ -234,7 +234,6 @@ export class Arker {
   readonly controlBaseUrl: string;
   readonly region?: string;
   readonly provider: "aws" | "aws-burst";
-  readonly filesystems: Filesystems;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryConfig;
@@ -263,7 +262,6 @@ export class Arker {
     this.provider = effectiveProvider;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retry = normalizeRetry(opts.retry);
-    this.filesystems = new Filesystems(this);
 
     if (!this.fetchImpl) throw new Error("fetch is required in this runtime");
   }
@@ -338,7 +336,7 @@ export class Arker {
    * aggregate across providers and regions. Pass `?provider=` /
    * `?region=` to narrow.
    */
-  async list(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
+  async listVms(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
     const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", {
       cursor: opts.cursor,
       limit: opts.limit,
@@ -357,10 +355,25 @@ export class Arker {
   }
 
   /** Compute call — goes direct to the backend hosting this VM (no
-   * control-plane hop). Returns a handle carrying the VM's data in `.info`. */
-  async get(vmId: string): Promise<VM> {
+   * control-plane hop). Returns a fully-populated VM handle. */
+  async getVm(vmId: string): Promise<VM> {
     const data = await this._request<Vm>("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
     return new VM(this, vmId, this._baseUrlFor(vmId), data);
+  }
+
+  // ── Filesystems (org-scoped, control-plane) ─────────────────────────
+  async listFilesystems(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
+    return this._request("GET", buildQuery("/v1/filesystems", {
+      cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
+    }), undefined, this.controlBaseUrl);
+  }
+
+  async getFilesystem(filesystemId: string): Promise<Filesystem> {
+    return this._request("GET", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.controlBaseUrl);
+  }
+
+  async deleteFilesystem(filesystemId: string): Promise<DeleteFilesystemResponse> {
+    return this._request("DELETE", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.controlBaseUrl);
   }
 
   /** @internal */
@@ -455,73 +468,46 @@ export interface ListOpts {
   limit?: number;
 }
 
-export class Filesystems {
-  /** @internal */
-  readonly _client: Arker;
-
-  constructor(client: Arker) {
-    this._client = client;
-  }
-
-  /** Admin call — goes through the control plane. */
-  async list(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
-    return this._client._request(
-      "GET",
-      buildQuery("/v1/filesystems", {
-        cursor: opts.cursor,
-        limit: opts.limit,
-        name_prefix: opts.namePrefix,
-      }),
-      undefined,
-      this._client.controlBaseUrl,
-    );
-  }
-
-  async get(filesystemId: string): Promise<Filesystem> {
-    return this._client._request(
-      "GET",
-      `/v1/filesystems/${pathSegment(filesystemId)}`,
-      undefined,
-      this._client.controlBaseUrl,
-    );
-  }
-
-  async delete(filesystemId: string): Promise<DeleteFilesystemResponse> {
-    return this._client._request(
-      "DELETE",
-      `/v1/filesystems/${pathSegment(filesystemId)}`,
-      undefined,
-      this._client.controlBaseUrl,
-    );
-  }
-}
-
 export class VM {
   readonly id: string;
   readonly baseUrl: string;
-  /** Last-known VM data (from `fork`/`get`/`list`); `null` for a bare
-   * handle from `arker.vm(id)`. Call `get()` to refresh. */
-  readonly info: Vm | null;
-  readonly syncs: Syncs;
-  readonly tunnels: Tunnels;
-  readonly runs: Runs;
-  readonly sessions: Sessions;
   /** @internal */
   readonly _client: Arker;
+  // ── Data fields ──────────────────────────────────────────────────
+  // Populated from fork/get/list/refresh; `undefined` on a bare handle
+  // from `arker.vm(id)` until you call `refresh()`. Names mirror the
+  // contract (`Vm`).
+  readonly vm_id?: string;
+  readonly name?: string | null;
+  readonly state?: VmState;
+  readonly owner_org_id?: string;
+  readonly created_at?: string;
+  readonly public?: boolean;
+  readonly region?: string | null;
+  readonly provider?: string | null;
+  readonly vcpu_count?: number | null;
+  readonly memory_mib?: number | null;
+  readonly disk_mib?: number | null;
+  readonly started_at?: string | null;
+  readonly root_source_vm_id?: string | null;
+  readonly root_source_vm_name?: string | null;
+  readonly worker_id?: string | null;
+  readonly sessions?: Session[];
+  readonly tunnels?: Tunnel[];
+  readonly network?: NetworkStatus | null;
 
-  constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), info: Vm | null = null) {
+  constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), data?: Vm) {
     this._client = client;
     this.id = vmId;
     this.baseUrl = baseUrl;
-    this.info = info;
-    this.syncs = new Syncs(this);
-    this.tunnels = new Tunnels(this);
-    this.runs = new Runs(this);
-    this.sessions = new Sessions(this);
+    if (data) Object.assign(this, data);
+    // Keep the client reference off enumeration so `JSON.stringify(vm)` /
+    // `console.log(vm)` show just the VM's data, not the whole SDK.
+    Object.defineProperty(this, "_client", { enumerable: false });
   }
 
-  /** Refresh this VM and return a handle carrying its current data in `.info`. */
-  async get(): Promise<VM> {
+  /** Re-fetch this VM and return a fresh, fully-populated handle. */
+  async refresh(): Promise<VM> {
     const data = await this._client._request<Vm>("GET", vmPath(this.id), undefined, this.baseUrl);
     return new VM(this._client, this.id, this.baseUrl, data);
   }
@@ -666,138 +652,80 @@ export class VM {
   async delete(): Promise<DeleteVmResponse> {
     return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
   }
-}
 
-export class Runs {
-  /** @internal */
-  readonly _vm: VM;
-
-  constructor(vm: VM) {
-    this._vm = vm;
+  // ── Syncs: bindings of a filesystem into this VM at a path ────────
+  async listSyncs(opts: ListOpts & { filesystemId?: string } = {}): Promise<ListSyncsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/syncs`, {
+      cursor: opts.cursor, limit: opts.limit, filesystem_id: opts.filesystemId,
+    }), undefined, this.baseUrl);
   }
 
-  async list(opts: ListOpts & { state?: RunState; startedAfter?: string; startedBefore?: string; completedAfter?: string } = {}): Promise<ListRunsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/runs`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      state: opts.state,
-      started_after: opts.startedAfter,
-      started_before: opts.startedBefore,
-      completed_after: opts.completedAfter,
-    }), undefined, this._vm.baseUrl);
+  async createSync(request: { path: string; filesystemId?: string; filesystemName?: string; createIfMissing?: boolean }): Promise<SyncObject> {
+    return this._client._request<SyncObject>("POST", `${vmPath(this.id)}/syncs`, {
+      path: request.path,
+      filesystem_id: request.filesystemId,
+      filesystem_name: request.filesystemName,
+      create_if_missing: request.createIfMissing ?? false,
+    }, this.baseUrl);
   }
 
-  async get(runId: string): Promise<Run> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/runs/${pathSegment(runId)}`, undefined, this._vm.baseUrl);
+  async getSync(syncId: string): Promise<SyncObject> {
+    return this._client._request("GET", `${vmPath(this.id)}/syncs/${pathSegment(syncId)}`, undefined, this.baseUrl);
   }
 
-  async cancel(runId: string): Promise<CancelRunResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/runs/${pathSegment(runId)}`, undefined, this._vm.baseUrl);
-  }
-}
-
-export class Sessions {
-  /** @internal */
-  readonly _vm: VM;
-
-  constructor(vm: VM) {
-    this._vm = vm;
+  async deleteSync(syncId: string): Promise<DeleteSyncResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/syncs/${pathSegment(syncId)}`, undefined, this.baseUrl);
   }
 
-  async list(opts: ListOpts & { state?: SessionState } = {}): Promise<ListSessionsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/sessions`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      state: opts.state,
-    }), undefined, this._vm.baseUrl);
+  // ── Runs ──────────────────────────────────────────────────────────
+  async listRuns(opts: ListOpts & { state?: RunState; startedAfter?: string; startedBefore?: string; completedAfter?: string } = {}): Promise<ListRunsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/runs`, {
+      cursor: opts.cursor, limit: opts.limit, state: opts.state,
+      started_after: opts.startedAfter, started_before: opts.startedBefore, completed_after: opts.completedAfter,
+    }), undefined, this.baseUrl);
   }
 
-  async get(sessionId: string): Promise<Session> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/sessions/${pathSegment(sessionId)}`, undefined, this._vm.baseUrl);
+  async getRun(runId: string): Promise<Run> {
+    return this._client._request("GET", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
   }
 
-  async create(request: CreateSessionRequest = {}): Promise<Session> {
-    return this._vm._client._request("POST", `${vmPath(this._vm.id)}/sessions`, request, this._vm.baseUrl);
+  async cancelRun(runId: string): Promise<CancelRunResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
   }
 
-  async delete(sessionId: string): Promise<DeleteSessionResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/sessions/${pathSegment(sessionId)}`, undefined, this._vm.baseUrl);
-  }
-}
-
-export class Tunnels {
-  /** @internal */
-  readonly _vm: VM;
-
-  constructor(vm: VM) {
-    this._vm = vm;
+  // ── Sessions ──────────────────────────────────────────────────────
+  async listSessions(opts: ListOpts & { state?: SessionState } = {}): Promise<ListSessionsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/sessions`, {
+      cursor: opts.cursor, limit: opts.limit, state: opts.state,
+    }), undefined, this.baseUrl);
   }
 
-  async list(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/tunnels`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      state: opts.state,
-    }), undefined, this._vm.baseUrl);
+  async createSession(request: CreateSessionRequest = {}): Promise<Session> {
+    return this._client._request("POST", `${vmPath(this.id)}/sessions`, request, this.baseUrl);
   }
 
-  async get(port: number): Promise<Tunnel> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/tunnels/${port}`, undefined, this._vm.baseUrl);
+  async getSession(sessionId: string): Promise<Session> {
+    return this._client._request("GET", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
   }
 
-  async delete(port: number): Promise<DeleteTunnelResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/tunnels/${port}`, undefined, this._vm.baseUrl);
-  }
-}
-
-export class Syncs {
-  /** @internal */
-  readonly _vm: VM;
-
-  constructor(vm: VM) {
-    this._vm = vm;
+  async deleteSession(sessionId: string): Promise<DeleteSessionResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
   }
 
-  async list(opts: ListOpts & { filesystemId?: string } = {}): Promise<ListSyncsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/syncs`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      filesystem_id: opts.filesystemId,
-    }), undefined, this._vm.baseUrl);
+  // ── Tunnels: opened as a side effect of fork/run, addressed by port ─
+  async listTunnels(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/tunnels`, {
+      cursor: opts.cursor, limit: opts.limit, state: opts.state,
+    }), undefined, this.baseUrl);
   }
 
-  async get(syncId: string): Promise<SyncObject> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/syncs/${pathSegment(syncId)}`, undefined, this._vm.baseUrl);
+  async getTunnel(port: number): Promise<Tunnel> {
+    return this._client._request("GET", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
   }
 
-  /**
-   * Ensure a `Filesystem` exists (creating one if requested) and
-   * bind-mount it into this VM at `path`. Bidirectional by virtue of
-   * being a mount — there is no separate sync-direction parameter.
-   */
-  async create(request: {
-    path: string;
-    filesystemId?: string;
-    filesystemName?: string;
-    createIfMissing?: boolean;
-  }): Promise<SyncObject> {
-    return this._vm._client._request<SyncObject>(
-      "POST",
-      `${vmPath(this._vm.id)}/syncs`,
-      {
-        path: request.path,
-        filesystem_id: request.filesystemId,
-        filesystem_name: request.filesystemName,
-        create_if_missing: request.createIfMissing ?? false,
-      },
-      this._vm.baseUrl,
-    );
+  async deleteTunnel(port: number): Promise<DeleteTunnelResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
   }
-
-  async delete(syncId: string): Promise<DeleteSyncResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/syncs/${pathSegment(syncId)}`, undefined, this._vm.baseUrl);
-  }
-
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

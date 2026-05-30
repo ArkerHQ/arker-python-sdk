@@ -136,12 +136,12 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-function fmtVm(vm: Vm): string {
+function fmtVm(vm: VM): string {
   const provider = vm.provider ?? "?";
   const region = vm.region ?? "?";
   const name = vm.name ?? "—";
-  const state = vm.state;
-  return `${vm.vm_id}\t${provider}-${region}\t${state}\t${name}`;
+  const state = vm.state ?? "?";
+  return `${vm.vm_id ?? vm.id}\t${provider}-${region}\t${state}\t${name}`;
 }
 
 // ── Resources ──────────────────────────────────────────────────────
@@ -153,21 +153,21 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
     case undefined:
     case "ls":
     case "list": {
-      const res = await client.list({
+      const res = await client.listVms({
         provider: args.flags.provider as "aws" | "aws-burst" | undefined,
         region: args.flags.region as string | undefined,
         state: args.flags.state as "idle" | "running" | undefined,
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
       });
-      if (args.flags.json) return out({ vms: res.vms.map((v) => v.info), next_cursor: res.nextCursor });
-      for (const vm of res.vms) out(vm.info ? fmtVm(vm.info) : vm.id);
+      if (args.flags.json) return out({ vms: res.vms, next_cursor: res.nextCursor });
+      for (const vm of res.vms) out(fmtVm(vm));
       if (res.nextCursor) out(`# next_cursor=${res.nextCursor}`);
       return;
     }
     case "get": {
       const id = rest[0] ?? die("usage: arker vms get <vm_id>");
-      out((await client.get(id)).info);
+      out(await client.getVm(id));
       return;
     }
     case "rm":
@@ -250,7 +250,7 @@ async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
     case "ls":
     case "list": {
       const vm = rest[0] ?? die("usage: arker runs ls <vm_id>");
-      const res = await client.vm(vm).runs.list({
+      const res = await client.vm(vm).listRuns({
         state: args.flags.state as "running" | "completed" | "cancelled" | undefined,
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
@@ -265,14 +265,14 @@ async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
     case "get": {
       const [vm, runId] = rest;
       if (!vm || !runId) die("usage: arker runs get <vm_id> <run_id>");
-      out(await client.vm(vm).runs.get(runId));
+      out(await client.vm(vm).getRun(runId));
       return;
     }
     case "rm":
     case "cancel": {
       const [vm, runId] = rest;
       if (!vm || !runId) die("usage: arker runs rm <vm_id> <run_id>");
-      const r = await client.vm(vm).runs.cancel(runId);
+      const r = await client.vm(vm).cancelRun(runId);
       out(r.cancelled ? `cancelled ${runId}` : "cancel failed");
       return;
     }
@@ -289,7 +289,7 @@ async function cmdSessions(args: ParsedArgs, client: Arker): Promise<void> {
     case "ls":
     case "list": {
       if (!vm) die("usage: arker sessions ls <vm_id>");
-      const res = await client.vm(vm).sessions.list({
+      const res = await client.vm(vm).listSessions({
         state: args.flags.state as "idle" | "running" | undefined,
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
@@ -304,19 +304,19 @@ async function cmdSessions(args: ParsedArgs, client: Arker): Promise<void> {
     case "get": {
       if (!vm) die("usage: arker sessions get <vm_id> <session_id>");
       const sid = rest[1] ?? die("missing session_id");
-      out(await client.vm(vm).sessions.get(sid));
+      out(await client.vm(vm).getSession(sid));
       return;
     }
     case "create": {
       if (!vm) die("usage: arker sessions create <vm_id>");
-      out(await client.vm(vm).sessions.create({ cwd: args.flags.cwd as string | undefined }));
+      out(await client.vm(vm).createSession({ cwd: args.flags.cwd as string | undefined }));
       return;
     }
     case "rm":
     case "delete": {
       if (!vm) die("usage: arker sessions rm <vm_id> <session_id>");
       const sid = rest[1] ?? die("missing session_id");
-      const r = await client.vm(vm).sessions.delete(sid);
+      const r = await client.vm(vm).deleteSession(sid);
       out(r.deleted ? `deleted ${sid}` : "delete failed");
       return;
     }
@@ -333,7 +333,7 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
     case "ls":
     case "list": {
       if (!vm) die("usage: arker syncs ls <vm_id>");
-      const res = await client.vm(vm).syncs.list({
+      const res = await client.vm(vm).listSyncs({
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
         filesystemId: args.flags["filesystem-id"] as string | undefined,
@@ -348,14 +348,14 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
     case "get": {
       if (!vm) die("usage: arker syncs get <vm_id> <sync_id>");
       const sid = rest[1] ?? die("missing sync_id");
-      out(await client.vm(vm).syncs.get(sid));
+      out(await client.vm(vm).getSync(sid));
       return;
     }
     case "create": {
       if (!vm) die("usage: arker syncs create <vm_id> --path /mnt [--filesystem-name foo] [--create]");
       const path = args.flags.path as string | undefined;
       if (!path) die("missing --path");
-      out(await client.vm(vm).syncs.create({
+      out(await client.vm(vm).createSync({
         path,
         filesystemId: args.flags["filesystem-id"] as string | undefined,
         filesystemName: args.flags["filesystem-name"] as string | undefined,
@@ -367,7 +367,7 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
     case "delete": {
       if (!vm) die("usage: arker syncs rm <vm_id> <sync_id>");
       const sid = rest[1] ?? die("missing sync_id");
-      const r = await client.vm(vm).syncs.delete(sid);
+      const r = await client.vm(vm).deleteSync(sid);
       out(r.deleted ? `deleted ${sid}` : "delete failed");
       return;
     }
@@ -405,7 +405,7 @@ async function cmdTunnels(args: ParsedArgs, client: Arker): Promise<void> {
     case "ls":
     case "list": {
       if (!vm) die("usage: arker tunnels ls <vm_id>");
-      const res = await client.vm(vm).tunnels.list({
+      const res = await client.vm(vm).listTunnels({
         state: args.flags.state as "starting" | "open" | "closed" | undefined,
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
@@ -420,14 +420,14 @@ async function cmdTunnels(args: ParsedArgs, client: Arker): Promise<void> {
     case "get": {
       if (!vm) die("usage: arker tunnels get <vm_id> <port>");
       const port = Number(rest[1] ?? die("missing port"));
-      out(await client.vm(vm).tunnels.get(port));
+      out(await client.vm(vm).getTunnel(port));
       return;
     }
     case "rm":
     case "delete": {
       if (!vm) die("usage: arker tunnels rm <vm_id> <port>");
       const port = Number(rest[1] ?? die("missing port"));
-      const r = await client.vm(vm).tunnels.delete(port);
+      const r = await client.vm(vm).deleteTunnel(port);
       out(r.deleted ? `deleted tunnel ${port}` : "delete failed");
       return;
     }
@@ -443,7 +443,7 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
     case undefined:
     case "ls":
     case "list": {
-      const res = await client.filesystems.list({
+      const res = await client.listFilesystems({
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
         namePrefix: args.flags["name-prefix"] as string | undefined,
@@ -457,13 +457,13 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
     }
     case "get": {
       const id = rest[0] ?? die("usage: arker fs get <filesystem_id>");
-      out(await client.filesystems.get(id));
+      out(await client.getFilesystem(id));
       return;
     }
     case "rm":
     case "delete": {
       const id = rest[0] ?? die("usage: arker fs rm <filesystem_id>");
-      const r = await client.filesystems.delete(id);
+      const r = await client.deleteFilesystem(id);
       out(r.deleted ? `deleted ${id}` : "delete failed");
       return;
     }
@@ -479,11 +479,9 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   // otherwise fork a fresh one from a source name in the Arker org
   // (default: ubuntu-full).
   let computer: VM;
-  let header: Vm | null;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
   if (vmIdArg) {
-    computer = client.vm(vmIdArg);
-    header = (await computer.get()).info;
+    computer = await client.vm(vmIdArg).refresh();
   } else {
     const sourceVmName =
       (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-full";
@@ -491,12 +489,12 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
       sourceVmName,
       sourceOrgId: ARKER_ORG_ID,
     });
-    header = (await computer.get()).info;
   }
+  const header = computer;
 
   // Persistent session: keeps cd / export / variables across lines. Without
   // this every `computer.run` lands in a fresh PTY and cd is lost.
-  const session = await computer.sessions.create({
+  const session = await computer.createSession({
     cwd: args.flags.cwd as string | undefined,
   });
   const sessionId = session.session_id;
@@ -567,7 +565,7 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
     rl.close();
   } finally {
     // Best-effort cleanup; don't surface noise if the VM is already gone.
-    await computer.sessions.delete(sessionId).catch(() => {});
+    await computer.deleteSession(sessionId).catch(() => {});
   }
   if (exitCode !== 0) process.exit(exitCode);
 }

@@ -274,7 +274,7 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
     },
   );
 
-  const status = await client(fetch).vm("vm_1").runs.get("run_1");
+  const status = await client(fetch).vm("vm_1").getRun("run_1");
   assert.equal(status.retry_count, 2);
 }
 
