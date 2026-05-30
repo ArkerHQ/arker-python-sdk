@@ -64,8 +64,8 @@ try {
     throw new Error(`unexpected run output: exit=${run.exitCode} stdout=${JSON.stringify(decode(run.stdout))}`);
   }
 
-  await vm.sync.writeFile("/home/user/ts-sdk-demo.txt", `${hello}\n`);
-  const file = await vm.sync.readFile("/home/user/ts-sdk-demo.txt");
+  await vm.syncs.writeFile("/home/user/ts-sdk-demo.txt", `${hello}\n`);
+  const file = await vm.syncs.readFile("/home/user/ts-sdk-demo.txt");
   if (decode(file) !== `${hello}\n`) throw new Error("sync round trip failed");
 
   console.log(`PASS ${vm.id}`);

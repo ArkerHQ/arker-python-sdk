@@ -329,7 +329,9 @@ export class Arker {
       isBurstRef(source.sourceVmName);
     const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
-    return new Computer(this, vm.vm_id, this._baseUrlFor(vm.vm_id));
+    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    // Child lives on the same host the fork was posted to.
+    return new Computer(this, vmId, baseUrl);
   }
 
   /**
@@ -520,13 +522,17 @@ export class Computer {
    * Kept for back-compat with older user code that called `.fork()` on
    * a Computer instance.
    */
-  async fork(request: ForkOptions = {} as ForkOptions): Promise<Computer> {
+  async fork(request: Partial<ForkRequest> = {}): Promise<Computer> {
     const merged: ForkRequest = {
+      disk: true,
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
-    return new Computer(this._client, vm.vm_id, this._client._baseUrlFor(vm.vm_id));
+    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    // The child is forked on the same compute host as the source, so it lives
+    // on the same base URL (this.baseUrl) — not whatever the id alone implies.
+    return new Computer(this._client, vmId, this.baseUrl);
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
