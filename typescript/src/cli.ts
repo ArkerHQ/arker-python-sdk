@@ -371,24 +371,30 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
       out(r.deleted ? `deleted ${sid}` : "delete failed");
       return;
     }
-    case "read": {
-      if (!vm) die("usage: arker syncs read <vm_id> <path>");
-      const path = rest[1] ?? die("missing path");
-      const bytes = await client.vm(vm).sync(path);
-      output.write(bytes);
-      return;
-    }
-    case "write": {
-      if (!vm) die("usage: arker syncs write <vm_id> <path> < file");
-      const path = rest[1] ?? die("missing path");
-      const buf = await readAllStdin();
+    default:
+      die(`usage: arker syncs <ls|get|create|rm> ...  (read/write files with: arker sync)`);
+  }
+}
+
+// File I/O on a VM: read (no data) or write (inline arg or piped stdin).
+async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
+  const vm = args.positional[0] ?? die("usage: arker sync <vm_id> <path> [data]   (omit data to read; or pipe stdin to write)");
+  const path = args.positional[1] ?? die("missing path");
+  const inline = args.positional[2];
+  if (inline !== undefined) {
+    await client.vm(vm).sync(path, inline);
+    out(`wrote ${Buffer.byteLength(inline)} bytes to ${path}`);
+    return;
+  }
+  if (!process.stdin.isTTY) {
+    const buf = await readAllStdin();
+    if (buf.length > 0) {
       await client.vm(vm).sync(path, buf);
       out(`wrote ${buf.length} bytes to ${path}`);
       return;
     }
-    default:
-      die(`usage: arker syncs <ls|get|create|rm|read|write> ...`);
   }
+  output.write(await client.vm(vm).sync(path));
 }
 
 async function cmdTunnels(args: ParsedArgs, client: Arker): Promise<void> {
@@ -696,6 +702,7 @@ async function main(): Promise<void> {
       case "run":
         return await cmdRun(args, client);
       case "sync":
+        return await cmdSync(args, client);
       case "syncs":
         return await cmdSyncs(args, client);
       case "shell":
