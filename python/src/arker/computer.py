@@ -320,7 +320,6 @@ class Arker:
         self._region = _normalize_region(resolved_region) if resolved_region else None
         self._provider = effective_provider
         self._retry = _normalize_retry(retry)
-        self.filesystems = Filesystems(self)
 
     @property
     def base_url(self) -> str:
@@ -402,7 +401,7 @@ class Arker:
         # Child lives on the host the fork was posted to.
         return VM(self, info.vm_id, base_url, info)
 
-    def list(
+    def list_vms(
         self,
         *,
         cursor: str | None = None,
@@ -434,9 +433,25 @@ class Arker:
             vms.append(VM(self, info.vm_id, self._base_url_for(info.vm_id), info))
         return ListVmsResponse(vms=vms, next_cursor=_optional_str(payload.get("next_cursor")))
 
-    def get(self, vm_id: str) -> VM:
+    def get_vm(self, vm_id: str) -> VM:
         info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
         return VM(self, vm_id, self._base_url_for(vm_id), info)
+
+    # ── Filesystems (org-scoped, control-plane) ─────────────────────────
+    def list_filesystems(self, *, cursor: str | None = None, limit: int | None = None, name_prefix: str | None = None) -> ListFilesystemsResponse:
+        path = _build_query("/v1/filesystems", {"cursor": cursor, "limit": limit, "name_prefix": name_prefix})
+        payload = self._request("GET", path, base_url=self._control_base_url)
+        return ListFilesystemsResponse(
+            filesystems=[_filesystem(item) for item in payload.get("filesystems", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get_filesystem(self, filesystem_id: str) -> Filesystem:
+        return _filesystem(self._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._control_base_url))
+
+    def delete_filesystem(self, filesystem_id: str) -> DeleteFilesystemResponse:
+        payload = self._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._control_base_url)
+        return DeleteFilesystemResponse(deleted=bool(payload.get("deleted")))
 
     def _request(
         self,
@@ -505,66 +520,41 @@ class Arker:
         return self._base_url
 
 
-class Filesystems:
-    """Admin calls — routed through the control plane (CF Worker)."""
-
-    def __init__(self, client: Arker) -> None:
-        self._client = client
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int | None = None,
-        name_prefix: str | None = None,
-    ) -> ListFilesystemsResponse:
-        path = _build_query("/v1/filesystems", {
-            "cursor": cursor,
-            "limit": limit,
-            "name_prefix": name_prefix,
-        })
-        payload = self._client._request("GET", path, base_url=self._client._control_base_url)
-        return ListFilesystemsResponse(
-            filesystems=[_filesystem(item) for item in payload.get("filesystems", [])],
-            next_cursor=_optional_str(payload.get("next_cursor")),
-        )
-
-    def get(self, filesystem_id: str) -> Filesystem:
-        payload = self._client._request(
-            "GET",
-            f"/v1/filesystems/{_segment(filesystem_id)}",
-            base_url=self._client._control_base_url,
-        )
-        return _filesystem(payload)
-
-    def delete(self, filesystem_id: str) -> DeleteFilesystemResponse:
-        payload = self._client._request(
-            "DELETE",
-            f"/v1/filesystems/{_segment(filesystem_id)}",
-            base_url=self._client._control_base_url,
-        )
-        return DeleteFilesystemResponse(deleted=bool(payload.get("deleted")))
-
-
 class VM:
-    def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, info: Vm | None = None) -> None:
+    # Data fields — populated from fork/get/list/refresh; ``None`` on a bare
+    # handle from ``arker.vm(id)`` until you call ``refresh()``. Names mirror
+    # the contract ``Vm``.
+    vm_id: str | None
+    name: str | None
+    state: str | None
+    owner_org_id: str | None
+    created_at: str | None
+    public: bool | None
+    region: str | None
+    provider: str | None
+    vcpu_count: int | None
+    memory_mib: int | None
+    disk_mib: int | None
+    started_at: str | None
+    sessions: list[Session] | None
+    tunnels: list[Tunnel] | None
+
+    def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, data: Vm | None = None) -> None:
         self._client = client
         self.id = vm_id
         self.base_url = base_url or client._base_url_for(vm_id)
-        #: Last-known VM data (from fork/get/list); ``None`` for a bare
-        #: handle from ``arker.vm(id)``. Call ``get()`` to refresh.
-        self.info = info
-        self.syncs = Syncs(self)
-        self.tunnels = Tunnels(self)
-        self.runs = Runs(self)
-        self.sessions = Sessions(self)
+        for f in dataclasses.fields(Vm):
+            setattr(self, f.name, getattr(data, f.name) if data is not None else None)
 
-    def get(self) -> VM:
-        """Refresh and return a handle carrying current data in ``.info``."""
+    def __repr__(self) -> str:
+        return f"VM(id={self.id!r}, name={self.name!r}, state={self.state!r})"
+
+    def refresh(self) -> VM:
+        """Re-fetch this VM and return a fresh, fully-populated handle."""
         info = _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
         return VM(self._client, self.id, self.base_url, info)
 
-    def fork(self, **kwargs: Any) -> "VM":
+    def fork(self, **kwargs: Any) -> VM:
         """Deprecated: prefer ``Arker.fork(source_vm_id=..., ...)``."""
         return self._client.fork(source_vm_id=self.id, **kwargs)
 
@@ -719,201 +709,88 @@ class VM:
             200,
         )
 
-
-class Runs:
-    def __init__(self, vm: VM) -> None:
-        self._vm = vm
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int | None = None,
-        state: str | None = None,
-        started_after: str | None = None,
-        started_before: str | None = None,
-        completed_after: str | None = None,
-    ) -> ListRunsResponse:
-        path = _build_query(f"{_vm_path(self._vm.id)}/runs", {
-            "cursor": cursor,
-            "limit": limit,
-            "state": state,
-            "started_after": started_after,
-            "started_before": started_before,
-            "completed_after": completed_after,
-        })
-        payload = self._vm._client._request("GET", path, base_url=self._vm.base_url)
-        return ListRunsResponse(
-            runs=[_run_summary(item) for item in payload.get("runs", [])],
-            next_cursor=_optional_str(payload.get("next_cursor")),
-        )
-
-    def get(self, run_id: str) -> Run:
-        return _run_status_response(self._vm._client._request(
-            "GET",
-            f"{_vm_path(self._vm.id)}/runs/{_segment(run_id)}",
-            base_url=self._vm.base_url,
-        ))
-
-    def cancel(self, run_id: str) -> CancelRunResponse:
-        payload = self._vm._client._request(
-            "DELETE",
-            f"{_vm_path(self._vm.id)}/runs/{_segment(run_id)}",
-            base_url=self._vm.base_url,
-        )
-        return CancelRunResponse(cancelled=bool(payload.get("cancelled")))
-
-
-class Sessions:
-    def __init__(self, vm: VM) -> None:
-        self._vm = vm
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int | None = None,
-        state: str | None = None,
-    ) -> ListSessionsResponse:
-        path = _build_query(f"{_vm_path(self._vm.id)}/sessions", {
-            "cursor": cursor, "limit": limit, "state": state,
-        })
-        payload = self._vm._client._request("GET", path, base_url=self._vm.base_url)
-        return ListSessionsResponse(
-            sessions=[_session_info(item) for item in payload.get("sessions", [])],
-            next_cursor=_optional_str(payload.get("next_cursor")),
-        )
-
-    def get(self, session_id: str) -> Session:
-        payload = self._vm._client._request(
-            "GET",
-            f"{_vm_path(self._vm.id)}/sessions/{_segment(session_id)}",
-            base_url=self._vm.base_url,
-        )
-        return _session_info(payload)
-
-    def create(
-        self,
-        *,
-        env: dict[str, str] | None = None,
-        cwd: str | None = None,
-    ) -> Session:
-        payload = self._vm._client._request(
-            "POST",
-            f"{_vm_path(self._vm.id)}/sessions",
-            {"env": env, "cwd": cwd},
-            base_url=self._vm.base_url,
-        )
-        return _session_info(payload)
-
-    def delete(self, session_id: str) -> DeleteSessionResponse:
-        payload = self._vm._client._request(
-            "DELETE",
-            f"{_vm_path(self._vm.id)}/sessions/{_segment(session_id)}",
-            base_url=self._vm.base_url,
-        )
-        return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
-
-
-class Tunnels:
-    def __init__(self, vm: VM) -> None:
-        self._vm = vm
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int | None = None,
-        state: str | None = None,
-    ) -> ListTunnelsResponse:
-        path = _build_query(f"{_vm_path(self._vm.id)}/tunnels", {
-            "cursor": cursor, "limit": limit, "state": state,
-        })
-        payload = self._vm._client._request("GET", path, base_url=self._vm.base_url)
-        return ListTunnelsResponse(
-            tunnels=[_tunnel(item) for item in payload.get("tunnels", [])],
-            next_cursor=_optional_str(payload.get("next_cursor")),
-        )
-
-    def get(self, port: int) -> Tunnel:
-        payload = self._vm._client._request(
-            "GET",
-            f"{_vm_path(self._vm.id)}/tunnels/{port}",
-            base_url=self._vm.base_url,
-        )
-        return _tunnel(payload)
-
-    def delete(self, port: int) -> DeleteTunnelResponse:
-        payload = self._vm._client._request(
-            "DELETE",
-            f"{_vm_path(self._vm.id)}/tunnels/{port}",
-            base_url=self._vm.base_url,
-        )
-        return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
-
-
-class Syncs:
-    def __init__(self, vm: VM) -> None:
-        self._vm = vm
-        self._client = vm._client
-
-    def list(
-        self,
-        *,
-        cursor: str | None = None,
-        limit: int | None = None,
-        filesystem_id: str | None = None,
-    ) -> ListSyncsResponse:
-        path = _build_query(f"{_vm_path(self._vm.id)}/syncs", {
-            "cursor": cursor, "limit": limit, "filesystem_id": filesystem_id,
-        })
-        payload = self._client._request("GET", path, base_url=self._vm.base_url)
+    # ── Syncs: bindings of a filesystem into this VM at a path ────────
+    def list_syncs(self, *, cursor: str | None = None, limit: int | None = None, filesystem_id: str | None = None) -> ListSyncsResponse:
+        path = _build_query(f"{_vm_path(self.id)}/syncs", {"cursor": cursor, "limit": limit, "filesystem_id": filesystem_id})
+        payload = self._client._request("GET", path, base_url=self.base_url)
         return ListSyncsResponse(
             syncs=[_sync(item) for item in payload.get("syncs", [])],
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
 
-    def get(self, sync_id: str) -> SyncObject:
-        payload = self._client._request(
-            "GET",
-            f"{_vm_path(self._vm.id)}/syncs/{_segment(sync_id)}",
-            base_url=self._vm.base_url,
-        )
+    def create_sync(self, *, path: str, filesystem_id: str | None = None, filesystem_name: str | None = None, create_if_missing: bool = False) -> SyncObject:
+        """Bind a filesystem into this VM at ``path`` (creating it if requested)."""
+        payload = self._client._request("POST", f"{_vm_path(self.id)}/syncs", {
+            "path": path, "filesystem_id": filesystem_id,
+            "filesystem_name": filesystem_name, "create_if_missing": create_if_missing,
+        }, base_url=self.base_url)
         return _sync(payload)
 
-    def create(
-        self,
-        *,
-        path: str,
-        filesystem_id: str | None = None,
-        filesystem_name: str | None = None,
-        create_if_missing: bool = False,
-    ) -> SyncObject:
-        """Ensure a Filesystem exists and bind-mount it into this VM at ``path``.
-
-        Bidirectional by virtue of being a mount — there is no separate
-        sync-direction parameter.
-        """
-        payload = self._client._request(
-            "POST",
-            f"{_vm_path(self._vm.id)}/syncs",
-            {
-                "path": path,
-                "filesystem_id": filesystem_id,
-                "filesystem_name": filesystem_name,
-                "create_if_missing": create_if_missing,
-            },
-            base_url=self._vm.base_url,
-        )
+    def get_sync(self, sync_id: str) -> SyncObject:
+        payload = self._client._request("GET", f"{_vm_path(self.id)}/syncs/{_segment(sync_id)}", base_url=self.base_url)
         return _sync(payload)
 
-    def delete(self, sync_id: str) -> DeleteSyncResponse:
-        payload = self._client._request(
-            "DELETE",
-            f"{_vm_path(self._vm.id)}/syncs/{_segment(sync_id)}",
-            base_url=self._vm.base_url,
-        )
+    def delete_sync(self, sync_id: str) -> DeleteSyncResponse:
+        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/syncs/{_segment(sync_id)}", base_url=self.base_url)
         return DeleteSyncResponse(deleted=bool(payload.get("deleted")))
+
+    # ── Runs ──────────────────────────────────────────────────────────
+    def list_runs(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None,
+                  started_after: str | None = None, started_before: str | None = None, completed_after: str | None = None) -> ListRunsResponse:
+        path = _build_query(f"{_vm_path(self.id)}/runs", {
+            "cursor": cursor, "limit": limit, "state": state,
+            "started_after": started_after, "started_before": started_before, "completed_after": completed_after,
+        })
+        payload = self._client._request("GET", path, base_url=self.base_url)
+        return ListRunsResponse(
+            runs=[_run_summary(item) for item in payload.get("runs", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get_run(self, run_id: str) -> Run:
+        return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
+
+    def cancel_run(self, run_id: str) -> CancelRunResponse:
+        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url)
+        return CancelRunResponse(cancelled=bool(payload.get("cancelled")))
+
+    # ── Sessions ──────────────────────────────────────────────────────
+    def list_sessions(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListSessionsResponse:
+        path = _build_query(f"{_vm_path(self.id)}/sessions", {"cursor": cursor, "limit": limit, "state": state})
+        payload = self._client._request("GET", path, base_url=self.base_url)
+        return ListSessionsResponse(
+            sessions=[_session_info(item) for item in payload.get("sessions", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def create_session(self, *, env: dict[str, str] | None = None, cwd: str | None = None) -> Session:
+        payload = self._client._request("POST", f"{_vm_path(self.id)}/sessions", {"env": env, "cwd": cwd}, base_url=self.base_url)
+        return _session_info(payload)
+
+    def get_session(self, session_id: str) -> Session:
+        payload = self._client._request("GET", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
+        return _session_info(payload)
+
+    def delete_session(self, session_id: str) -> DeleteSessionResponse:
+        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
+        return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
+
+    # ── Tunnels: opened as a side effect of fork/run, addressed by port ─
+    def list_tunnels(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListTunnelsResponse:
+        path = _build_query(f"{_vm_path(self.id)}/tunnels", {"cursor": cursor, "limit": limit, "state": state})
+        payload = self._client._request("GET", path, base_url=self.base_url)
+        return ListTunnelsResponse(
+            tunnels=[_tunnel(item) for item in payload.get("tunnels", [])],
+            next_cursor=_optional_str(payload.get("next_cursor")),
+        )
+
+    def get_tunnel(self, port: int) -> Tunnel:
+        payload = self._client._request("GET", f"{_vm_path(self.id)}/tunnels/{port}", base_url=self.base_url)
+        return _tunnel(payload)
+
+    def delete_tunnel(self, port: int) -> DeleteTunnelResponse:
+        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{port}", base_url=self.base_url)
+        return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

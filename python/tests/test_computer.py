@@ -202,13 +202,13 @@ def test_list_uses_configured_base_url() -> None:
     )
 
     with patch("urllib.request.urlopen", t):
-        result = client().list()
+        result = client().list_vms()
 
     assert isinstance(result, sdk.ListVmsResponse)
     assert len(result) == 1
     assert result.vms[0].id == "vm_1"
-    assert result.vms[0].info.vm_id == "vm_1"
-    assert result.vms[0].info.owner_org_id == "owner"
+    assert result.vms[0].vm_id == "vm_1"
+    assert result.vms[0].owner_org_id == "owner"
 
 
 def test_run_sends_command_without_default_session_id() -> None:
@@ -460,7 +460,7 @@ def test_run_status_parses_retry_count() -> None:
     )
 
     with patch("urllib.request.urlopen", t):
-        status = client().vm("vm_1").runs.get("run_1")
+        status = client().vm("vm_1").get_run("run_1")
 
     assert status.retry_count == 2
 
@@ -484,7 +484,7 @@ def test_run_status_defaults_retry_count_when_missing() -> None:
     )
 
     with patch("urllib.request.urlopen", t):
-        status = client().vm("vm_1").runs.get("run_1")
+        status = client().vm("vm_1").get_run("run_1")
 
     assert status.retry_count == 0
 
