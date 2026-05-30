@@ -519,9 +519,9 @@ export class VM {
    */
   async fork(request: Partial<ForkRequest> = {}): Promise<VM> {
     const merged: ForkRequest = {
-      disk: true,
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
+      disk: request.disk ?? true,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
     const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";

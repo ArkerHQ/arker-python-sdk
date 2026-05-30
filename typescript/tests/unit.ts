@@ -94,21 +94,6 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
   );
 }
 
-async function testForkAcceptsLegacyIdResponse(): Promise<void> {
-  const fetch = new FakeFetch();
-  // Back-compat: some older backends emit `id` instead of `vm_id` —
-  // the SDK accepts either.
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
-    200,
-    { id: "vm_child" },
-  );
-
-  const vm = await client(fetch).vm("ubuntu").fork();
-
-  assert.equal(vm.id, "vm_child");
-}
-
 async function testNestedErrorWithoutOkStillParses(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -183,12 +168,20 @@ async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
   fetch.addJson(
     (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/fork",
     200,
-    { id: "legacy_child_without_suffix" },
+    {
+      vm_id: "01KR4AN62T47VXQ0A3AVSSWFTZ_uswe",
+      owner_org_id: "owner",
+      created_at: "now",
+      public: false,
+      state: "idle",
+      sessions: [],
+      tunnels: [],
+    },
   );
 
   const vm = await regionClient(fetch).vm("arkuntu").fork();
 
-  assert.equal(vm.id, "legacy_child_without_suffix");
+  assert.equal(vm.id, "01KR4AN62T47VXQ0A3AVSSWFTZ_uswe");
   assert.equal(vm.baseUrl, "https://aws-burst-us-west-2.arker.ai/api");
 }
 
@@ -263,12 +256,13 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
     200,
     {
       run_id: "run_1",
+      state: "completed",
+      started_at: "now",
       stdout: "",
       stdout_encoding: "utf-8",
       stderr: "",
       stderr_encoding: "utf-8",
       exit_code: 0,
-      completed: true,
       tunnels: [],
       retry_count: 2,
     },
@@ -279,7 +273,6 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
 }
 
 await testForkPostsDirectlyToSourceVm();
-await testForkAcceptsLegacyIdResponse();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testRegionRoutesGoldensToMainEndpoint();
