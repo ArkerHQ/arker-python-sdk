@@ -43,8 +43,8 @@ def main() -> int:
         assert run.exit_code == 0
         assert run.stdout == b"hello-from-python-sdk\n"
 
-        vm.sync.write_file("/home/user/python-sdk-e2e.txt", b"hello-from-python-sdk\n")
-        assert vm.sync.read_file("/home/user/python-sdk-e2e.txt") == b"hello-from-python-sdk\n"
+        vm.sync("/home/user/python-sdk-e2e.txt", b"hello-from-python-sdk\n")
+        assert vm.sync("/home/user/python-sdk-e2e.txt") == b"hello-from-python-sdk\n"
 
         child = vm.fork(name="python-sdk-e2e-child")
         try:

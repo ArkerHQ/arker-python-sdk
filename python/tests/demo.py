@@ -65,8 +65,8 @@ try:
     if run.exit_code != 0 or run.stdout != f"{hello}\n".encode():
         raise RuntimeError(f"unexpected run output: exit={run.exit_code} stdout={run.stdout!r}")
 
-    vm.sync.write_file("/home/user/python-sdk-demo.txt", f"{hello}\n")
-    if vm.sync.read_file("/home/user/python-sdk-demo.txt") != f"{hello}\n".encode():
+    vm.sync("/home/user/python-sdk-demo.txt", f"{hello}\n")
+    if vm.sync("/home/user/python-sdk-demo.txt") != f"{hello}\n".encode():
         raise RuntimeError("sync round trip failed")
 
     print(f"PASS {vm.id}")

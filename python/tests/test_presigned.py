@@ -43,8 +43,8 @@ def main() -> int:
     vm = arker.vm(SOURCE_VM).fork(name="python-sdk-presigned")
 
     try:
-        vm.sync.write_file("/home/user/presigned.bin", payload)
-        assert hashlib.sha256(vm.sync.read_file("/home/user/presigned.bin")).hexdigest() == expected
+        vm.sync("/home/user/presigned.bin", payload)
+        assert hashlib.sha256(vm.sync("/home/user/presigned.bin")).hexdigest() == expected
 
         run = vm.run("sha256sum /home/user/presigned.bin")
         assert isinstance(run, CompletedRunResult)

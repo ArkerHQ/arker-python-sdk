@@ -102,11 +102,11 @@ class Vm:
 
 @dataclasses.dataclass(frozen=True)
 class ListVmsResponse:
-    vms: list[Vm]
+    vms: list[VM]
     next_cursor: str | None = None
 
     @property
-    def items(self) -> list[Vm]:
+    def items(self) -> list[VM]:
         return self.vms
 
     @property
@@ -342,8 +342,8 @@ class Arker:
     def provider(self) -> str:
         return self._provider
 
-    def vm(self, vm_id: str) -> "Computer":
-        return Computer(self, vm_id, self._base_url_for(vm_id))
+    def vm(self, vm_id: str) -> "VM":
+        return VM(self, vm_id, self._base_url_for(vm_id))
 
     def fork(
         self,
@@ -361,7 +361,7 @@ class Arker:
         max_memory_mib: int | None = None,
         disk_mib: int | None = None,
         durable: bool | None = None,
-    ) -> "Computer":
+    ) -> "VM":
         """Create a new VM by forking.
 
         Exactly one of ``source_vm_id`` or ``source_vm_name`` must be set.
@@ -387,17 +387,20 @@ class Arker:
             "public": public,
             "network": network,
             "tunnels": tunnels,
-            "disk": disk,
+            "disk": disk if disk is not None else True,
             "vcpu_count": vcpu_count,
             "memory_mib": memory_mib,
             "max_memory_mib": max_memory_mib,
             "disk_mib": disk_mib,
             "durable": durable,
         }
-        base_url = self._burst_base_url if (image is not None and _is_burst_ref(image) and self._burst_base_url) else self._base_url
+        burst_ref = source_vm_name or source_vm_id
+        use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
+        base_url = self._burst_base_url if use_burst else self._base_url
         payload = self._request("POST", "/v1/fork", body, base_url=base_url)
-        vm = _vm_info(payload)
-        return Computer(self, vm.vm_id, self._base_url_for(vm.vm_id))
+        info = _vm_info(payload)
+        # Child lives on the host the fork was posted to.
+        return VM(self, info.vm_id, base_url, info)
 
     def list(
         self,
@@ -425,13 +428,15 @@ class Arker:
             "started_before": started_before,
         })
         payload = self._request("GET", path, base_url=self._control_base_url)
-        return ListVmsResponse(
-            vms=[_vm_info(item) for item in payload.get("vms", [])],
-            next_cursor=_optional_str(payload.get("next_cursor")),
-        )
+        vms = []
+        for item in payload.get("vms", []):
+            info = _vm_info(item)
+            vms.append(VM(self, info.vm_id, self._base_url_for(info.vm_id), info))
+        return ListVmsResponse(vms=vms, next_cursor=_optional_str(payload.get("next_cursor")))
 
-    def get(self, vm_id: str) -> Vm:
-        return _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
+    def get(self, vm_id: str) -> VM:
+        info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
+        return VM(self, vm_id, self._base_url_for(vm_id), info)
 
     def _request(
         self,
@@ -541,20 +546,25 @@ class Filesystems:
         return DeleteFilesystemResponse(deleted=bool(payload.get("deleted")))
 
 
-class Computer:
-    def __init__(self, client: Arker, vm_id: str, base_url: str | None = None) -> None:
+class VM:
+    def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, info: Vm | None = None) -> None:
         self._client = client
         self.id = vm_id
         self.base_url = base_url or client._base_url_for(vm_id)
+        #: Last-known VM data (from fork/get/list); ``None`` for a bare
+        #: handle from ``arker.vm(id)``. Call ``get()`` to refresh.
+        self.info = info
         self.syncs = Syncs(self)
         self.tunnels = Tunnels(self)
         self.runs = Runs(self)
         self.sessions = Sessions(self)
 
-    def get(self) -> Vm:
-        return _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
+    def get(self) -> VM:
+        """Refresh and return a handle carrying current data in ``.info``."""
+        info = _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
+        return VM(self._client, self.id, self.base_url, info)
 
-    def fork(self, **kwargs: Any) -> "Computer":
+    def fork(self, **kwargs: Any) -> "VM":
         """Deprecated: prefer ``Arker.fork(source_vm_id=..., ...)``."""
         return self._client.fork(source_vm_id=self.id, **kwargs)
 
@@ -615,9 +625,103 @@ class Computer:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
         return DeleteVmResponse(deleted=bool(payload.get("deleted")))
 
+    def sync(self, path: str, data: bytes | str | None = None) -> bytes | None:
+        """Read or write a file in this VM over ``POST /v1/vms/{id}/sync``.
+
+        Omit ``data`` to read (returns ``bytes``); pass ``data`` to write
+        (returns ``None``). Inline transfer for small files, presigned
+        uploads for large ones. To mount a standalone filesystem into the
+        VM, use ``vm.syncs.create``.
+        """
+        if data is None:
+            return self._sync_read(path)
+        payload = data.encode("utf-8") if isinstance(data, str) else data
+        if len(payload) <= CHUNK_SIZE:
+            self._sync_write_inline(path, payload)
+        else:
+            self._sync_write_presigned(path, payload)
+        return None
+
+    def _sync_read(self, path: str) -> bytes:
+        payload = self._client._request(
+            "POST", f"{_vm_path(self.id)}/sync",
+            {"op": "read", "path": path}, base_url=self.base_url,
+        )
+        if "content" in payload:
+            return _decode_bytes(str(payload.get("content", "")), str(payload.get("encoding", "utf-8")))
+        url = payload.get("presigned_url")
+        if not isinstance(url, str) or not url:
+            raise ArkerError("internal", "read response missing content/presigned_url", 200)
+        with urllib.request.urlopen(url, timeout=300) as response:
+            return response.read()
+
+    def _sync_write_inline(self, path: str, data: bytes) -> None:
+        result = self._send_one_write({
+            "path": path, "size": len(data), "upload_id": _ulid(),
+            "content": base64.b64encode(data).decode("ascii"), "start": 0, "end": len(data),
+        })
+        _assert_write_complete(result, "inline write")
+
+    def _sync_write_presigned(self, path: str, data: bytes) -> None:
+        request = self._send_one_write({"path": path, "size": len(data), "presigned": True})
+        url = request.get("presigned_url")
+        upload_id = request.get("upload_id")
+        if not isinstance(url, str) or not url or not isinstance(upload_id, str) or not upload_id:
+            raise ArkerError("internal", "write response missing presigned upload fields", 200)
+        self._put_presigned(url, data)
+        result = self._send_one_write({"path": path, "size": len(data), "upload_id": upload_id})
+        _assert_write_complete(result, "presigned write commit")
+
+    def _put_presigned(self, url: str, data: bytes) -> None:
+        for attempt in range(self._client._retry.attempts):
+            try:
+                req = urllib.request.Request(url, method="PUT", data=data)
+                with urllib.request.urlopen(req, timeout=PRESIGNED_PUT_TIMEOUT_S) as response:
+                    if response.status < 400:
+                        return
+                    status = response.status
+            except urllib.error.HTTPError as error:
+                status = error.code
+            except urllib.error.URLError as error:
+                if attempt == self._client._retry.attempts - 1:
+                    raise ArkerError("network_error", f"upload PUT failed: {error}", 0) from error
+                time.sleep(self._client._retry_delay(attempt))
+                continue
+            if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
+                raise ArkerError("internal", f"upload PUT failed: {status}", status)
+            time.sleep(self._client._retry_delay(attempt))
+
+    def _send_one_write(self, entry: dict[str, Any]) -> dict[str, Any]:
+        last_error: dict[str, str] | None = None
+        for attempt in range(self._client._retry.attempts):
+            payload = self._client._request(
+                "POST", f"{_vm_path(self.id)}/sync",
+                {"op": "write", "writes": [entry]}, base_url=self.base_url,
+            )
+            results = payload.get("results")
+            if not isinstance(results, list) or not results:
+                raise ArkerError("internal", "write response missing results[0]", 200)
+            result = results[0]
+            if not isinstance(result, dict):
+                raise ArkerError("internal", "write response result must be an object", 200)
+            error = result.get("error")
+            if not error:
+                return result
+            if not isinstance(error, dict):
+                raise ArkerError("internal", "write response error must be an object", 200)
+            last_error = {"code": str(error.get("code", "internal")), "message": str(error.get("message", ""))}
+            if not _is_retryable(200, last_error) or attempt == self._client._retry.attempts - 1:
+                break
+            time.sleep(self._client._retry_delay(attempt))
+        raise ArkerError(
+            last_error["code"] if last_error else "internal",
+            last_error["message"] if last_error else "write failed",
+            200,
+        )
+
 
 class Runs:
-    def __init__(self, vm: Computer) -> None:
+    def __init__(self, vm: VM) -> None:
         self._vm = vm
 
     def list(
@@ -661,7 +765,7 @@ class Runs:
 
 
 class Sessions:
-    def __init__(self, vm: Computer) -> None:
+    def __init__(self, vm: VM) -> None:
         self._vm = vm
 
     def list(
@@ -712,7 +816,7 @@ class Sessions:
 
 
 class Tunnels:
-    def __init__(self, vm: Computer) -> None:
+    def __init__(self, vm: VM) -> None:
         self._vm = vm
 
     def list(
@@ -749,7 +853,7 @@ class Tunnels:
 
 
 class Syncs:
-    def __init__(self, vm: Computer) -> None:
+    def __init__(self, vm: VM) -> None:
         self._vm = vm
         self._client = vm._client
 
@@ -810,118 +914,6 @@ class Syncs:
             base_url=self._vm.base_url,
         )
         return DeleteSyncResponse(deleted=bool(payload.get("deleted")))
-
-    def read_file(self, path: str) -> bytes:
-        payload = self._client._request(
-            "POST",
-            f"{_vm_path(self._vm.id)}/syncs/read",
-            {"path": path},
-            base_url=self._vm.base_url,
-        )
-        if "content" in payload:
-            return _decode_bytes(str(payload.get("content", "")), str(payload.get("encoding", "utf-8")))
-
-        url = payload.get("presigned_url")
-        if not isinstance(url, str) or not url:
-            raise ArkerError("internal", "read response missing content/presigned_url", 200)
-
-        with urllib.request.urlopen(url, timeout=300) as response:
-            return response.read()
-
-    def write_file(self, path: str, data: bytes | str) -> None:
-        payload = data.encode("utf-8") if isinstance(data, str) else data
-        if len(payload) <= CHUNK_SIZE:
-            self._write_inline(path, payload)
-        else:
-            self._write_presigned(path, payload)
-
-    def _write_inline(self, path: str, data: bytes) -> None:
-        result = self._send_one_write({
-            "path": path,
-            "size": len(data),
-            "upload_id": _ulid(),
-            "content": base64.b64encode(data).decode("ascii"),
-            "start": 0,
-            "end": len(data),
-        })
-        _assert_write_complete(result, "inline write")
-
-    def _write_presigned(self, path: str, data: bytes) -> None:
-        request = self._send_one_write({
-            "path": path,
-            "size": len(data),
-            "presigned": True,
-        })
-        url = request.get("presigned_url")
-        upload_id = request.get("upload_id")
-        if not isinstance(url, str) or not url or not isinstance(upload_id, str) or not upload_id:
-            raise ArkerError("internal", "write response missing presigned upload fields", 200)
-
-        self._put_presigned(url, data)
-        result = self._send_one_write({
-            "path": path,
-            "size": len(data),
-            "upload_id": upload_id,
-        })
-        _assert_write_complete(result, "presigned write commit")
-
-    def _put_presigned(self, url: str, data: bytes) -> None:
-        for attempt in range(self._client._retry.attempts):
-            try:
-                req = urllib.request.Request(url, method="PUT", data=data)
-                with urllib.request.urlopen(req, timeout=PRESIGNED_PUT_TIMEOUT_S) as response:
-                    if response.status < 400:
-                        return
-                    status = response.status
-            except urllib.error.HTTPError as error:
-                status = error.code
-            except urllib.error.URLError as error:
-                if attempt == self._client._retry.attempts - 1:
-                    raise ArkerError("network_error", f"upload PUT failed: {error}", 0) from error
-                time.sleep(self._client._retry_delay(attempt))
-                continue
-
-            if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
-                raise ArkerError("internal", f"upload PUT failed: {status}", status)
-            time.sleep(self._client._retry_delay(attempt))
-
-    def _send_one_write(self, entry: dict[str, Any]) -> dict[str, Any]:
-        last_error: dict[str, str] | None = None
-
-        for attempt in range(self._client._retry.attempts):
-            payload = self._client._request(
-                "POST",
-                f"{_vm_path(self._vm.id)}/syncs/write",
-                {"writes": [entry]},
-                base_url=self._vm.base_url,
-            )
-            results = payload.get("results")
-            if not isinstance(results, list) or not results:
-                raise ArkerError("internal", "write response missing results[0]", 200)
-
-            result = results[0]
-            if not isinstance(result, dict):
-                raise ArkerError("internal", "write response result must be an object", 200)
-
-            error = result.get("error")
-            if not error:
-                return result
-            if not isinstance(error, dict):
-                raise ArkerError("internal", "write response error must be an object", 200)
-
-            last_error = {
-                "code": str(error.get("code", "internal")),
-                "message": str(error.get("message", "")),
-            }
-            if not _is_retryable(200, last_error) or attempt == self._client._retry.attempts - 1:
-                break
-            time.sleep(self._client._retry_delay(attempt))
-
-        raise ArkerError(
-            last_error["code"] if last_error else "internal",
-            last_error["message"] if last_error else "write failed",
-            200,
-        )
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -1139,11 +1131,11 @@ def _sync(payload: dict[str, Any]) -> SyncObject:
 
 def _vm_info(payload: dict[str, Any]) -> Vm:
     return Vm(
-        vm_id=str(payload["vm_id"]),
-        owner_org_id=str(payload["owner_org_id"]),
-        created_at=str(payload["created_at"]),
+        vm_id=str(payload.get("vm_id") or payload.get("id") or ""),
+        owner_org_id=str(payload.get("owner_org_id", "")),
+        created_at=str(payload.get("created_at", "")),
         public=bool(payload.get("public", False)),
-        state=str(payload["state"]),
+        state=str(payload.get("state", "")),
         sessions=[_session_info(item) for item in payload.get("sessions", [])],
         name=_optional_str(payload.get("name")),
         root_source_vm_id=_optional_str(payload.get("root_source_vm_id")),
