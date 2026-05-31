@@ -249,6 +249,9 @@ class SyncObject:
     filesystem_id: str
     path: str
     created_at: str
+    live: bool | None = None
+    live_error: str | None = None
+    idempotent: bool | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -445,6 +448,9 @@ class Arker:
             filesystems=[_filesystem(item) for item in payload.get("filesystems", [])],
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
+
+    def create_filesystem(self, *, name: str) -> Filesystem:
+        return _filesystem(self._request("POST", "/v1/filesystems", {"name": name}, base_url=self._control_base_url))
 
     def get_filesystem(self, filesystem_id: str) -> Filesystem:
         return _filesystem(self._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._control_base_url))
@@ -718,16 +724,11 @@ class VM:
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
 
-    def create_sync(self, *, path: str, filesystem_id: str | None = None, filesystem_name: str | None = None, create_if_missing: bool = False) -> SyncObject:
-        """Bind a filesystem into this VM at ``path`` (creating it if requested)."""
+    def create_sync(self, *, filesystem_id: str, path: str | None = None) -> SyncObject:
+        """Bind a filesystem into this VM at ``path``."""
         payload = self._client._request("POST", f"{_vm_path(self.id)}/syncs", {
-            "path": path, "filesystem_id": filesystem_id,
-            "filesystem_name": filesystem_name, "create_if_missing": create_if_missing,
+            "filesystem_id": filesystem_id, "path": path,
         }, base_url=self.base_url)
-        return _sync(payload)
-
-    def get_sync(self, sync_id: str) -> SyncObject:
-        payload = self._client._request("GET", f"{_vm_path(self.id)}/syncs/{_segment(sync_id)}", base_url=self.base_url)
         return _sync(payload)
 
     def delete_sync(self, sync_id: str) -> DeleteSyncResponse:
@@ -997,12 +998,17 @@ def _filesystem(payload: dict[str, Any]) -> Filesystem:
 
 
 def _sync(payload: dict[str, Any]) -> SyncObject:
+    live = payload.get("live")
+    idempotent = payload.get("idempotent")
     return SyncObject(
         sync_id=str(payload["sync_id"]),
         vm_id=str(payload["vm_id"]),
         filesystem_id=str(payload["filesystem_id"]),
         path=str(payload["path"]),
         created_at=str(payload["created_at"]),
+        live=bool(live) if isinstance(live, bool) else None,
+        live_error=_optional_str(payload.get("live_error")),
+        idempotent=bool(idempotent) if isinstance(idempotent, bool) else None,
     )
 
 

@@ -345,21 +345,13 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
       if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
       return;
     }
-    case "get": {
-      if (!vm) die("usage: arker syncs get <vm_id> <sync_id>");
-      const sid = rest[1] ?? die("missing sync_id");
-      out(await client.vm(vm).getSync(sid));
-      return;
-    }
     case "create": {
-      if (!vm) die("usage: arker syncs create <vm_id> --path /mnt [--filesystem-name foo] [--create]");
-      const path = args.flags.path as string | undefined;
-      if (!path) die("missing --path");
+      if (!vm) die("usage: arker syncs create <vm_id> --filesystem-id <fs> [--path /mnt]");
+      const filesystemId = args.flags["filesystem-id"] as string | undefined;
+      if (!filesystemId) die("missing --filesystem-id");
       out(await client.vm(vm).createSync({
-        path,
-        filesystemId: args.flags["filesystem-id"] as string | undefined,
-        filesystemName: args.flags["filesystem-name"] as string | undefined,
-        createIfMissing: boolFlag(args, "create") ?? false,
+        filesystemId,
+        path: args.flags.path as string | undefined,
       }));
       return;
     }
@@ -372,7 +364,7 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
       return;
     }
     default:
-      die(`usage: arker syncs <ls|get|create|rm> ...  (read/write files with: arker sync)`);
+      die(`usage: arker syncs <ls|create|rm> ...  (read/write files with: arker sync)`);
   }
 }
 
@@ -455,6 +447,12 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
       if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
       return;
     }
+    case "create": {
+      const name = (args.flags.name as string | undefined) ?? rest[0];
+      if (!name) die("usage: arker fs create --name <name>  (or: arker fs create <name>)");
+      out(await client.createFilesystem({ name }));
+      return;
+    }
     case "get": {
       const id = rest[0] ?? die("usage: arker fs get <filesystem_id>");
       out(await client.getFilesystem(id));
@@ -468,7 +466,7 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
       return;
     }
     default:
-      die(`usage: arker fs <ls|get|rm> ...`);
+      die(`usage: arker fs <ls|create|get|rm> ...`);
   }
 }
 
@@ -659,9 +657,9 @@ function usage(): never {
       "  arker vms         <ls|get|rm|fork|run> ...",
       "  arker runs        <ls|get|rm> <vm_id> ...",
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
-      "  arker syncs       <ls|get|create|rm|read|write> <vm_id> ...",
+      "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker tunnels     <ls|get|rm> <vm_id> ...",
-      "  arker filesystems <ls|get|rm> ...   (alias: fs)",
+      "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
       "",
       "Flags:",
       "  --api-key <key>            (or env ARKER_API_KEY)",

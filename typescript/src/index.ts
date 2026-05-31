@@ -103,6 +103,7 @@ export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
 export type Filesystem = ApiSchema<"Filesystem">;
 export type ListFilesystemsResponse = ApiSchema<"ListFilesystemsResponse">;
 export type DeleteFilesystemResponse = ApiSchema<"DeleteFilesystemResponse">;
+export type FilesystemCreateRequest = ApiSchema<"FilesystemCreateRequest">;
 
 // ── Syncs ──────────────────────────────────────────────────────────
 export type SyncObject = ApiSchema<"Sync">;
@@ -366,6 +367,10 @@ export class Arker {
     return this._request("GET", buildQuery("/v1/filesystems", {
       cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
     }), undefined, this.controlBaseUrl);
+  }
+
+  async createFilesystem(request: { name: string }): Promise<Filesystem> {
+    return this._request("POST", "/v1/filesystems", { name: request.name }, this.controlBaseUrl);
   }
 
   async getFilesystem(filesystemId: string): Promise<Filesystem> {
@@ -660,17 +665,11 @@ export class VM {
     }), undefined, this.baseUrl);
   }
 
-  async createSync(request: { path: string; filesystemId?: string; filesystemName?: string; createIfMissing?: boolean }): Promise<SyncObject> {
+  async createSync(request: { filesystemId: string; path?: string }): Promise<SyncObject> {
     return this._client._request<SyncObject>("POST", `${vmPath(this.id)}/syncs`, {
-      path: request.path,
       filesystem_id: request.filesystemId,
-      filesystem_name: request.filesystemName,
-      create_if_missing: request.createIfMissing ?? false,
+      path: request.path,
     }, this.baseUrl);
-  }
-
-  async getSync(syncId: string): Promise<SyncObject> {
-    return this._client._request("GET", `${vmPath(this.id)}/syncs/${pathSegment(syncId)}`, undefined, this.baseUrl);
   }
 
   async deleteSync(syncId: string): Promise<DeleteSyncResponse> {

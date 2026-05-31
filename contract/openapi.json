@@ -564,24 +564,6 @@
           "$ref": "#/components/parameters/SyncId"
         }
       ],
-      "get": {
-        "operationId": "getSync",
-        "responses": {
-          "200": {
-            "description": "Sync details.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Sync"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
       "delete": {
         "operationId": "deleteSync",
         "responses": {
@@ -615,8 +597,12 @@
             "application/json": {
               "schema": {
                 "oneOf": [
-                  { "$ref": "#/components/schemas/SyncReadRequest" },
-                  { "$ref": "#/components/schemas/SyncWriteRequest" }
+                  {
+                    "$ref": "#/components/schemas/SyncReadRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SyncWriteRequest"
+                  }
                 ]
               }
             }
@@ -629,8 +615,12 @@
               "application/json": {
                 "schema": {
                   "oneOf": [
-                    { "$ref": "#/components/schemas/SyncReadResponse" },
-                    { "$ref": "#/components/schemas/SyncWriteResponse" }
+                    {
+                      "$ref": "#/components/schemas/SyncReadResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncWriteResponse"
+                    }
                   ]
                 }
               }
@@ -643,7 +633,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ \"op\": \"read\", \"path\" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ \"op\": \"write\", \"writes\": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation — see `POST /v1/vms/{id}/syncs`."
+        "description": "Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ \"op\": \"read\", \"path\" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ \"op\": \"write\", \"writes\": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation \u2014 see `POST /v1/vms/{id}/syncs`."
       }
     },
     "/v1/vms/{id}/tunnels": {
@@ -759,6 +749,34 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListFilesystemsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createFilesystem",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilesystemCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created filesystem.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Filesystem"
                 }
               }
             }
@@ -2201,6 +2219,15 @@
               "aws-burst",
               null
             ]
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "live_error": {
+            "type": "string"
+          },
+          "idempotent": {
+            "type": "boolean"
           }
         }
       },
@@ -2240,25 +2267,12 @@
       "SyncCreateRequest": {
         "type": "object",
         "required": [
-          "path"
+          "filesystem_id"
         ],
         "additionalProperties": false,
         "properties": {
           "filesystem_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "filesystem_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "create_if_missing": {
-            "type": "boolean",
-            "default": false
+            "type": "string"
           },
           "path": {
             "type": "string",
@@ -2754,6 +2768,18 @@
         "properties": {
           "deleted": {
             "type": "boolean"
+          }
+        }
+      },
+      "FilesystemCreateRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
           }
         }
       }

@@ -198,7 +198,7 @@ export interface paths {
             };
             cookie?: never;
         };
-        get: operations["getSync"];
+        get?: never;
         put?: never;
         post?: never;
         delete: operations["deleteSync"];
@@ -272,7 +272,7 @@ export interface paths {
         };
         get: operations["listFilesystems"];
         put?: never;
-        post?: never;
+        post: operations["createFilesystem"];
         delete?: never;
         options?: never;
         head?: never;
@@ -610,6 +610,9 @@ export interface components {
             region?: string | null;
             /** @enum {string|null} */
             provider?: "aws" | "aws-burst" | null;
+            live?: boolean;
+            live_error?: string;
+            idempotent?: boolean;
         };
         ListSyncsResponse: {
             syncs: components["schemas"]["Sync"][];
@@ -619,12 +622,9 @@ export interface components {
             deleted: boolean;
         };
         SyncCreateRequest: {
-            filesystem_id?: string | null;
-            filesystem_name?: string | null;
-            /** @default false */
-            create_if_missing?: boolean;
+            filesystem_id: string;
             /** @description VM-side path. Returns `ErrorResponse` code `conflict` if a sync already exists at this path. */
-            path: string;
+            path?: string;
         };
         SyncReadRequest: {
             /** @constant */
@@ -734,6 +734,9 @@ export interface components {
         };
         DeleteFilesystemResponse: {
             deleted: boolean;
+        };
+        FilesystemCreateRequest: {
+            name: string;
         };
     };
     responses: {
@@ -1185,30 +1188,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    getSync: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-                sync_id: components["parameters"]["SyncId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Sync details. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Sync"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     deleteSync: {
         parameters: {
             query?: never;
@@ -1360,6 +1339,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListFilesystemsResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    createFilesystem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FilesystemCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Created filesystem. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Filesystem"];
                 };
             };
             default: components["responses"]["Error"];

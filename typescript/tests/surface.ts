@@ -105,7 +105,6 @@ await call("Syncs.readFile", async () => {
   return b;
 });
 await call("Syncs.list", () => computer.listSyncs(), { stubOk: true });
-await call("Syncs.get", () => computer.getSync("sync_does_not_exist"), { stubOk: true });
 await call("Syncs.delete", () => computer.deleteSync("sync_does_not_exist"), { stubOk: true });
 
 // ── Tunnels ─────────────────────────────────────────────────────────
