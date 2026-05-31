@@ -206,9 +206,10 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   let sourceOrgId: string | undefined = srcOrgIdFlag;
 
   if (!sourceVmId && !sourceVmName && refPositional) {
-    // Shortcut: `arker fork arkuntu` → public-goldens fork.
+    // Shortcut: `arker fork ubuntu-full` → source-vm-name. Org defaulting
+    // (known golden → Arker org, otherwise your own org) is handled by the
+    // SDK's fork(); pass --source-org-id to override.
     sourceVmName = refPositional;
-    if (!sourceOrgId) sourceOrgId = ARKER_ORG_ID;
   }
 
   if (!sourceVmId && !sourceVmName) {

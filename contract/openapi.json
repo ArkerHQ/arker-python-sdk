@@ -989,9 +989,10 @@
         "enum": [
           "running",
           "completed",
+          "failed",
           "cancelled"
         ],
-        "description": "Unified lifecycle state for a Run. `cancelled` covers both\nclient cancellation and server-side abort. Failure is NOT a\nstate \u2014 failed runs land in `completed` with non-zero\n`exit_code`.\n"
+        "description": "Lifecycle state for a Run. `running` = command in flight. `completed` = ran to completion; `exit_code` conveys success (0) or a non-zero program exit (still `completed`). `failed` = the platform could not run/finish the command (worker died, evicted mid-run); `fail_reason` explains why, distinct from the program's `stderr`. `cancelled` = cancelled by the client."
       },
       "TunnelState": {
         "type": "string",
@@ -1149,17 +1150,6 @@
                 "type": "null"
               }
             ]
-          },
-          "tunnels": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/InboundRequest"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Optional inbound tunnel allocation at fork time."
           },
           "disk": {
             "type": "boolean",
@@ -1416,16 +1406,6 @@
             "items": {
               "$ref": "#/components/schemas/Tunnel"
             }
-          },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         }
       },
@@ -1673,16 +1653,6 @@
               "$ref": "#/components/schemas/Tunnel"
             },
             "default": []
-          },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         }
       },
@@ -1734,6 +1704,13 @@
               "null"
             ]
           },
+          "fail_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
+          },
           "stdout": {
             "type": "string"
           },
@@ -1751,16 +1728,6 @@
             "items": {
               "$ref": "#/components/schemas/Tunnel"
             }
-          },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "retry_count": {
             "type": "integer",
@@ -1846,6 +1813,13 @@
               "integer",
               "null"
             ]
+          },
+          "fail_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
           },
           "vm_id": {
             "type": [

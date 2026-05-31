@@ -43,6 +43,17 @@ DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
 BURST_SOURCE_REFS = {"arkuntu"}
 BURST_VM_ID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$")
 
+# Public golden VM names owned by the Arker org. Forking one of these by name
+# auto-fills source_org_id = ARKER_ORG_ID (see Arker.fork).
+GOLDEN_NAMES = frozenset({
+    "arkuntu",
+    "ubuntu", "ubuntu-small", "ubuntu-nodisk", "ubuntu-nonet-nodisk",
+    "ubuntu-full", "ubuntu-full-32",
+    "ubuntu-py-repl", "ubuntu-js-repl",
+    "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
+    "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
+})
+
 
 @dataclasses.dataclass(frozen=True)
 class RetryOptions:
@@ -97,7 +108,6 @@ class Vm:
     disk_mib: int | None = None
     worker_id: str | None = None
     tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
-    network: dict[str, Any] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -145,14 +155,19 @@ class CompletedRunResult:
     stderr: bytes
     stderr_encoding: str
     exit_code: int
+    run_id: str | None = None  # present for executed runs; None for operation acks
+    state: str = "completed"   # "completed" | "failed"; mirrors the run-status (Run) shape
+    # System failure explanation when state is "failed"; distinct from
+    # stderr (the program's own error output). None otherwise.
+    fail_reason: str | None = None
     type: str = "completed"
 
 
 @dataclasses.dataclass(frozen=True)
 class BackgroundRunResult:
     run_id: str
+    state: str = "running"
     tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
-    network: dict[str, Any] | None = None
     type: str = "background"
 
 
@@ -162,7 +177,7 @@ RunResult = CompletedRunResult | BackgroundRunResult
 @dataclasses.dataclass(frozen=True)
 class Run:
     run_id: str
-    state: str  # "running" | "completed" | "cancelled"
+    state: str  # "running" | "completed" | "failed" | "cancelled"
     started_at: str
     stdout: bytes
     stdout_encoding: str
@@ -170,10 +185,12 @@ class Run:
     stderr_encoding: str
     tunnels: list[Tunnel]
     exit_code: int | None = None
+    # System failure explanation when state is "failed"; distinct from
+    # stderr (the program's own error output). None otherwise.
+    fail_reason: str | None = None
     session_id: str | None = None
     command: str | None = None
     completed_at: str | None = None
-    network: dict[str, Any] | None = None
     retry_count: int = 0
 
 
@@ -184,6 +201,8 @@ class RunSummary:
     state: str
     started_at: str
     exit_code: int | None = None
+    # System failure explanation when state is "failed"; see Run.fail_reason.
+    fail_reason: str | None = None
     session_id: str | None = None
     command: str | None = None
     completed_at: str | None = None
@@ -243,20 +262,17 @@ class DeleteFilesystemResponse:
 
 
 @dataclasses.dataclass(frozen=True)
-class SyncObject:
+class Sync:
     sync_id: str
     vm_id: str
     filesystem_id: str
     path: str
-    created_at: str
-    live: bool | None = None
-    live_error: str | None = None
-    idempotent: bool | None = None
+    region: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
 class ListSyncsResponse:
-    syncs: list[SyncObject]
+    syncs: list[Sync]
     next_cursor: str | None = None
 
 
@@ -349,6 +365,7 @@ class Arker:
 
     def fork(
         self,
+        source: "VM | str | None" = None,
         *,
         source_vm_id: str | None = None,
         source_vm_name: str | None = None,
@@ -356,7 +373,6 @@ class Arker:
         name: str | None = None,
         public: bool | None = None,
         network: bool | str | dict[str, Any] | None = None,
-        tunnels: dict[str, Any] | None = None,
         disk: bool | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
@@ -364,23 +380,42 @@ class Arker:
         disk_mib: int | None = None,
         durable: bool | None = None,
     ) -> "VM":
-        """Create a new VM by forking.
+        """Create a new VM by forking from a source.
 
-        Exactly one of ``source_vm_id`` or ``source_vm_name`` must be set.
+        The source can be passed positionally or by keyword:
 
+        - ``fork("ubuntu-full")`` — fork a public golden by name (the Arker
+          org is filled in automatically for known goldens).
+        - ``fork("base")`` — fork a VM by name in your own org.
+        - ``fork(vm)`` — fork an existing ``VM`` (uses its id).
         - ``fork(source_vm_id="vm_abc...")`` — fork by global id.
-        - ``fork(source_vm_name="base")`` — fork a VM by name in the
-          caller's org.
-        - ``fork(source_vm_name="arkuntu", source_org_id=ARKER_ORG_ID)``
-          — fork the public arkuntu golden.
+        - ``fork(source_vm_name="base", source_org_id="org_...")`` — fork a
+          named VM in a specific org (it must be ``public``).
 
-        ``name`` (optional) is the *new* VM's name in the caller's org.
-        Forking a VM in another org requires that VM to be ``public``.
+        ``source_org_id`` defaults to the Arker org when ``source_vm_name`` is
+        a known public golden, otherwise to your own org; an explicit value
+        always wins, and it's irrelevant when forking by id. ``name``
+        (optional) is the *new* VM's name in your org.
         """
+        # Positional source: a VM handle (use its id) or a name string.
+        if source is not None:
+            if source_vm_id or source_vm_name:
+                raise ArkerError("bad_request", "fork: pass the source positionally or by keyword, not both", 400)
+            if isinstance(source, VM):
+                source_vm_id = source.id
+            elif isinstance(source, str):
+                source_vm_name = source
+            else:
+                raise ArkerError("bad_request", "fork source must be a VM or a source-name string", 400)
         if not source_vm_id and not source_vm_name:
-            raise ArkerError("bad_request", "fork requires source_vm_id or source_vm_name", 400)
+            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, or source_vm_id)", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
+        # A public golden by name defaults to the Arker org; any other name
+        # defaults (server-side) to the caller's own org. Explicit wins;
+        # irrelevant when forking by id.
+        if source_vm_name and source_org_id is None and source_vm_name in GOLDEN_NAMES:
+            source_org_id = ARKER_ORG_ID
         body = {
             "source_vm_id": source_vm_id,
             "source_vm_name": source_vm_name,
@@ -388,7 +423,6 @@ class Arker:
             "name": name,
             "public": public,
             "network": network,
-            "tunnels": tunnels,
             "disk": disk if disk is not None else True,
             "vcpu_count": vcpu_count,
             "memory_mib": memory_mib,
@@ -724,7 +758,7 @@ class VM:
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
 
-    def create_sync(self, *, filesystem_id: str, path: str | None = None) -> SyncObject:
+    def create_sync(self, *, filesystem_id: str, path: str | None = None) -> Sync:
         """Bind a filesystem into this VM at ``path``."""
         payload = self._client._request("POST", f"{_vm_path(self.id)}/syncs", {
             "filesystem_id": filesystem_id, "path": path,
@@ -997,18 +1031,13 @@ def _filesystem(payload: dict[str, Any]) -> Filesystem:
     )
 
 
-def _sync(payload: dict[str, Any]) -> SyncObject:
-    live = payload.get("live")
-    idempotent = payload.get("idempotent")
-    return SyncObject(
+def _sync(payload: dict[str, Any]) -> Sync:
+    return Sync(
         sync_id=str(payload["sync_id"]),
         vm_id=str(payload["vm_id"]),
         filesystem_id=str(payload["filesystem_id"]),
         path=str(payload["path"]),
-        created_at=str(payload["created_at"]),
-        live=bool(live) if isinstance(live, bool) else None,
-        live_error=_optional_str(payload.get("live_error")),
-        idempotent=bool(idempotent) if isinstance(idempotent, bool) else None,
+        region=_optional_str(payload.get("region")),
     )
 
 
@@ -1031,7 +1060,6 @@ def _vm_info(payload: dict[str, Any]) -> Vm:
         disk_mib=_optional_int(payload.get("disk_mib")),
         worker_id=_optional_str(payload.get("worker_id")),
         tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
-        network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
     )
 
 
@@ -1043,13 +1071,16 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
             stderr=_decode_bytes(str(payload["stderr"]), str(payload["stderr_encoding"])),
             stderr_encoding=str(payload["stderr_encoding"]),
             exit_code=int(payload["exit_code"]),
+            run_id=str(payload["run_id"]) if isinstance(payload.get("run_id"), str) else None,
+            state=str(payload["state"]) if isinstance(payload.get("state"), str) else "completed",
+            fail_reason=_optional_str(payload.get("fail_reason")),
         )
 
     if isinstance(payload.get("run_id"), str):
         return BackgroundRunResult(
             run_id=str(payload["run_id"]),
+            state=str(payload["state"]) if isinstance(payload.get("state"), str) else "running",
             tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
-            network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
         )
 
     raise ArkerError("internal", "unrecognized run response shape", 200)
@@ -1067,10 +1098,10 @@ def _run_status_response(payload: dict[str, Any]) -> Run:
         stderr_encoding=str(payload["stderr_encoding"]),
         tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
         exit_code=_optional_int(payload.get("exit_code")),
+        fail_reason=_optional_str(payload.get("fail_reason")),
         session_id=_optional_str(payload.get("session_id")),
         command=_optional_str(payload.get("command")),
         completed_at=_optional_str(payload.get("completed_at")),
-        network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
         retry_count=int(retry_count) if isinstance(retry_count, int) else 0,
     )
 
@@ -1081,6 +1112,7 @@ def _run_summary(payload: dict[str, Any]) -> RunSummary:
         state=str(payload["state"]),
         started_at=str(payload["started_at"]),
         exit_code=_optional_int(payload.get("exit_code")),
+        fail_reason=_optional_str(payload.get("fail_reason")),
         session_id=_optional_str(payload.get("session_id")),
         command=_optional_str(payload.get("command")),
         completed_at=_optional_str(payload.get("completed_at")),

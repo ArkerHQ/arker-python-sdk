@@ -20,6 +20,17 @@ export const CHUNK_SIZE = 4 * 1024 * 1024;
  */
 export const ARKER_ORG_ID = "ArkerHQ";
 
+/** Public golden VM names owned by the Arker org. Forking one of these by
+ * name auto-fills `sourceOrgId = ARKER_ORG_ID` (see `Arker.fork`). */
+const GOLDEN_NAMES = new Set<string>([
+  "arkuntu",
+  "ubuntu", "ubuntu-small", "ubuntu-nodisk", "ubuntu-nonet-nodisk",
+  "ubuntu-full", "ubuntu-full-32",
+  "ubuntu-py-repl", "ubuntu-js-repl",
+  "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
+  "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
+]);
+
 const DEFAULT_RETRY_ATTEMPTS = 4;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
@@ -106,7 +117,7 @@ export type DeleteFilesystemResponse = ApiSchema<"DeleteFilesystemResponse">;
 export type FilesystemCreateRequest = ApiSchema<"FilesystemCreateRequest">;
 
 // ── Syncs ──────────────────────────────────────────────────────────
-export type SyncObject = ApiSchema<"Sync">;
+export type Sync = ApiSchema<"Sync">;
 export type ListSyncsResponse = ApiSchema<"ListSyncsResponse">;
 export type DeleteSyncResponse = ApiSchema<"DeleteSyncResponse">;
 export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
@@ -170,18 +181,26 @@ export type RunTunnelStatus = Tunnel;
 // ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
   type: "completed";
+  /** The run's own id. Present for executed runs; absent for operation acks. */
+  runId?: string;
+  /** Lifecycle state — "completed" or "failed". Mirrors the run-status (`Run`) shape. */
+  state: string;
   stdout: Uint8Array;
   stdoutEncoding: string;
   stderr: Uint8Array;
   stderrEncoding: string;
   exitCode: number;
+  /** System failure explanation when `state` is "failed". Distinct from
+   * `stderr` (the program's own error output); null otherwise. */
+  failReason?: string | null;
 }
 
 export interface BackgroundRunResult {
   type: "background";
   runId: string;
+  /** Lifecycle state — "running". */
+  state: string;
   tunnels: Tunnel[];
-  network?: NetworkStatus | null;
 }
 
 export type RunResult = CompletedRunResult | BackgroundRunResult;
@@ -276,54 +295,75 @@ export class Arker {
   }
 
   /**
-   * Create a new VM by forking.
+   * Create a new VM by forking from a source.
    *
+   *     fork("ubuntu-full")                       // public golden by name
+   *     fork("base")                              // a VM by name in your org
+   *     fork(vm)                                  // an existing VM (uses its id)
    *     fork({ sourceVmId: "vm_abc..." })
-   *     fork({ sourceVmName: "base" })                            // caller's org
-   *     fork({ sourceVmName: "arkuntu", sourceOrgId: ARKER_ORG_ID })
+   *     fork({ sourceVmName: "base", sourceOrgId: "org_..." })
    *
-   * Exactly one of `sourceVmId` or `sourceVmName` must be set. When
-   * `sourceVmName` is used, `sourceOrgId` selects which org to look it
-   * up in; without it the server defaults to the caller's org. Forking
-   * a VM in another org requires that VM to be `public: true`. The new
-   * VM's name (in the caller's org) is passed as `name`.
+   * The source can be a name string, a `VM` handle, or a `ForkSource`
+   * object. `sourceOrgId` defaults to the Arker org when `sourceVmName`
+   * is a known public golden, otherwise to your own org; an explicit
+   * value always wins, and it's irrelevant when forking by id. Forking a
+   * VM in another org requires that VM to be `public: true`. The new VM's
+   * name (in your org) is passed as `name`. When the source is a name or
+   * `VM`, extra fork options go in the second `opts` argument.
    */
-  async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<VM> {
-    if (!source.sourceVmId && !source.sourceVmName) {
+  async fork(
+    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>),
+    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> = {},
+  ): Promise<VM> {
+    // Normalize the source: a name string, a VM handle (use its id), or a
+    // ForkSource object.
+    const src: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> =
+      typeof source === "string"
+        ? { sourceVmName: source, ...opts }
+        : source instanceof VM
+          ? { sourceVmId: source.id, ...opts }
+          : source;
+    if (!src.sourceVmId && !src.sourceVmName) {
       throw new ArkerError(
         "bad_request",
-        "fork requires sourceVmId or sourceVmName",
+        "fork requires a source (a name, a VM, sourceVmName, or sourceVmId)",
         400,
       );
     }
-    if (source.sourceVmId && source.sourceVmName) {
+    if (src.sourceVmId && src.sourceVmName) {
       throw new ArkerError(
         "bad_request",
         "fork: pass only one of sourceVmId or sourceVmName",
         400,
       );
     }
+    // A public golden by name defaults to the Arker org; any other name
+    // defaults (server-side) to the caller's own org. Explicit wins.
+    const sourceOrgId =
+      src.sourceOrgId ??
+      (src.sourceVmName !== undefined && GOLDEN_NAMES.has(src.sourceVmName)
+        ? ARKER_ORG_ID
+        : undefined);
     const body: ForkRequest = {
-      source_vm_id: source.sourceVmId ?? null,
-      source_vm_name: source.sourceVmName ?? null,
-      source_org_id: source.sourceOrgId ?? null,
-      name: source.name ?? null,
-      public: source.public ?? null,
-      network: source.network ?? null,
-      tunnels: source.tunnels ?? null,
-      disk: source.disk ?? true,
-      vcpu_count: source.vcpu_count ?? null,
-      memory_mib: source.memory_mib ?? null,
-      max_memory_mib: source.max_memory_mib ?? null,
-      disk_mib: source.disk_mib ?? null,
-      durable: source.durable ?? null,
+      source_vm_id: src.sourceVmId ?? null,
+      source_vm_name: src.sourceVmName ?? null,
+      source_org_id: sourceOrgId ?? null,
+      name: src.name ?? null,
+      public: src.public ?? null,
+      network: src.network ?? null,
+      disk: src.disk ?? true,
+      vcpu_count: src.vcpu_count ?? null,
+      memory_mib: src.memory_mib ?? null,
+      max_memory_mib: src.max_memory_mib ?? null,
+      disk_mib: src.disk_mib ?? null,
+      durable: src.durable ?? null,
     };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
     const useBurst =
-      source.sourceOrgId === ARKER_ORG_ID &&
-      source.sourceVmName !== undefined &&
-      isBurstRef(source.sourceVmName);
+      sourceOrgId === ARKER_ORG_ID &&
+      src.sourceVmName !== undefined &&
+      isBurstRef(src.sourceVmName);
     const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
     const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
@@ -499,7 +539,6 @@ export class VM {
   readonly worker_id?: string | null;
   readonly sessions?: Session[];
   readonly tunnels?: Tunnel[];
-  readonly network?: NetworkStatus | null;
 
   constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), data?: Vm) {
     this._client = client;
@@ -665,8 +704,8 @@ export class VM {
     }), undefined, this.baseUrl);
   }
 
-  async createSync(request: { filesystemId: string; path?: string }): Promise<SyncObject> {
-    return this._client._request<SyncObject>("POST", `${vmPath(this.id)}/syncs`, {
+  async createSync(request: { filesystemId: string; path?: string }): Promise<Sync> {
+    return this._client._request<Sync>("POST", `${vmPath(this.id)}/syncs`, {
       filesystem_id: request.filesystemId,
       path: request.path,
     }, this.baseUrl);
@@ -835,19 +874,22 @@ function parseRunResponse(payload: unknown): RunResult {
     const stderrEncoding = stringField(body.stderr_encoding, "run response.stderr_encoding");
     return {
       type: "completed",
+      runId: typeof body.run_id === "string" ? body.run_id : undefined,
+      state: typeof body.state === "string" ? body.state : "completed",
       stdout: decodeBytes(stdout, stdoutEncoding),
       stdoutEncoding,
       stderr: decodeBytes(stderr, stderrEncoding),
       stderrEncoding,
       exitCode: numberField(body.exit_code, "run response.exit_code"),
+      failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
     };
   }
   if (typeof body.run_id === "string") {
     return {
       type: "background",
       runId: body.run_id,
+      state: typeof body.state === "string" ? body.state : "running",
       tunnels: Array.isArray(body.tunnels) ? body.tunnels as Tunnel[] : [],
-      network: isObject(body.network) ? body.network as unknown as NetworkStatus : null,
     };
   }
   throw new ArkerError("internal", "unrecognized run response shape", 200);

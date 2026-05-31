@@ -317,13 +317,10 @@ export interface components {
         VmState: "idle" | "running";
         SessionState: components["schemas"]["VmState"];
         /**
-         * @description Unified lifecycle state for a Run. `cancelled` covers both
-         *     client cancellation and server-side abort. Failure is NOT a
-         *     state — failed runs land in `completed` with non-zero
-         *     `exit_code`.
+         * @description Lifecycle state for a Run. `running` = command in flight. `completed` = ran to completion; `exit_code` conveys success (0) or a non-zero program exit (still `completed`). `failed` = the platform could not run/finish the command (worker died, evicted mid-run); `fail_reason` explains why, distinct from the program's `stderr`. `cancelled` = cancelled by the client.
          * @enum {string}
          */
-        RunState: "running" | "completed" | "cancelled";
+        RunState: "running" | "completed" | "failed" | "cancelled";
         /**
          * @description `starting` = backend is allocating the tunnel; `open` = accepting
          *     connections; `closed` = torn down or never came up.
@@ -364,8 +361,6 @@ export interface components {
             /** @description Make the new VM publicly forkable from other orgs. */
             public?: boolean | null;
             network?: components["schemas"]["NetworkPolicyInput"] | null;
-            /** @description Optional inbound tunnel allocation at fork time. */
-            tunnels?: components["schemas"]["InboundRequest"] | null;
             /** @default true */
             disk?: boolean;
             vcpu_count?: number | null;
@@ -421,7 +416,6 @@ export interface components {
             worker_id?: string | null;
             sessions: components["schemas"]["Session"][];
             tunnels?: components["schemas"]["Tunnel"][];
-            network?: components["schemas"]["NetworkStatus"] | null;
         };
         ListVmsResponse: {
             vms: components["schemas"]["Vm"][];
@@ -495,7 +489,6 @@ export interface components {
             run_id: string;
             /** @default [] */
             tunnels?: components["schemas"]["Tunnel"][];
-            network?: components["schemas"]["NetworkStatus"] | null;
         };
         Run: {
             run_id: string;
@@ -505,12 +498,13 @@ export interface components {
             started_at: string;
             completed_at?: string | null;
             exit_code: number | null;
+            /** @description System failure explanation when `state` is `failed` (e.g. "worker died: <id>"). Distinct from `stderr`, which is the program's own output. */
+            fail_reason?: string | null;
             stdout: string;
             stdout_encoding: string;
             stderr: string;
             stderr_encoding: string;
             tunnels: components["schemas"]["Tunnel"][];
-            network?: components["schemas"]["NetworkStatus"] | null;
             /** @default 0 */
             retry_count?: number;
             vm_id?: string | null;
@@ -528,6 +522,8 @@ export interface components {
             started_at: string;
             completed_at?: string | null;
             exit_code: number | null;
+            /** @description System failure explanation when `state` is `failed` (e.g. "worker died: <id>"). Distinct from `stderr`, which is the program's own output. */
+            fail_reason?: string | null;
             vm_id?: string | null;
             vm_name?: string | null;
             source_org_id?: string | null;
