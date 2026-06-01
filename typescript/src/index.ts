@@ -402,23 +402,26 @@ export class Arker {
     return new VM(this, vmId, this._baseUrlFor(vmId), data);
   }
 
-  // ── Filesystems (org-scoped, control-plane) ─────────────────────────
+  // ── Filesystems (region-scoped, served by arkerd directly) ──────────
+  // Route to the regional endpoint (baseUrl), not the control plane: the
+  // control-plane path (arker.ai → api_proxy_bash) does not route
+  // /v1/filesystems, while the regional NLB → arkerd serves the full CRUD.
   async listFilesystems(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
     return this._request("GET", buildQuery("/v1/filesystems", {
       cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
-    }), undefined, this.controlBaseUrl);
+    }), undefined, this.baseUrl);
   }
 
   async createFilesystem(request: { name: string }): Promise<Filesystem> {
-    return this._request("POST", "/v1/filesystems", { name: request.name }, this.controlBaseUrl);
+    return this._request("POST", "/v1/filesystems", { name: request.name }, this.baseUrl);
   }
 
   async getFilesystem(filesystemId: string): Promise<Filesystem> {
-    return this._request("GET", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.controlBaseUrl);
+    return this._request("GET", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.baseUrl);
   }
 
   async deleteFilesystem(filesystemId: string): Promise<DeleteFilesystemResponse> {
-    return this._request("DELETE", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.controlBaseUrl);
+    return this._request("DELETE", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.baseUrl);
   }
 
   /** @internal */

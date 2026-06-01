@@ -477,20 +477,24 @@ class Arker:
     # ── Filesystems (org-scoped, control-plane) ─────────────────────────
     def list_filesystems(self, *, cursor: str | None = None, limit: int | None = None, name_prefix: str | None = None) -> ListFilesystemsResponse:
         path = _build_query("/v1/filesystems", {"cursor": cursor, "limit": limit, "name_prefix": name_prefix})
-        payload = self._request("GET", path, base_url=self._control_base_url)
+        # Filesystems are region-scoped and served by arkerd directly. Route to
+        # the regional endpoint (base_url) rather than the control plane: the
+        # control-plane path (arker.ai → api_proxy_bash) does not route
+        # /v1/filesystems, while the regional NLB → arkerd serves it.
+        payload = self._request("GET", path, base_url=self._base_url)
         return ListFilesystemsResponse(
             filesystems=[_filesystem(item) for item in payload.get("filesystems", [])],
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
 
     def create_filesystem(self, *, name: str) -> Filesystem:
-        return _filesystem(self._request("POST", "/v1/filesystems", {"name": name}, base_url=self._control_base_url))
+        return _filesystem(self._request("POST", "/v1/filesystems", {"name": name}, base_url=self._base_url))
 
     def get_filesystem(self, filesystem_id: str) -> Filesystem:
-        return _filesystem(self._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._control_base_url))
+        return _filesystem(self._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._base_url))
 
     def delete_filesystem(self, filesystem_id: str) -> DeleteFilesystemResponse:
-        payload = self._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._control_base_url)
+        payload = self._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._base_url)
         return DeleteFilesystemResponse(deleted=bool(payload.get("deleted")))
 
     def _request(
