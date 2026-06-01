@@ -8,7 +8,7 @@
  *   npm run demo
  */
 
-import { Arker, ArkerError, Computer, type CompletedRunResult } from "../src/index.js";
+import { Arker, ArkerError, VM, type CompletedRunResult } from "../src/index.js";
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -50,9 +50,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 
 const arker = new Arker({ apiKey, baseUrl, region });
 const source = arker.vm(sourceVm);
-if (!(source instanceof Computer)) throw new Error("vm() did not return a Computer");
+if (!(source instanceof VM)) throw new Error("vm() did not return a VM");
 
-let vm: Computer | undefined;
+let vm: VM | undefined;
 
 try {
   vm = await source.fork({ name: "ts-sdk-demo" });
@@ -64,8 +64,8 @@ try {
     throw new Error(`unexpected run output: exit=${run.exitCode} stdout=${JSON.stringify(decode(run.stdout))}`);
   }
 
-  await vm.sync.writeFile("/home/user/ts-sdk-demo.txt", `${hello}\n`);
-  const file = await vm.sync.readFile("/home/user/ts-sdk-demo.txt");
+  await vm.sync("/home/user/ts-sdk-demo.txt", `${hello}\n`);
+  const file = await vm.sync("/home/user/ts-sdk-demo.txt");
   if (decode(file) !== `${hello}\n`) throw new Error("sync round trip failed");
 
   console.log(`PASS ${vm.id}`);

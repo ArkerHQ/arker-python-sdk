@@ -564,24 +564,6 @@
           "$ref": "#/components/parameters/SyncId"
         }
       ],
-      "get": {
-        "operationId": "getSync",
-        "responses": {
-          "200": {
-            "description": "Sync details.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Sync"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
       "delete": {
         "operationId": "deleteSync",
         "responses": {
@@ -601,31 +583,45 @@
         }
       }
     },
-    "/v1/vms/{id}/syncs/read": {
+    "/v1/vms/{id}/sync": {
       "parameters": [
         {
           "$ref": "#/components/parameters/VmId"
         }
       ],
       "post": {
-        "operationId": "syncRead",
+        "operationId": "sync",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SyncReadRequest"
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SyncReadRequest"
+                  },
+                  {
+                    "$ref": "#/components/schemas/SyncWriteRequest"
+                  }
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Read result.",
+            "description": "Read or write result, matching the request op.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SyncReadResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SyncReadResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SyncWriteResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -637,46 +633,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read a file from the VM filesystem (including mounted sync paths)."
-      }
-    },
-    "/v1/vms/{id}/syncs/write": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
-        }
-      ],
-      "post": {
-        "operationId": "syncWrite",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SyncWriteRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Write result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SyncWriteResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "$ref": "#/components/responses/UnsupportedOperation"
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "description": "Write files to the VM filesystem (including mounted sync paths). Each entry is an inline chunk or a presigned-upload step."
+        "description": "Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ \"op\": \"read\", \"path\" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ \"op\": \"write\", \"writes\": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation \u2014 see `POST /v1/vms/{id}/syncs`."
       }
     },
     "/v1/vms/{id}/tunnels": {
@@ -792,6 +749,34 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ListFilesystemsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createFilesystem",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FilesystemCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Created filesystem.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Filesystem"
                 }
               }
             }
@@ -1004,9 +989,10 @@
         "enum": [
           "running",
           "completed",
+          "failed",
           "cancelled"
         ],
-        "description": "Unified lifecycle state for a Run. `cancelled` covers both\nclient cancellation and server-side abort. Failure is NOT a\nstate \u2014 failed runs land in `completed` with non-zero\n`exit_code`.\n"
+        "description": "Lifecycle state for a Run. `running` = command in flight. `completed` = ran to completion; `exit_code` conveys success (0) or a non-zero program exit (still `completed`). `failed` = the platform could not run/finish the command (worker died, evicted mid-run); `fail_reason` explains why, distinct from the program's `stderr`. `cancelled` = cancelled by the client."
       },
       "TunnelState": {
         "type": "string",
@@ -1164,17 +1150,6 @@
                 "type": "null"
               }
             ]
-          },
-          "tunnels": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/InboundRequest"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Optional inbound tunnel allocation at fork time."
           },
           "disk": {
             "type": "boolean",
@@ -1431,16 +1406,6 @@
             "items": {
               "$ref": "#/components/schemas/Tunnel"
             }
-          },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         }
       },
@@ -1688,16 +1653,6 @@
               "$ref": "#/components/schemas/Tunnel"
             },
             "default": []
-          },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         }
       },
@@ -1749,6 +1704,13 @@
               "null"
             ]
           },
+          "fail_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
+          },
           "stdout": {
             "type": "string"
           },
@@ -1766,16 +1728,6 @@
             "items": {
               "$ref": "#/components/schemas/Tunnel"
             }
-          },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "retry_count": {
             "type": "integer",
@@ -1861,6 +1813,13 @@
               "integer",
               "null"
             ]
+          },
+          "fail_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
           },
           "vm_id": {
             "type": [
@@ -2234,6 +2193,15 @@
               "aws-burst",
               null
             ]
+          },
+          "live": {
+            "type": "boolean"
+          },
+          "live_error": {
+            "type": "string"
+          },
+          "idempotent": {
+            "type": "boolean"
           }
         }
       },
@@ -2273,25 +2241,12 @@
       "SyncCreateRequest": {
         "type": "object",
         "required": [
-          "path"
+          "filesystem_id"
         ],
         "additionalProperties": false,
         "properties": {
           "filesystem_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "filesystem_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "create_if_missing": {
-            "type": "boolean",
-            "default": false
+            "type": "string"
           },
           "path": {
             "type": "string",
@@ -2302,10 +2257,15 @@
       "SyncReadRequest": {
         "type": "object",
         "required": [
+          "op",
           "path"
         ],
         "additionalProperties": false,
         "properties": {
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
           "path": {
             "type": "string"
           }
@@ -2314,10 +2274,15 @@
       "SyncWriteRequest": {
         "type": "object",
         "required": [
+          "op",
           "writes"
         ],
         "additionalProperties": false,
         "properties": {
+          "op": {
+            "type": "string",
+            "const": "write"
+          },
           "writes": {
             "type": "array",
             "items": {
@@ -2777,6 +2742,18 @@
         "properties": {
           "deleted": {
             "type": "boolean"
+          }
+        }
+      },
+      "FilesystemCreateRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
           }
         }
       }

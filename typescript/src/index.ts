@@ -20,6 +20,17 @@ export const CHUNK_SIZE = 4 * 1024 * 1024;
  */
 export const ARKER_ORG_ID = "ArkerHQ";
 
+/** Public golden VM names owned by the Arker org. Forking one of these by
+ * name auto-fills `sourceOrgId = ARKER_ORG_ID` (see `Arker.fork`). */
+const GOLDEN_NAMES = new Set<string>([
+  "arkuntu",
+  "ubuntu", "ubuntu-small", "ubuntu-nodisk", "ubuntu-nonet-nodisk",
+  "ubuntu-full", "ubuntu-full-32",
+  "ubuntu-py-repl", "ubuntu-js-repl",
+  "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
+  "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
+]);
+
 const DEFAULT_RETRY_ATTEMPTS = 4;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
@@ -103,9 +114,10 @@ export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
 export type Filesystem = ApiSchema<"Filesystem">;
 export type ListFilesystemsResponse = ApiSchema<"ListFilesystemsResponse">;
 export type DeleteFilesystemResponse = ApiSchema<"DeleteFilesystemResponse">;
+export type FilesystemCreateRequest = ApiSchema<"FilesystemCreateRequest">;
 
 // ── Syncs ──────────────────────────────────────────────────────────
-export type SyncObject = ApiSchema<"Sync">;
+export type Sync = ApiSchema<"Sync">;
 export type ListSyncsResponse = ApiSchema<"ListSyncsResponse">;
 export type DeleteSyncResponse = ApiSchema<"DeleteSyncResponse">;
 export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
@@ -153,8 +165,6 @@ export type ResizeResponse = ApiSchema<"ResizeResponse">;
 export type ErrorResponse = ApiSchema<"ErrorResponse">;
 
 // ── Back-compat aliases (deprecated) ───────────────────────────────
-/** @deprecated Use `Vm`. */
-export type VmInfo = Vm;
 /** @deprecated Use `Session`. */
 export type SessionInfo = Session;
 /** @deprecated Use `Run`. */
@@ -171,18 +181,26 @@ export type RunTunnelStatus = Tunnel;
 // ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
   type: "completed";
+  /** The run's own id. Present for executed runs; absent for operation acks. */
+  runId?: string;
+  /** Lifecycle state — "completed" or "failed". Mirrors the run-status (`Run`) shape. */
+  state: string;
   stdout: Uint8Array;
   stdoutEncoding: string;
   stderr: Uint8Array;
   stderrEncoding: string;
   exitCode: number;
+  /** System failure explanation when `state` is "failed". Distinct from
+   * `stderr` (the program's own error output); null otherwise. */
+  failReason?: string | null;
 }
 
 export interface BackgroundRunResult {
   type: "background";
   runId: string;
+  /** Lifecycle state — "running". */
+  state: string;
   tunnels: Tunnel[];
-  network?: NetworkStatus | null;
 }
 
 export type RunResult = CompletedRunResult | BackgroundRunResult;
@@ -236,7 +254,6 @@ export class Arker {
   readonly controlBaseUrl: string;
   readonly region?: string;
   readonly provider: "aws" | "aws-burst";
-  readonly filesystems: Filesystems;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly retry: RetryConfig;
@@ -265,7 +282,6 @@ export class Arker {
     this.provider = effectiveProvider;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retry = normalizeRetry(opts.retry);
-    this.filesystems = new Filesystems(this);
 
     if (!this.fetchImpl) throw new Error("fetch is required in this runtime");
   }
@@ -274,62 +290,85 @@ export class Arker {
    * Address an existing VM. Doesn't make any network calls; returns a
    * lightweight handle.
    */
-  vm(vmId: string): Computer {
-    return new Computer(this, vmId, this._baseUrlFor(vmId));
+  vm(vmId: string): VM {
+    return new VM(this, vmId, this._baseUrlFor(vmId));
   }
 
   /**
-   * Create a new VM by forking.
+   * Create a new VM by forking from a source.
    *
+   *     fork("ubuntu-full")                       // public golden by name
+   *     fork("base")                              // a VM by name in your org
+   *     fork(vm)                                  // an existing VM (uses its id)
    *     fork({ sourceVmId: "vm_abc..." })
-   *     fork({ sourceVmName: "base" })                            // caller's org
-   *     fork({ sourceVmName: "arkuntu", sourceOrgId: ARKER_ORG_ID })
+   *     fork({ sourceVmName: "base", sourceOrgId: "org_..." })
    *
-   * Exactly one of `sourceVmId` or `sourceVmName` must be set. When
-   * `sourceVmName` is used, `sourceOrgId` selects which org to look it
-   * up in; without it the server defaults to the caller's org. Forking
-   * a VM in another org requires that VM to be `public: true`. The new
-   * VM's name (in the caller's org) is passed as `name`.
+   * The source can be a name string, a `VM` handle, or a `ForkSource`
+   * object. `sourceOrgId` defaults to the Arker org when `sourceVmName`
+   * is a known public golden, otherwise to your own org; an explicit
+   * value always wins, and it's irrelevant when forking by id. Forking a
+   * VM in another org requires that VM to be `public: true`. The new VM's
+   * name (in your org) is passed as `name`. When the source is a name or
+   * `VM`, extra fork options go in the second `opts` argument.
    */
-  async fork(source: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>): Promise<Computer> {
-    if (!source.sourceVmId && !source.sourceVmName) {
+  async fork(
+    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>),
+    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> = {},
+  ): Promise<VM> {
+    // Normalize the source: a name string, a VM handle (use its id), or a
+    // ForkSource object.
+    const src: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> =
+      typeof source === "string"
+        ? { sourceVmName: source, ...opts }
+        : source instanceof VM
+          ? { sourceVmId: source.id, ...opts }
+          : source;
+    if (!src.sourceVmId && !src.sourceVmName) {
       throw new ArkerError(
         "bad_request",
-        "fork requires sourceVmId or sourceVmName",
+        "fork requires a source (a name, a VM, sourceVmName, or sourceVmId)",
         400,
       );
     }
-    if (source.sourceVmId && source.sourceVmName) {
+    if (src.sourceVmId && src.sourceVmName) {
       throw new ArkerError(
         "bad_request",
         "fork: pass only one of sourceVmId or sourceVmName",
         400,
       );
     }
+    // A public golden by name defaults to the Arker org; any other name
+    // defaults (server-side) to the caller's own org. Explicit wins.
+    const sourceOrgId =
+      src.sourceOrgId ??
+      (src.sourceVmName !== undefined && GOLDEN_NAMES.has(src.sourceVmName)
+        ? ARKER_ORG_ID
+        : undefined);
     const body: ForkRequest = {
-      source_vm_id: source.sourceVmId ?? null,
-      source_vm_name: source.sourceVmName ?? null,
-      source_org_id: source.sourceOrgId ?? null,
-      name: source.name ?? null,
-      public: source.public ?? null,
-      network: source.network ?? null,
-      tunnels: source.tunnels ?? null,
-      disk: source.disk ?? true,
-      vcpu_count: source.vcpu_count ?? null,
-      memory_mib: source.memory_mib ?? null,
-      max_memory_mib: source.max_memory_mib ?? null,
-      disk_mib: source.disk_mib ?? null,
-      durable: source.durable ?? null,
+      source_vm_id: src.sourceVmId ?? null,
+      source_vm_name: src.sourceVmName ?? null,
+      source_org_id: sourceOrgId ?? null,
+      name: src.name ?? null,
+      public: src.public ?? null,
+      network: src.network ?? null,
+      disk: src.disk ?? true,
+      vcpu_count: src.vcpu_count ?? null,
+      memory_mib: src.memory_mib ?? null,
+      max_memory_mib: src.max_memory_mib ?? null,
+      disk_mib: src.disk_mib ?? null,
+      durable: src.durable ?? null,
     };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
     const useBurst =
-      source.sourceOrgId === ARKER_ORG_ID &&
-      source.sourceVmName !== undefined &&
-      isBurstRef(source.sourceVmName);
+      sourceOrgId === ARKER_ORG_ID &&
+      src.sourceVmName !== undefined &&
+      isBurstRef(src.sourceVmName);
     const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
-    return new Computer(this, vm.vm_id, this._baseUrlFor(vm.vm_id));
+    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    // Child lives on the same host the fork was posted to.
+    return new VM(this, vmId, baseUrl, vm);
   }
 
   /**
@@ -338,8 +377,8 @@ export class Arker {
    * aggregate across providers and regions. Pass `?provider=` /
    * `?region=` to narrow.
    */
-  async list(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<ListVmsResponse> {
-    return this._request("GET", buildQuery("/v1/vms", {
+  async listVms(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
+    const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", {
       cursor: opts.cursor,
       limit: opts.limit,
       region: opts.region,
@@ -349,12 +388,37 @@ export class Arker {
       started_after: opts.startedAfter,
       started_before: opts.startedBefore,
     }), undefined, this.controlBaseUrl);
+    const vms = (resp.vms ?? []).map((v) => {
+      const id = v.vm_id ?? (v as { id?: string }).id ?? "";
+      return new VM(this, id, this._baseUrlFor(id), v);
+    });
+    return { vms, nextCursor: resp.next_cursor ?? null };
   }
 
   /** Compute call — goes direct to the backend hosting this VM (no
-   * control-plane hop). */
-  async get(vmId: string): Promise<Vm> {
-    return this._request("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
+   * control-plane hop). Returns a fully-populated VM handle. */
+  async getVm(vmId: string): Promise<VM> {
+    const data = await this._request<Vm>("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
+    return new VM(this, vmId, this._baseUrlFor(vmId), data);
+  }
+
+  // ── Filesystems (org-scoped, control-plane) ─────────────────────────
+  async listFilesystems(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
+    return this._request("GET", buildQuery("/v1/filesystems", {
+      cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
+    }), undefined, this.controlBaseUrl);
+  }
+
+  async createFilesystem(request: { name: string }): Promise<Filesystem> {
+    return this._request("POST", "/v1/filesystems", { name: request.name }, this.controlBaseUrl);
+  }
+
+  async getFilesystem(filesystemId: string): Promise<Filesystem> {
+    return this._request("GET", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.controlBaseUrl);
+  }
+
+  async deleteFilesystem(filesystemId: string): Promise<DeleteFilesystemResponse> {
+    return this._request("DELETE", `/v1/filesystems/${pathSegment(filesystemId)}`, undefined, this.controlBaseUrl);
   }
 
   /** @internal */
@@ -449,85 +513,65 @@ export interface ListOpts {
   limit?: number;
 }
 
-export class Filesystems {
-  /** @internal */
-  readonly _client: Arker;
-
-  constructor(client: Arker) {
-    this._client = client;
-  }
-
-  /** Admin call — goes through the control plane. */
-  async list(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
-    return this._client._request(
-      "GET",
-      buildQuery("/v1/filesystems", {
-        cursor: opts.cursor,
-        limit: opts.limit,
-        name_prefix: opts.namePrefix,
-      }),
-      undefined,
-      this._client.controlBaseUrl,
-    );
-  }
-
-  async get(filesystemId: string): Promise<Filesystem> {
-    return this._client._request(
-      "GET",
-      `/v1/filesystems/${pathSegment(filesystemId)}`,
-      undefined,
-      this._client.controlBaseUrl,
-    );
-  }
-
-  async delete(filesystemId: string): Promise<DeleteFilesystemResponse> {
-    return this._client._request(
-      "DELETE",
-      `/v1/filesystems/${pathSegment(filesystemId)}`,
-      undefined,
-      this._client.controlBaseUrl,
-    );
-  }
-}
-
-export class Computer {
+export class VM {
   readonly id: string;
   readonly baseUrl: string;
-  readonly syncs: Syncs;
-  readonly tunnels: Tunnels;
-  readonly runs: Runs;
-  readonly sessions: Sessions;
   /** @internal */
   readonly _client: Arker;
+  // ── Data fields ──────────────────────────────────────────────────
+  // Populated from fork/get/list/refresh; `undefined` on a bare handle
+  // from `arker.vm(id)` until you call `refresh()`. Names mirror the
+  // contract (`Vm`).
+  readonly vm_id?: string;
+  readonly name?: string | null;
+  readonly state?: VmState;
+  readonly owner_org_id?: string;
+  readonly created_at?: string;
+  readonly public?: boolean;
+  readonly region?: string | null;
+  readonly provider?: string | null;
+  readonly vcpu_count?: number | null;
+  readonly memory_mib?: number | null;
+  readonly disk_mib?: number | null;
+  readonly started_at?: string | null;
+  readonly root_source_vm_id?: string | null;
+  readonly root_source_vm_name?: string | null;
+  readonly worker_id?: string | null;
+  readonly sessions?: Session[];
+  readonly tunnels?: Tunnel[];
 
-  constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId)) {
+  constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), data?: Vm) {
     this._client = client;
     this.id = vmId;
     this.baseUrl = baseUrl;
-    this.syncs = new Syncs(this);
-    this.tunnels = new Tunnels(this);
-    this.runs = new Runs(this);
-    this.sessions = new Sessions(this);
+    if (data) Object.assign(this, data);
+    // Keep the client reference off enumeration so `JSON.stringify(vm)` /
+    // `console.log(vm)` show just the VM's data, not the whole SDK.
+    Object.defineProperty(this, "_client", { enumerable: false });
   }
 
-  /** Refresh and return this VM's current state. */
-  async get(): Promise<Vm> {
-    return this._client._request("GET", vmPath(this.id), undefined, this.baseUrl);
+  /** Re-fetch this VM and return a fresh, fully-populated handle. */
+  async refresh(): Promise<VM> {
+    const data = await this._client._request<Vm>("GET", vmPath(this.id), undefined, this.baseUrl);
+    return new VM(this._client, this.id, this.baseUrl, data);
   }
 
   /**
    * @deprecated Use `Arker.fork({ sourceVmId: this.id, ... })`.
    * Kept for back-compat with older user code that called `.fork()` on
-   * a Computer instance.
+   * a VM instance.
    */
-  async fork(request: ForkOptions = {} as ForkOptions): Promise<Computer> {
+  async fork(request: Partial<ForkRequest> = {}): Promise<VM> {
     const merged: ForkRequest = {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
       disk: request.disk ?? true,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
-    return new Computer(this._client, vm.vm_id, this._client._baseUrlFor(vm.vm_id));
+    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    // The child is forked on the same compute host as the source, so it lives
+    // on the same base URL (this.baseUrl) — not whatever the id alone implies.
+    return new VM(this._client, vmId, this.baseUrl, vm);
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
@@ -543,168 +587,40 @@ export class Computer {
     return parseRunResponse(response);
   }
 
-  async resize(request: ResizeRequest): Promise<ResizeResponse> {
-    return this._client._request("POST", `${vmPath(this.id)}/resize`, request, this.baseUrl);
-  }
-
-  async delete(): Promise<DeleteVmResponse> {
-    return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
-  }
-}
-
-export class Runs {
-  /** @internal */
-  readonly _vm: Computer;
-
-  constructor(vm: Computer) {
-    this._vm = vm;
-  }
-
-  async list(opts: ListOpts & { state?: RunState; startedAfter?: string; startedBefore?: string; completedAfter?: string } = {}): Promise<ListRunsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/runs`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      state: opts.state,
-      started_after: opts.startedAfter,
-      started_before: opts.startedBefore,
-      completed_after: opts.completedAfter,
-    }), undefined, this._vm.baseUrl);
-  }
-
-  async get(runId: string): Promise<Run> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/runs/${pathSegment(runId)}`, undefined, this._vm.baseUrl);
-  }
-
-  async cancel(runId: string): Promise<CancelRunResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/runs/${pathSegment(runId)}`, undefined, this._vm.baseUrl);
-  }
-}
-
-export class Sessions {
-  /** @internal */
-  readonly _vm: Computer;
-
-  constructor(vm: Computer) {
-    this._vm = vm;
-  }
-
-  async list(opts: ListOpts & { state?: SessionState } = {}): Promise<ListSessionsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/sessions`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      state: opts.state,
-    }), undefined, this._vm.baseUrl);
-  }
-
-  async get(sessionId: string): Promise<Session> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/sessions/${pathSegment(sessionId)}`, undefined, this._vm.baseUrl);
-  }
-
-  async create(request: CreateSessionRequest = {}): Promise<Session> {
-    return this._vm._client._request("POST", `${vmPath(this._vm.id)}/sessions`, request, this._vm.baseUrl);
-  }
-
-  async delete(sessionId: string): Promise<DeleteSessionResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/sessions/${pathSegment(sessionId)}`, undefined, this._vm.baseUrl);
-  }
-}
-
-export class Tunnels {
-  /** @internal */
-  readonly _vm: Computer;
-
-  constructor(vm: Computer) {
-    this._vm = vm;
-  }
-
-  async list(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/tunnels`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      state: opts.state,
-    }), undefined, this._vm.baseUrl);
-  }
-
-  async get(port: number): Promise<Tunnel> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/tunnels/${port}`, undefined, this._vm.baseUrl);
-  }
-
-  async delete(port: number): Promise<DeleteTunnelResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/tunnels/${port}`, undefined, this._vm.baseUrl);
-  }
-}
-
-export class Syncs {
-  /** @internal */
-  readonly _vm: Computer;
-
-  constructor(vm: Computer) {
-    this._vm = vm;
-  }
-
-  async list(opts: ListOpts & { filesystemId?: string } = {}): Promise<ListSyncsResponse> {
-    return this._vm._client._request("GET", buildQuery(`${vmPath(this._vm.id)}/syncs`, {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      filesystem_id: opts.filesystemId,
-    }), undefined, this._vm.baseUrl);
-  }
-
-  async get(syncId: string): Promise<SyncObject> {
-    return this._vm._client._request("GET", `${vmPath(this._vm.id)}/syncs/${pathSegment(syncId)}`, undefined, this._vm.baseUrl);
-  }
-
   /**
-   * Ensure a `Filesystem` exists (creating one if requested) and
-   * bind-mount it into this VM at `path`. Bidirectional by virtue of
-   * being a mount — there is no separate sync-direction parameter.
+   * Read or write a file in this VM over `POST /v1/vms/{id}/sync`.
+   * Omit `data` to read; pass `data` (string or bytes) to write. The
+   * client picks inline transfer for small files and presigned uploads
+   * for large ones automatically.
+   *
+   *     const bytes = await vm.sync("/home/user/out.txt");   // read
+   *     await vm.sync("/home/user/in.txt", "hello\n");       // write
+   *
+   * To mount a standalone filesystem into the VM, use `vm.syncs.create`.
    */
-  async create(request: {
-    path: string;
-    filesystemId?: string;
-    filesystemName?: string;
-    createIfMissing?: boolean;
-  }): Promise<SyncObject> {
-    return this._vm._client._request<SyncObject>(
-      "POST",
-      `${vmPath(this._vm.id)}/syncs`,
-      {
-        path: request.path,
-        filesystem_id: request.filesystemId,
-        filesystem_name: request.filesystemName,
-        create_if_missing: request.createIfMissing ?? false,
-      },
-      this._vm.baseUrl,
-    );
+  async sync(path: string): Promise<Uint8Array>;
+  async sync(path: string, data: Uint8Array | string): Promise<void>;
+  async sync(path: string, data?: Uint8Array | string): Promise<Uint8Array | void> {
+    if (data === undefined) return this.syncRead(path);
+    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    if (bytes.length <= CHUNK_SIZE) await this.syncWriteInline(path, bytes);
+    else await this.syncWritePresigned(path, bytes);
   }
 
-  async delete(syncId: string): Promise<DeleteSyncResponse> {
-    return this._vm._client._request("DELETE", `${vmPath(this._vm.id)}/syncs/${pathSegment(syncId)}`, undefined, this._vm.baseUrl);
-  }
-
-  async readFile(path: string): Promise<Uint8Array> {
-    const response = await this._vm._client._request<SyncReadInlineResponse | SyncReadPresignedResponse>(
+  private async syncRead(path: string): Promise<Uint8Array> {
+    const response = await this._client._request<SyncReadInlineResponse | SyncReadPresignedResponse>(
       "POST",
-      `${vmPath(this._vm.id)}/syncs/read`,
-      { path },
-      this._vm.baseUrl,
+      `${vmPath(this.id)}/sync`,
+      { op: "read", path },
+      this.baseUrl,
     );
     if ("content" in response) return decodeBytes(response.content, response.encoding);
-    const signed = await this._vm._client._fetch(response.presigned_url);
+    const signed = await this._client._fetch(response.presigned_url);
     if (!signed.ok) throw new ArkerError("internal", `signed GET failed: ${signed.status}`, signed.status);
     return new Uint8Array(await signed.arrayBuffer());
   }
 
-  async writeFile(path: string, data: Uint8Array | string): Promise<void> {
-    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-    if (bytes.length <= CHUNK_SIZE) {
-      await this.writeInline(path, bytes);
-    } else {
-      await this.writePresigned(path, bytes);
-    }
-  }
-
-  private async writeInline(path: string, data: Uint8Array): Promise<void> {
+  private async syncWriteInline(path: string, data: Uint8Array): Promise<void> {
     const result = await this.sendOneWrite({
       path,
       size: data.length,
@@ -716,34 +632,23 @@ export class Syncs {
     assertWriteComplete(result, "inline write");
   }
 
-  private async writePresigned(path: string, data: Uint8Array): Promise<void> {
-    const request = await this.sendOneWrite({
-      path,
-      size: data.length,
-      presigned: true,
-    });
-
+  private async syncWritePresigned(path: string, data: Uint8Array): Promise<void> {
+    const request = await this.sendOneWrite({ path, size: data.length, presigned: true });
     if (!("presigned_url" in request) || !request.presigned_url || !request.upload_id) {
       throw new ArkerError("internal", "write response missing presigned upload fields", 200);
     }
-
     await this.putPresigned(request.presigned_url, data);
-
-    const commit = await this.sendOneWrite({
-      path,
-      size: data.length,
-      upload_id: request.upload_id,
-    });
+    const commit = await this.sendOneWrite({ path, size: data.length, upload_id: request.upload_id });
     assertWriteComplete(commit, "presigned write commit");
   }
 
   private async putPresigned(url: string, data: Uint8Array): Promise<void> {
-    const attempts = this._vm._client._retryAttempts();
+    const attempts = this._client._retryAttempts();
     for (let attempt = 0; attempt < attempts; attempt++) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), PRESIGNED_PUT_TIMEOUT_MS);
       try {
-        const response = await this._vm._client._fetch(url, {
+        const response = await this._client._fetch(url, {
           method: "PUT",
           body: data as BodyInit,
           signal: controller.signal,
@@ -761,26 +666,103 @@ export class Syncs {
           throw new ArkerError("network_error", `upload PUT failed: ${message}`, 0);
         }
       }
-      await sleep(this._vm._client._retryDelay(attempt));
+      await sleep(this._client._retryDelay(attempt));
     }
   }
 
   private async sendOneWrite(entry: JsonObject): Promise<SyncWriteResult> {
     let lastError: ErrorResponse | undefined;
-    const attempts = this._vm._client._retryAttempts();
+    const attempts = this._client._retryAttempts();
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const response = await this._vm._client._request<SyncWriteResponse>("POST", `${vmPath(this._vm.id)}/syncs/write`, {
+      const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, {
+        op: "write",
         writes: [entry],
-      }, this._vm.baseUrl);
+      }, this.baseUrl);
       const result = response.results[0];
       if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
       const error = result.error ?? undefined;
       if (!error) return result;
       lastError = error as ErrorResponse;
       if (!isRetryable(200, { code: error.code as string, message: error.message }) || attempt === attempts - 1) break;
-      await sleep(this._vm._client._retryDelay(attempt));
+      await sleep(this._client._retryDelay(attempt));
     }
     throw new ArkerError(lastError?.code ?? "internal", lastError?.message ?? "write failed", 200);
+  }
+
+  async resize(request: ResizeRequest): Promise<ResizeResponse> {
+    return this._client._request("POST", `${vmPath(this.id)}/resize`, request, this.baseUrl);
+  }
+
+  async delete(): Promise<DeleteVmResponse> {
+    return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
+  }
+
+  // ── Syncs: bindings of a filesystem into this VM at a path ────────
+  async listSyncs(opts: ListOpts & { filesystemId?: string } = {}): Promise<ListSyncsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/syncs`, {
+      cursor: opts.cursor, limit: opts.limit, filesystem_id: opts.filesystemId,
+    }), undefined, this.baseUrl);
+  }
+
+  async createSync(request: { filesystemId: string; path?: string }): Promise<Sync> {
+    return this._client._request<Sync>("POST", `${vmPath(this.id)}/syncs`, {
+      filesystem_id: request.filesystemId,
+      path: request.path,
+    }, this.baseUrl);
+  }
+
+  async deleteSync(syncId: string): Promise<DeleteSyncResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/syncs/${pathSegment(syncId)}`, undefined, this.baseUrl);
+  }
+
+  // ── Runs ──────────────────────────────────────────────────────────
+  async listRuns(opts: ListOpts & { state?: RunState; startedAfter?: string; startedBefore?: string; completedAfter?: string } = {}): Promise<ListRunsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/runs`, {
+      cursor: opts.cursor, limit: opts.limit, state: opts.state,
+      started_after: opts.startedAfter, started_before: opts.startedBefore, completed_after: opts.completedAfter,
+    }), undefined, this.baseUrl);
+  }
+
+  async getRun(runId: string): Promise<Run> {
+    return this._client._request("GET", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
+  }
+
+  async cancelRun(runId: string): Promise<CancelRunResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
+  }
+
+  // ── Sessions ──────────────────────────────────────────────────────
+  async listSessions(opts: ListOpts & { state?: SessionState } = {}): Promise<ListSessionsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/sessions`, {
+      cursor: opts.cursor, limit: opts.limit, state: opts.state,
+    }), undefined, this.baseUrl);
+  }
+
+  async createSession(request: CreateSessionRequest = {}): Promise<Session> {
+    return this._client._request("POST", `${vmPath(this.id)}/sessions`, request, this.baseUrl);
+  }
+
+  async getSession(sessionId: string): Promise<Session> {
+    return this._client._request("GET", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
+  }
+
+  async deleteSession(sessionId: string): Promise<DeleteSessionResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
+  }
+
+  // ── Tunnels: opened as a side effect of fork/run, addressed by port ─
+  async listTunnels(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/tunnels`, {
+      cursor: opts.cursor, limit: opts.limit, state: opts.state,
+    }), undefined, this.baseUrl);
+  }
+
+  async getTunnel(port: number): Promise<Tunnel> {
+    return this._client._request("GET", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
+  }
+
+  async deleteTunnel(port: number): Promise<DeleteTunnelResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
   }
 }
 
@@ -892,19 +874,22 @@ function parseRunResponse(payload: unknown): RunResult {
     const stderrEncoding = stringField(body.stderr_encoding, "run response.stderr_encoding");
     return {
       type: "completed",
+      runId: typeof body.run_id === "string" ? body.run_id : undefined,
+      state: typeof body.state === "string" ? body.state : "completed",
       stdout: decodeBytes(stdout, stdoutEncoding),
       stdoutEncoding,
       stderr: decodeBytes(stderr, stderrEncoding),
       stderrEncoding,
       exitCode: numberField(body.exit_code, "run response.exit_code"),
+      failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
     };
   }
   if (typeof body.run_id === "string") {
     return {
       type: "background",
       runId: body.run_id,
+      state: typeof body.state === "string" ? body.state : "running",
       tunnels: Array.isArray(body.tunnels) ? body.tunnels as Tunnel[] : [],
-      network: isObject(body.network) ? body.network as unknown as NetworkStatus : null,
     };
   }
   throw new ArkerError("internal", "unrecognized run response shape", 200);

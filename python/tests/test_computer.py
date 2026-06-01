@@ -202,10 +202,11 @@ def test_list_uses_configured_base_url() -> None:
     )
 
     with patch("urllib.request.urlopen", t):
-        result = client().list()
+        result = client().list_vms()
 
     assert isinstance(result, sdk.ListVmsResponse)
     assert len(result) == 1
+    assert result.vms[0].id == "vm_1"
     assert result.vms[0].vm_id == "vm_1"
     assert result.vms[0].owner_org_id == "owner"
 
@@ -291,7 +292,7 @@ def test_retry_on_503_then_success(monkeypatch) -> None:
     t.add_json(predicate, 200, {"ok": True, "op": "read", "path": "/home/user/x", "size": 2, "content": "ok", "encoding": "utf-8"})
 
     with patch("urllib.request.urlopen", t):
-        assert sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync.read_file("/home/user/x") == b"ok"
+        assert sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x") == b"ok"
 
     assert len(t.calls) == 2
 
@@ -313,7 +314,7 @@ def test_read_inline_base64() -> None:
     )
 
     with patch("urllib.request.urlopen", t):
-        assert client().vm("vm_1").sync.read_file("/home/user/bin") == payload
+        assert client().vm("vm_1").sync("/home/user/bin") == payload
 
 
 def test_read_presigned_follows_url() -> None:
@@ -326,7 +327,7 @@ def test_read_presigned_follows_url() -> None:
     t.add_raw(lambda method, url: method == "GET" and url == "https://s3.invalid/file", 200, b"hello")
 
     with patch("urllib.request.urlopen", t):
-        assert client().vm("vm_1").sync.read_file("/home/user/big") == b"hello"
+        assert client().vm("vm_1").sync("/home/user/big") == b"hello"
 
 
 def test_small_write_uses_inline_chunk() -> None:
@@ -345,7 +346,7 @@ def test_small_write_uses_inline_chunk() -> None:
     )
 
     with patch("urllib.request.urlopen", t):
-        client().vm("vm_1").sync.write_file("/home/user/x", b"hello world")
+        client().vm("vm_1").sync("/home/user/x", b"hello world")
 
     body = json.loads(t.calls[0]["body"])
     entry = body["writes"][0]
@@ -379,7 +380,7 @@ def test_large_write_uses_presigned_bypass() -> None:
     }]})
 
     with patch("urllib.request.urlopen", t):
-        client().vm("vm_1").sync.write_file("/home/user/big", payload)
+        client().vm("vm_1").sync("/home/user/big", payload)
 
     assert [call["method"] for call in t.calls] == ["POST", "PUT", "POST"]
     first_entry = json.loads(t.calls[0]["body"])["writes"][0]
@@ -451,14 +452,15 @@ def test_run_status_parses_retry_count() -> None:
             "stderr": "",
             "stderr_encoding": "utf-8",
             "exit_code": 0,
-            "completed": True,
+            "state": "completed",
+            "started_at": "now",
             "tunnels": [],
             "retry_count": 2,
         },
     )
 
     with patch("urllib.request.urlopen", t):
-        status = client().vm("vm_1").run_status("run_1")
+        status = client().vm("vm_1").get_run("run_1")
 
     assert status.retry_count == 2
 
@@ -475,13 +477,14 @@ def test_run_status_defaults_retry_count_when_missing() -> None:
             "stderr": "",
             "stderr_encoding": "utf-8",
             "exit_code": 0,
-            "completed": True,
+            "state": "completed",
+            "started_at": "now",
             "tunnels": [],
         },
     )
 
     with patch("urllib.request.urlopen", t):
-        status = client().vm("vm_1").run_status("run_1")
+        status = client().vm("vm_1").get_run("run_1")
 
     assert status.retry_count == 0
 
@@ -508,6 +511,6 @@ def test_per_entry_internal_error_retries(monkeypatch) -> None:
     }]})
 
     with patch("urllib.request.urlopen", t):
-        sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync.write_file("/home/user/x", b"hello")
+        sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x", b"hello")
 
     assert len(t.calls) == 2

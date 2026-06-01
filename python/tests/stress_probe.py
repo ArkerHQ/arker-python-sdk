@@ -140,13 +140,13 @@ def main() -> None:
         # PUT to the final blob key + 1 state.log CAS append.
         def write_one(i: int) -> None:
             payload = f"hello-{i:04d}".encode()
-            vm.sync.write_file(f"/home/user/probe-{i:04d}.txt", payload)
+            vm.sync(f"/home/user/probe-{i:04d}.txt", payload)
 
         run_phase("WRITE 30× tiny files (chunk fast-path)", write_one, N, trace)
 
         # Phase 2: read those same files back. Server returns inline utf8.
         def read_one(i: int) -> None:
-            vm.sync.read_file(f"/home/user/probe-{i:04d}.txt")
+            vm.sync(f"/home/user/probe-{i:04d}.txt")
 
         run_phase("READ 30× tiny files (inline)", read_one, N, trace)
 
@@ -154,15 +154,15 @@ def main() -> None:
         # because each op contends on state.log CAS for one VM.
         def alt(i: int) -> None:
             if i % 2 == 0:
-                vm.sync.write_file("/home/user/alt.txt", f"v{i}".encode())
+                vm.sync("/home/user/alt.txt", f"v{i}".encode())
             else:
-                vm.sync.read_file("/home/user/alt.txt")
+                vm.sync("/home/user/alt.txt")
 
         run_phase("ALTERNATE write/read same path (CAS-contention probe)", alt, N, trace)
 
         # Phase 4: medium writes — exercise the multi-chunk path.
         def med_write(i: int) -> None:
-            vm.sync.write_file(f"/home/user/med-{i}.bin", secrets.token_bytes(6 * 1024 * 1024))
+            vm.sync(f"/home/user/med-{i}.bin", secrets.token_bytes(6 * 1024 * 1024))
 
         run_phase("WRITE 10× 6MB files (multi-chunk → finalize)", med_write, min(10, N), trace)
 
