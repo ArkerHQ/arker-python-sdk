@@ -33,7 +33,11 @@ import type {
   ResourceKind,
   RunResult,
   Vm,
+  ForkRequest,
 } from "./index.js";
+
+/** The `network` field shape shared by fork + run (NetworkPolicyInput). */
+type NetworkInput = NonNullable<ForkRequest["network"]>;
 
 // ── Argv parsing ───────────────────────────────────────────────────
 
@@ -215,12 +219,23 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   if (!sourceVmId && !sourceVmName) {
     die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]");
   }
+  // Resource + network overrides — same contract as the REST ForkRequest and
+  // the New VM dialog: vcpu / memory / disk size + on/off, max-memory, and the
+  // egress policy (open / blocked / allow / deny lists).
+  const res = resourceFlags(args);
+  const network = parseNetwork(args);
+  const noDisk = boolFlag(args, "no-disk") === true;
+  const maxMemory = numFlagAny(args, ["max-memory", "max-memory-mib"]);
   const computer = await client.fork({
     sourceVmId,
     sourceVmName,
     sourceOrgId,
     name,
     public: publicFlag,
+    ...res,
+    ...(network !== undefined ? { network } : {}),
+    ...(maxMemory !== undefined ? { max_memory_mib: maxMemory } : {}),
+    ...(noDisk ? { disk: false } : {}),
   });
   out({ vm_id: computer.id });
 }
@@ -229,11 +244,14 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
   const vmId = args.positional[0] ?? die("usage: arker run <vm_id> <command...>");
   const command = args.positional.slice(1).join(" ");
   if (!command) die("missing command to run");
+  // /run can also resize the VM (cpu/mem/disk) and set the egress policy for
+  // the run — same contract fields as REST RunRequest.
   const result: RunResult = await client.vm(vmId).run(command, {
     background: boolFlag(args, "background"),
     timeout: numFlag(args, "timeout"),
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
+    ...resourceFlags(args),
   });
   if (result.type === "completed") {
     process.stdout.write(new TextDecoder().decode(result.stdout));
@@ -250,7 +268,31 @@ async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
   switch (sub) {
     case "ls":
     case "list": {
-      const vm = rest[0] ?? die("usage: arker runs ls <vm_id>");
+      // No vm_id positional → org-scoped, cross-VM listing over a time window
+      // (the data behind the console observability page), with optional
+      // --vm/--region/--provider/--source/--search filters. With a vm_id →
+      // that VM's run history (unchanged).
+      if (rest.length === 0) {
+        const res = await client.listRuns({
+          since: tsFlag(args, "since"),
+          until: tsFlag(args, "until"),
+          vm: args.flags.vm as string | undefined,
+          region: args.flags.region as string | undefined,
+          provider: args.flags.provider as "aws" | "aws-burst" | undefined,
+          source: args.flags.source as "cf" | "arkerd" | undefined,
+          search: args.flags.search as string | undefined,
+          limit: numFlag(args, "limit"),
+          lite: !!args.flags.lite,
+        });
+        if (args.flags.json) return out(res);
+        for (const r of res.rows) {
+          out(
+            `${new Date(r.t_ms).toISOString()}\t${r.vm_id}\t${r.endpoint}\t${r.exit_code ?? "-"}\t${Math.round(r.executor_duration_ms)}ms\t${r.command ?? ""}`,
+          );
+        }
+        return;
+      }
+      const vm = rest[0];
       const res = await client.vm(vm).listRuns({
         state: args.flags.state as "running" | "completed" | "cancelled" | undefined,
         cursor: args.flags.cursor as string | undefined,
@@ -622,12 +664,86 @@ function numFlag(args: ParsedArgs, name: string): number | undefined {
   return undefined;
 }
 
+/** Parse a --since/--until flag into unix SECONDS. Accepts a unix-seconds
+ *  integer, a relative shorthand ("15m", "1h", "7d" → seconds before now), or
+ *  an ISO date string. */
+function tsFlag(args: ParsedArgs, name: string): number | undefined {
+  const v = args.flags[name];
+  if (typeof v !== "string" || !v.trim()) return undefined;
+  const s = v.trim();
+  const rel = s.match(/^(\d+)([smhd])$/);
+  if (rel) {
+    const mult = { s: 1, m: 60, h: 3600, d: 86400 }[rel[2] as "s" | "m" | "h" | "d"];
+    return Math.floor(Date.now() / 1000) - Number(rel[1]) * mult;
+  }
+  if (/^\d+$/.test(s)) return Number(s);
+  const parsed = Date.parse(s);
+  return Number.isNaN(parsed) ? undefined : Math.floor(parsed / 1000);
+}
+
 function boolFlag(args: ParsedArgs, name: string): boolean | undefined {
   const v = args.flags[name];
   if (v === undefined) return undefined;
   if (typeof v === "boolean") return v;
   if (v === "false" || v === "0") return false;
   return true;
+}
+
+/** First defined numeric flag among `names` (e.g. ["vcpu", "vcpu-count"]). */
+function numFlagAny(args: ParsedArgs, names: string[]): number | undefined {
+  for (const n of names) {
+    const v = numFlag(args, n);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+/** Parse a comma-separated flag into a trimmed, non-empty string list. */
+function csvFlag(args: ParsedArgs, name: string): string[] | undefined {
+  const v = args.flags[name];
+  if (typeof v !== "string") return undefined;
+  const list = v.split(",").map((s) => s.trim()).filter(Boolean);
+  return list.length ? list : undefined;
+}
+
+/**
+ * Resolve the egress network policy from flags into the contract's
+ * NetworkPolicyInput shape (shared by fork + run). Precedence:
+ *   --allow a,b      → { type: "allow", allow: [...] }   (default-deny allowlist)
+ *   --deny a,b       → { type: "block", block: [...] }   (default-allow blocklist)
+ *   --network open|blocked|none|true|false
+ * Returns undefined when no network flag is present (don't touch the policy).
+ */
+function parseNetwork(args: ParsedArgs): NetworkInput | undefined {
+  const allow = csvFlag(args, "allow");
+  if (allow) return { type: "allow", allow };
+  const deny = csvFlag(args, "deny") ?? csvFlag(args, "block");
+  if (deny) return { type: "block", block: deny };
+  const net = args.flags.network;
+  if (net === undefined) return undefined;
+  if (typeof net === "boolean") return net; // bare --network → open
+  const v = net.toLowerCase();
+  if (v === "open" || v === "true" || v === "on") return "open";
+  if (v === "blocked" || v === "none" || v === "false" || v === "off") return "blocked";
+  return v; // pass through (server validates); NetworkPolicyInput accepts string
+}
+
+/**
+ * Shared CPU/memory/disk resize flags for fork + run. Egress `network`
+ * (allow/deny) is NOT here — it's a fork-only NetworkPolicyInput, whereas
+ * RunRequest.network is the unrelated inbound-port shape. So fork adds network
+ * via parseNetwork() separately; run only resizes.
+ */
+function resourceFlags(args: ParsedArgs): {
+  vcpu_count?: number;
+  memory_mib?: number;
+  disk_mib?: number;
+} {
+  return {
+    vcpu_count: numFlagAny(args, ["vcpu", "vcpu-count"]),
+    memory_mib: numFlagAny(args, ["memory", "memory-mib"]),
+    disk_mib: numFlagAny(args, ["disk-mib", "disk"]),
+  };
 }
 
 async function readAllStdin(): Promise<Uint8Array> {
@@ -651,12 +767,17 @@ function usage(): never {
       "  arker fork --source-vm-id <id>                 fork by global id",
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
+      "  arker fork <vm_name> --vcpu 4 --memory 2048 --disk-mib 20480",
+      "                                                 fork with resource overrides",
+      "  arker fork <vm_name> --allow github.com,pypi.org   (or --network blocked / --no-disk)",
       "  arker run <vm> <command>                       run a command",
+      "  arker run <vm> <cmd> --vcpu 8 --memory 4096    run, resizing the VM",
       "  arker shell [vm_id]                            interactive shell (forks arkuntu if no vm)",
       "",
       "Resources:",
       "  arker vms         <ls|get|rm|fork|run> ...",
-      "  arker runs        <ls|get|rm> <vm_id> ...",
+      "  arker runs        ls [vm_id] [--since 1h --until now --vm --region --provider --source --search --json]",
+      "  arker runs        <get|rm> <vm_id> <run_id>",
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker tunnels     <ls|get|rm> <vm_id> ...",
@@ -669,6 +790,16 @@ function usage(): never {
       "  --base-url <url>           override compute URL (env ARKER_BASE_URL)",
       "  --control-base-url <url>   override CF Worker URL (env ARKER_CONTROL_BASE_URL)",
       "  --json                     emit JSON instead of tabular output",
+      "",
+      "Resource flags (cpu/mem/disk on fork + run; network + max-memory + no-disk are fork-only):",
+      "  --vcpu <n>                 vCPU count (alias --vcpu-count)",
+      "  --memory <mib>             memory in MiB (alias --memory-mib)",
+      "  --max-memory <mib>         max hot-pluggable memory in MiB (fork only)",
+      "  --disk-mib <mib>           disk size in MiB (alias --disk)",
+      "  --no-disk                  create a diskless VM (fork only)",
+      "  --network <open|blocked>   egress policy",
+      "  --allow <a,b,c>            default-deny allowlist (domains/CIDRs/@groups)",
+      "  --deny <a,b,c>             default-allow blocklist (alias --block)",
       "",
       `Arker org id: ${ARKER_ORG_ID}`,
     ].join("\n"),
