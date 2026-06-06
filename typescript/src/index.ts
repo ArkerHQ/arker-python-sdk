@@ -156,6 +156,27 @@ export type RunSummary = ApiSchema<"RunSummary">;
 export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
 export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
+/** One row from the org-scoped, cross-VM `GET /v1/runs` (Arker.listRuns).
+ *  Body fields are empty when `lite` was requested. */
+export type RunListRow = {
+  source: "cf" | "arkerd";
+  t_ms: number;
+  run_id: string;
+  vm_id: string;
+  session_id: string;
+  region: string;
+  status: number;
+  exit_code: number | null;
+  total_ms: number;
+  executor_duration_ms: number;
+  vm_vcpus: number;
+  vm_memory_mib: number;
+  endpoint: string;
+  command: string;
+  body_in: string;
+  body_out: string;
+};
+
 // ── Sessions / resize ──────────────────────────────────────────────
 export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
 export type ResizeRequest = ApiSchema<"ResizeRequest">;
@@ -393,6 +414,49 @@ export class Arker {
       return new VM(this, id, this._baseUrlFor(id), v);
     });
     return { vms, nextCursor: resp.next_cursor ?? null };
+  }
+
+  /**
+   * Org-scoped, cross-VM run listing (control plane). Finds runs across ALL
+   * the org's VMs in a time window with optional filters — the data behind
+   * the console observability page. `since`/`until` are unix SECONDS (default:
+   * last 24h). `lite` drops request/response bodies so large windows stay
+   * cheap when you only want to compute metrics. For a single VM's run history
+   * use `vm.listRuns()` instead.
+   */
+  async listRuns(
+    opts: {
+      since?: number;
+      until?: number;
+      vm?: string;
+      vmIds?: string[];
+      region?: string;
+      provider?: "aws" | "aws-burst";
+      source?: "cf" | "arkerd";
+      search?: string;
+      limit?: number;
+      offset?: number;
+      lite?: boolean;
+    } = {},
+  ): Promise<{ since: number; until: number; rows: RunListRow[] }> {
+    return this._request(
+      "GET",
+      buildQuery("/v1/runs", {
+        since: opts.since,
+        until: opts.until,
+        vm: opts.vm,
+        vms: opts.vmIds && opts.vmIds.length ? opts.vmIds.join(",") : undefined,
+        region: opts.region,
+        provider: opts.provider,
+        source: opts.source,
+        search: opts.search,
+        limit: opts.limit,
+        offset: opts.offset,
+        lite: opts.lite ? "1" : undefined,
+      }),
+      undefined,
+      this.controlBaseUrl,
+    );
   }
 
   /** Compute call — goes direct to the backend hosting this VM (no

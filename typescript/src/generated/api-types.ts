@@ -412,6 +412,12 @@ export interface components {
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
+            /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
+            max_vcpus?: number | null;
+            /** @description Hard memory ceiling (MiB) a fork can hotplug up to. */
+            max_memory_mib?: number | null;
+            /** @description Non-hotpluggable base memory (MiB). */
+            min_memory_mib?: number | null;
             /** @description Worker host that owns this VM. Used by routers to populate caches without a fresh PlanetScale lookup. */
             worker_id?: string | null;
             sessions: components["schemas"]["Session"][];
