@@ -251,6 +251,10 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
     timeout: numFlag(args, "timeout"),
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
+    // session_id (existing session by id) and session_idx (select by index)
+    // are distinct run-request fields.
+    session_id: args.flags.session as string | undefined,
+    session_idx: numFlag(args, "session-idx"),
     ...resourceFlags(args),
   });
   if (result.type === "completed") {
