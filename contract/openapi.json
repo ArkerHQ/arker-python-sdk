@@ -3,7 +3,7 @@
   "info": {
     "title": "Arker Public VM API",
     "version": "0.3.0",
-    "description": "Public VM API contract. Backends expose the same endpoint and wire\nshapes; backend-specific feature limitations are returned as\n`ErrorResponse` with `code: \"unsupported_operation\"`.\n"
+    "description": "Public VM and control-plane API contract. Backend VM endpoints expose the same wire\nshapes; backend-specific feature limitations are returned as\n`ErrorResponse` with `code: \"unsupported_operation\"`.\n"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
@@ -122,6 +122,228 @@
             "$ref": "#/components/responses/Error"
           }
         }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "operationId": "listOrgRuns",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "description": "Unix epoch seconds; include runs at or after this time.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "description": "Unix epoch seconds; include runs before this time.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vm",
+            "required": false,
+            "description": "Single VM ID filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vms",
+            "required": false,
+            "description": "Comma-separated VM ID filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "region",
+            "required": false,
+            "description": "Backend region filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "description": "Provider filter. `aws` maps to host-backed runs; `aws-burst` maps to Lambda-backed runs.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "aws",
+                "aws-burst"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "description": "Raw run metrics source filter.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "cf",
+                "arkerd"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "description": "Free-text search across run metadata.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Maximum number of rows to return.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "description": "Number of rows to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "in": "query",
+            "name": "lite",
+            "required": false,
+            "description": "When true, omit large input/output previews where supported by the backend.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "runtime",
+            "required": false,
+            "description": "Runtime filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endpoint",
+            "required": false,
+            "description": "Endpoint category filter.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "run",
+                "fork",
+                "sync"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "actions",
+            "required": false,
+            "description": "Comma-separated action filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "description": "Comma-separated status class filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_min",
+            "required": false,
+            "description": "Minimum HTTP/status code filter.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_max",
+            "required": false,
+            "description": "Maximum HTTP/status code filter.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "description": "Sort column.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "when",
+                "status",
+                "path",
+                "total",
+                "queue",
+                "your_code",
+                "runtime"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "dir",
+            "required": false,
+            "description": "Sort direction.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Runs visible to the authenticated caller across VMs, providers, and regions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOrgRunsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions."
       }
     },
     "/v1/vms/{id}": {
@@ -633,7 +855,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ \"op\": \"read\", \"path\" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ \"op\": \"write\", \"writes\": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation \u2014 see `POST /v1/vms/{id}/syncs`."
+        "description": "Read or write files in the VM filesystem. Op-discriminated:\n`{op:\"read\",path}` reads a file (inline content for small files, a\npresigned GET URL for large ones); `{op:\"write\",writes:[...]}` writes,\neach entry an inline chunk or a presigned-upload step. Binding a\nfilesystem into the VM is the separate `/v1/vms/{id}/syncs` resource.\n"
       }
     },
     "/v1/vms/{id}/tunnels": {
@@ -780,6 +1002,9 @@
                 }
               }
             }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
           },
           "default": {
             "$ref": "#/components/responses/Error"
@@ -992,7 +1217,7 @@
           "failed",
           "cancelled"
         ],
-        "description": "Lifecycle state for a Run. `running` = command in flight. `completed` = ran to completion; `exit_code` conveys success (0) or a non-zero program exit (still `completed`). `failed` = the platform could not run/finish the command (worker died, evicted mid-run); `fail_reason` explains why, distinct from the program's `stderr`. `cancelled` = cancelled by the client."
+        "description": "Lifecycle state for a Run. `running` = command in flight.\n`completed` = the command ran to completion; `exit_code` conveys\nsuccess (0) or a non-zero program exit (a non-zero exit is still\n`completed`). `failed` = the platform could not run or finish the\ncommand (host died, evicted mid-run, exec error); `fail_reason`\nexplains why, distinct from the program's `stderr`. `cancelled` =\ncancelled by the client.\n"
       },
       "TunnelState": {
         "type": "string",
@@ -1388,6 +1613,35 @@
             ],
             "minimum": 0
           },
+          "network": {
+            "$ref": "#/components/schemas/NetworkPolicy",
+            "description": "Effective VM fork-time egress policy."
+          },
+          "max_vcpus": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 255,
+            "description": "Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run."
+          },
+          "max_memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Hard memory ceiling (MiB) a fork can hotplug up to."
+          },
+          "min_memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Non-hotpluggable base memory (MiB)."
+          },
           "worker_id": {
             "type": [
               "string",
@@ -1613,6 +1867,17 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "run_id": {
+            "description": "The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "Lifecycle state \u2014 \"completed\" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape.",
+            "type": "string"
+          },
           "stdout": {
             "type": "string"
           },
@@ -1645,6 +1910,10 @@
         "additionalProperties": false,
         "properties": {
           "run_id": {
+            "type": "string"
+          },
+          "state": {
+            "description": "Lifecycle state \u2014 \"running\" for a backgrounded run.",
             "type": "string"
           },
           "tunnels": {
@@ -1709,7 +1978,7 @@
               "string",
               "null"
             ],
-            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
+            "description": "System failure explanation when `state` is `failed` (e.g. \"host died:&nbsp;<id>\", \"evicted mid-run\"). Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion."
           },
           "stdout": {
             "type": "string"
@@ -1819,7 +2088,7 @@
               "string",
               "null"
             ],
-            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
+            "description": "System failure explanation when `state` is `failed` \u2014 see `Run.fail_reason`. Distinct from the program's `stderr`."
           },
           "vm_id": {
             "type": [
@@ -1876,6 +2145,180 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "OrgRunListRow": {
+        "type": "object",
+        "required": [
+          "source",
+          "t_ms",
+          "request_id",
+          "run_id",
+          "vm_id",
+          "session_id",
+          "region",
+          "status",
+          "total_ms",
+          "queue_ms",
+          "lambda_call_ms",
+          "lambda_duration_ms",
+          "executor_duration_ms",
+          "executor_kind",
+          "executor_cpu_ms",
+          "executor_mem_mb",
+          "lambda_cpu_ms",
+          "lambda_mem_mb",
+          "vm_vcpus",
+          "vm_memory_mib",
+          "path",
+          "method",
+          "command",
+          "source_vm_id",
+          "exit_code",
+          "endpoint",
+          "api_key_prefix",
+          "body_bytes_in",
+          "body_bytes_out",
+          "body_in",
+          "body_out"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "cf",
+              "arkerd"
+            ]
+          },
+          "t_ms": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "vm_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "total_ms": {
+            "type": "number"
+          },
+          "queue_ms": {
+            "type": "number"
+          },
+          "lambda_call_ms": {
+            "type": "number"
+          },
+          "lambda_duration_ms": {
+            "type": "integer"
+          },
+          "executor_duration_ms": {
+            "type": "integer"
+          },
+          "executor_kind": {
+            "type": "string"
+          },
+          "executor_cpu_ms": {
+            "type": "integer"
+          },
+          "executor_mem_mb": {
+            "type": "integer"
+          },
+          "lambda_cpu_ms": {
+            "type": "integer"
+          },
+          "lambda_mem_mb": {
+            "type": "integer"
+          },
+          "vm_vcpus": {
+            "type": "integer"
+          },
+          "vm_memory_mib": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "source_vm_id": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "api_key_prefix": {
+            "type": "string"
+          },
+          "body_bytes_in": {
+            "type": "integer"
+          },
+          "body_bytes_out": {
+            "type": "integer"
+          },
+          "body_in": {
+            "type": "string"
+          },
+          "body_out": {
+            "type": "string"
+          }
+        }
+      },
+      "ListOrgRunsResponse": {
+        "type": "object",
+        "required": [
+          "since",
+          "until",
+          "limit",
+          "offset",
+          "lite",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "since": {
+            "type": "integer"
+          },
+          "until": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "lite": {
+            "type": "boolean"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgRunListRow"
+            }
           }
         }
       },
@@ -2138,8 +2581,7 @@
           "sync_id",
           "vm_id",
           "filesystem_id",
-          "path",
-          "created_at"
+          "path"
         ],
         "additionalProperties": false,
         "properties": {
@@ -2156,52 +2598,11 @@
             "type": "string",
             "description": "VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`."
           },
-          "created_at": {
-            "type": "string"
-          },
-          "vm_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "filesystem_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_org_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "region": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "aws-burst",
-              null
-            ]
-          },
-          "live": {
-            "type": "boolean"
-          },
-          "live_error": {
-            "type": "string"
-          },
-          "idempotent": {
-            "type": "boolean"
           }
         }
       },
@@ -2249,23 +2650,17 @@
             "type": "string"
           },
           "path": {
-            "type": "string",
-            "description": "VM-side path. Returns `ErrorResponse` code `conflict` if a sync already exists at this path."
+            "type": "string"
           }
         }
       },
       "SyncReadRequest": {
         "type": "object",
         "required": [
-          "op",
           "path"
         ],
         "additionalProperties": false,
         "properties": {
-          "op": {
-            "type": "string",
-            "const": "read"
-          },
           "path": {
             "type": "string"
           }
@@ -2274,15 +2669,10 @@
       "SyncWriteRequest": {
         "type": "object",
         "required": [
-          "op",
           "writes"
         ],
         "additionalProperties": false,
         "properties": {
-          "op": {
-            "type": "string",
-            "const": "write"
-          },
           "writes": {
             "type": "array",
             "items": {

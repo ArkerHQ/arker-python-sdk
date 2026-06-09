@@ -198,6 +198,10 @@ def test_list_uses_configured_base_url() -> None:
             "sessions": [session()],
             "tunnels": [],
             "name": "demo",
+            "network": {"type": "open"},
+            "max_vcpus": 8,
+            "max_memory_mib": 32768,
+            "min_memory_mib": 512,
         }]},
     )
 
@@ -209,6 +213,93 @@ def test_list_uses_configured_base_url() -> None:
     assert result.vms[0].id == "vm_1"
     assert result.vms[0].vm_id == "vm_1"
     assert result.vms[0].owner_org_id == "owner"
+    assert result.vms[0].max_vcpus == 8
+    assert result.vms[0].max_memory_mib == 32768
+    assert result.vms[0].min_memory_mib == 512
+    assert result.vms[0].network == {"type": "open"}
+
+
+def test_list_runs_uses_control_plane_and_filters() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&source=arkerd&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+        200,
+        {
+            "since": 10,
+            "until": 20,
+            "limit": 25,
+            "offset": 5,
+            "lite": True,
+            "rows": [{
+                "source": "arkerd",
+                "t_ms": 10,
+                "request_id": "req_1",
+                "run_id": "run_1",
+                "vm_id": "vm_1",
+                "session_id": "session_1",
+                "region": "us-west-2",
+                "status": 200,
+                "total_ms": 12.5,
+                "queue_ms": 1.5,
+                "lambda_call_ms": 0,
+                "lambda_duration_ms": 0,
+                "executor_duration_ms": 10,
+                "executor_kind": "firecracker",
+                "executor_cpu_ms": 8,
+                "executor_mem_mb": 64,
+                "lambda_cpu_ms": 0,
+                "lambda_mem_mb": 0,
+                "vm_vcpus": 2,
+                "vm_memory_mib": 4096,
+                "path": "/v1/vms/vm_1/runs",
+                "method": "POST",
+                "command": "pytest",
+                "source_vm_id": "",
+                "exit_code": 0,
+                "endpoint": "run",
+                "api_key_prefix": "ark_live",
+                "body_bytes_in": 10,
+                "body_bytes_out": 20,
+                "body_in": "",
+                "body_out": "",
+            }],
+        },
+    )
+
+    arker = sdk.Arker(
+        api_key="ark_live_test",
+        base_url="https://test.invalid/api",
+        control_base_url="https://control.invalid/api",
+        retry=False,
+    )
+    with patch("urllib.request.urlopen", t):
+        result = arker.list_runs(
+            since=10,
+            until=20,
+            vm="vm_1",
+            vm_ids=["vm_2", "vm_3"],
+            region="us-west-2",
+            provider="aws",
+            source="arkerd",
+            search="pytest",
+            limit=25,
+            offset=5,
+            lite=True,
+            runtime="fc",
+            endpoint="run",
+            actions=["run", "fork"],
+            status=["success", "internal"],
+            status_min=200,
+            status_max=599,
+            sort="when",
+            dir="asc",
+        )
+
+    assert isinstance(result, sdk.ListOrgRunsResponse)
+    assert result.lite is True
+    assert result.rows[0].region == "us-west-2"
+    assert result.rows[0].vm_vcpus == 2
+    assert t.calls[0]["body"] is None
 
 
 def test_run_sends_command_without_default_session_id() -> None:

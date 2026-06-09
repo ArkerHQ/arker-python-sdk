@@ -204,6 +204,120 @@ async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
   assert.equal(fetch.calls[0]!.url, "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs");
 }
 
+async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&source=arkerd&search=pytest&limit=25&offset=5&lite=true&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+    200,
+    {
+      since: 10,
+      until: 20,
+      limit: 25,
+      offset: 5,
+      lite: true,
+      rows: [{
+        source: "arkerd",
+        t_ms: 10,
+        request_id: "req_1",
+        run_id: "run_1",
+        vm_id: "vm_1",
+        session_id: "session_1",
+        region: "us-west-2",
+        status: 200,
+        total_ms: 12.5,
+        queue_ms: 1.5,
+        lambda_call_ms: 0,
+        lambda_duration_ms: 0,
+        executor_duration_ms: 10,
+        executor_kind: "firecracker",
+        executor_cpu_ms: 8,
+        executor_mem_mb: 64,
+        lambda_cpu_ms: 0,
+        lambda_mem_mb: 0,
+        vm_vcpus: 2,
+        vm_memory_mib: 4096,
+        path: "/v1/vms/vm_1/runs",
+        method: "POST",
+        command: "pytest",
+        source_vm_id: "",
+        exit_code: 0,
+        endpoint: "run",
+        api_key_prefix: "ark_live",
+        body_bytes_in: 10,
+        body_bytes_out: 20,
+        body_in: "",
+        body_out: "",
+      }],
+    },
+  );
+
+  const arker = new Arker({
+    apiKey: "ark_live_test",
+    baseUrl: "https://test.invalid/api/",
+    controlBaseUrl: "https://control.invalid/api/",
+    fetch: fetch.fetch,
+    retry: false,
+  });
+  const result = await arker.listRuns({
+    since: 10,
+    until: 20,
+    vm: "vm_1",
+    vmIds: ["vm_2", "vm_3"],
+    region: "us-west-2",
+    provider: "aws",
+    source: "arkerd",
+    search: "pytest",
+    limit: 25,
+    offset: 5,
+    lite: true,
+    runtime: "fc",
+    endpoint: "run",
+    actions: ["run", "fork"],
+    status: ["success", "internal"],
+    statusMin: 200,
+    statusMax: 599,
+    sort: "when",
+    dir: "asc",
+  });
+
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0]!.region, "us-west-2");
+  assert.equal(result.rows[0]!.vm_vcpus, 2);
+  assert.equal(result.lite, true);
+  assert.equal(fetch.calls[0]!.method, "GET");
+  assert.equal(fetch.calls[0]!.body, undefined);
+}
+
+async function testListVmsPreservesForkLimitFields(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws",
+    200,
+    {
+      vms: [{
+        vm_id: "vm_1",
+        owner_org_id: "owner",
+        created_at: "now",
+        public: false,
+        state: "running",
+        sessions: [],
+        tunnels: [],
+        network: { type: "open" },
+        max_vcpus: 8,
+        max_memory_mib: 32768,
+        min_memory_mib: 512,
+      }],
+    },
+  );
+
+  const result = await client(fetch).listVms({ region: "us-west-2", provider: "aws" });
+
+  assert.equal(result.vms[0]!.max_vcpus, 8);
+  assert.equal(result.vms[0]!.max_memory_mib, 32768);
+  assert.equal(result.vms[0]!.min_memory_mib, 512);
+  assert.deepEqual(result.vms[0]!.network, { type: "open" });
+}
+
 async function testForkSendsDurableFlag(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -278,6 +392,8 @@ await testCompletedRunDecodesOutput();
 await testRegionRoutesGoldensToMainEndpoint();
 await testRegionRoutesArkuntuAliasToBurstEndpoint();
 await testRegionRoutesBurstVmIdsToBurstEndpoint();
+await testListRunsUsesControlPlaneAndFilters();
+await testListVmsPreservesForkLimitFields();
 await testForkSendsDurableFlag();
 await testRunSendsIdempotencyKeyHeader();
 await testRunStatusReturnsRetryCount();

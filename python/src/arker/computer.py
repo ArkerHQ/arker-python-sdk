@@ -106,6 +106,10 @@ class Vm:
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
+    network: dict[str, Any] | None = None
+    max_vcpus: int | None = None
+    max_memory_mib: int | None = None
+    min_memory_mib: int | None = None
     worker_id: str | None = None
     tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
 
@@ -212,6 +216,51 @@ class RunSummary:
 class ListRunsResponse:
     runs: list[RunSummary]
     next_cursor: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class OrgRunListRow:
+    source: str
+    t_ms: int
+    request_id: str
+    run_id: str
+    vm_id: str
+    session_id: str
+    region: str
+    status: int
+    total_ms: float
+    queue_ms: float
+    lambda_call_ms: float
+    lambda_duration_ms: int
+    executor_duration_ms: int
+    executor_kind: str
+    executor_cpu_ms: int
+    executor_mem_mb: int
+    lambda_cpu_ms: int
+    lambda_mem_mb: int
+    vm_vcpus: int
+    vm_memory_mib: int
+    path: str
+    method: str
+    command: str
+    source_vm_id: str
+    exit_code: int | None
+    endpoint: str
+    api_key_prefix: str
+    body_bytes_in: int
+    body_bytes_out: int
+    body_in: str
+    body_out: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ListOrgRunsResponse:
+    since: int
+    until: int
+    limit: int
+    offset: int
+    lite: bool
+    rows: list[OrgRunListRow]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -470,6 +519,54 @@ class Arker:
             vms.append(VM(self, info.vm_id, self._base_url_for(info.vm_id), info))
         return ListVmsResponse(vms=vms, next_cursor=_optional_str(payload.get("next_cursor")))
 
+    def list_runs(
+        self,
+        *,
+        since: int | None = None,
+        until: int | None = None,
+        vm: str | None = None,
+        vm_ids: list[str] | None = None,
+        region: str | None = None,
+        provider: str | None = None,
+        source: str | None = None,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        lite: bool | None = None,
+        runtime: str | None = None,
+        endpoint: str | None = None,
+        actions: list[str] | None = None,
+        status: list[str] | None = None,
+        status_min: int | None = None,
+        status_max: int | None = None,
+        sort: str | None = None,
+        dir: str | None = None,
+    ) -> ListOrgRunsResponse:
+        """List run activity across VMs through the control plane."""
+        path = _build_query("/v1/runs", {
+            "since": since,
+            "until": until,
+            "vm": vm,
+            "vms": ",".join(vm_ids) if vm_ids else None,
+            "region": region,
+            "provider": provider,
+            "source": source,
+            "search": search,
+            "limit": limit,
+            "offset": offset,
+            "lite": lite,
+            "runtime": runtime,
+            "endpoint": endpoint,
+            "actions": ",".join(actions) if actions else None,
+            "status": ",".join(status) if status else None,
+            "status_min": status_min,
+            "status_max": status_max,
+            "sort": sort,
+            "dir": dir,
+        })
+        payload = self._request("GET", path, base_url=self._control_base_url)
+        return _org_runs_response(payload)
+
     def get_vm(self, vm_id: str) -> VM:
         info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
         return VM(self, vm_id, self._base_url_for(vm_id), info)
@@ -579,6 +676,10 @@ class VM:
     vcpu_count: int | None
     memory_mib: int | None
     disk_mib: int | None
+    network: dict[str, Any] | None
+    max_vcpus: int | None
+    max_memory_mib: int | None
+    min_memory_mib: int | None
     started_at: str | None
     sessions: list[Session] | None
     tunnels: list[Tunnel] | None
@@ -1062,6 +1163,10 @@ def _vm_info(payload: dict[str, Any]) -> Vm:
         vcpu_count=_optional_int(payload.get("vcpu_count")),
         memory_mib=_optional_int(payload.get("memory_mib")),
         disk_mib=_optional_int(payload.get("disk_mib")),
+        network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
+        max_vcpus=_optional_int(payload.get("max_vcpus")),
+        max_memory_mib=_optional_int(payload.get("max_memory_mib")),
+        min_memory_mib=_optional_int(payload.get("min_memory_mib")),
         worker_id=_optional_str(payload.get("worker_id")),
         tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
     )
@@ -1120,6 +1225,53 @@ def _run_summary(payload: dict[str, Any]) -> RunSummary:
         session_id=_optional_str(payload.get("session_id")),
         command=_optional_str(payload.get("command")),
         completed_at=_optional_str(payload.get("completed_at")),
+    )
+
+
+def _org_runs_response(payload: dict[str, Any]) -> ListOrgRunsResponse:
+    return ListOrgRunsResponse(
+        since=int(payload["since"]),
+        until=int(payload["until"]),
+        limit=int(payload["limit"]),
+        offset=int(payload["offset"]),
+        lite=bool(payload["lite"]),
+        rows=[_org_run_list_row(item) for item in payload.get("rows", []) if isinstance(item, dict)],
+    )
+
+
+def _org_run_list_row(payload: dict[str, Any]) -> OrgRunListRow:
+    return OrgRunListRow(
+        source=str(payload["source"]),
+        t_ms=int(payload["t_ms"]),
+        request_id=str(payload["request_id"]),
+        run_id=str(payload["run_id"]),
+        vm_id=str(payload["vm_id"]),
+        session_id=str(payload["session_id"]),
+        region=str(payload["region"]),
+        status=int(payload["status"]),
+        total_ms=float(payload["total_ms"]),
+        queue_ms=float(payload["queue_ms"]),
+        lambda_call_ms=float(payload["lambda_call_ms"]),
+        lambda_duration_ms=int(payload["lambda_duration_ms"]),
+        executor_duration_ms=int(payload["executor_duration_ms"]),
+        executor_kind=str(payload["executor_kind"]),
+        executor_cpu_ms=int(payload["executor_cpu_ms"]),
+        executor_mem_mb=int(payload["executor_mem_mb"]),
+        lambda_cpu_ms=int(payload["lambda_cpu_ms"]),
+        lambda_mem_mb=int(payload["lambda_mem_mb"]),
+        vm_vcpus=int(payload["vm_vcpus"]),
+        vm_memory_mib=int(payload["vm_memory_mib"]),
+        path=str(payload["path"]),
+        method=str(payload["method"]),
+        command=str(payload["command"]),
+        source_vm_id=str(payload["source_vm_id"]),
+        exit_code=_optional_int(payload.get("exit_code")),
+        endpoint=str(payload["endpoint"]),
+        api_key_prefix=str(payload["api_key_prefix"]),
+        body_bytes_in=int(payload["body_bytes_in"]),
+        body_bytes_out=int(payload["body_bytes_out"]),
+        body_in=str(payload["body_in"]),
+        body_out=str(payload["body_out"]),
     )
 
 
