@@ -154,6 +154,9 @@ export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
 export type Run = ApiSchema<"Run">;
 export type RunSummary = ApiSchema<"RunSummary">;
 export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
+export type OrgRunListRow = ApiSchema<"OrgRunListRow">;
+export type ListOrgRunsResponse = ApiSchema<"ListOrgRunsResponse">;
+export type RunListRow = OrgRunListRow;
 export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
 // ── Sessions / resize ──────────────────────────────────────────────
@@ -204,6 +207,28 @@ export interface BackgroundRunResult {
 }
 
 export type RunResult = CompletedRunResult | BackgroundRunResult;
+
+export interface ListOrgRunsOptions {
+  since?: number;
+  until?: number;
+  vm?: string;
+  vmIds?: string[];
+  region?: string;
+  provider?: "aws" | "aws-burst";
+  source?: "cf" | "arkerd";
+  search?: string;
+  limit?: number;
+  offset?: number;
+  lite?: boolean;
+  runtime?: string;
+  endpoint?: "run" | "fork" | "sync";
+  actions?: string[];
+  status?: string[];
+  statusMin?: number;
+  statusMax?: number;
+  sort?: "when" | "status" | "path" | "total" | "queue" | "your_code" | "runtime";
+  dir?: "asc" | "desc";
+}
 
 interface RetryConfig {
   attempts: number;
@@ -395,6 +420,34 @@ export class Arker {
     return { vms, nextCursor: resp.next_cursor ?? null };
   }
 
+  /**
+   * List run activity visible to the authenticated caller across VMs,
+   * providers, and regions. Admin call — routed through the control plane.
+   */
+  async listRuns(opts: ListOrgRunsOptions = {}): Promise<ListOrgRunsResponse> {
+    return this._request("GET", buildQuery("/v1/runs", {
+      since: opts.since,
+      until: opts.until,
+      vm: opts.vm,
+      vms: opts.vmIds && opts.vmIds.length > 0 ? opts.vmIds.join(",") : undefined,
+      region: opts.region,
+      provider: opts.provider,
+      source: opts.source,
+      search: opts.search,
+      limit: opts.limit,
+      offset: opts.offset,
+      lite: opts.lite === undefined ? undefined : opts.lite,
+      runtime: opts.runtime,
+      endpoint: opts.endpoint,
+      actions: opts.actions && opts.actions.length > 0 ? opts.actions.join(",") : undefined,
+      status: opts.status && opts.status.length > 0 ? opts.status.join(",") : undefined,
+      status_min: opts.statusMin,
+      status_max: opts.statusMax,
+      sort: opts.sort,
+      dir: opts.dir,
+    }), undefined, this.controlBaseUrl);
+  }
+
   /** Compute call — goes direct to the backend hosting this VM (no
    * control-plane hop). Returns a fully-populated VM handle. */
   async getVm(vmId: string): Promise<VM> {
@@ -536,6 +589,10 @@ export class VM {
   readonly vcpu_count?: number | null;
   readonly memory_mib?: number | null;
   readonly disk_mib?: number | null;
+  readonly network?: NetworkPolicy;
+  readonly max_vcpus?: number | null;
+  readonly max_memory_mib?: number | null;
+  readonly min_memory_mib?: number | null;
   readonly started_at?: string | null;
   readonly root_source_vm_id?: string | null;
   readonly root_source_vm_name?: string | null;

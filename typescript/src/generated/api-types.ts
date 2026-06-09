@@ -42,6 +42,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions. */
+        get: operations["listOrgRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vms/{id}": {
         parameters: {
             query?: never;
@@ -218,7 +235,13 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ "op": "read", "path" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ "op": "write", "writes": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation — see `POST /v1/vms/{id}/syncs`. */
+        /**
+         * @description Read or write files in the VM filesystem. Op-discriminated:
+         *     `{op:"read",path}` reads a file (inline content for small files, a
+         *     presigned GET URL for large ones); `{op:"write",writes:[...]}` writes,
+         *     each entry an inline chunk or a presigned-upload step. Binding a
+         *     filesystem into the VM is the separate `/v1/vms/{id}/syncs` resource.
+         */
         post: operations["sync"];
         delete?: never;
         options?: never;
@@ -317,7 +340,13 @@ export interface components {
         VmState: "idle" | "running";
         SessionState: components["schemas"]["VmState"];
         /**
-         * @description Lifecycle state for a Run. `running` = command in flight. `completed` = ran to completion; `exit_code` conveys success (0) or a non-zero program exit (still `completed`). `failed` = the platform could not run/finish the command (worker died, evicted mid-run); `fail_reason` explains why, distinct from the program's `stderr`. `cancelled` = cancelled by the client.
+         * @description Lifecycle state for a Run. `running` = command in flight.
+         *     `completed` = the command ran to completion; `exit_code` conveys
+         *     success (0) or a non-zero program exit (a non-zero exit is still
+         *     `completed`). `failed` = the platform could not run or finish the
+         *     command (host died, evicted mid-run, exec error); `fail_reason`
+         *     explains why, distinct from the program's `stderr`. `cancelled` =
+         *     cancelled by the client.
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
@@ -412,6 +441,14 @@ export interface components {
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
+            /** @description Effective VM fork-time egress policy. */
+            network?: components["schemas"]["NetworkPolicy"];
+            /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
+            max_vcpus?: number | null;
+            /** @description Hard memory ceiling (MiB) a fork can hotplug up to. */
+            max_memory_mib?: number | null;
+            /** @description Non-hotpluggable base memory (MiB). */
+            min_memory_mib?: number | null;
             /** @description Worker host that owns this VM. Used by routers to populate caches without a fresh PlanetScale lookup. */
             worker_id?: string | null;
             sessions: components["schemas"]["Session"][];
@@ -473,6 +510,10 @@ export interface components {
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
+            /** @description The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record. */
+            run_id?: string | null;
+            /** @description Lifecycle state — "completed" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape. */
+            state?: string;
             stdout: string;
             /**
              * @description TODO(encoding-normalize): goal is to always emit utf-8 from
@@ -487,6 +528,8 @@ export interface components {
         };
         BackgroundRunResponse: {
             run_id: string;
+            /** @description Lifecycle state — "running" for a backgrounded run. */
+            state?: string;
             /** @default [] */
             tunnels?: components["schemas"]["Tunnel"][];
         };
@@ -498,7 +541,7 @@ export interface components {
             started_at: string;
             completed_at?: string | null;
             exit_code: number | null;
-            /** @description System failure explanation when `state` is `failed` (e.g. "worker died: <id>"). Distinct from `stderr`, which is the program's own output. */
+            /** @description System failure explanation when `state` is `failed` (e.g. "host died:&nbsp;<id>", "evicted mid-run"). Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion. */
             fail_reason?: string | null;
             stdout: string;
             stdout_encoding: string;
@@ -522,7 +565,7 @@ export interface components {
             started_at: string;
             completed_at?: string | null;
             exit_code: number | null;
-            /** @description System failure explanation when `state` is `failed` (e.g. "worker died: <id>"). Distinct from `stderr`, which is the program's own output. */
+            /** @description System failure explanation when `state` is `failed` — see `Run.fail_reason`. Distinct from the program's `stderr`. */
             fail_reason?: string | null;
             vm_id?: string | null;
             vm_name?: string | null;
@@ -534,6 +577,48 @@ export interface components {
         ListRunsResponse: {
             runs: components["schemas"]["RunSummary"][];
             next_cursor?: string | null;
+        };
+        OrgRunListRow: {
+            /** @enum {string} */
+            source: "cf" | "arkerd";
+            t_ms: number;
+            request_id: string;
+            run_id: string;
+            vm_id: string;
+            session_id: string;
+            region: string;
+            status: number;
+            total_ms: number;
+            queue_ms: number;
+            lambda_call_ms: number;
+            lambda_duration_ms: number;
+            executor_duration_ms: number;
+            executor_kind: string;
+            executor_cpu_ms: number;
+            executor_mem_mb: number;
+            lambda_cpu_ms: number;
+            lambda_mem_mb: number;
+            vm_vcpus: number;
+            vm_memory_mib: number;
+            path: string;
+            method: string;
+            command: string;
+            source_vm_id: string;
+            exit_code: number | null;
+            endpoint: string;
+            api_key_prefix: string;
+            body_bytes_in: number;
+            body_bytes_out: number;
+            body_in: string;
+            body_out: string;
+        };
+        ListOrgRunsResponse: {
+            since: number;
+            until: number;
+            limit: number;
+            offset: number;
+            lite: boolean;
+            rows: components["schemas"]["OrgRunListRow"][];
         };
         NetworkStatus: {
             inbound: components["schemas"]["InboundStatus"];
@@ -599,16 +684,7 @@ export interface components {
             filesystem_id: string;
             /** @description VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`. */
             path: string;
-            created_at: string;
-            vm_name?: string | null;
-            filesystem_name?: string | null;
-            source_org_id?: string | null;
             region?: string | null;
-            /** @enum {string|null} */
-            provider?: "aws" | "aws-burst" | null;
-            live?: boolean;
-            live_error?: string;
-            idempotent?: boolean;
         };
         ListSyncsResponse: {
             syncs: components["schemas"]["Sync"][];
@@ -619,17 +695,12 @@ export interface components {
         };
         SyncCreateRequest: {
             filesystem_id: string;
-            /** @description VM-side path. Returns `ErrorResponse` code `conflict` if a sync already exists at this path. */
             path?: string;
         };
         SyncReadRequest: {
-            /** @constant */
-            op: "read";
             path: string;
         };
         SyncWriteRequest: {
-            /** @constant */
-            op: "write";
             writes: components["schemas"]["SyncWriteEntry"][];
         };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
@@ -830,6 +901,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListVmsResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    listOrgRuns: {
+        parameters: {
+            query?: {
+                /** @description Unix epoch seconds; include runs at or after this time. */
+                since?: number;
+                /** @description Unix epoch seconds; include runs before this time. */
+                until?: number;
+                /** @description Single VM ID filter. */
+                vm?: string;
+                /** @description Comma-separated VM ID filter. */
+                vms?: string;
+                /** @description Backend region filter. */
+                region?: string;
+                /** @description Provider filter. `aws` maps to host-backed runs; `aws-burst` maps to Lambda-backed runs. */
+                provider?: "aws" | "aws-burst";
+                /** @description Raw run metrics source filter. */
+                source?: "cf" | "arkerd";
+                /** @description Free-text search across run metadata. */
+                search?: string;
+                /** @description Maximum number of rows to return. */
+                limit?: number;
+                /** @description Number of rows to skip. */
+                offset?: number;
+                /** @description When true, omit large input/output previews where supported by the backend. */
+                lite?: boolean;
+                /** @description Runtime filter. */
+                runtime?: string;
+                /** @description Endpoint category filter. */
+                endpoint?: "run" | "fork" | "sync";
+                /** @description Comma-separated action filter. */
+                actions?: string;
+                /** @description Comma-separated status class filter. */
+                status?: string;
+                /** @description Minimum HTTP/status code filter. */
+                status_min?: number;
+                /** @description Maximum HTTP/status code filter. */
+                status_max?: number;
+                /** @description Sort column. */
+                sort?: "when" | "status" | "path" | "total" | "queue" | "your_code" | "runtime";
+                /** @description Sort direction. */
+                dir?: "asc" | "desc";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runs visible to the authenticated caller across VMs, providers, and regions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListOrgRunsResponse"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1362,6 +1493,7 @@ export interface operations {
                     "application/json": components["schemas"]["Filesystem"];
                 };
             };
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
