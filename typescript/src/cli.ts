@@ -474,6 +474,17 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
 // ── Shell ──────────────────────────────────────────────────────────
 
 async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
+  // Interactive terminal: when attached to a real TTY (and not given a
+  // one-shot command or --exit), drop into a full PTY over WebSocket — vim,
+  // htop, a REPL and `claude` all work. For non-TTY / scripted use
+  // (`arker shell <vm> "cmd" --exit`, pipelines) fall back to the line-based
+  // run REPL below.
+  const _vmId = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
+  const _preload = args.positional.slice(_vmId ? 1 : 0).join(" ").trim();
+  if (process.stdin.isTTY && !_preload && args.flags.exit !== true) {
+    return await cmdPty(args, client);
+  }
+
   // Attach to an explicit VM by id (--vm-id or a positional vm id),
   // otherwise fork a fresh one from a source name in the Arker org
   // (default: ubuntu-full).
@@ -614,6 +625,81 @@ function classifyShellError(message: string, vmId: string): "fatal" | "recoverab
   return "recoverable";
 }
 
+// ── PTY (interactive terminal over WebSocket) ───────────────────────
+
+async function cmdPty(args: ParsedArgs, client: Arker): Promise<void> {
+  // Attach to an explicit VM by id, otherwise fork a fresh one (default
+  // ubuntu-full) in the Arker org.
+  let computer: VM;
+  const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
+  if (vmIdArg) {
+    computer = await client.vm(vmIdArg).refresh();
+  } else {
+    const sourceVmName = (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-full";
+    computer = await client.fork({ sourceVmName, sourceOrgId: ARKER_ORG_ID });
+    err(`forked ${computer.id} from ${sourceVmName}`);
+  }
+  // Optional: launch a specific program (a single binary path) instead of the
+  // login shell, e.g. `arker pty <vm> --command /usr/bin/htop`.
+  const command = args.flags.command as string | undefined;
+  await runInteractivePty(computer, args, command);
+}
+
+/**
+ * Bridge the local terminal to a VM PTY over a WebSocket: stdin (raw) →
+ * pty.sendInput, pty output → stdout, SIGWINCH → pty.resize. Exits when the
+ * remote shell closes. In raw mode every keystroke (incl. Ctrl-C = 0x03,
+ * arrows, escape sequences) is forwarded verbatim; the guest tty raises
+ * SIGINT inside the VM, exactly like a local terminal.
+ */
+async function runInteractivePty(
+  computer: VM,
+  args: ParsedArgs,
+  command: string | undefined,
+): Promise<void> {
+  const session = await computer.createSession({ cwd: args.flags.cwd as string | undefined });
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+  const isTty = !!stdin.isTTY;
+  let closed = false;
+
+  const restore = () => {
+    if (isTty) {
+      try { stdin.setRawMode(false); } catch { /* not a tty */ }
+    }
+    stdin.pause();
+  };
+
+  const pty = await computer.createPty({
+    cols: stdout.columns ?? 80,
+    rows: stdout.rows ?? 24,
+    sessionId: session.session_id,
+    command,
+    onData: (bytes) => { stdout.write(bytes); },
+    onExit: () => {
+      if (closed) return;
+      closed = true;
+      restore();
+      process.exit(0);
+    },
+  });
+
+  if (isTty) {
+    try { stdin.setRawMode(true); } catch { /* not a tty */ }
+  }
+  stdin.resume();
+
+  stdin.on("data", (chunk: Buffer) => {
+    if (!closed) void pty.sendInput(new Uint8Array(chunk));
+  });
+  stdout.on("resize", () => {
+    if (!closed) void pty.resize({ cols: stdout.columns ?? 80, rows: stdout.rows ?? 24 });
+  });
+
+  // Park until the remote shell closes (onExit calls process.exit).
+  await new Promise<void>(() => {});
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 function numFlag(args: ParsedArgs, name: string): number | undefined {
@@ -652,7 +738,8 @@ function usage(): never {
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
       "  arker run <vm> <command>                       run a command",
-      "  arker shell [vm_id]                            interactive shell (forks arkuntu if no vm)",
+      "  arker pty [vm_id]                              interactive PTY over WebSocket (vim/htop/REPL/claude)",
+      "  arker shell [vm_id]                            interactive PTY when on a TTY; line REPL when scripted",
       "",
       "Resources:",
       "  arker vms         <ls|get|rm|fork|run> ...",
@@ -704,6 +791,8 @@ async function main(): Promise<void> {
         return await cmdSyncs(args, client);
       case "shell":
         return await cmdShell(args, client);
+      case "pty":
+        return await cmdPty(args, client);
       // Resources.
       case "vms":
         return await cmdVms(args, client);

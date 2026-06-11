@@ -31,6 +31,8 @@
     "generate:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts",
     "smoke": "tsx tests/conformance/fork-run-sync.ts",
     "test": "tsx tests/unit.ts",
+    "test:cli": "tsx tests/cli-e2e.ts",
+    "test:e2e": "bash ../scripts/e2e.sh",
     "typecheck": "tsc -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
@@ -51,9 +53,13 @@
   "bugs": "https://github.com/ArkerHQ/arker-sdk/issues",
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "@types/ws": "^8.18.1",
     "openapi-typescript": "^7.13.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "optionalDependencies": {
+    "ws": "^8.21.0"
   }
 }

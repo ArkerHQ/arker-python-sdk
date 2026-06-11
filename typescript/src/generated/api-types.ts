@@ -163,6 +163,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vms/{id}/sessions/{sid}/pty": {
+        parameters: {
+            query?: {
+                /** @description Initial terminal width in columns. */
+                cols?: number;
+                /** @description Initial terminal height in rows. */
+                rows?: number;
+                /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
+                command?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Open an interactive PTY (WebSocket upgrade)
+         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Bearer auth on the upgrade (a key may only attach to its own org's VMs). Wire format: server→client Binary frames are raw terminal output (ANSI escapes/colors intact); client→server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client→server Text frames are JSON control: {"type":"resize","cols":N,"rows":M}, {"type":"kill"}, {"type":"ping"}. Closing the socket tears down the shell. Caps: one PTY per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.
+         */
+        get: operations["attachSessionPty"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vms/{id}/syncs": {
         parameters: {
             query?: never;
@@ -1124,6 +1154,38 @@ export interface operations {
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
+    attachSessionPty: {
+        parameters: {
+            query?: {
+                /** @description Initial terminal width in columns. */
+                cols?: number;
+                /** @description Initial terminal height in rows. */
+                rows?: number;
+                /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
+                command?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols — the WebSocket PTY stream is established. */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            429: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };

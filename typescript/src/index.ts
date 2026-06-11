@@ -509,11 +509,54 @@ export class Arker {
     if (isBurstRef(ref) && this.burstBaseUrl) return this.burstBaseUrl;
     return this.baseUrl;
   }
+
+  /** @internal — headers for the PTY WebSocket upgrade (Node only). */
+  _authHeaders(): Record<string, string> {
+    return { authorization: `Bearer ${this.apiKey}` };
+  }
 }
 
 export interface ListOpts {
   cursor?: string;
   limit?: number;
+}
+
+// ── Interactive PTY (terminal) ─────────────────────────────────────────
+
+export interface CreatePtyOptions {
+  /** Terminal width in columns. Default 80. */
+  cols?: number;
+  /** Terminal height in rows. Default 24. */
+  rows?: number;
+  /**
+   * Executable to launch as the terminal program — a single binary path; the
+   * guest does not shell-split arguments. Defaults to the login shell
+   * (`/bin/bash`). To run a command line, launch a shell and `sendInput` it.
+   */
+  command?: string;
+  /** Attach to an existing session instead of creating a fresh one. */
+  sessionId?: string;
+  /** Called with each chunk of raw terminal output (ANSI escapes/colors intact). */
+  onData: (bytes: Uint8Array) => void;
+  /** Called once when the terminal closes, with the WebSocket close code if any. */
+  onExit?: (code?: number) => void;
+}
+
+export interface PtyResizeRequest {
+  cols: number;
+  rows: number;
+}
+
+/** A live interactive pseudo-terminal inside a VM. */
+export interface Pty {
+  /** The session this PTY is bound to. */
+  readonly sessionId: string;
+  /** Send raw input bytes (keystrokes), incl. control chars like Ctrl-C (0x03). */
+  sendInput(data: Uint8Array): Promise<void>;
+  /** Resize the terminal; a running full-screen app reflows. */
+  resize(size: PtyResizeRequest): Promise<void>;
+  /** Kill the shell and close the connection. */
+  kill(): Promise<void>;
 }
 
 export class VM {
@@ -753,6 +796,49 @@ export class VM {
     return this._client._request("DELETE", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
   }
 
+  /**
+   * Open an interactive pseudo-terminal in this VM, streamed over a WebSocket.
+   * Raw terminal bytes (ANSI escapes/colors) arrive via `onData`; send
+   * keystrokes with `sendInput`, resize with `resize`, tear it down with
+   * `kill`. isatty() is true inside, so interactive programs work — a shell,
+   * vim, htop, a language REPL, or `claude`.
+   *
+   * Node only (uses the optional `ws` package for the authenticated upgrade).
+   *
+   * ```ts
+   * const pty = await vm.createPty({ cols, rows, onData: (b) => term.write(b) });
+   * await pty.sendInput(new TextEncoder().encode("ls -la\n"));
+   * await pty.resize({ cols, rows });
+   * await pty.kill();
+   * ```
+   */
+  async createPty(options: CreatePtyOptions): Promise<Pty> {
+    const cols = options.cols ?? 80;
+    const rows = options.rows ?? 24;
+    const sessionId = options.sessionId ?? (await this.createSession()).session_id;
+
+    const wsBase = this.baseUrl.replace(/^http/, "ws"); // https→wss, http→ws
+    const params = new URLSearchParams({ cols: String(cols), rows: String(rows) });
+    if (options.command) params.set("command", options.command);
+    const url = `${wsBase}${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty?${params.toString()}`;
+
+    const socket = await openPtySocket(url, this._client._authHeaders());
+    socket.onMessage((data) => options.onData(data));
+    socket.onClose((code) => options.onExit?.(code));
+
+    return {
+      sessionId,
+      sendInput: async (data: Uint8Array) => { socket.send(data); },
+      resize: async ({ cols, rows }: PtyResizeRequest) => {
+        socket.send(JSON.stringify({ type: "resize", cols, rows }));
+      },
+      kill: async () => {
+        socket.send(JSON.stringify({ type: "kill" }));
+        socket.close();
+      },
+    };
+  }
+
   // ── Tunnels: opened as a side effect of fork/run, addressed by port ─
   async listTunnels(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
     return this._client._request("GET", buildQuery(`${vmPath(this.id)}/tunnels`, {
@@ -785,6 +871,111 @@ function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   if (!trimmed) throw new Error("baseUrl must not be empty");
   return trimmed;
+}
+
+// ── PTY WebSocket transport ────────────────────────────────────────────
+// A tiny adapter over the Node `ws` package and the browser WebSocket so the
+// VM.createPty code path is agnostic to which one is in play.
+
+interface PtySocket {
+  send(data: string | Uint8Array): void;
+  onMessage(cb: (data: Uint8Array) => void): void;
+  onClose(cb: (code?: number) => void): void;
+  close(): void;
+}
+
+function isNodeRuntime(): boolean {
+  const g = globalThis as { process?: { versions?: { node?: string } }; window?: unknown };
+  return !!g.process?.versions?.node && typeof g.window === "undefined";
+}
+
+function toUint8(data: unknown): Uint8Array {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (Array.isArray(data)) {
+    // `ws` may deliver a fragmented binary message as Buffer[].
+    const parts = data.map((d) => toUint8(d));
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  }
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  return new Uint8Array(0);
+}
+
+async function openPtySocket(
+  url: string,
+  headers: Record<string, string>,
+): Promise<PtySocket> {
+  if (isNodeRuntime()) {
+    // Node: the WHATWG WebSocket can't set request headers, so use `ws`,
+    // which can carry the Authorization header on the upgrade.
+    let mod: { default?: unknown; WebSocket?: unknown };
+    try {
+      mod = (await import("ws")) as { default?: unknown; WebSocket?: unknown };
+    } catch {
+      throw new Error(
+        "createPty requires the optional 'ws' package in Node — install it with `npm install ws`",
+      );
+    }
+    const WsCtor = (mod.default ?? mod.WebSocket) as new (
+      url: string,
+      opts: { headers: Record<string, string> },
+    ) => WsNodeLike;
+    const ws = new WsCtor(url, { headers });
+    ws.binaryType = "nodebuffer";
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", (err: Error) => reject(err));
+    });
+    return {
+      send: (data) => ws.send(data),
+      onMessage: (cb) => ws.on("message", (data: unknown) => cb(toUint8(data))),
+      onClose: (cb) => ws.on("close", (code: number) => cb(code)),
+      close: () => ws.close(),
+    };
+  }
+
+  // Browser: header auth isn't possible on WebSocket; a token-in-query path
+  // is a future addition (see WEBSOCKET_PTY_PLAN.md). Connect anyway so a
+  // same-origin/cookie-authed page can use it.
+  const WsCtor = (globalThis as { WebSocket: new (url: string) => WsBrowserLike }).WebSocket;
+  const ws = new WsCtor(url);
+  ws.binaryType = "arraybuffer";
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener("open", () => resolve(), { once: true });
+    ws.addEventListener("error", () => reject(new Error("PTY WebSocket error")), { once: true });
+  });
+  return {
+    send: (data) => ws.send(data),
+    onMessage: (cb) =>
+      ws.addEventListener("message", (ev: { data: unknown }) => cb(toUint8(ev.data))),
+    onClose: (cb) =>
+      ws.addEventListener("close", (ev: { code?: number }) => cb(ev.code)),
+    close: () => ws.close(),
+  };
+}
+
+interface WsNodeLike {
+  binaryType: string;
+  send(data: string | Uint8Array): void;
+  once(event: "open", cb: () => void): void;
+  once(event: "error", cb: (err: Error) => void): void;
+  on(event: "message", cb: (data: unknown) => void): void;
+  on(event: "close", cb: (code: number) => void): void;
+  close(): void;
+}
+
+interface WsBrowserLike {
+  binaryType: string;
+  send(data: string | Uint8Array): void;
+  addEventListener(event: "open", cb: () => void, opts?: { once: boolean }): void;
+  addEventListener(event: "error", cb: () => void, opts?: { once: boolean }): void;
+  addEventListener(event: "message", cb: (ev: { data: unknown }) => void): void;
+  addEventListener(event: "close", cb: (ev: { code?: number }) => void): void;
+  close(): void;
 }
 
 function normalizeRegion(region: string): string {

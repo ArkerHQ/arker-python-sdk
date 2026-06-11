@@ -27,6 +27,8 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+# Interactive PTY (VM.create_pty) needs a WebSocket client.
+pty = ["websocket-client>=1.7"]
 
 [project.urls]
 Homepage = "https://arker.ai"

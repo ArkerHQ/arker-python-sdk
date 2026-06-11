@@ -12,11 +12,12 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 CHUNK_SIZE = 4 * 1024 * 1024
 
@@ -814,6 +815,51 @@ class VM:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
         return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
 
+    def create_pty(
+        self,
+        *,
+        on_data: Callable[[bytes], None],
+        cols: int = 80,
+        rows: int = 24,
+        command: str | None = None,
+        session_id: str | None = None,
+        on_exit: Callable[[], None] | None = None,
+    ) -> "Pty":
+        """Open an interactive pseudo-terminal in this VM over a WebSocket.
+
+        Raw terminal bytes (ANSI escapes/colors) are delivered to ``on_data``
+        from a background reader thread. Send keystrokes with
+        ``pty.send_input(b"...")`` (control chars like Ctrl-C = b"\\x03" work),
+        resize with ``pty.resize(cols, rows)``, tear down with ``pty.kill()``.
+        ``isatty()`` is true inside, so a shell, vim, htop, a REPL or ``claude``
+        all work.
+
+        ``command`` is a single executable path (no shell-splitting); defaults
+        to the login shell. Requires the optional ``websocket-client`` package
+        (``pip install 'arker[pty]'``).
+        """
+        try:
+            from websocket import create_connection  # type: ignore[import-untyped]
+        except ImportError as exc:  # pragma: no cover - import guard
+            raise ArkerError(
+                "dependency",
+                "create_pty requires the optional 'websocket-client' package "
+                "(pip install 'arker[pty]')",
+                0,
+            ) from exc
+
+        sid = session_id or self.create_session().session_id
+        ws_base = re.sub(r"^http", "ws", self.base_url)  # https→wss, http→ws
+        params: dict[str, Any] = {"cols": cols, "rows": rows}
+        if command:
+            params["command"] = command
+        url = f"{ws_base}{_vm_path(self.id)}/sessions/{_segment(sid)}/pty?{urllib.parse.urlencode(params)}"
+        ws = create_connection(
+            url,
+            header=[f"Authorization: Bearer {self._client._api_key}"],
+        )
+        return Pty(ws, sid, on_data, on_exit)
+
     # ── Tunnels: opened as a side effect of fork/run, addressed by port ─
     def list_tunnels(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListTunnelsResponse:
         path = _build_query(f"{_vm_path(self.id)}/tunnels", {"cursor": cursor, "limit": limit, "state": state})
@@ -830,6 +876,83 @@ class VM:
     def delete_tunnel(self, port: int) -> DeleteTunnelResponse:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{port}", base_url=self.base_url)
         return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
+
+
+class Pty:
+    """A live interactive pseudo-terminal inside a VM (see ``VM.create_pty``).
+
+    Output is delivered to the ``on_data`` callback from a daemon reader
+    thread. Sends are serialized with a lock so input/resize/kill are safe to
+    call from another thread while the reader runs.
+    """
+
+    def __init__(
+        self,
+        ws: Any,
+        session_id: str,
+        on_data: Callable[[bytes], None],
+        on_exit: Callable[[], None] | None,
+    ) -> None:
+        self.session_id = session_id
+        self._ws = ws
+        self._on_data = on_data
+        self._on_exit = on_exit
+        self._send_lock = threading.Lock()
+        self._closed = False
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    def _read_loop(self) -> None:
+        from websocket import ABNF  # type: ignore[import-untyped]
+
+        try:
+            while not self._closed:
+                opcode, data = self._ws.recv_data()
+                if opcode in (ABNF.OPCODE_BINARY, ABNF.OPCODE_TEXT):
+                    if data:
+                        self._on_data(bytes(data))
+                elif opcode == ABNF.OPCODE_CLOSE:
+                    break
+        except Exception:
+            pass
+        finally:
+            self._closed = True
+            if self._on_exit is not None:
+                self._on_exit()
+
+    def send_input(self, data: bytes) -> None:
+        """Send raw input bytes (keystrokes), incl. control chars like b"\\x03"."""
+        with self._send_lock:
+            if not self._closed:
+                self._ws.send_binary(data)
+
+    def resize(self, cols: int, rows: int) -> None:
+        """Resize the terminal; a running full-screen app reflows."""
+        with self._send_lock:
+            if not self._closed:
+                self._ws.send(json.dumps({"type": "resize", "cols": cols, "rows": rows}))
+
+    def kill(self) -> None:
+        """Kill the remote shell and close the connection."""
+        with self._send_lock:
+            if not self._closed:
+                try:
+                    self._ws.send(json.dumps({"type": "kill"}))
+                except Exception:
+                    pass
+        self.close()
+
+    def close(self) -> None:
+        """Close the WebSocket without sending a kill control message."""
+        self._closed = True
+        try:
+            self._ws.close()
+        except Exception:
+            pass
+
+    def wait(self) -> None:
+        """Block until the terminal closes (the reader thread exits)."""
+        self._reader.join()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

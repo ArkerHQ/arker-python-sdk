@@ -60,6 +60,40 @@ vm.delete_sync(sync_id)
 
 `api_key` falls back to `ARKER_API_KEY`; `region` to `ARKER_REGION`. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
 
+## Interactive terminal (PTY)
+
+Open a real pseudo-terminal in a VM and drive it interactively — stream raw
+terminal bytes out, send keystrokes in (incl. control chars like Ctrl-C),
+resize, and kill. `isatty()` is true inside, so an interactive shell, `vim`,
+`htop`, a REPL, and `claude` all work. Transport is a TLS WebSocket; a key can
+only attach to its own org's VMs.
+
+Install the optional WebSocket dependency: `pip install 'arker[pty]'`.
+
+```python
+import sys
+
+vm = ar.fork("ubuntu-full")
+
+# on_data is called from a background reader thread with raw output bytes.
+pty = vm.create_pty(
+    cols=80,
+    rows=24,
+    on_data=lambda b: sys.stdout.buffer.write(b) or sys.stdout.flush(),
+    # command defaults to the login shell; it is a single executable path
+    # (no shell-splitting) — launch a shell and send_input() it.
+)
+
+pty.send_input(b"ls -la\n")
+pty.resize(cols=120, rows=40)   # a full-screen app reflows
+pty.wait()                       # block until the shell exits, or:
+pty.kill()                       # tear it down
+```
+
+`b"\x03"` (Ctrl-C) interrupts the running program, exactly like a local
+terminal. To embed in a browser terminal, forward the same bytes to/from
+`xterm.js`.
+
 ## Durability
 
 For long-running or non-idempotent work, fork with `durable=True` and pass an idempotency key when retrying a run:
