@@ -823,6 +823,7 @@ class VM:
         rows: int = 24,
         command: str | None = None,
         session_id: str | None = None,
+        persist: bool = True,
         on_exit: Callable[[], None] | None = None,
     ) -> "Pty":
         """Open an interactive pseudo-terminal in this VM over a WebSocket.
@@ -833,6 +834,13 @@ class VM:
         resize with ``pty.resize(cols, rows)``, tear down with ``pty.kill()``.
         ``isatty()`` is true inside, so a shell, vim, htop, a REPL or ``claude``
         all work.
+
+        With ``persist=True`` (the default), a disconnect keeps the shell
+        running so you can reconnect to the SAME shell — call ``connect_pty``
+        (or ``create_pty``) again with the same ``session_id`` and recent
+        scrollback is replayed. ``pty.kill()`` destroys it immediately; a plain
+        ``close()`` only detaches. Set ``persist=False`` for an ephemeral
+        terminal torn down on disconnect.
 
         ``command`` is a single executable path (no shell-splitting); defaults
         to the login shell. Requires the optional ``websocket-client`` package
@@ -850,7 +858,7 @@ class VM:
 
         sid = session_id or self.create_session().session_id
         ws_base = re.sub(r"^http", "ws", self.base_url)  # https→wss, http→ws
-        params: dict[str, Any] = {"cols": cols, "rows": rows}
+        params: dict[str, Any] = {"cols": cols, "rows": rows, "persist": str(persist).lower()}
         if command:
             params["command"] = command
         url = f"{ws_base}{_vm_path(self.id)}/sessions/{_segment(sid)}/pty?{urllib.parse.urlencode(params)}"
@@ -859,6 +867,30 @@ class VM:
             header=[f"Authorization: Bearer {self._client._api_key}"],
         )
         return Pty(ws, sid, on_data, on_exit)
+
+    def connect_pty(
+        self,
+        *,
+        session_id: str,
+        on_data: Callable[[bytes], None],
+        cols: int = 80,
+        rows: int = 24,
+        on_exit: Callable[[], None] | None = None,
+    ) -> "Pty":
+        """Reconnect to a persistent PTY by ``session_id`` (replays scrollback)."""
+        return self.create_pty(
+            on_data=on_data, cols=cols, rows=rows, session_id=session_id, on_exit=on_exit,
+        )
+
+    def create_pty_ticket(self, session_id: str) -> dict[str, Any]:
+        """Mint a short-lived (5 min) ticket for opening the PTY WebSocket from a
+        browser, which cannot send an Authorization header. Open
+        ``wss://.../pty?ticket=<ticket>`` with it. Returns ``{ticket, expires_in}``."""
+        return self._client._request(
+            "POST",
+            f"{_vm_path(self.id)}/sessions/{_segment(session_id)}/pty-ticket",
+            base_url=self.base_url,
+        )
 
     # ── Tunnels: opened as a side effect of fork/run, addressed by port ─
     def list_tunnels(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListTunnelsResponse:

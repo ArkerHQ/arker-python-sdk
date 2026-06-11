@@ -534,12 +534,31 @@ export interface CreatePtyOptions {
    * (`/bin/bash`). To run a command line, launch a shell and `sendInput` it.
    */
   command?: string;
-  /** Attach to an existing session instead of creating a fresh one. */
+  /**
+   * Attach to an existing session instead of creating a fresh one. Reopening
+   * a PTY with the same `sessionId` (while `persist` is on) RECONNECTS to the
+   * same running shell and replays recent scrollback to `onData`.
+   */
   sessionId?: string;
+  /**
+   * E2B-style persistence (default `true`): when the connection drops, the
+   * shell keeps running so it can be reconnected via `sessionId`. Set `false`
+   * for an ephemeral terminal that is torn down on disconnect. The server
+   * reaps idle detached shells after a TTL; `kill()` destroys one immediately.
+   */
+  persist?: boolean;
   /** Called with each chunk of raw terminal output (ANSI escapes/colors intact). */
   onData: (bytes: Uint8Array) => void;
   /** Called once when the terminal closes, with the WebSocket close code if any. */
   onExit?: (code?: number) => void;
+}
+
+/** A short-lived ticket for opening a PTY WebSocket from a browser. */
+export interface PtyTicket {
+  /** Opaque token to pass as `?ticket=` on the PTY WebSocket URL. */
+  ticket: string;
+  /** Seconds until the ticket expires. */
+  expiresIn: number;
 }
 
 export interface PtyResizeRequest {
@@ -815,14 +834,29 @@ export class VM {
   async createPty(options: CreatePtyOptions): Promise<Pty> {
     const cols = options.cols ?? 80;
     const rows = options.rows ?? 24;
+    const persist = options.persist ?? true;
     const sessionId = options.sessionId ?? (await this.createSession()).session_id;
 
     const wsBase = this.baseUrl.replace(/^http/, "ws"); // https→wss, http→ws
-    const params = new URLSearchParams({ cols: String(cols), rows: String(rows) });
+    const params = new URLSearchParams({
+      cols: String(cols),
+      rows: String(rows),
+      persist: String(persist),
+    });
     if (options.command) params.set("command", options.command);
-    const url = `${wsBase}${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty?${params.toString()}`;
 
-    const socket = await openPtySocket(url, this._client._authHeaders());
+    // Node can set the Authorization header on the WS handshake. Browsers
+    // can't, so mint a short-lived ticket (over HTTP, which CAN auth) and pass
+    // it as `?ticket=` — the server validates it in lieu of the header.
+    let headers = this._client._authHeaders();
+    if (!isNodeRuntime()) {
+      const t = await this.createPtyTicket(sessionId);
+      params.set("ticket", t.ticket);
+      headers = {};
+    }
+
+    const url = `${wsBase}${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty?${params.toString()}`;
+    const socket = await openPtySocket(url, headers);
     socket.onMessage((data) => options.onData(data));
     socket.onClose((code) => options.onExit?.(code));
 
@@ -833,10 +867,37 @@ export class VM {
         socket.send(JSON.stringify({ type: "resize", cols, rows }));
       },
       kill: async () => {
+        // Explicitly destroy the persistent shell (a plain close only detaches
+        // it for later reconnect).
         socket.send(JSON.stringify({ type: "kill" }));
         socket.close();
       },
     };
+  }
+
+  /**
+   * Reconnect to a persistent PTY by `sessionId` — the same running shell, with
+   * recent scrollback replayed to `onData`. Equivalent to `createPty` with the
+   * session id of an earlier (persistent) PTY.
+   */
+  async connectPty(options: CreatePtyOptions & { sessionId: string }): Promise<Pty> {
+    return this.createPty(options);
+  }
+
+  /**
+   * Mint a short-lived (5 min) ticket for opening the PTY WebSocket from a
+   * browser (which cannot set an Authorization header). Open
+   * `wss://…/pty?ticket=<ticket>` with it. `createPty` does this automatically
+   * in a browser; call this directly only for a custom xterm.js integration.
+   */
+  async createPtyTicket(sessionId: string): Promise<PtyTicket> {
+    const r = await this._client._request<{ ticket: string; expires_in: number }>(
+      "POST",
+      `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty-ticket`,
+      undefined,
+      this.baseUrl,
+    );
+    return { ticket: r.ticket, expiresIn: r.expires_in };
   }
 
   // ── Tunnels: opened as a side effect of fork/run, addressed by port ─
