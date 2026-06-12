@@ -1,0 +1,50 @@
+"""Live compatibility shim smoke tests.
+
+Run with:
+
+    ARKER_API_KEY=... python -m pytest tests/test_compat_e2e.py
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+from arker.daytona import Daytona
+from arker.e2b import Sandbox as E2BSandbox
+from arker.modal import Sandbox as ModalSandbox
+
+if not os.environ.get("ARKER_API_KEY"):
+    pytest.skip("live Arker credentials are not configured", allow_module_level=True)
+
+if not os.environ.get("ARKER_BASE_URL") and not os.environ.get("ARKER_REGION"):
+    os.environ["ARKER_REGION"] = "aws-us-east-1"
+
+
+def test_daytona_live() -> None:
+    daytona = Daytona()
+    sandbox = daytona.create()
+    try:
+        response = sandbox.process.exec("printf daytona-python-live")
+        assert response.result == "daytona-python-live"
+    finally:
+        sandbox.delete()
+
+
+def test_e2b_live() -> None:
+    sandbox = E2BSandbox.create()
+    try:
+        result = sandbox.commands.run("printf e2b-python-live")
+        assert result.stdout == "e2b-python-live"
+    finally:
+        sandbox.kill()
+
+
+def test_modal_live() -> None:
+    sandbox = ModalSandbox.create()
+    try:
+        process = sandbox.exec("printf", "modal-python-live")
+        assert process.stdout.read() == "modal-python-live"
+    finally:
+        sandbox.terminate()

@@ -14,6 +14,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./daytona": {
+      "types": "./dist/daytona.d.ts",
+      "import": "./dist/daytona.js",
+      "require": "./dist/daytona.cjs"
+    },
+    "./e2b": {
+      "types": "./dist/e2b.d.ts",
+      "import": "./dist/e2b.js",
+      "require": "./dist/e2b.cjs"
+    },
+    "./modal": {
+      "types": "./dist/modal.d.ts",
+      "import": "./dist/modal.js",
+      "require": "./dist/modal.cjs"
     }
   },
   "files": [
@@ -25,12 +40,15 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts --format esm,cjs --dts --clean --target=node18",
+    "build": "tsup src/index.ts src/cli.ts src/daytona.ts src/e2b.ts src/modal.ts --format esm,cjs --dts --clean --target=node18",
     "check:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts --check",
     "demo": "tsx tests/demo.ts",
     "generate:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts",
     "smoke": "tsx tests/conformance/fork-run-sync.ts",
-    "test": "tsx tests/unit.ts",
+    "test": "tsx tests/unit.ts && tsx tests/compat.ts",
+    "test:compat": "tsx tests/compat.ts",
+    "test:compat-live": "tsx tests/compat-live.ts",
+    "test:compat-fallback-live": "tsx tests/compat-fallback-live.ts",
     "typecheck": "tsc -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
@@ -55,5 +73,11 @@
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@computesdk/daytona": "^1.7.30",
+    "@computesdk/e2b": "^1.7.51",
+    "@computesdk/modal": "^1.9.3",
+    "computesdk": "^4.1.3"
   }
 }

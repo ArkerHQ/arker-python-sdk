@@ -39,6 +39,8 @@ from .computer import (
     VmInfo,
 )
 
+from . import daytona, e2b, modal
+
 __all__ = [
     "ARKER_ORG_ID",
     "Arker",
@@ -76,5 +78,8 @@ __all__ = [
     "VmInfo",
     "VmList",
     "VmSummary",
+    "daytona",
+    "e2b",
+    "modal",
 ]
 __version__ = "0.5.1"
