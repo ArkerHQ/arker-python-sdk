@@ -77,6 +77,12 @@ class Session:
 
 
 @dataclasses.dataclass(frozen=True)
+class TunnelRequest:
+    ports: list[int] | None = None
+    auth_mode: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
 class Tunnel:
     vm_id: str
     port: int
@@ -87,6 +93,9 @@ class Tunnel:
     url: str | None = None
     message: str | None = None
     started_at: str | None = None
+    tunnel_key: str | None = None
+    auth_mode: str | None = None
+    auth_token: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -171,7 +180,6 @@ class CompletedRunResult:
 class BackgroundRunResult:
     run_id: str
     state: str = "running"
-    tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
     type: str = "background"
 
 
@@ -187,7 +195,6 @@ class Run:
     stdout_encoding: str
     stderr: bytes
     stderr_encoding: str
-    tunnels: list[Tunnel]
     exit_code: int | None = None
     # System failure explanation when state is "failed"; distinct from
     # stderr (the program's own error output). None otherwise.
@@ -428,6 +435,7 @@ class Arker:
         max_memory_mib: int | None = None,
         disk_mib: int | None = None,
         durable: bool | None = None,
+        tunnel: TunnelRequest | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -478,6 +486,7 @@ class Arker:
             "max_memory_mib": max_memory_mib,
             "disk_mib": disk_mib,
             "durable": durable,
+            "tunnel": _tunnel_request_payload(tunnel),
         }
         burst_ref = source_vm_name or source_vm_id
         use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
@@ -915,7 +924,7 @@ class VM:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
         return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
 
-    # ── Tunnels: opened as a side effect of fork/run, addressed by port ─
+    # ── Tunnels: VM-scoped, addressed by recoverable tunnel key ─
     def list_tunnels(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListTunnelsResponse:
         path = _build_query(f"{_vm_path(self.id)}/tunnels", {"cursor": cursor, "limit": limit, "state": state})
         payload = self._client._request("GET", path, base_url=self.base_url)
@@ -924,12 +933,21 @@ class VM:
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
 
-    def get_tunnel(self, port: int) -> Tunnel:
-        payload = self._client._request("GET", f"{_vm_path(self.id)}/tunnels/{port}", base_url=self.base_url)
+    def create_tunnel(self, request: TunnelRequest | dict[str, Any] | None = None, *, ports: list[int] | None = None, auth_mode: str | None = None) -> Tunnel:
+        payload = self._client._request(
+            "POST",
+            f"{_vm_path(self.id)}/tunnels",
+            _tunnel_request_payload(request) or _tunnel_request_payload(TunnelRequest(ports=ports, auth_mode=auth_mode)) or {},
+            base_url=self.base_url,
+        )
         return _tunnel(payload)
 
-    def delete_tunnel(self, port: int) -> DeleteTunnelResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{port}", base_url=self.base_url)
+    def get_tunnel(self, key: str) -> Tunnel:
+        payload = self._client._request("GET", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
+        return _tunnel(payload)
+
+    def delete_tunnel(self, key: str) -> DeleteTunnelResponse:
+        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
         return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
 
 
@@ -1041,6 +1059,16 @@ def _drop_none(value: Any) -> Any:
     return value
 
 
+def _tunnel_request_payload(value: TunnelRequest | dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, TunnelRequest):
+        return _drop_none({"ports": value.ports, "auth_mode": value.auth_mode})
+    if isinstance(value, dict):
+        return _drop_none(value)
+    raise ArkerError("bad_request", "tunnel request must be a TunnelRequest or dict", 400)
+
+
 def _parse_json(text: str) -> Any:
     if not text:
         return {}
@@ -1123,6 +1151,9 @@ def _tunnel(payload: dict[str, Any]) -> Tunnel:
         url=_optional_str(payload.get("url")),
         message=_optional_str(payload.get("message")),
         started_at=_optional_str(payload.get("started_at")),
+        tunnel_key=_optional_str(payload.get("tunnel_key")),
+        auth_mode=_optional_str(payload.get("auth_mode")),
+        auth_token=_optional_str(payload.get("auth_token")),
     )
 
 
@@ -1189,7 +1220,6 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
         return BackgroundRunResult(
             run_id=str(payload["run_id"]),
             state=str(payload["state"]) if isinstance(payload.get("state"), str) else "running",
-            tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
         )
 
     raise ArkerError("internal", "unrecognized run response shape", 200)
@@ -1205,7 +1235,6 @@ def _run_status_response(payload: dict[str, Any]) -> Run:
         stdout_encoding=str(payload["stdout_encoding"]),
         stderr=_decode_bytes(str(payload["stderr"]), str(payload["stderr_encoding"])),
         stderr_encoding=str(payload["stderr_encoding"]),
-        tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
         exit_code=_optional_int(payload.get("exit_code")),
         fail_reason=_optional_str(payload.get("fail_reason")),
         session_id=_optional_str(payload.get("session_id")),

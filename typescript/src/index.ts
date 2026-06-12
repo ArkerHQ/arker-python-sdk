@@ -144,6 +144,7 @@ export type RunOptions = Partial<Omit<RunRequest, "command">> & {
 };
 export type InboundPortRequest = ApiSchema<"InboundPortRequest">;
 export type NetworkRequest = ApiSchema<"NetworkRequest">;
+export type TunnelRequest = ApiSchema<"TunnelRequest">;
 export type Tunnel = ApiSchema<"Tunnel">;
 export type ListTunnelsResponse = ApiSchema<"ListTunnelsResponse">;
 export type DeleteTunnelResponse = ApiSchema<"DeleteTunnelResponse">;
@@ -203,7 +204,6 @@ export interface BackgroundRunResult {
   runId: string;
   /** Lifecycle state — "running". */
   state: string;
-  tunnels: Tunnel[];
 }
 
 export type RunResult = CompletedRunResult | BackgroundRunResult;
@@ -382,6 +382,7 @@ export class Arker {
       max_memory_mib: src.max_memory_mib ?? null,
       disk_mib: src.disk_mib ?? null,
       durable: src.durable ?? null,
+      tunnel: src.tunnel ?? null,
     };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
@@ -810,19 +811,23 @@ export class VM {
     return this._client._request("DELETE", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
   }
 
-  // ── Tunnels: opened as a side effect of fork/run, addressed by port ─
+  // ── Tunnels: VM-scoped, addressed by recoverable tunnel key ───────
   async listTunnels(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
     return this._client._request("GET", buildQuery(`${vmPath(this.id)}/tunnels`, {
       cursor: opts.cursor, limit: opts.limit, state: opts.state,
     }), undefined, this.baseUrl);
   }
 
-  async getTunnel(port: number): Promise<Tunnel> {
-    return this._client._request("GET", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
+  async createTunnel(request: TunnelRequest = {}): Promise<Tunnel> {
+    return this._client._request("POST", `${vmPath(this.id)}/tunnels`, request, this.baseUrl);
   }
 
-  async deleteTunnel(port: number): Promise<DeleteTunnelResponse> {
-    return this._client._request("DELETE", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
+  async getTunnel(key: string): Promise<Tunnel> {
+    return this._client._request("GET", `${vmPath(this.id)}/tunnels/${pathSegment(key)}`, undefined, this.baseUrl);
+  }
+
+  async deleteTunnel(key: string): Promise<DeleteTunnelResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/tunnels/${pathSegment(key)}`, undefined, this.baseUrl);
   }
 }
 
@@ -949,7 +954,6 @@ function parseRunResponse(payload: unknown): RunResult {
       type: "background",
       runId: body.run_id,
       state: typeof body.state === "string" ? body.state : "running",
-      tunnels: Array.isArray(body.tunnels) ? body.tunnels as Tunnel[] : [],
     };
   }
   throw new ArkerError("internal", "unrecognized run response shape", 200);

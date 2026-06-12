@@ -109,8 +109,9 @@ await call("Syncs.delete", () => computer.deleteSync("sync_does_not_exist"), { s
 
 // ── Tunnels ─────────────────────────────────────────────────────────
 await call("Tunnels.list", () => computer.listTunnels(), { stubOk: true });
-await call("Tunnels.get", () => computer.getTunnel(8080), { stubOk: true });
-await call("Tunnels.delete", () => computer.deleteTunnel(8080), { stubOk: true });
+await call("Tunnels.create", () => computer.createTunnel({ ports: [8080] }), { stubOk: true });
+await call("Tunnels.get", () => computer.getTunnel("example-key"), { stubOk: true });
+await call("Tunnels.delete", () => computer.deleteTunnel("example-key"), { stubOk: true });
 
 // ── Filesystems get/delete ──────────────────────────────────────────
 await call("Filesystems.get", () => arker.getFilesystem("fs_does_not_exist"), { stubOk: true });
