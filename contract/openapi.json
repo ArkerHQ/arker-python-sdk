@@ -740,7 +740,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and bind-mount it into this VM at `path`.\nBidirectional by virtue of being a mount \u2014 there is no separate\nsync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
+        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and bind-mount it into this VM at `path`.\nBidirectional by virtue of being a mount — there is no separate\nsync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
       },
       "get": {
         "operationId": "listSyncs",
@@ -897,44 +897,26 @@
             "$ref": "#/components/responses/Error"
           }
         }
-      }
-    },
-    "/v1/vms/{id}/tunnels/{port}": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
+      },
+      "post": {
+        "operationId": "createTunnel",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TunnelRequest"
+              }
+            }
+          }
         },
-        {
-          "$ref": "#/components/parameters/TunnelPort"
-        }
-      ],
-      "get": {
-        "operationId": "getTunnel",
         "responses": {
           "200": {
-            "description": "Tunnel details.",
+            "description": "Created tunnel. `auth_token` is returned only once for authenticated tunnels.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Tunnel"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteTunnel",
-        "responses": {
-          "200": {
-            "description": "Delete result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeleteTunnelResponse"
                 }
               }
             }
@@ -1054,6 +1036,52 @@
           }
         }
       }
+    },
+    "/v1/vms/{id}/tunnels/{key}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        },
+        {
+          "$ref": "#/components/parameters/TunnelKey"
+        }
+      ],
+      "get": {
+        "operationId": "getTunnel",
+        "responses": {
+          "200": {
+            "description": "Tunnel details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tunnel"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTunnel",
+        "responses": {
+          "200": {
+            "description": "Delete result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteTunnelResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1090,16 +1118,6 @@
           "type": "string"
         }
       },
-      "TunnelPort": {
-        "name": "port",
-        "in": "path",
-        "required": true,
-        "schema": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 65535
-        }
-      },
       "FilesystemId": {
         "name": "filesystem_id",
         "in": "path",
@@ -1129,6 +1147,15 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 1000
+        }
+      },
+      "TunnelKey": {
+        "name": "key",
+        "in": "path",
+        "required": true,
+        "description": "Recoverable tunnel identity returned as `Tunnel.tunnel_key` and embedded in tunnel URLs.",
+        "schema": {
+          "type": "string"
         }
       }
     },
@@ -1414,6 +1441,17 @@
               "boolean",
               "null"
             ]
+          },
+          "tunnel": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TunnelRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional VM-scoped tunnel customization. Omitting it allocates an open any-port tunnel where supported."
           }
         }
       },
@@ -1875,7 +1913,7 @@
             ]
           },
           "state": {
-            "description": "Lifecycle state \u2014 \"completed\" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape.",
+            "description": "Lifecycle state — \"completed\" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape.",
             "type": "string"
           },
           "stdout": {
@@ -1913,15 +1951,8 @@
             "type": "string"
           },
           "state": {
-            "description": "Lifecycle state \u2014 \"running\" for a backgrounded run.",
+            "description": "Lifecycle state — \"running\" for a backgrounded run.",
             "type": "string"
-          },
-          "tunnels": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Tunnel"
-            },
-            "default": []
           }
         }
       },
@@ -1935,8 +1966,7 @@
           "stdout",
           "stdout_encoding",
           "stderr",
-          "stderr_encoding",
-          "tunnels"
+          "stderr_encoding"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1991,12 +2021,6 @@
           },
           "stderr_encoding": {
             "type": "string"
-          },
-          "tunnels": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Tunnel"
-            }
           },
           "retry_count": {
             "type": "integer",
@@ -2088,7 +2112,7 @@
               "string",
               "null"
             ],
-            "description": "System failure explanation when `state` is `failed` \u2014 see `Run.fail_reason`. Distinct from the program's `stderr`."
+            "description": "System failure explanation when `state` is `failed` — see `Run.fail_reason`. Distinct from the program's `stderr`."
           },
           "vm_id": {
             "type": [
@@ -2392,7 +2416,7 @@
         "properties": {
           "vm_id": {
             "type": "string",
-            "description": "The VM this tunnel belongs to. Always populated, including when embedded in `Run.tunnels`."
+            "description": "The VM this tunnel belongs to. Always populated so flat tunnel listings work without restructuring."
           },
           "port": {
             "type": "integer",
@@ -2405,7 +2429,7 @@
               "string",
               "null"
             ],
-            "description": "The Run that opened this tunnel, if any. Tunnels allocated at fork time have `run_id: null`."
+            "description": "The Run that opened this tunnel, if any. VM-scoped tunnels created at fork time or via `POST /vms/{id}/tunnels` have `run_id: null`."
           },
           "visibility": {
             "type": "string"
@@ -2462,6 +2486,32 @@
               "aws-burst",
               null
             ]
+          },
+          "tunnel_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Recoverable tunnel identity embedded in URLs (`p{port}-{key}`). Not a secret. Present on VM-scoped tunnel responses."
+          },
+          "auth_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "open",
+              "authenticated",
+              null
+            ],
+            "description": "`open` or `authenticated` for VM-scoped tunnels."
+          },
+          "auth_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One-time bearer secret returned only when allocating an authenticated tunnel; never echoed on listings."
           }
         }
       },
@@ -3144,6 +3194,38 @@
         "properties": {
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "TunnelRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ports": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Allowed VM ports for this tunnel. Omitted, null, or empty means any port.",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "default": []
+          },
+          "auth_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "open",
+              "authenticated",
+              null
+            ],
+            "description": "`open` allows unauthenticated tunnel requests. `authenticated` returns a one-time bearer `auth_token` and requires it on tunnel requests.",
+            "default": "open"
           }
         }
       }

@@ -331,7 +331,11 @@ def test_background_run_response() -> None:
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/runs"),
         200,
-        {"run_id": "run_1", "tunnels": []},
+        {
+            "run_id": "run_1",
+            "state": "running",
+            "tunnels": [{"vm_id": "vm_1", "port": 8080, "visibility": "public", "protocol": "http", "state": "open"}],
+        },
     )
 
     with patch("urllib.request.urlopen", t):
@@ -339,6 +343,8 @@ def test_background_run_response() -> None:
 
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_1"
+    assert result.state == "running"
+    assert not hasattr(result, "tunnels")
     assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "background": True}
 
 
@@ -503,6 +509,73 @@ def test_fork_sends_durable_flag() -> None:
         "source_vm_id": "ubuntu",
         "disk": True,
     }
+
+
+def test_fork_sends_tunnel_request() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "tunnels": [],
+        },
+    )
+
+    with patch("urllib.request.urlopen", t):
+        client().vm("ubuntu").fork(tunnel=sdk.TunnelRequest(ports=[8080], auth_mode="authenticated"))
+
+    assert json.loads(t.calls[0]["body"]) == {
+        "source_vm_id": "ubuntu",
+        "disk": True,
+        "tunnel": {"ports": [8080], "auth_mode": "authenticated"},
+    }
+
+
+def test_tunnel_crud_uses_keys() -> None:
+    t = FakeTransport()
+    tunnel = {
+        "vm_id": "vm_1",
+        "port": 8080,
+        "visibility": "private",
+        "protocol": "http",
+        "state": "open",
+        "url": "https://p8080-key.tunnels.example",
+        "tunnel_key": "key-123",
+        "auth_mode": "authenticated",
+        "auth_token": "secret-123",
+    }
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/tunnels"),
+        200,
+        tunnel,
+    )
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/tunnels/key-123"),
+        200,
+        {**tunnel, "auth_token": None},
+    )
+    t.add_json(
+        lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_1/tunnels/key-123"),
+        200,
+        {"deleted": True},
+    )
+
+    with patch("urllib.request.urlopen", t):
+        created = client().vm("vm_1").create_tunnel(ports=[8080], auth_mode="authenticated")
+        fetched = client().vm("vm_1").get_tunnel("key-123")
+        deleted = client().vm("vm_1").delete_tunnel("key-123")
+
+    assert created.tunnel_key == "key-123"
+    assert created.auth_token == "secret-123"
+    assert fetched.auth_token is None
+    assert deleted.deleted is True
+    assert json.loads(t.calls[0]["body"]) == {"ports": [8080], "auth_mode": "authenticated"}
 
 
 def test_run_sends_idempotency_key_header() -> None:

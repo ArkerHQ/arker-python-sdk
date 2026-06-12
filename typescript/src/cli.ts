@@ -241,7 +241,7 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
     process.exitCode = result.exitCode === 0 ? 0 : result.exitCode;
     return;
   }
-  out({ run_id: result.runId, tunnels: result.tunnels });
+  out({ run_id: result.runId, state: result.state });
 }
 
 async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
@@ -405,27 +405,35 @@ async function cmdTunnels(args: ParsedArgs, client: Arker): Promise<void> {
       });
       if (args.flags.json) return out(res);
       for (const t of res.tunnels) {
-        out(`${t.port}\t${t.state}\t${t.protocol}\t${t.url ?? "-"}`);
+        out(`${t.tunnel_key ?? "-"}\t${t.port}\t${t.state}\t${t.protocol}\t${t.url ?? "-"}`);
       }
       if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
       return;
     }
+    case "create": {
+      if (!vm) die("usage: arker tunnels create <vm_id> [--ports 80,8080] [--auth-mode open|authenticated]");
+      const tunnel = await client.vm(vm).createTunnel({
+        ports: parsePorts(args.flags.ports),
+        auth_mode: args.flags["auth-mode"] as "open" | "authenticated" | undefined,
+      });
+      return out(tunnel);
+    }
     case "get": {
-      if (!vm) die("usage: arker tunnels get <vm_id> <port>");
-      const port = Number(rest[1] ?? die("missing port"));
-      out(await client.vm(vm).getTunnel(port));
+      if (!vm) die("usage: arker tunnels get <vm_id> <key>");
+      const key = rest[1] ?? die("missing key");
+      out(await client.vm(vm).getTunnel(key));
       return;
     }
     case "rm":
     case "delete": {
-      if (!vm) die("usage: arker tunnels rm <vm_id> <port>");
-      const port = Number(rest[1] ?? die("missing port"));
-      const r = await client.vm(vm).deleteTunnel(port);
-      out(r.deleted ? `deleted tunnel ${port}` : "delete failed");
+      if (!vm) die("usage: arker tunnels rm <vm_id> <key>");
+      const key = rest[1] ?? die("missing key");
+      const r = await client.vm(vm).deleteTunnel(key);
+      out(r.deleted ? `deleted tunnel ${key}` : "delete failed");
       return;
     }
     default:
-      die(`usage: arker tunnels <ls|get|rm> ...`);
+      die(`usage: arker tunnels <ls|create|get|rm> ...`);
   }
 }
 
@@ -628,6 +636,11 @@ function boolFlag(args: ParsedArgs, name: string): boolean | undefined {
   if (typeof v === "boolean") return v;
   if (v === "false" || v === "0") return false;
   return true;
+}
+
+function parsePorts(value: string | boolean | undefined): number[] | undefined {
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  return value.split(",").map((part) => Number(part.trim())).filter((port) => Number.isFinite(port));
 }
 
 async function readAllStdin(): Promise<Uint8Array> {
