@@ -230,6 +230,64 @@ export interface ListOrgRunsOptions {
   dir?: "asc" | "desc";
 }
 
+export type PtyInput = string | Uint8Array | ArrayBuffer;
+
+export interface PtyConnectOptions {
+  /** Existing session to attach. Omit to create a new session first. */
+  sessionId?: string;
+  cols?: number;
+  rows?: number;
+  command?: string;
+  /** Defaults to the backend's persistent detach semantics. */
+  persist?: boolean;
+  /** @internal Test/runtime override for browser-ticket vs Node-header auth. */
+  useTicket?: boolean;
+  /** @internal Test/runtime override for WebSocket construction. */
+  webSocketFactory?: PtyWebSocketFactory;
+}
+
+export interface PtyCloseEvent {
+  code?: number;
+  reason?: string;
+}
+
+export interface PtyConnection {
+  readonly sessionId: string;
+  readonly ready: Promise<void>;
+  onData(listener: (data: Uint8Array) => void): () => void;
+  onClose(listener: (event: PtyCloseEvent) => void): () => void;
+  onError(listener: (error: unknown) => void): () => void;
+  send(data: PtyInput): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+  close(code?: number, reason?: string): void;
+}
+
+interface PtyWebSocketFactoryInit {
+  headers?: Record<string, string>;
+}
+
+export type PtyWebSocketFactory = (
+  url: string,
+  init: PtyWebSocketFactoryInit,
+) => PtyWebSocketLike | Promise<PtyWebSocketLike>;
+
+interface PtyWebSocketLike {
+  binaryType?: string;
+  readyState?: number;
+  send(data: string | Uint8Array | ArrayBuffer): void;
+  close(code?: number, reason?: string): void;
+  addEventListener?: (type: string, listener: (event: unknown) => void) => void;
+  removeEventListener?: (type: string, listener: (event: unknown) => void) => void;
+  on?: (type: string, listener: (...args: unknown[]) => void) => void;
+  off?: (type: string, listener: (...args: unknown[]) => void) => void;
+}
+
+interface PtyTicketResponse {
+  ticket: string;
+  expires_in: number;
+}
+
 interface RetryConfig {
   attempts: number;
   baseDelayMs: number;
@@ -559,6 +617,11 @@ export class Arker {
   }
 
   /** @internal */
+  _authHeaders(): Record<string, string> {
+    return { authorization: `Bearer ${this.apiKey}` };
+  }
+
+  /** @internal */
   _baseUrlFor(ref: string): string {
     if (isBurstRef(ref) && this.burstBaseUrl) return this.burstBaseUrl;
     return this.baseUrl;
@@ -811,6 +874,31 @@ export class VM {
     return this._client._request("DELETE", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
   }
 
+  async connectPty(options: PtyConnectOptions = {}): Promise<PtyConnection> {
+    const sessionId = options.sessionId ?? sessionIdFrom(await this.createSession());
+    const useTicket = options.useTicket ?? !isNodeRuntime();
+    const params = {
+      cols: options.cols,
+      rows: options.rows,
+      command: options.command,
+      persist: options.persist,
+    };
+    let ticket: string | undefined;
+    if (useTicket) {
+      const response = await this._client._request<PtyTicketResponse>(
+        "POST",
+        `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty-ticket`,
+        {},
+        this.baseUrl,
+      );
+      ticket = response.ticket;
+    }
+    const url = buildPtyWebSocketUrl(this.baseUrl, this.id, sessionId, { ...params, ticket });
+    const factory = options.webSocketFactory ?? (useTicket ? browserPtyWebSocketFactory : nodePtyWebSocketFactory);
+    const socket = await factory(url, useTicket ? {} : { headers: this._client._authHeaders() });
+    return new PtyConnectionImpl(sessionId, socket);
+  }
+
   // ── Tunnels: VM-scoped, addressed by recoverable tunnel key ───────
   async listTunnels(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
     return this._client._request("GET", buildQuery(`${vmPath(this.id)}/tunnels`, {
@@ -841,6 +929,205 @@ function buildQuery(path: string, params: Record<string, unknown>): string {
   }
   const qs = usp.toString();
   return qs ? `${path}?${qs}` : path;
+}
+
+function buildPtyWebSocketUrl(
+  baseUrl: string,
+  vmId: string,
+  sessionId: string,
+  params: { cols?: number; rows?: number; command?: string; persist?: boolean; ticket?: string },
+): string {
+  const url = new URL(`${normalizeBaseUrl(baseUrl)}${vmPath(vmId)}/sessions/${pathSegment(sessionId)}/pty`);
+  if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol === "http:") url.protocol = "ws:";
+  else throw new Error(`unsupported PTY WebSocket protocol: ${url.protocol}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    url.searchParams.set(key, String(value));
+  }
+  return url.toString();
+}
+
+function sessionIdFrom(session: Session): string {
+  const id = session.session_id ?? (session as { id?: string }).id;
+  if (!id) throw new ArkerError("internal", "createSession response missing session_id", 200);
+  return id;
+}
+
+function isNodeRuntime(): boolean {
+  return typeof process !== "undefined" && Boolean(process.versions?.node);
+}
+
+async function nodePtyWebSocketFactory(url: string, init: PtyWebSocketFactoryInit): Promise<PtyWebSocketLike> {
+  const ws = await import("ws");
+  return new ws.default(url, { headers: init.headers }) as unknown as PtyWebSocketLike;
+}
+
+function browserPtyWebSocketFactory(url: string): PtyWebSocketLike {
+  if (typeof globalThis.WebSocket !== "function") {
+    throw new Error("WebSocket is not available in this runtime");
+  }
+  return new globalThis.WebSocket(url);
+}
+
+class PtyConnectionImpl implements PtyConnection {
+  readonly ready: Promise<void>;
+  private readonly dataListeners = new Set<(data: Uint8Array) => void>();
+  private readonly closeListeners = new Set<(event: PtyCloseEvent) => void>();
+  private readonly errorListeners = new Set<(error: unknown) => void>();
+
+  constructor(readonly sessionId: string, private readonly socket: PtyWebSocketLike) {
+    try {
+      socket.binaryType = "arraybuffer";
+    } catch {
+      // Some WebSocket implementations expose binaryType as read-only.
+    }
+    this.ready = waitForSocketOpen(socket);
+    addSocketListener(socket, "message", (event) => {
+      const data = messageData(event);
+      if (data !== undefined) this.emitData(bytesFromMessageData(data));
+    });
+    addSocketListener(socket, "close", (event) => this.emitClose(closeEvent(event)));
+    addSocketListener(socket, "error", (event) => this.emitError(event));
+  }
+
+  onData(listener: (data: Uint8Array) => void): () => void {
+    this.dataListeners.add(listener);
+    return () => this.dataListeners.delete(listener);
+  }
+
+  onClose(listener: (event: PtyCloseEvent) => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
+  onError(listener: (error: unknown) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
+  }
+
+  send(data: PtyInput): void {
+    this.socket.send(ptyInputBytes(data));
+  }
+
+  resize(cols: number, rows: number): void {
+    this.socket.send(JSON.stringify({ type: "resize", cols: clampPtyDimension(cols), rows: clampPtyDimension(rows) }));
+  }
+
+  kill(): void {
+    this.socket.send(JSON.stringify({ type: "kill" }));
+  }
+
+  close(code?: number, reason?: string): void {
+    this.socket.close(code, reason);
+  }
+
+  private emitData(data: Uint8Array): void {
+    for (const listener of this.dataListeners) listener(data);
+  }
+
+  private emitClose(event: PtyCloseEvent): void {
+    for (const listener of this.closeListeners) listener(event);
+  }
+
+  private emitError(error: unknown): void {
+    for (const listener of this.errorListeners) listener(error);
+  }
+}
+
+function waitForSocketOpen(socket: PtyWebSocketLike): Promise<void> {
+  if (socket.readyState === 1) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let removeOpen: (() => void) | undefined;
+    let removeError: (() => void) | undefined;
+    let removeClose: (() => void) | undefined;
+    const cleanup = () => {
+      removeOpen?.();
+      removeError?.();
+      removeClose?.();
+    };
+    removeOpen = addSocketListener(socket, "open", () => {
+      cleanup();
+      resolve();
+    });
+    removeError = addSocketListener(socket, "error", (event) => {
+      cleanup();
+      reject(event instanceof Error ? event : new Error("PTY WebSocket failed to open"));
+    });
+    removeClose = addSocketListener(socket, "close", (event) => {
+      cleanup();
+      const ev = closeEvent(event);
+      reject(new Error(`PTY WebSocket closed before opening${ev.code ? ` (${ev.code})` : ""}`));
+    });
+  });
+}
+
+function addSocketListener(
+  socket: PtyWebSocketLike,
+  type: string,
+  listener: (event: unknown) => void,
+): () => void {
+  if (socket.addEventListener) {
+    socket.addEventListener(type, listener);
+    return () => socket.removeEventListener?.(type, listener);
+  }
+  if (socket.on) {
+    const nodeListener = (...args: unknown[]) => {
+      if (type === "message") listener({ data: args[0] });
+      else if (type === "close") listener({ code: args[0], reason: args[1] });
+      else listener(args[0]);
+    };
+    socket.on(type, nodeListener);
+    return () => socket.off?.(type, nodeListener);
+  }
+  return () => {};
+}
+
+function messageData(event: unknown): unknown {
+  if (event && typeof event === "object" && "data" in event) {
+    return (event as { data?: unknown }).data;
+  }
+  return undefined;
+}
+
+function closeEvent(event: unknown): PtyCloseEvent {
+  if (!event || typeof event !== "object") return {};
+  const raw = event as { code?: unknown; reason?: unknown };
+  return {
+    code: typeof raw.code === "number" ? raw.code : undefined,
+    reason: typeof raw.reason === "string" ? raw.reason : undefined,
+  };
+}
+
+function bytesFromMessageData(data: unknown): Uint8Array {
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (Array.isArray(data)) {
+    const chunks = data.map(bytesFromMessageData);
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return out;
+  }
+  return new Uint8Array();
+}
+
+function ptyInputBytes(data: PtyInput): Uint8Array | ArrayBuffer {
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  return data;
+}
+
+function clampPtyDimension(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(1000, Math.trunc(value)));
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
