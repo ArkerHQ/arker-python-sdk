@@ -547,6 +547,16 @@ export interface CreatePtyOptions {
    * reaps idle detached shells after a TTL; `kill()` destroys one immediately.
    */
   persist?: boolean;
+  /**
+   * Auto-cancel the PTY run after this many seconds with no terminal I/O.
+   * When the window elapses the server completes the underlying run and
+   * DESTROYS the shell (not just a detach) — a reconnect to the same
+   * `sessionId` starts fresh. Unset (default) means no auto-cancel; the
+   * shell lives until you `kill()` it or `persist` reaping kicks in. A
+   * console typically sets this so an abandoned tab cannot hold a VM warm
+   * indefinitely.
+   */
+  cancelTtlSecs?: number;
   /** Called with each chunk of raw terminal output (ANSI escapes/colors intact). */
   onData: (bytes: Uint8Array) => void;
   /** Called once when the terminal closes, with the WebSocket close code if any. */
@@ -844,6 +854,9 @@ export class VM {
       persist: String(persist),
     });
     if (options.command) params.set("command", options.command);
+    if (options.cancelTtlSecs && options.cancelTtlSecs > 0) {
+      params.set("cancel_ttl_secs", String(Math.floor(options.cancelTtlSecs)));
+    }
 
     // Node can set the Authorization header on the WS handshake. Browsers
     // can't, so mint a short-lived ticket (over HTTP, which CAN auth) and pass

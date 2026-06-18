@@ -172,6 +172,10 @@ export interface paths {
                 rows?: number;
                 /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
                 command?: string;
+                /** @description When true (default), the shell survives a WS disconnect so it can be reattached via the same session id; when false the shell is torn down on disconnect. */
+                persist?: boolean;
+                /** @description Auto-cancel the underlying PTY run after this many seconds with no terminal I/O, which DESTROYS the shell (not just a detach). Unset means no auto-cancel. */
+                cancel_ttl_secs?: number;
             };
             header?: never;
             path: {
@@ -614,6 +618,10 @@ export interface components {
                 [key: string]: string;
             } | null;
             cwd?: string | null;
+            pty?: boolean | null;
+            cols?: number | null;
+            rows?: number | null;
+            command?: string | null;
         };
         ResizeRequest: {
             vcpu_count?: number | null;
@@ -1166,6 +1174,10 @@ export interface operations {
                 rows?: number;
                 /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
                 command?: string;
+                /** @description When true (default), the shell survives a WS disconnect so it can be reattached via the same session id; when false the shell is torn down on disconnect. */
+                persist?: boolean;
+                /** @description Auto-cancel the underlying PTY run after this many seconds with no terminal I/O, which DESTROYS the shell (not just a detach). Unset means no auto-cancel. */
+                cancel_ttl_secs?: number;
             };
             header?: never;
             path: {

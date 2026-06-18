@@ -510,6 +510,20 @@
           "required": false,
           "schema": { "type": "string" },
           "description": "Single executable path to launch (no shell-splitting). Defaults to the login shell."
+        },
+        {
+          "name": "persist",
+          "in": "query",
+          "required": false,
+          "schema": { "type": "boolean", "default": true },
+          "description": "When true (default), the shell survives a WS disconnect so it can be reattached via the same session id; when false the shell is torn down on disconnect."
+        },
+        {
+          "name": "cancel_ttl_secs",
+          "in": "query",
+          "required": false,
+          "schema": { "type": "integer", "minimum": 1 },
+          "description": "Auto-cancel the underlying PTY run after this many seconds with no terminal I/O, which DESTROYS the shell (not just a detach). Unset means no auto-cancel."
         }
       ],
       "get": {
@@ -2138,6 +2152,34 @@
             ]
           },
           "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cols": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "rows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "command": {
             "type": [
               "string",
               "null"
