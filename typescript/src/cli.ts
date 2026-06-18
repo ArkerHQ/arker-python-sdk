@@ -657,11 +657,29 @@ async function runInteractivePty(
   args: ParsedArgs,
   command: string | undefined,
 ): Promise<void> {
-  const session = await computer.createSession({ cwd: args.flags.cwd as string | undefined });
   const stdin = process.stdin;
   const stdout = process.stdout;
   const isTty = !!stdin.isTTY;
   let closed = false;
+
+  const cols = stdout.columns ?? 80;
+  const rows = stdout.rows ?? 24;
+  // Optional auto-cancel: tear the run (and shell) down after this many seconds
+  // with no terminal I/O — `arker pty <vm> --cancel-ttl 600`.
+  const cancelTtlRaw = args.flags["cancel-ttl"];
+  const cancelTtlSecs =
+    cancelTtlRaw === undefined ? undefined : Number(cancelTtlRaw);
+  if (cancelTtlSecs !== undefined && (!Number.isFinite(cancelTtlSecs) || cancelTtlSecs <= 0)) {
+    throw new Error("--cancel-ttl must be a positive number of seconds");
+  }
+
+  const session = await computer.createSession({
+    cwd: args.flags.cwd as string | undefined,
+    pty: true,
+    cols,
+    rows,
+    command,
+  });
 
   const restore = () => {
     if (isTty) {
@@ -671,10 +689,11 @@ async function runInteractivePty(
   };
 
   const pty = await computer.createPty({
-    cols: stdout.columns ?? 80,
-    rows: stdout.rows ?? 24,
+    cols,
+    rows,
     sessionId: session.session_id,
     command,
+    cancelTtlSecs,
     onData: (bytes) => { stdout.write(bytes); },
     onExit: () => {
       if (closed) return;
@@ -738,7 +757,7 @@ function usage(): never {
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
       "  arker run <vm> <command>                       run a command",
-      "  arker pty [vm_id]                              interactive PTY over WebSocket (vim/htop/REPL/claude)",
+      "  arker pty [vm_id] [--command P] [--cancel-ttl S]  interactive PTY over WebSocket (vim/htop/REPL/claude)",
       "  arker shell [vm_id]                            interactive PTY when on a TTY; line REPL when scripted",
       "",
       "Resources:",
