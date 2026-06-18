@@ -173,6 +173,9 @@ class CompletedRunResult:
     # System failure explanation when state is "failed"; distinct from
     # stderr (the program's own error output). None otherwise.
     fail_reason: str | None = None
+    memory_requested_mib: int | None = None
+    memory_achieved_mib: int | None = None
+    memory_partial: bool = False
     type: str = "completed"
 
 
@@ -295,6 +298,9 @@ class DeleteTunnelResponse:
 @dataclasses.dataclass(frozen=True)
 class ResizeResponse:
     resized: bool
+    memory_requested_mib: int | None = None
+    memory_achieved_mib: int | None = None
+    memory_partial: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -763,7 +769,12 @@ class VM:
     ) -> ResizeResponse:
         body = {"vcpu_count": vcpu_count, "memory_mib": memory_mib, "disk_mib": disk_mib}
         payload = self._client._request("POST", f"{_vm_path(self.id)}/resize", body, base_url=self.base_url)
-        return ResizeResponse(resized=bool(payload.get("resized")))
+        return ResizeResponse(
+            resized=bool(payload.get("resized")),
+            memory_requested_mib=_optional_int(payload.get("memory_requested_mib")),
+            memory_achieved_mib=_optional_int(payload.get("memory_achieved_mib")),
+            memory_partial=_optional_bool(payload.get("memory_partial")),
+        )
 
     def delete(self) -> DeleteVmResponse:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
@@ -1214,6 +1225,9 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
             run_id=str(payload["run_id"]) if isinstance(payload.get("run_id"), str) else None,
             state=str(payload["state"]) if isinstance(payload.get("state"), str) else "completed",
             fail_reason=_optional_str(payload.get("fail_reason")),
+            memory_requested_mib=_optional_int(payload.get("memory_requested_mib")),
+            memory_achieved_mib=_optional_int(payload.get("memory_achieved_mib")),
+            memory_partial=_optional_bool(payload.get("memory_partial")),
         )
 
     if isinstance(payload.get("run_id"), str):
@@ -1310,6 +1324,10 @@ def _optional_str(value: Any) -> str | None:
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if isinstance(value, int) else None
+
+
+def _optional_bool(value: Any) -> bool:
+    return value if isinstance(value, bool) else False
 
 # Backwards-compat: previously RunStatusResponse.
 RunStatusResponse = Run

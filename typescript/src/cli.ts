@@ -238,13 +238,47 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
   });
+  if (args.flags.json) {
+    out(runResultForJson(result));
+    if (result.type === "completed") process.exitCode = result.exitCode === 0 ? 0 : result.exitCode;
+    return;
+  }
   if (result.type === "completed") {
+    if (result.memoryPartial) {
+      err(`Memory target partially applied: requested ${formatMib(result.memoryRequestedMib)}, achieved ${formatMib(result.memoryAchievedMib)}.`);
+    }
     process.stdout.write(new TextDecoder().decode(result.stdout));
     if (result.stderr.length) process.stderr.write(new TextDecoder().decode(result.stderr));
     process.exitCode = result.exitCode === 0 ? 0 : result.exitCode;
     return;
   }
   out({ run_id: result.runId, state: result.state });
+}
+
+function formatMib(value: number | null | undefined): string {
+  return typeof value === "number" ? `${value} MiB` : "unknown";
+}
+
+function runResultForJson(result: RunResult): unknown {
+  switch (result.type) {
+    case "completed":
+      return {
+        type: result.type,
+        runId: result.runId,
+        state: result.state,
+        stdout: new TextDecoder().decode(result.stdout),
+        stdoutEncoding: result.stdoutEncoding,
+        stderr: new TextDecoder().decode(result.stderr),
+        stderrEncoding: result.stderrEncoding,
+        exitCode: result.exitCode,
+        failReason: result.failReason,
+        memoryRequestedMib: result.memoryRequestedMib,
+        memoryAchievedMib: result.memoryAchievedMib,
+        memoryPartial: result.memoryPartial,
+      };
+    case "background":
+      return result;
+  }
 }
 
 async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
