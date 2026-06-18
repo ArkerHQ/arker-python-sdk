@@ -180,6 +180,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vms/{id}/sessions/{sid}/pty": {
+        parameters: {
+            query?: {
+                /** @description Initial terminal width in columns. */
+                cols?: number;
+                /** @description Initial terminal height in rows. */
+                rows?: number;
+                /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
+                command?: string;
+                /** @description E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {"type":"kill"} or the server idle TTL destroy a persistent shell. */
+                persist?: boolean;
+                /** @description Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set). */
+                ticket?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * Open an interactive PTY (WebSocket upgrade)
+         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Auth on the upgrade is a Bearer key (a key may only attach to its own org's VMs) OR a ?ticket= for browsers. Reopening with the same session_id RECONNECTS to the same running shell when persist=true (scrollback replayed). Wire format: server→client Binary frames are raw terminal output (ANSI escapes/colors intact); client→server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client→server Text frames are JSON control: {"type":"resize","cols":N,"rows":M}, {"type":"kill"}, {"type":"ping"}. A plain socket close DETACHES (persist) or tears down; {"type":"kill"} always destroys. Caps: one live attachment per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.
+         */
+        get: operations["attachSessionPty"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/vms/{id}/sessions/{sid}/pty-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint a browser PTY ticket
+         * @description Returns a short-lived (5 min, multi-use) ticket for opening the PTY WebSocket from a browser, which cannot send an Authorization header. Bearer-authed; the caller must own the VM. Open wss://.../pty?ticket=<ticket> with it. The ticket is a stateless HMAC bound to (org, vm, session), so it validates on any node.
+         */
+        post: operations["mintSessionPtyTicket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vms/{id}/syncs": {
         parameters: {
             query?: never;
@@ -528,6 +585,12 @@ export interface components {
             stderr_encoding: string;
             exit_code: number;
             dispatch?: string | null;
+            /** @description ARK-107: requested total memory (MiB) when this run carried an explicit memory override. Absent when the run had no memory override. */
+            memory_requested_mib?: number | null;
+            /** @description ARK-107: achieved total memory (MiB) after the run's resize. Memory shrink is best-effort, so this can exceed memory_requested_mib when guest pages are pinned. Absent when the run had no memory override. */
+            memory_achieved_mib?: number | null;
+            /** @description ARK-107: true when the run's memory shrink was partial (achieved differs from requested beyond the virtio-mem block granularity). The command still ran at the achieved footprint (best-effort); this flags the gap instead of a silent success. Defaults false. */
+            memory_partial?: boolean;
         };
         BackgroundRunResponse: {
             run_id: string;
@@ -686,6 +749,18 @@ export interface components {
         };
         ResizeResponse: {
             resized: boolean;
+            /**
+             * Format: uint64
+             * @description Requested total memory (MiB), present only when the request carried memory_mib.
+             */
+            memory_requested_mib?: number;
+            /**
+             * Format: uint64
+             * @description Achieved total memory (MiB). virtio-mem unplug is best-effort, so this can exceed memory_requested_mib when guest pages are pinned.
+             */
+            memory_achieved_mib?: number;
+            /** @description True when a memory target was requested but the runtime could not reach it (achieved differs from requested beyond virtio-mem block granularity). Treat as target-not-met. */
+            memory_partial?: boolean;
         };
         Sync: {
             sync_id: string;
@@ -1278,6 +1353,72 @@ export interface operations {
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
+    attachSessionPty: {
+        parameters: {
+            query?: {
+                /** @description Initial terminal width in columns. */
+                cols?: number;
+                /** @description Initial terminal height in rows. */
+                rows?: number;
+                /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
+                command?: string;
+                /** @description E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {"type":"kill"} or the server idle TTL destroy a persistent shell. */
+                persist?: boolean;
+                /** @description Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set). */
+                ticket?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols — the WebSocket PTY stream is established. */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            429: components["responses"]["Error"];
+            default: components["responses"]["Error"];
+        };
+    };
+    mintSessionPtyTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ticket minted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ticket: string;
+                        /** @description Seconds until expiry. */
+                        expires_in: number;
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            404: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
     };

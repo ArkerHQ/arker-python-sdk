@@ -29,6 +29,27 @@ const data = await vm.sync("/tmp/data.txt"); // read -> Uint8Array
 await vm.delete();
 ```
 
+## Interactive PTY
+
+`arker shell` opens a native PTY session over WebSocket. It does not use SSH and
+does not call `/runs` for each line:
+
+```bash
+arker shell vm_123
+arker shell vm_123 --session-id sess_123
+```
+
+The SDK exposes the same transport:
+
+```ts
+const pty = await vm.connectPty({ cols: 120, rows: 32 });
+pty.onData((chunk) => process.stdout.write(chunk));
+await pty.ready;
+pty.send("echo hello\n");
+pty.resize(100, 30);
+pty.close(); // detach; the session is not deleted
+```
+
 ## Core API
 
 ```ts
@@ -41,6 +62,7 @@ await ar.fork({ sourceVmName, sourceOrgId, name?, durable? });
 await ar.listVms({ state? });
 ar.vm(vmId);                                  // bare handle
 await ar.vm(vmId).run(command, options?);
+await ar.vm(vmId).connectPty({ sessionId?, cols?, rows?, command?, persist? });
 await ar.vm(vmId).resize({ vcpu_count, memory_mib });
 await ar.vm(vmId).delete();
 

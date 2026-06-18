@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { Arker, ArkerError, type CompletedRunResult } from "../src/index.js";
+import { Arker, ArkerError, type CompletedRunResult, type PtyWebSocketFactory } from "../src/index.js";
 
 type FetchCall = {
   url: string;
@@ -42,6 +42,38 @@ class FakeFetch {
     assert.notEqual(index, -1, `no scripted response for ${method} ${url}`);
     return this.script.splice(index, 1)[0]!.response;
   };
+}
+
+class FakeWebSocket {
+  binaryType = "";
+  readyState = 1;
+  readonly sent: Array<string | Uint8Array | ArrayBuffer> = [];
+  private readonly listeners = new Map<string, Set<(event: unknown) => void>>();
+
+  send(data: string | Uint8Array | ArrayBuffer): void {
+    this.sent.push(data);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.emit("close", { code, reason });
+  }
+
+  addEventListener(type: string, listener: (event: unknown) => void): void {
+    let set = this.listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(type, set);
+    }
+    set.add(listener);
+  }
+
+  removeEventListener(type: string, listener: (event: unknown) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  emit(type: string, event: unknown): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
 }
 
 function client(fetch: FakeFetch): Arker {
@@ -122,6 +154,9 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
       stderr: "",
       stderr_encoding: "utf-8",
       exit_code: 0,
+      memory_requested_mib: 1024,
+      memory_achieved_mib: 1536,
+      memory_partial: true,
     },
   );
 
@@ -130,6 +165,9 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
   assert.equal(result.type, "completed");
   const completed = result as CompletedRunResult;
   assert.equal(completed.exitCode, 0);
+  assert.equal(completed.memoryRequestedMib, 1024);
+  assert.equal(completed.memoryAchievedMib, 1536);
+  assert.equal(completed.memoryPartial, true);
   assert.equal(decode(completed.stdout), "hello\n");
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "printf hello" });
 }
@@ -477,6 +515,85 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
   assert.equal(status.retry_count, 2);
 }
 
+async function testConnectPtyCreatesSessionAndUsesBearerHeader(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/sessions",
+    200,
+    {
+      session_id: "sess_1",
+      vm_id: "vm_1",
+      state: "idle",
+      cwd: "/home/user",
+      env: {},
+    },
+  );
+  const socket = new FakeWebSocket();
+  let openedUrl = "";
+  let openedHeaders: Record<string, string> | undefined;
+  const factory: PtyWebSocketFactory = (url, init) => {
+    openedUrl = url;
+    openedHeaders = init.headers;
+    return socket;
+  };
+
+  const pty = await client(fetch).vm("vm_1").connectPty({
+    cols: 100,
+    rows: 40,
+    command: "/bin/sh",
+    persist: false,
+    useTicket: false,
+    webSocketFactory: factory,
+  });
+
+  assert.equal(pty.sessionId, "sess_1");
+  assert.equal(
+    openedUrl,
+    "wss://test.invalid/api/v1/vms/vm_1/sessions/sess_1/pty?cols=100&rows=40&command=%2Fbin%2Fsh&persist=false",
+  );
+  assert.equal(openedHeaders?.authorization, "Bearer ark_live_test");
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), {});
+
+  pty.resize(120, 33);
+  pty.kill();
+  pty.send("x");
+  assert.equal(socket.sent[0], JSON.stringify({ type: "resize", cols: 120, rows: 33 }));
+  assert.equal(socket.sent[1], JSON.stringify({ type: "kill" }));
+  assert.deepEqual(socket.sent[2], new TextEncoder().encode("x"));
+}
+
+async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/sessions/sess_1/pty-ticket",
+    200,
+    { ticket: "ptyt_ticket", expires_in: 300 },
+  );
+  let openedUrl = "";
+  let openedHeaders: Record<string, string> | undefined = { unexpected: "set" };
+  const factory: PtyWebSocketFactory = (url, init) => {
+    openedUrl = url;
+    openedHeaders = init.headers;
+    return new FakeWebSocket();
+  };
+
+  await client(fetch).vm("vm_1").connectPty({
+    sessionId: "sess_1",
+    cols: 80,
+    rows: 24,
+    useTicket: true,
+    webSocketFactory: factory,
+  });
+
+  assert.equal(
+    openedUrl,
+    "wss://test.invalid/api/v1/vms/vm_1/sessions/sess_1/pty?cols=80&rows=24&ticket=ptyt_ticket",
+  );
+  assert.equal(openedHeaders, undefined);
+  assert.equal(fetch.calls[0]!.headers.authorization, "Bearer ark_live_test");
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), {});
+}
+
 await testForkPostsDirectlyToSourceVm();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
@@ -491,5 +608,7 @@ await testForkSendsTunnelRequest();
 await testTunnelCrudUsesKeys();
 await testRunSendsIdempotencyKeyHeader();
 await testRunStatusReturnsRetryCount();
+await testConnectPtyCreatesSessionAndUsesBearerHeader();
+await testConnectPtyUsesTicketForBrowserWebSocket();
 
 console.log("PASS unit");

@@ -313,6 +313,9 @@ def test_run_sends_command_without_default_session_id() -> None:
             "stderr": "",
             "stderr_encoding": "utf-8",
             "exit_code": 0,
+            "memory_requested_mib": 1024,
+            "memory_achieved_mib": 1536,
+            "memory_partial": True,
         },
     )
 
@@ -323,7 +326,33 @@ def test_run_sends_command_without_default_session_id() -> None:
     assert result.stdout == b"hi\n"
     assert result.stderr == b""
     assert result.exit_code == 0
+    assert result.memory_requested_mib == 1024
+    assert result.memory_achieved_mib == 1536
+    assert result.memory_partial is True
     assert json.loads(t.calls[0]["body"]) == {"command": "printf hi"}
+
+
+def test_resize_returns_memory_target_metadata() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/resize"),
+        200,
+        {
+            "resized": True,
+            "memory_requested_mib": 1024,
+            "memory_achieved_mib": 1536,
+            "memory_partial": True,
+        },
+    )
+
+    with patch("urllib.request.urlopen", t):
+        result = client().vm("vm_1").resize(memory_mib=1024)
+
+    assert result.resized is True
+    assert result.memory_requested_mib == 1024
+    assert result.memory_achieved_mib == 1536
+    assert result.memory_partial is True
+    assert json.loads(t.calls[0]["body"]) == {"memory_mib": 1024}
 
 
 def test_background_run_response() -> None:

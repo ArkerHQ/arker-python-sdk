@@ -45,7 +45,7 @@
     "demo": "tsx tests/demo.ts",
     "generate:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts",
     "smoke": "tsx tests/conformance/fork-run-sync.ts",
-    "test": "tsx tests/unit.ts && tsx tests/compat.ts",
+    "test": "tsx tests/unit.ts && tsx tests/compat.ts && tsx tests/cli.ts",
     "test:compat": "tsx tests/compat.ts",
     "test:compat-live": "tsx tests/compat-live.ts",
     "test:compat-fallback-live": "tsx tests/compat-fallback-live.ts",
@@ -69,6 +69,7 @@
   "bugs": "https://github.com/ArkerHQ/arker-sdk/issues",
   "devDependencies": {
     "@types/node": "^25.6.0",
+    "@types/ws": "^8.18.1",
     "openapi-typescript": "^7.13.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
@@ -78,6 +79,7 @@
     "@computesdk/daytona": "^1.7.30",
     "@computesdk/e2b": "^1.7.51",
     "@computesdk/modal": "^1.9.3",
-    "computesdk": "^4.1.3"
+    "computesdk": "^4.1.3",
+    "ws": "^8.21.0"
   }
 }
