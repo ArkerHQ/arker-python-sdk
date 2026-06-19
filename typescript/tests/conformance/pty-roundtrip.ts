@@ -27,20 +27,18 @@ const arker = new Arker({ apiKey: API_KEY, baseUrl: BASE_URL, region: REGION });
 const dec = new TextDecoder();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-let pass = 0, fail = 0, known = 0;
+let pass = 0, fail = 0;
 function check(label: string, ok: boolean, detail = ""): void {
   if (ok) { pass++; console.log(`  PASS  ${label}`); }
   else { fail++; console.log(`  FAIL  ${label}  ${detail.slice(0, 160).replace(/\n/g, "⏎")}`); }
 }
-/** Assertions for a path with a documented open bug — reported loudly but NOT
- *  counted toward the exit code, so the suite still gates the working paths.
- *  KNOWN ISSUE: SDK connectPty RECONNECT drops with WS 1006 (~140ms) while the
- *  server reattach is fine for a raw-ws client (3/3) — strict Node `ws` rejects
- *  the reattach scrollback-replay. See memory project_pty_sdk_reconnect_ws_rst. */
-function knownIssue(label: string, ok: boolean): void {
-  known++;
-  console.log(`  ${ok ? "PASS " : "KNOWN"}  ${label}${ok ? "" : "  (KNOWN ISSUE: SDK ws reconnect 1006 — see project_pty_sdk_reconnect_ws_rst)"}`);
-}
+/** Reconnect was previously a KNOWN ISSUE (SDK connectPty RECONNECT dropped with
+ *  WS 1006 ~140ms). ROOT CAUSE + FIX (arkerd commit 7151609b7): on a warm
+ *  reconnect, pty_bridge ran probe_guest_ready against control vsock port 52 and
+ *  hit its full 20s timeout (port 52 storms on reattach), so open_pty was delayed
+ *  past the client's patience. Fix gates the probe on runtime state (skip when the
+ *  FC is already warm). Now a real gated assertion. Requires that server fix
+ *  deployed; will fail against an arkerd without it. See project_pty_sdk_reconnect_ws_rst. */
 
 /** Attach a buffer to a PTY; returns helpers to drive it like a terminal. */
 function driver(pty: PtyConnection) {
@@ -121,13 +119,13 @@ async function main(): Promise<void> {
     await sleep(4000);
 
     // 3) reconnect to the SAME session → same shell ($MARK survives)
-    //    KNOWN ISSUE (project_pty_sdk_reconnect_ws_rst): SDK ws reconnect drops
-    //    1006; server reattach is fine for raw-ws. Reported, not gated.
+    //    (Previously a known SDK ws-reconnect 1006; fixed by the arkerd probe-gate
+    //    — see project_pty_sdk_reconnect_ws_rst. Now a real gated assertion.)
     const b = await live(vmId, sid);
-    knownIssue("reconnect same session", b !== null);
+    check("reconnect same session", b !== null);
     if (b) {
       b.d.clear();
-      knownIssue("reconnect = same shell ($MARK survives)", await b.d.expect("MARK=[ZZ]", "echo MARK=[$MARK]\n"));
+      check("reconnect = same shell ($MARK survives)", await b.d.expect("MARK=[ZZ]", "echo MARK=[$MARK]\n"));
       b.pty.kill();
       await sleep(500);
       b.pty.close();
@@ -135,17 +133,17 @@ async function main(): Promise<void> {
     await sleep(4000);
 
     const c = await live(vmId, sid);
-    knownIssue("reconnect after kill", c !== null);
+    check("reconnect after kill", c !== null);
     if (c) {
       c.d.clear();
-      knownIssue("kill → fresh shell ($MARK gone)", await c.d.expect("MARK=[]", "echo MARK=[$MARK]\n"));
+      check("kill → fresh shell ($MARK gone)", await c.d.expect("MARK=[]", "echo MARK=[$MARK]\n"));
       c.pty.close();
     }
   } finally {
     await arker.vm(vmId).delete().catch(() => {});
   }
 
-  console.log(`\n==== PTY e2e: ${pass} passed, ${fail} failed, ${known} known-issue (reconnect) ====`);
+  console.log(`\n==== PTY e2e: ${pass} passed, ${fail} failed ====`);
   process.exit(fail === 0 ? 0 : 1);
 }
 
