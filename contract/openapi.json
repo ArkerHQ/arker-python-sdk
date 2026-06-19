@@ -387,45 +387,34 @@
             "$ref": "#/components/responses/Error"
           }
         }
-      }
-    },
-    "/v1/vms/{id}/resize": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
-        }
-      ],
-      "post": {
-        "operationId": "resizeVm",
+      },
+      "patch": {
+        "operationId": "patchVm",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ResizeRequest"
+                "$ref": "#/components/schemas/PatchVmRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Resize result.",
+            "description": "Updated VM details.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResizeResponse"
+                  "$ref": "#/components/schemas/Vm"
                 }
               }
             }
           },
-          "422": {
-            "$ref": "#/components/responses/UnsupportedOperation"
-          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
-        },
-        "description": "Resize VM resources. Per-run resource overrides can also be\npassed via `RunRequest` and are independent of this endpoint;\nthis endpoint sets the VM's baseline allocation.\n"
+        }
       }
     },
     "/v1/vms/{id}/runs": {
@@ -716,45 +705,58 @@
           "name": "cols",
           "in": "query",
           "required": false,
-          "schema": { "type": "integer", "default": 80 },
+          "schema": {
+            "type": "integer",
+            "default": 80
+          },
           "description": "Initial terminal width in columns."
         },
         {
           "name": "rows",
           "in": "query",
           "required": false,
-          "schema": { "type": "integer", "default": 24 },
+          "schema": {
+            "type": "integer",
+            "default": 24
+          },
           "description": "Initial terminal height in rows."
         },
         {
           "name": "command",
           "in": "query",
           "required": false,
-          "schema": { "type": "string" },
+          "schema": {
+            "type": "string"
+          },
           "description": "Single executable path to launch (no shell-splitting). Defaults to the login shell."
         },
         {
           "name": "persist",
           "in": "query",
           "required": false,
-          "schema": { "type": "boolean", "default": true },
+          "schema": {
+            "type": "boolean",
+            "default": true
+          },
           "description": "E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {\"type\":\"kill\"} or the server idle TTL destroy a persistent shell."
         },
         {
           "name": "ticket",
           "in": "query",
           "required": false,
-          "schema": { "type": "string" },
+          "schema": {
+            "type": "string"
+          },
           "description": "Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set)."
         }
       ],
       "get": {
         "operationId": "attachSessionPty",
         "summary": "Open an interactive PTY (WebSocket upgrade)",
-        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Auth on the upgrade is a Bearer key (a key may only attach to its own org's VMs) OR a ?ticket= for browsers. Reopening with the same session_id RECONNECTS to the same running shell when persist=true (scrollback replayed). Wire format: server→client Binary frames are raw terminal output (ANSI escapes/colors intact); client→server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client→server Text frames are JSON control: {\"type\":\"resize\",\"cols\":N,\"rows\":M}, {\"type\":\"kill\"}, {\"type\":\"ping\"}. A plain socket close DETACHES (persist) or tears down; {\"type\":\"kill\"} always destroys. Caps: one live attachment per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.",
+        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Auth on the upgrade is a Bearer key (a key may only attach to its own org's VMs) OR a ?ticket= for browsers. Reopening with the same session_id RECONNECTS to the same running shell when persist=true (scrollback replayed). Wire format: server\u2192client Binary frames are raw terminal output (ANSI escapes/colors intact); client\u2192server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client\u2192server Text frames are JSON control: {\"type\":\"resize\",\"cols\":N,\"rows\":M}, {\"type\":\"kill\"}, {\"type\":\"ping\"}. A plain socket close DETACHES (persist) or tears down; {\"type\":\"kill\"} always destroys. Caps: one live attachment per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.",
         "responses": {
           "101": {
-            "description": "Switching Protocols — the WebSocket PTY stream is established."
+            "description": "Switching Protocols \u2014 the WebSocket PTY stream is established."
           },
           "401": {
             "$ref": "#/components/responses/Error"
@@ -773,8 +775,12 @@
     },
     "/v1/vms/{id}/sessions/{sid}/pty-ticket": {
       "parameters": [
-        { "$ref": "#/components/parameters/VmId" },
-        { "$ref": "#/components/parameters/SessionId" }
+        {
+          "$ref": "#/components/parameters/VmId"
+        },
+        {
+          "$ref": "#/components/parameters/SessionId"
+        }
       ],
       "post": {
         "operationId": "mintSessionPtyTicket",
@@ -787,18 +793,32 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["ticket", "expires_in"],
+                  "required": [
+                    "ticket",
+                    "expires_in"
+                  ],
                   "properties": {
-                    "ticket": { "type": "string" },
-                    "expires_in": { "type": "integer", "description": "Seconds until expiry." }
+                    "ticket": {
+                      "type": "string"
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "description": "Seconds until expiry."
+                    }
                   }
                 }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Error" },
-          "404": { "$ref": "#/components/responses/Error" },
-          "default": { "$ref": "#/components/responses/Error" }
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
         }
       }
     },
@@ -838,7 +858,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and bind-mount it into this VM at `path`.\nBidirectional by virtue of being a mount — there is no separate\nsync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
+        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and bind-mount it into this VM at `path`.\nBidirectional by virtue of being a mount \u2014 there is no separate\nsync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
       },
       "get": {
         "operationId": "listSyncs",
@@ -956,75 +976,6 @@
         "description": "Read or write files in the VM filesystem. Op-discriminated:\n`{op:\"read\",path}` reads a file (inline content for small files, a\npresigned GET URL for large ones); `{op:\"write\",writes:[...]}` writes,\neach entry an inline chunk or a presigned-upload step. Binding a\nfilesystem into the VM is the separate `/v1/vms/{id}/syncs` resource.\n"
       }
     },
-    "/v1/vms/{id}/tunnels": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
-        }
-      ],
-      "get": {
-        "operationId": "listTunnels",
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/Cursor"
-          },
-          {
-            "$ref": "#/components/parameters/Limit"
-          },
-          {
-            "in": "query",
-            "name": "state",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/TunnelState"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Tunnels on this VM.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListTunnelsResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
-      "post": {
-        "operationId": "createTunnel",
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TunnelRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Created tunnel. `auth_token` is returned only once for authenticated tunnels.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Tunnel"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
     "/v1/filesystems": {
       "get": {
         "operationId": "listFilesystems",
@@ -1134,52 +1085,6 @@
           }
         }
       }
-    },
-    "/v1/vms/{id}/tunnels/{key}": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
-        },
-        {
-          "$ref": "#/components/parameters/TunnelKey"
-        }
-      ],
-      "get": {
-        "operationId": "getTunnel",
-        "responses": {
-          "200": {
-            "description": "Tunnel details.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Tunnel"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteTunnel",
-        "responses": {
-          "200": {
-            "description": "Delete result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeleteTunnelResponse"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
     }
   },
   "components": {
@@ -1245,15 +1150,6 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 1000
-        }
-      },
-      "TunnelKey": {
-        "name": "key",
-        "in": "path",
-        "required": true,
-        "description": "Recoverable tunnel identity returned as `Tunnel.tunnel_key` and embedded in tunnel URLs.",
-        "schema": {
-          "type": "string"
         }
       }
     },
@@ -1344,112 +1240,12 @@
         ],
         "description": "Lifecycle state for a Run. `running` = command in flight.\n`completed` = the command ran to completion; `exit_code` conveys\nsuccess (0) or a non-zero program exit (a non-zero exit is still\n`completed`). `failed` = the platform could not run or finish the\ncommand (host died, evicted mid-run, exec error); `fail_reason`\nexplains why, distinct from the program's `stderr`. `cancelled` =\ncancelled by the client.\n"
       },
-      "TunnelState": {
-        "type": "string",
-        "enum": [
-          "starting",
-          "open",
-          "closed"
-        ],
-        "description": "`starting` = backend is allocating the tunnel; `open` = accepting\nconnections; `closed` = torn down or never came up.\n"
-      },
       "ResourceKind": {
         "type": "string",
         "enum": [
           "cpu",
           "memory",
           "disk"
-        ]
-      },
-      "NetworkPolicy": {
-        "oneOf": [
-          {
-            "$ref": "#/components/schemas/NetworkPolicyOpen"
-          },
-          {
-            "$ref": "#/components/schemas/NetworkPolicyBlocked"
-          },
-          {
-            "$ref": "#/components/schemas/NetworkPolicyAllow"
-          },
-          {
-            "$ref": "#/components/schemas/NetworkPolicyBlock"
-          }
-        ]
-      },
-      "NetworkPolicyOpen": {
-        "type": "object",
-        "required": [
-          "type"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "type": {
-            "const": "open"
-          }
-        }
-      },
-      "NetworkPolicyBlocked": {
-        "type": "object",
-        "required": [
-          "type"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "type": {
-            "const": "blocked"
-          }
-        }
-      },
-      "NetworkPolicyAllow": {
-        "type": "object",
-        "required": [
-          "type",
-          "allow"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "type": {
-            "const": "allow"
-          },
-          "allow": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "NetworkPolicyBlock": {
-        "type": "object",
-        "required": [
-          "type",
-          "block"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "type": {
-            "const": "block"
-          },
-          "block": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "NetworkPolicyInput": {
-        "oneOf": [
-          {
-            "type": "boolean"
-          },
-          {
-            "type": "string"
-          },
-          {
-            "$ref": "#/components/schemas/NetworkPolicy"
-          }
         ]
       },
       "ForkRequest": {
@@ -1494,45 +1290,19 @@
           "network": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/NetworkPolicyInput"
+                "$ref": "#/components/schemas/NetworkInput"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Inbound reachability and SSH authorized keys for the new VM."
           },
           "disk": {
-            "type": "boolean",
-            "default": true
-          },
-          "vcpu_count": {
             "type": [
-              "integer",
+              "boolean",
               "null"
-            ],
-            "minimum": 0,
-            "maximum": 255
-          },
-          "memory_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
-          "max_memory_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
-          "disk_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
+            ]
           },
           "durable": {
             "type": [
@@ -1540,16 +1310,16 @@
               "null"
             ]
           },
-          "tunnel": {
+          "resources": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/TunnelRequest"
+                "$ref": "#/components/schemas/VmResources"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Optional VM-scoped tunnel customization. Omitting it allocates an open any-port tunnel where supported."
+            "description": "Resource shape for the new VM."
           }
         }
       },
@@ -1662,7 +1432,9 @@
           "created_at",
           "public",
           "state",
-          "sessions"
+          "sessions",
+          "resources",
+          "network"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1727,31 +1499,9 @@
               "null"
             ]
           },
-          "vcpu_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 255
-          },
-          "memory_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
-          "disk_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
           "network": {
-            "$ref": "#/components/schemas/NetworkPolicy",
-            "description": "Effective VM fork-time egress policy."
+            "$ref": "#/components/schemas/VmNetwork",
+            "description": "Inbound reachability settings for this VM."
           },
           "max_vcpus": {
             "type": [
@@ -1761,6 +1511,15 @@
             "minimum": 0,
             "maximum": 255,
             "description": "Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run."
+          },
+          "min_vcpus": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 255,
+            "description": "Smallest vCPU count accepted for this VM."
           },
           "max_memory_mib": {
             "type": [
@@ -1778,12 +1537,21 @@
             "minimum": 0,
             "description": "Non-hotpluggable base memory (MiB)."
           },
-          "worker_id": {
+          "min_disk_mib": {
             "type": [
-              "string",
+              "integer",
               "null"
             ],
-            "description": "Worker host that owns this VM. Used by routers to populate caches without a fresh PlanetScale lookup."
+            "minimum": 0,
+            "description": "Smallest disk size (MiB) accepted for this VM. `0` means nodisk."
+          },
+          "max_disk_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Largest disk size (MiB) accepted for this VM. `0` means nodisk."
           },
           "sessions": {
             "type": "array",
@@ -1791,11 +1559,9 @@
               "$ref": "#/components/schemas/Session"
             }
           },
-          "tunnels": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Tunnel"
-            }
+          "resources": {
+            "$ref": "#/components/schemas/VmResources",
+            "description": "Current VM resource allocation."
           }
         }
       },
@@ -2011,7 +1777,7 @@
             ]
           },
           "state": {
-            "description": "Lifecycle state — \"completed\" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape.",
+            "description": "Lifecycle state \u2014 \"completed\" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape.",
             "type": "string"
           },
           "stdout": {
@@ -2067,7 +1833,7 @@
             "type": "string"
           },
           "state": {
-            "description": "Lifecycle state — \"running\" for a backgrounded run.",
+            "description": "Lifecycle state \u2014 \"running\" for a backgrounded run.",
             "type": "string"
           }
         }
@@ -2228,7 +1994,7 @@
               "string",
               "null"
             ],
-            "description": "System failure explanation when `state` is `failed` — see `Run.fail_reason`. Distinct from the program's `stderr`."
+            "description": "System failure explanation when `state` is `failed` \u2014 see `Run.fail_reason`. Distinct from the program's `stderr`."
           },
           "vm_id": {
             "type": [
@@ -2519,151 +2285,6 @@
           }
         }
       },
-      "Tunnel": {
-        "type": "object",
-        "required": [
-          "vm_id",
-          "port",
-          "visibility",
-          "protocol",
-          "state"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "vm_id": {
-            "type": "string",
-            "description": "The VM this tunnel belongs to. Always populated so flat tunnel listings work without restructuring."
-          },
-          "port": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535,
-            "description": "Unique-per-VM identifier."
-          },
-          "run_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The Run that opened this tunnel, if any. VM-scoped tunnels created at fork time or via `POST /vms/{id}/tunnels` have `run_id: null`."
-          },
-          "visibility": {
-            "type": "string"
-          },
-          "protocol": {
-            "type": "string"
-          },
-          "url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "state": {
-            "$ref": "#/components/schemas/TunnelState"
-          },
-          "message": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "started_at": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "vm_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_org_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "region": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "aws-burst",
-              null
-            ]
-          },
-          "tunnel_key": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Recoverable tunnel identity embedded in URLs (`p{port}-{key}`). Not a secret. Present on VM-scoped tunnel responses."
-          },
-          "auth_mode": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "open",
-              "authenticated",
-              null
-            ],
-            "description": "`open` or `authenticated` for VM-scoped tunnels."
-          },
-          "auth_token": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "One-time bearer secret returned only when allocating an authenticated tunnel; never echoed on listings."
-          }
-        }
-      },
-      "ListTunnelsResponse": {
-        "type": "object",
-        "required": [
-          "tunnels"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "tunnels": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Tunnel"
-            }
-          },
-          "next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
-      "DeleteTunnelResponse": {
-        "type": "object",
-        "required": [
-          "deleted"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "deleted": {
-            "type": "boolean"
-          }
-        }
-      },
       "CancelRunResponse": {
         "type": "object",
         "required": [
@@ -2698,62 +2319,6 @@
               "string",
               "null"
             ]
-          }
-        }
-      },
-      "ResizeRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "vcpu_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 255
-          },
-          "memory_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          },
-          "disk_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
-          }
-        }
-      },
-      "ResizeResponse": {
-        "type": "object",
-        "required": [
-          "resized"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "resized": {
-            "type": "boolean"
-          },
-          "memory_requested_mib": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0,
-            "description": "Requested total memory (MiB), present only when the request carried memory_mib."
-          },
-          "memory_achieved_mib": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0,
-            "description": "Achieved total memory (MiB). virtio-mem unplug is best-effort, so this can exceed memory_requested_mib when guest pages are pinned."
-          },
-          "memory_partial": {
-            "type": "boolean",
-            "description": "True when a memory target was requested but the runtime could not reach it (achieved differs from requested beyond virtio-mem block granularity). Treat as target-not-met."
           }
         }
       },
@@ -3329,35 +2894,119 @@
           }
         }
       },
-      "TunnelRequest": {
+      "VmResources": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "ports": {
+          "vcpu": {
             "type": [
-              "array",
+              "integer",
               "null"
             ],
-            "description": "Allowed VM ports for this tunnel. Omitted, null, or empty means any port.",
-            "items": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 65535
-            },
-            "default": []
+            "minimum": 0,
+            "maximum": 255
           },
-          "auth_mode": {
+          "memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "disk_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      },
+      "NetworkInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reachable": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Enable inbound reachability for this VM. Defaults to false."
+          },
+          "ssh_public_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "OpenSSH public keys authorized for terminator auth and in-VM sshd injection."
+          }
+        }
+      },
+      "SshPublicKeyInfo": {
+        "type": "object",
+        "required": [
+          "public_key",
+          "fingerprint"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "public_key": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        }
+      },
+      "VmNetwork": {
+        "type": "object",
+        "required": [
+          "reachable"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "reachable": {
+            "type": "boolean"
+          },
+          "hostname": {
             "type": [
               "string",
               "null"
             ],
-            "enum": [
-              "open",
-              "authenticated",
-              null
-            ],
-            "description": "`open` allows unauthenticated tunnel requests. `authenticated` returns a one-time bearer `auth_token` and requires it on tunnel requests.",
-            "default": "open"
+            "description": "Stable per-VM hostname, present when reachable is true."
+          },
+          "ssh_public_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SshPublicKeyInfo"
+            },
+            "description": "Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty."
+          }
+        }
+      },
+      "PatchVmRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VmResources"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "network": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NetworkInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       }
