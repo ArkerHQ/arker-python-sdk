@@ -2698,6 +2698,34 @@
               "string",
               "null"
             ]
+          },
+          "pty": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cols": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "rows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

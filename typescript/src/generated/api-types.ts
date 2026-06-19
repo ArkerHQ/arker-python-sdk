@@ -741,6 +741,10 @@ export interface components {
                 [key: string]: string;
             } | null;
             cwd?: string | null;
+            pty?: boolean | null;
+            cols?: number | null;
+            rows?: number | null;
+            command?: string | null;
         };
         ResizeRequest: {
             vcpu_count?: number | null;
