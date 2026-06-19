@@ -15,7 +15,7 @@
  *     arker sync <vm> ...      → arker syncs create/read/write on <vm>
  *     arker shell [vm]         → native PTY shell over WebSocket
  *
- * Resources: vms, runs, sessions, syncs, tunnels, filesystems (alias `fs`).
+ * Resources: vms, runs, sessions, syncs, filesystems (alias `fs`).
  * Each supports `ls`, `get`, `rm`, and the resource-specific verbs.
  *
  * Auth: reads `ARKER_API_KEY` from the environment (or `~/.arker/config`).
@@ -33,6 +33,9 @@ import type {
   ResourceKind,
   RunResult,
   Vm,
+  VmResources,
+  NetworkInput,
+  PatchVmRequest,
 } from "./index.js";
 
 // ── Argv parsing ───────────────────────────────────────────────────
@@ -184,6 +187,12 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
       await cmdFork({ ...args, positional: rest }, client);
       return;
     }
+    case "patch":
+    case "update": {
+      const id = rest[0] ?? die("usage: arker vms patch <vm_id> [--vcpu n] [--memory-mib n] [--disk-mib n] [--reachable|--no-reachable] [--ssh-public-key key[,key...]]");
+      out(await client.vm(id).patch(buildPatchRequest(args)));
+      return;
+    }
     case "run": {
       await cmdRun({ ...args, positional: rest }, client);
       return;
@@ -203,6 +212,8 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const srcOrgIdFlag = args.flags["source-org-id"] as string | undefined;
   const name = args.flags.name as string | undefined;
   const publicFlag = boolFlag(args, "public");
+  const resources = resourcesFromFlags(args);
+  const network = networkFromFlags(args);
 
   let sourceVmId: string | undefined = srcVmIdFlag;
   let sourceVmName: string | undefined = srcVmNameFlag;
@@ -224,6 +235,8 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     sourceOrgId,
     name,
     public: publicFlag,
+    resources,
+    network,
   });
   out({ vm_id: computer.id });
 }
@@ -427,53 +440,6 @@ async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
   output.write(await client.vm(vm).sync(path));
 }
 
-async function cmdTunnels(args: ParsedArgs, client: Arker): Promise<void> {
-  const sub = args.positional[0];
-  const rest = args.positional.slice(1);
-  const vm = rest[0];
-  switch (sub) {
-    case "ls":
-    case "list": {
-      if (!vm) die("usage: arker tunnels ls <vm_id>");
-      const res = await client.vm(vm).listTunnels({
-        state: args.flags.state as "starting" | "open" | "closed" | undefined,
-        cursor: args.flags.cursor as string | undefined,
-        limit: numFlag(args, "limit"),
-      });
-      if (args.flags.json) return out(res);
-      for (const t of res.tunnels) {
-        out(`${t.tunnel_key ?? "-"}\t${t.port}\t${t.state}\t${t.protocol}\t${t.url ?? "-"}`);
-      }
-      if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
-      return;
-    }
-    case "create": {
-      if (!vm) die("usage: arker tunnels create <vm_id> [--ports 80,8080] [--auth-mode open|authenticated]");
-      const tunnel = await client.vm(vm).createTunnel({
-        ports: parsePorts(args.flags.ports),
-        auth_mode: args.flags["auth-mode"] as "open" | "authenticated" | undefined,
-      });
-      return out(tunnel);
-    }
-    case "get": {
-      if (!vm) die("usage: arker tunnels get <vm_id> <key>");
-      const key = rest[1] ?? die("missing key");
-      out(await client.vm(vm).getTunnel(key));
-      return;
-    }
-    case "rm":
-    case "delete": {
-      if (!vm) die("usage: arker tunnels rm <vm_id> <key>");
-      const key = rest[1] ?? die("missing key");
-      const r = await client.vm(vm).deleteTunnel(key);
-      out(r.deleted ? `deleted tunnel ${key}` : "delete failed");
-      return;
-    }
-    default:
-      die(`usage: arker tunnels <ls|create|get|rm> ...`);
-  }
-}
-
 async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
   const sub = args.positional[0];
   const rest = args.positional.slice(1);
@@ -673,9 +639,39 @@ function boolFlag(args: ParsedArgs, name: string): boolean | undefined {
   return true;
 }
 
-function parsePorts(value: string | boolean | undefined): number[] | undefined {
-  if (typeof value !== "string" || value.trim() === "") return undefined;
-  return value.split(",").map((part) => Number(part.trim())).filter((port) => Number.isFinite(port));
+function resourcesFromFlags(args: ParsedArgs): VmResources | undefined {
+  const resources: VmResources = {};
+  const vcpu = numFlag(args, "vcpu");
+  const memoryMib = numFlag(args, "memory-mib");
+  const diskMib = numFlag(args, "disk-mib");
+  if (vcpu !== undefined) resources.vcpu = vcpu;
+  if (memoryMib !== undefined) resources.memory_mib = memoryMib;
+  if (diskMib !== undefined) resources.disk_mib = diskMib;
+  return Object.keys(resources).length > 0 ? resources : undefined;
+}
+
+function networkFromFlags(args: ParsedArgs): NetworkInput | undefined {
+  const keys = sshPublicKeysFlag(args.flags["ssh-public-key"]);
+  const reachable = args.flags["no-reachable"] === true ? false : boolFlag(args, "reachable");
+  const network: NetworkInput = {};
+  if (reachable !== undefined) network.reachable = reachable;
+  if (keys !== undefined) network.ssh_public_keys = keys;
+  return Object.keys(network).length > 0 ? network : undefined;
+}
+
+function sshPublicKeysFlag(value: string | boolean | undefined): string[] | undefined {
+  if (typeof value !== "string") return undefined;
+  const keys = value.split(",").map((part) => part.trim()).filter(Boolean);
+  return keys.length > 0 ? keys : undefined;
+}
+
+function buildPatchRequest(args: ParsedArgs): PatchVmRequest {
+  const resources = resourcesFromFlags(args);
+  const network = networkFromFlags(args);
+  if (!resources && !network) {
+    die("usage: arker vms patch <vm_id> [--vcpu n] [--memory-mib n] [--disk-mib n] [--reachable|--no-reachable] [--ssh-public-key key[,key...]]");
+  }
+  return { resources, network };
 }
 
 async function readAllStdin(): Promise<Uint8Array> {
@@ -703,11 +699,10 @@ function usage(): never {
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "",
       "Resources:",
-      "  arker vms         <ls|get|rm|fork|run> ...",
+      "  arker vms         <ls|get|rm|fork|patch|run> ...",
       "  arker runs        <ls|get|rm> <vm_id> ...",
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
-      "  arker tunnels     <ls|get|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
       "",
       "Flags:",
@@ -717,6 +712,11 @@ function usage(): never {
       "  --base-url <url>           override compute URL (env ARKER_BASE_URL)",
       "  --control-base-url <url>   override CF Worker URL (env ARKER_CONTROL_BASE_URL)",
       "  --json                     emit JSON instead of tabular output",
+      "  --vcpu <n> --memory-mib <n> --disk-mib <n>",
+      "                             fork/patch VM resources",
+      "  --reachable|--no-reachable fork/patch inbound reachability",
+      "  --ssh-public-key <key[,key...]>",
+      "                             fork/patch SSH authorized keys",
       "",
       "Shell flags:",
       "  --session-id <id>          reconnect to an existing PTY session",
@@ -765,8 +765,6 @@ async function main(): Promise<void> {
         return await cmdRuns(args, client);
       case "sessions":
         return await cmdSessions(args, client);
-      case "tunnels":
-        return await cmdTunnels(args, client);
       case "filesystems":
       case "fs":
         return await cmdFilesystems(args, client);

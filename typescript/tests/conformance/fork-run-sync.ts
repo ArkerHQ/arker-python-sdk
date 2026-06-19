@@ -220,11 +220,9 @@ function canonicalReadRequest(path: string): JsonObject {
 }
 
 function assertForkResponse(body: JsonObject): string {
-  // Contract 0.3 renamed `owner_id → owner_org_id`, dropped
-  // `ssh_private_key` from the public surface, and added `public`,
-  // `state`, `tunnels`. Old arkerd / Lambda may still emit the legacy
-  // fields, so accept either shape and prefer the new one when both
-  // are present.
+  // Contract 0.3 renamed `owner_id → owner_org_id`; the current VM
+  // contract exposes reachability through `network` and resources
+  // through the nested `resources` object.
   const required = ["vm_id", "created_at", "sessions"];
   for (const key of required) {
     assert(body[key] !== undefined, `fork response.${key} missing`);
@@ -237,9 +235,8 @@ function assertForkResponse(body: JsonObject): string {
   const vmId = stringField(body.vm_id, "fork response.vm_id");
   stringField(body.created_at, "fork response.created_at");
   arrayField(body.sessions, "fork response.sessions");
-  optionalString(body.ssh_private_key, "fork response.ssh_private_key");
-  if (body.tunnels !== undefined) arrayField(body.tunnels, "fork response.tunnels");
   optionalObject(body.network, "fork response.network");
+  optionalObject(body.resources, "fork response.resources");
   return vmId;
 }
 

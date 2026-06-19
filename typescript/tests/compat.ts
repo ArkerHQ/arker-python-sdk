@@ -283,7 +283,8 @@ async function testInternalArkerProvider(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
+      network: { reachable: false },
+      resources: { vcpu: 1, memory_mib: 1024, disk_mib: 10240 },
     },
   );
   fetch.addJson(

@@ -94,7 +94,8 @@ def test_fork_posts_directly_to_source_vm() -> None:
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "tunnels": [],
+            "network": {"reachable": False},
+            "resources": {"vcpu": 1, "memory_mib": 1024, "disk_mib": 10240},
         },
     )
 
@@ -133,7 +134,8 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "tunnels": [],
+            "network": {"reachable": False},
+            "resources": {"vcpu": 1, "memory_mib": 1024, "disk_mib": 10240},
         },
     )
 
@@ -196,9 +198,9 @@ def test_list_uses_configured_base_url() -> None:
             "public": False,
             "state": "running",
             "sessions": [session()],
-            "tunnels": [],
             "name": "demo",
-            "network": {"type": "open"},
+            "network": {"reachable": True, "hostname": "aws-us-west-2-vm_1.arker.app"},
+            "resources": {"vcpu": 2, "memory_mib": 4096, "disk_mib": 10240},
             "max_vcpus": 8,
             "max_memory_mib": 32768,
             "min_memory_mib": 512,
@@ -216,7 +218,8 @@ def test_list_uses_configured_base_url() -> None:
     assert result.vms[0].max_vcpus == 8
     assert result.vms[0].max_memory_mib == 32768
     assert result.vms[0].min_memory_mib == 512
-    assert result.vms[0].network == {"type": "open"}
+    assert result.vms[0].resources == sdk.VmResources(vcpu=2, memory_mib=4096, disk_mib=10240)
+    assert result.vms[0].network == sdk.VmNetwork(reachable=True, hostname="aws-us-west-2-vm_1.arker.app")
 
 
 def test_list_runs_uses_control_plane_and_filters() -> None:
@@ -332,27 +335,40 @@ def test_run_sends_command_without_default_session_id() -> None:
     assert json.loads(t.calls[0]["body"]) == {"command": "printf hi"}
 
 
-def test_resize_returns_memory_target_metadata() -> None:
+def test_patch_updates_resources_and_network() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/resize"),
+        lambda method, url: method == "PATCH" and url.endswith("/v1/vms/vm_1"),
         200,
         {
-            "resized": True,
-            "memory_requested_mib": 1024,
-            "memory_achieved_mib": 1536,
-            "memory_partial": True,
+            "vm_id": "vm_1",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "running",
+            "sessions": [],
+            "network": {
+                "reachable": True,
+                "hostname": "aws-us-west-2-vm_1.arker.app",
+                "ssh_public_keys": [{"public_key": "ssh-ed25519 AAAA", "fingerprint": "SHA256:test"}],
+            },
+            "resources": {"vcpu": 2, "memory_mib": 4096, "disk_mib": 10240},
         },
     )
 
     with patch("urllib.request.urlopen", t):
-        result = client().vm("vm_1").resize(memory_mib=1024)
+        result = client().vm("vm_1").patch(
+            resources=sdk.VmResources(vcpu=2, memory_mib=4096, disk_mib=10240),
+            network=sdk.NetworkInput(reachable=True, ssh_public_keys=["ssh-ed25519 AAAA"]),
+        )
 
-    assert result.resized is True
-    assert result.memory_requested_mib == 1024
-    assert result.memory_achieved_mib == 1536
-    assert result.memory_partial is True
-    assert json.loads(t.calls[0]["body"]) == {"memory_mib": 1024}
+    assert result.network.hostname == "aws-us-west-2-vm_1.arker.app"
+    assert result.network.ssh_public_keys[0].fingerprint == "SHA256:test"
+    assert result.resources == sdk.VmResources(vcpu=2, memory_mib=4096, disk_mib=10240)
+    assert json.loads(t.calls[0]["body"]) == {
+        "resources": {"vcpu": 2, "memory_mib": 4096, "disk_mib": 10240},
+        "network": {"reachable": True, "ssh_public_keys": ["ssh-ed25519 AAAA"]},
+    }
 
 
 def test_background_run_response() -> None:
@@ -363,7 +379,7 @@ def test_background_run_response() -> None:
         {
             "run_id": "run_1",
             "state": "running",
-            "tunnels": [{"vm_id": "vm_1", "port": 8080, "visibility": "public", "protocol": "http", "state": "open"}],
+            "unexpected": [{"value": "ignored"}],
         },
     )
 
@@ -373,7 +389,7 @@ def test_background_run_response() -> None:
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_1"
     assert result.state == "running"
-    assert not hasattr(result, "tunnels")
+    assert not hasattr(result, "unexpected")
     assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "background": True}
 
 
@@ -525,7 +541,8 @@ def test_fork_sends_durable_flag() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "tunnels": [],
+            "network": {"reachable": False},
+            "resources": {"vcpu": 1, "memory_mib": 1024, "disk_mib": 10240},
         },
     )
 
@@ -540,7 +557,7 @@ def test_fork_sends_durable_flag() -> None:
     }
 
 
-def test_fork_sends_tunnel_request() -> None:
+def test_fork_sends_network_and_resource_request() -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/v1/fork"),
@@ -552,59 +569,23 @@ def test_fork_sends_tunnel_request() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "tunnels": [],
+            "network": {"reachable": True, "hostname": "aws-us-west-2-vm_child.arker.app"},
+            "resources": {"vcpu": 2, "memory_mib": 4096, "disk_mib": 10240},
         },
     )
 
     with patch("urllib.request.urlopen", t):
-        client().vm("ubuntu").fork(tunnel=sdk.TunnelRequest(ports=[8080], auth_mode="authenticated"))
+        client().vm("ubuntu").fork(
+            network=sdk.NetworkInput(reachable=True, ssh_public_keys=["ssh-ed25519 AAAA"]),
+            resources=sdk.VmResources(vcpu=2, memory_mib=4096, disk_mib=10240),
+        )
 
     assert json.loads(t.calls[0]["body"]) == {
         "source_vm_id": "ubuntu",
         "disk": True,
-        "tunnel": {"ports": [8080], "auth_mode": "authenticated"},
+        "network": {"reachable": True, "ssh_public_keys": ["ssh-ed25519 AAAA"]},
+        "resources": {"vcpu": 2, "memory_mib": 4096, "disk_mib": 10240},
     }
-
-
-def test_tunnel_crud_uses_keys() -> None:
-    t = FakeTransport()
-    tunnel = {
-        "vm_id": "vm_1",
-        "port": 8080,
-        "visibility": "private",
-        "protocol": "http",
-        "state": "open",
-        "url": "https://p8080-key.tunnels.example",
-        "tunnel_key": "key-123",
-        "auth_mode": "authenticated",
-        "auth_token": "secret-123",
-    }
-    t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/tunnels"),
-        200,
-        tunnel,
-    )
-    t.add_json(
-        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/tunnels/key-123"),
-        200,
-        {**tunnel, "auth_token": None},
-    )
-    t.add_json(
-        lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_1/tunnels/key-123"),
-        200,
-        {"deleted": True},
-    )
-
-    with patch("urllib.request.urlopen", t):
-        created = client().vm("vm_1").create_tunnel(ports=[8080], auth_mode="authenticated")
-        fetched = client().vm("vm_1").get_tunnel("key-123")
-        deleted = client().vm("vm_1").delete_tunnel("key-123")
-
-    assert created.tunnel_key == "key-123"
-    assert created.auth_token == "secret-123"
-    assert fetched.auth_token is None
-    assert deleted.deleted is True
-    assert json.loads(t.calls[0]["body"]) == {"ports": [8080], "auth_mode": "authenticated"}
 
 
 def test_run_sends_idempotency_key_header() -> None:
@@ -647,7 +628,6 @@ def test_run_status_parses_retry_count() -> None:
             "exit_code": 0,
             "state": "completed",
             "started_at": "now",
-            "tunnels": [],
             "retry_count": 2,
         },
     )
@@ -672,7 +652,6 @@ def test_run_status_defaults_retry_count_when_missing() -> None:
             "exit_code": 0,
             "state": "completed",
             "started_at": "now",
-            "tunnels": [],
         },
     )
 
