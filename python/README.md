@@ -107,6 +107,90 @@ vm.run("python3 train.py", background=True, idempotency_key=str(uuid.uuid4()))
 
 If the host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Backends without durability raise `ArkerError(code="unsupported_operation")`.
 
+## Compatibility imports
+
+The Python package includes limited compatibility modules for common Daytona, E2B, and Modal sandbox workflows. For the supported surface below, migration is a one-line import change:
+
+| SDK | Replace | With |
+| --- | --- | --- |
+| Daytona | `from daytona import Daytona` | `from arker.daytona import Daytona` |
+| E2B | `from e2b import Sandbox` | `from arker.e2b import Sandbox` |
+| Modal | provider-specific imports | `from arker.modal import Sandbox` |
+
+### Daytona
+
+```python
+from arker.daytona import Daytona
+
+daytona = Daytona()
+sandbox = daytona.create()
+try:
+    response = sandbox.process.exec("echo 'Hello, World!'")
+    print(response.result)
+finally:
+    sandbox.delete()
+```
+
+Supported Daytona surface:
+
+- `Daytona()`
+- `daytona.create()`
+- `daytona.get(id)`
+- `daytona.delete(id_or_sandbox)`
+- `sandbox.id`
+- `sandbox.process.exec(command)`
+- `sandbox.process.execute_command(command)`
+- `sandbox.delete()`
+
+### E2B
+
+```python
+from arker.e2b import Sandbox
+
+sandbox = Sandbox.create()
+try:
+    result = sandbox.commands.run('echo "Hello from E2B Sandbox!"')
+    print(result.stdout)
+finally:
+    sandbox.kill()
+```
+
+Supported E2B surface:
+
+- `Sandbox.create()`
+- `Sandbox.create(template_id)`
+- `Sandbox.connect(id)`
+- `sandbox.sandbox_id` / `sandbox.sandboxId`
+- `sandbox.commands.run(command)`
+- `sandbox.files.read/write/make_dir/makeDir/list/exists/remove`
+- `sandbox.kill()`
+
+### Modal
+
+```python
+from arker.modal import Sandbox
+
+sandbox = Sandbox.create()
+try:
+    process = sandbox.exec("echo", "hello")
+    print(process.stdout.read())
+finally:
+    sandbox.terminate()
+```
+
+Supported Modal surface:
+
+- `Sandbox.create()`
+- `Sandbox.from_id(id)` / `Sandbox.fromId(id)`
+- `sandbox.sandbox_id` / `sandbox.sandboxId`
+- `sandbox.exec(*command)`
+- `process.stdout.read()`
+- `process.stderr.read()`
+- `process.wait()`
+- `sandbox.terminate()`
+
+Unsupported provider-specific methods and options throw explicit errors instead of being silently ignored. Arker credentials come from `ARKER_API_KEY` and optional `ARKER_REGION` / `ARKER_BASE_URL`.
+
 ## License
 
 Apache-2.0

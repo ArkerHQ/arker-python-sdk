@@ -3,7 +3,7 @@
   "info": {
     "title": "Arker Public VM API",
     "version": "0.3.0",
-    "description": "Public VM API contract. Backends expose the same endpoint and wire\nshapes; backend-specific feature limitations are returned as\n`ErrorResponse` with `code: \"unsupported_operation\"`.\n"
+    "description": "Public VM and control-plane API contract. Backend VM endpoints expose the same wire\nshapes; backend-specific feature limitations are returned as\n`ErrorResponse` with `code: \"unsupported_operation\"`.\n"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
@@ -122,6 +122,228 @@
             "$ref": "#/components/responses/Error"
           }
         }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "operationId": "listOrgRuns",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "description": "Unix epoch seconds; include runs at or after this time.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "description": "Unix epoch seconds; include runs before this time.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vm",
+            "required": false,
+            "description": "Single VM ID filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "vms",
+            "required": false,
+            "description": "Comma-separated VM ID filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "region",
+            "required": false,
+            "description": "Backend region filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "description": "Provider filter. `aws` maps to host-backed runs; `aws-burst` maps to Lambda-backed runs.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "aws",
+                "aws-burst"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "description": "Raw run metrics source filter.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "cf",
+                "arkerd"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "description": "Free-text search across run metadata.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "description": "Maximum number of rows to return.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "description": "Number of rows to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "in": "query",
+            "name": "lite",
+            "required": false,
+            "description": "When true, omit large input/output previews where supported by the backend.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "runtime",
+            "required": false,
+            "description": "Runtime filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "endpoint",
+            "required": false,
+            "description": "Endpoint category filter.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "run",
+                "fork",
+                "sync"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "actions",
+            "required": false,
+            "description": "Comma-separated action filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "description": "Comma-separated status class filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_min",
+            "required": false,
+            "description": "Minimum HTTP/status code filter.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status_max",
+            "required": false,
+            "description": "Maximum HTTP/status code filter.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "description": "Sort column.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "when",
+                "status",
+                "path",
+                "total",
+                "queue",
+                "your_code",
+                "runtime"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "dir",
+            "required": false,
+            "description": "Sort direction.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Runs visible to the authenticated caller across VMs, providers, and regions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListOrgRunsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions."
       }
     },
     "/v1/vms/{id}": {
@@ -516,20 +738,20 @@
           "in": "query",
           "required": false,
           "schema": { "type": "boolean", "default": true },
-          "description": "When true (default), the shell survives a WS disconnect so it can be reattached via the same session id; when false the shell is torn down on disconnect."
+          "description": "E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {\"type\":\"kill\"} or the server idle TTL destroy a persistent shell."
         },
         {
-          "name": "cancel_ttl_secs",
+          "name": "ticket",
           "in": "query",
           "required": false,
-          "schema": { "type": "integer", "minimum": 1 },
-          "description": "Auto-cancel the underlying PTY run after this many seconds with no terminal I/O, which DESTROYS the shell (not just a detach). Unset means no auto-cancel."
+          "schema": { "type": "string" },
+          "description": "Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set)."
         }
       ],
       "get": {
         "operationId": "attachSessionPty",
         "summary": "Open an interactive PTY (WebSocket upgrade)",
-        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Bearer auth on the upgrade (a key may only attach to its own org's VMs). Wire format: server→client Binary frames are raw terminal output (ANSI escapes/colors intact); client→server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client→server Text frames are JSON control: {\"type\":\"resize\",\"cols\":N,\"rows\":M}, {\"type\":\"kill\"}, {\"type\":\"ping\"}. Closing the socket tears down the shell. Caps: one PTY per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.",
+        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Auth on the upgrade is a Bearer key (a key may only attach to its own org's VMs) OR a ?ticket= for browsers. Reopening with the same session_id RECONNECTS to the same running shell when persist=true (scrollback replayed). Wire format: server→client Binary frames are raw terminal output (ANSI escapes/colors intact); client→server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client→server Text frames are JSON control: {\"type\":\"resize\",\"cols\":N,\"rows\":M}, {\"type\":\"kill\"}, {\"type\":\"ping\"}. A plain socket close DETACHES (persist) or tears down; {\"type\":\"kill\"} always destroys. Caps: one live attachment per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.",
         "responses": {
           "101": {
             "description": "Switching Protocols — the WebSocket PTY stream is established."
@@ -546,6 +768,37 @@
           "default": {
             "$ref": "#/components/responses/Error"
           }
+        }
+      }
+    },
+    "/v1/vms/{id}/sessions/{sid}/pty-ticket": {
+      "parameters": [
+        { "$ref": "#/components/parameters/VmId" },
+        { "$ref": "#/components/parameters/SessionId" }
+      ],
+      "post": {
+        "operationId": "mintSessionPtyTicket",
+        "summary": "Mint a browser PTY ticket",
+        "description": "Returns a short-lived (5 min, multi-use) ticket for opening the PTY WebSocket from a browser, which cannot send an Authorization header. Bearer-authed; the caller must own the VM. Open wss://.../pty?ticket=<ticket> with it. The ticket is a stateless HMAC bound to (org, vm, session), so it validates on any node.",
+        "responses": {
+          "200": {
+            "description": "Ticket minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ticket", "expires_in"],
+                  "properties": {
+                    "ticket": { "type": "string" },
+                    "expires_in": { "type": "integer", "description": "Seconds until expiry." }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "default": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -585,7 +838,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and bind-mount it into this VM at `path`.\nBidirectional by virtue of being a mount \u2014 there is no separate\nsync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
+        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and bind-mount it into this VM at `path`.\nBidirectional by virtue of being a mount — there is no separate\nsync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
       },
       "get": {
         "operationId": "listSyncs",
@@ -700,7 +953,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read or write files in the VM filesystem (including mounted sync paths). Discriminated by `op`: `{ \"op\": \"read\", \"path\" }` reads a file (inline content for small files, a presigned GET URL for large ones); `{ \"op\": \"write\", \"writes\": [...] }` writes, where each entry is an inline chunk or a presigned-upload step. Binding a standalone filesystem into the VM is a separate operation \u2014 see `POST /v1/vms/{id}/syncs`."
+        "description": "Read or write files in the VM filesystem. Op-discriminated:\n`{op:\"read\",path}` reads a file (inline content for small files, a\npresigned GET URL for large ones); `{op:\"write\",writes:[...]}` writes,\neach entry an inline chunk or a presigned-upload step. Binding a\nfilesystem into the VM is the separate `/v1/vms/{id}/syncs` resource.\n"
       }
     },
     "/v1/vms/{id}/tunnels": {
@@ -742,44 +995,26 @@
             "$ref": "#/components/responses/Error"
           }
         }
-      }
-    },
-    "/v1/vms/{id}/tunnels/{port}": {
-      "parameters": [
-        {
-          "$ref": "#/components/parameters/VmId"
+      },
+      "post": {
+        "operationId": "createTunnel",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TunnelRequest"
+              }
+            }
+          }
         },
-        {
-          "$ref": "#/components/parameters/TunnelPort"
-        }
-      ],
-      "get": {
-        "operationId": "getTunnel",
         "responses": {
           "200": {
-            "description": "Tunnel details.",
+            "description": "Created tunnel. `auth_token` is returned only once for authenticated tunnels.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Tunnel"
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
-      "delete": {
-        "operationId": "deleteTunnel",
-        "responses": {
-          "200": {
-            "description": "Delete result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeleteTunnelResponse"
                 }
               }
             }
@@ -848,6 +1083,9 @@
               }
             }
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
@@ -896,6 +1134,52 @@
           }
         }
       }
+    },
+    "/v1/vms/{id}/tunnels/{key}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        },
+        {
+          "$ref": "#/components/parameters/TunnelKey"
+        }
+      ],
+      "get": {
+        "operationId": "getTunnel",
+        "responses": {
+          "200": {
+            "description": "Tunnel details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tunnel"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteTunnel",
+        "responses": {
+          "200": {
+            "description": "Delete result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteTunnelResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -932,16 +1216,6 @@
           "type": "string"
         }
       },
-      "TunnelPort": {
-        "name": "port",
-        "in": "path",
-        "required": true,
-        "schema": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 65535
-        }
-      },
       "FilesystemId": {
         "name": "filesystem_id",
         "in": "path",
@@ -971,6 +1245,15 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 1000
+        }
+      },
+      "TunnelKey": {
+        "name": "key",
+        "in": "path",
+        "required": true,
+        "description": "Recoverable tunnel identity returned as `Tunnel.tunnel_key` and embedded in tunnel URLs.",
+        "schema": {
+          "type": "string"
         }
       }
     },
@@ -1059,7 +1342,7 @@
           "failed",
           "cancelled"
         ],
-        "description": "Lifecycle state for a Run. `running` = command in flight. `completed` = ran to completion; `exit_code` conveys success (0) or a non-zero program exit (still `completed`). `failed` = the platform could not run/finish the command (worker died, evicted mid-run); `fail_reason` explains why, distinct from the program's `stderr`. `cancelled` = cancelled by the client."
+        "description": "Lifecycle state for a Run. `running` = command in flight.\n`completed` = the command ran to completion; `exit_code` conveys\nsuccess (0) or a non-zero program exit (a non-zero exit is still\n`completed`). `failed` = the platform could not run or finish the\ncommand (host died, evicted mid-run, exec error); `fail_reason`\nexplains why, distinct from the program's `stderr`. `cancelled` =\ncancelled by the client.\n"
       },
       "TunnelState": {
         "type": "string",
@@ -1256,6 +1539,17 @@
               "boolean",
               "null"
             ]
+          },
+          "tunnel": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TunnelRequest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional VM-scoped tunnel customization. Omitting it allocates an open any-port tunnel where supported."
           }
         }
       },
@@ -1454,6 +1748,35 @@
               "null"
             ],
             "minimum": 0
+          },
+          "network": {
+            "$ref": "#/components/schemas/NetworkPolicy",
+            "description": "Effective VM fork-time egress policy."
+          },
+          "max_vcpus": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 255,
+            "description": "Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run."
+          },
+          "max_memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Hard memory ceiling (MiB) a fork can hotplug up to."
+          },
+          "min_memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Non-hotpluggable base memory (MiB)."
           },
           "worker_id": {
             "type": [
@@ -1680,6 +2003,17 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "run_id": {
+            "description": "The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "Lifecycle state — \"completed\" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape.",
+            "type": "string"
+          },
           "stdout": {
             "type": "string"
           },
@@ -1701,6 +2035,24 @@
               "string",
               "null"
             ]
+          },
+          "memory_requested_mib": {
+            "description": "ARK-107: requested total memory (MiB) when this run carried an explicit memory override. Absent when the run had no memory override.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory_achieved_mib": {
+            "description": "ARK-107: achieved total memory (MiB) after the run's resize. Memory shrink is best-effort, so this can exceed memory_requested_mib when guest pages are pinned. Absent when the run had no memory override.",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "memory_partial": {
+            "description": "ARK-107: true when the run's memory shrink was partial (achieved differs from requested beyond the virtio-mem block granularity). The command still ran at the achieved footprint (best-effort); this flags the gap instead of a silent success. Defaults false.",
+            "type": "boolean"
           }
         }
       },
@@ -1714,12 +2066,9 @@
           "run_id": {
             "type": "string"
           },
-          "tunnels": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Tunnel"
-            },
-            "default": []
+          "state": {
+            "description": "Lifecycle state — \"running\" for a backgrounded run.",
+            "type": "string"
           }
         }
       },
@@ -1733,8 +2082,7 @@
           "stdout",
           "stdout_encoding",
           "stderr",
-          "stderr_encoding",
-          "tunnels"
+          "stderr_encoding"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1776,7 +2124,7 @@
               "string",
               "null"
             ],
-            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
+            "description": "System failure explanation when `state` is `failed` (e.g. \"host died:&nbsp;<id>\", \"evicted mid-run\"). Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion."
           },
           "stdout": {
             "type": "string"
@@ -1789,12 +2137,6 @@
           },
           "stderr_encoding": {
             "type": "string"
-          },
-          "tunnels": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Tunnel"
-            }
           },
           "retry_count": {
             "type": "integer",
@@ -1886,7 +2228,7 @@
               "string",
               "null"
             ],
-            "description": "System failure explanation when `state` is `failed` (e.g. \"worker died: <id>\"). Distinct from `stderr`, which is the program's own output."
+            "description": "System failure explanation when `state` is `failed` — see `Run.fail_reason`. Distinct from the program's `stderr`."
           },
           "vm_id": {
             "type": [
@@ -1943,6 +2285,180 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "OrgRunListRow": {
+        "type": "object",
+        "required": [
+          "source",
+          "t_ms",
+          "request_id",
+          "run_id",
+          "vm_id",
+          "session_id",
+          "region",
+          "status",
+          "total_ms",
+          "queue_ms",
+          "lambda_call_ms",
+          "lambda_duration_ms",
+          "executor_duration_ms",
+          "executor_kind",
+          "executor_cpu_ms",
+          "executor_mem_mb",
+          "lambda_cpu_ms",
+          "lambda_mem_mb",
+          "vm_vcpus",
+          "vm_memory_mib",
+          "path",
+          "method",
+          "command",
+          "source_vm_id",
+          "exit_code",
+          "endpoint",
+          "api_key_prefix",
+          "body_bytes_in",
+          "body_bytes_out",
+          "body_in",
+          "body_out"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "cf",
+              "arkerd"
+            ]
+          },
+          "t_ms": {
+            "type": "integer"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "vm_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "region": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "total_ms": {
+            "type": "number"
+          },
+          "queue_ms": {
+            "type": "number"
+          },
+          "lambda_call_ms": {
+            "type": "number"
+          },
+          "lambda_duration_ms": {
+            "type": "integer"
+          },
+          "executor_duration_ms": {
+            "type": "integer"
+          },
+          "executor_kind": {
+            "type": "string"
+          },
+          "executor_cpu_ms": {
+            "type": "integer"
+          },
+          "executor_mem_mb": {
+            "type": "integer"
+          },
+          "lambda_cpu_ms": {
+            "type": "integer"
+          },
+          "lambda_mem_mb": {
+            "type": "integer"
+          },
+          "vm_vcpus": {
+            "type": "integer"
+          },
+          "vm_memory_mib": {
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "source_vm_id": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "api_key_prefix": {
+            "type": "string"
+          },
+          "body_bytes_in": {
+            "type": "integer"
+          },
+          "body_bytes_out": {
+            "type": "integer"
+          },
+          "body_in": {
+            "type": "string"
+          },
+          "body_out": {
+            "type": "string"
+          }
+        }
+      },
+      "ListOrgRunsResponse": {
+        "type": "object",
+        "required": [
+          "since",
+          "until",
+          "limit",
+          "offset",
+          "lite",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "since": {
+            "type": "integer"
+          },
+          "until": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "lite": {
+            "type": "boolean"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrgRunListRow"
+            }
           }
         }
       },
@@ -2016,7 +2532,7 @@
         "properties": {
           "vm_id": {
             "type": "string",
-            "description": "The VM this tunnel belongs to. Always populated, including when embedded in `Run.tunnels`."
+            "description": "The VM this tunnel belongs to. Always populated so flat tunnel listings work without restructuring."
           },
           "port": {
             "type": "integer",
@@ -2029,7 +2545,7 @@
               "string",
               "null"
             ],
-            "description": "The Run that opened this tunnel, if any. Tunnels allocated at fork time have `run_id: null`."
+            "description": "The Run that opened this tunnel, if any. VM-scoped tunnels created at fork time or via `POST /vms/{id}/tunnels` have `run_id: null`."
           },
           "visibility": {
             "type": "string"
@@ -2086,6 +2602,32 @@
               "aws-burst",
               null
             ]
+          },
+          "tunnel_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Recoverable tunnel identity embedded in URLs (`p{port}-{key}`). Not a secret. Present on VM-scoped tunnel responses."
+          },
+          "auth_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "open",
+              "authenticated",
+              null
+            ],
+            "description": "`open` or `authenticated` for VM-scoped tunnels."
+          },
+          "auth_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One-time bearer secret returned only when allocating an authenticated tunnel; never echoed on listings."
           }
         }
       },
@@ -2156,34 +2698,6 @@
               "string",
               "null"
             ]
-          },
-          "pty": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "cols": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 65535
-          },
-          "rows": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 65535
-          },
-          "command": {
-            "type": [
-              "string",
-              "null"
-            ]
           }
         }
       },
@@ -2224,6 +2738,22 @@
         "properties": {
           "resized": {
             "type": "boolean"
+          },
+          "memory_requested_mib": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Requested total memory (MiB), present only when the request carried memory_mib."
+          },
+          "memory_achieved_mib": {
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0,
+            "description": "Achieved total memory (MiB). virtio-mem unplug is best-effort, so this can exceed memory_requested_mib when guest pages are pinned."
+          },
+          "memory_partial": {
+            "type": "boolean",
+            "description": "True when a memory target was requested but the runtime could not reach it (achieved differs from requested beyond virtio-mem block granularity). Treat as target-not-met."
           }
         }
       },
@@ -2233,8 +2763,7 @@
           "sync_id",
           "vm_id",
           "filesystem_id",
-          "path",
-          "created_at"
+          "path"
         ],
         "additionalProperties": false,
         "properties": {
@@ -2251,52 +2780,11 @@
             "type": "string",
             "description": "VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`."
           },
-          "created_at": {
-            "type": "string"
-          },
-          "vm_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "filesystem_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "source_org_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "region": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "aws-burst",
-              null
-            ]
-          },
-          "live": {
-            "type": "boolean"
-          },
-          "live_error": {
-            "type": "string"
-          },
-          "idempotent": {
-            "type": "boolean"
           }
         }
       },
@@ -2344,23 +2832,17 @@
             "type": "string"
           },
           "path": {
-            "type": "string",
-            "description": "VM-side path. Returns `ErrorResponse` code `conflict` if a sync already exists at this path."
+            "type": "string"
           }
         }
       },
       "SyncReadRequest": {
         "type": "object",
         "required": [
-          "op",
           "path"
         ],
         "additionalProperties": false,
         "properties": {
-          "op": {
-            "type": "string",
-            "const": "read"
-          },
           "path": {
             "type": "string"
           }
@@ -2369,15 +2851,10 @@
       "SyncWriteRequest": {
         "type": "object",
         "required": [
-          "op",
           "writes"
         ],
         "additionalProperties": false,
         "properties": {
-          "op": {
-            "type": "string",
-            "const": "write"
-          },
           "writes": {
             "type": "array",
             "items": {
@@ -2849,6 +3326,38 @@
         "properties": {
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "TunnelRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ports": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Allowed VM ports for this tunnel. Omitted, null, or empty means any port.",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "default": []
+          },
+          "auth_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "open",
+              "authenticated",
+              null
+            ],
+            "description": "`open` allows unauthenticated tunnel requests. `authenticated` returns a one-time bearer `auth_token` and requires it on tunnel requests.",
+            "default": "open"
           }
         }
       }

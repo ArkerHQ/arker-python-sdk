@@ -144,6 +144,7 @@ export type RunOptions = Partial<Omit<RunRequest, "command">> & {
 };
 export type InboundPortRequest = ApiSchema<"InboundPortRequest">;
 export type NetworkRequest = ApiSchema<"NetworkRequest">;
+export type TunnelRequest = ApiSchema<"TunnelRequest">;
 export type Tunnel = ApiSchema<"Tunnel">;
 export type ListTunnelsResponse = ApiSchema<"ListTunnelsResponse">;
 export type DeleteTunnelResponse = ApiSchema<"DeleteTunnelResponse">;
@@ -154,6 +155,9 @@ export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
 export type Run = ApiSchema<"Run">;
 export type RunSummary = ApiSchema<"RunSummary">;
 export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
+export type OrgRunListRow = ApiSchema<"OrgRunListRow">;
+export type ListOrgRunsResponse = ApiSchema<"ListOrgRunsResponse">;
+export type RunListRow = OrgRunListRow;
 export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
 // ── Sessions / resize ──────────────────────────────────────────────
@@ -193,6 +197,12 @@ export interface CompletedRunResult {
   /** System failure explanation when `state` is "failed". Distinct from
    * `stderr` (the program's own error output); null otherwise. */
   failReason?: string | null;
+  /** Requested total memory (MiB), present when the run carried a memory override. */
+  memoryRequestedMib?: number | null;
+  /** Achieved total memory (MiB) after the run's resize. */
+  memoryAchievedMib?: number | null;
+  /** True when the runtime could not reach the requested memory target exactly. */
+  memoryPartial?: boolean;
 }
 
 export interface BackgroundRunResult {
@@ -200,10 +210,96 @@ export interface BackgroundRunResult {
   runId: string;
   /** Lifecycle state — "running". */
   state: string;
-  tunnels: Tunnel[];
 }
 
 export type RunResult = CompletedRunResult | BackgroundRunResult;
+
+export interface ListOrgRunsOptions {
+  since?: number;
+  until?: number;
+  vm?: string;
+  vmIds?: string[];
+  region?: string;
+  provider?: "aws" | "aws-burst";
+  source?: "cf" | "arkerd";
+  search?: string;
+  limit?: number;
+  offset?: number;
+  lite?: boolean;
+  runtime?: string;
+  endpoint?: "run" | "fork" | "sync";
+  actions?: string[];
+  status?: string[];
+  statusMin?: number;
+  statusMax?: number;
+  sort?: "when" | "status" | "path" | "total" | "queue" | "your_code" | "runtime";
+  dir?: "asc" | "desc";
+}
+
+export type PtyInput = string | Uint8Array | ArrayBuffer;
+
+export interface PtyConnectOptions {
+  /** Existing session to attach. Omit to create a new session first. */
+  sessionId?: string;
+  cols?: number;
+  rows?: number;
+  command?: string;
+  /** Defaults to the backend's persistent detach semantics. */
+  persist?: boolean;
+  /**
+   * Auto-cancel the PTY run after this many seconds with no terminal I/O. When
+   * the window elapses the server completes the underlying run and DESTROYS the
+   * shell (not just a detach) — a reconnect to the same `sessionId` starts
+   * fresh. Unset (default) means no auto-cancel.
+   */
+  cancelTtlSecs?: number;
+  /** @internal Test/runtime override for browser-ticket vs Node-header auth. */
+  useTicket?: boolean;
+  /** @internal Test/runtime override for WebSocket construction. */
+  webSocketFactory?: PtyWebSocketFactory;
+}
+
+export interface PtyCloseEvent {
+  code?: number;
+  reason?: string;
+}
+
+export interface PtyConnection {
+  readonly sessionId: string;
+  readonly ready: Promise<void>;
+  onData(listener: (data: Uint8Array) => void): () => void;
+  onClose(listener: (event: PtyCloseEvent) => void): () => void;
+  onError(listener: (error: unknown) => void): () => void;
+  send(data: PtyInput): void;
+  resize(cols: number, rows: number): void;
+  kill(): void;
+  close(code?: number, reason?: string): void;
+}
+
+interface PtyWebSocketFactoryInit {
+  headers?: Record<string, string>;
+}
+
+export type PtyWebSocketFactory = (
+  url: string,
+  init: PtyWebSocketFactoryInit,
+) => PtyWebSocketLike | Promise<PtyWebSocketLike>;
+
+interface PtyWebSocketLike {
+  binaryType?: string;
+  readyState?: number;
+  send(data: string | Uint8Array | ArrayBuffer): void;
+  close(code?: number, reason?: string): void;
+  addEventListener?: (type: string, listener: (event: unknown) => void) => void;
+  removeEventListener?: (type: string, listener: (event: unknown) => void) => void;
+  on?: (type: string, listener: (...args: unknown[]) => void) => void;
+  off?: (type: string, listener: (...args: unknown[]) => void) => void;
+}
+
+interface PtyTicketResponse {
+  ticket: string;
+  expires_in: number;
+}
 
 interface RetryConfig {
   attempts: number;
@@ -357,6 +453,7 @@ export class Arker {
       max_memory_mib: src.max_memory_mib ?? null,
       disk_mib: src.disk_mib ?? null,
       durable: src.durable ?? null,
+      tunnel: src.tunnel ?? null,
     };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
@@ -393,6 +490,34 @@ export class Arker {
       return new VM(this, id, this._baseUrlFor(id), v);
     });
     return { vms, nextCursor: resp.next_cursor ?? null };
+  }
+
+  /**
+   * List run activity visible to the authenticated caller across VMs,
+   * providers, and regions. Admin call — routed through the control plane.
+   */
+  async listRuns(opts: ListOrgRunsOptions = {}): Promise<ListOrgRunsResponse> {
+    return this._request("GET", buildQuery("/v1/runs", {
+      since: opts.since,
+      until: opts.until,
+      vm: opts.vm,
+      vms: opts.vmIds && opts.vmIds.length > 0 ? opts.vmIds.join(",") : undefined,
+      region: opts.region,
+      provider: opts.provider,
+      source: opts.source,
+      search: opts.search,
+      limit: opts.limit,
+      offset: opts.offset,
+      lite: opts.lite === undefined ? undefined : opts.lite,
+      runtime: opts.runtime,
+      endpoint: opts.endpoint,
+      actions: opts.actions && opts.actions.length > 0 ? opts.actions.join(",") : undefined,
+      status: opts.status && opts.status.length > 0 ? opts.status.join(",") : undefined,
+      status_min: opts.statusMin,
+      status_max: opts.statusMax,
+      sort: opts.sort,
+      dir: opts.dir,
+    }), undefined, this.controlBaseUrl);
   }
 
   /** Compute call — goes direct to the backend hosting this VM (no
@@ -505,87 +630,20 @@ export class Arker {
   }
 
   /** @internal */
+  _authHeaders(): Record<string, string> {
+    return { authorization: `Bearer ${this.apiKey}` };
+  }
+
+  /** @internal */
   _baseUrlFor(ref: string): string {
     if (isBurstRef(ref) && this.burstBaseUrl) return this.burstBaseUrl;
     return this.baseUrl;
-  }
-
-  /** @internal — headers for the PTY WebSocket upgrade (Node only). */
-  _authHeaders(): Record<string, string> {
-    return { authorization: `Bearer ${this.apiKey}` };
   }
 }
 
 export interface ListOpts {
   cursor?: string;
   limit?: number;
-}
-
-// ── Interactive PTY (terminal) ─────────────────────────────────────────
-
-export interface CreatePtyOptions {
-  /** Terminal width in columns. Default 80. */
-  cols?: number;
-  /** Terminal height in rows. Default 24. */
-  rows?: number;
-  /**
-   * Executable to launch as the terminal program — a single binary path; the
-   * guest does not shell-split arguments. Defaults to the login shell
-   * (`/bin/bash`). To run a command line, launch a shell and `sendInput` it.
-   */
-  command?: string;
-  /**
-   * Attach to an existing session instead of creating a fresh one. Reopening
-   * a PTY with the same `sessionId` (while `persist` is on) RECONNECTS to the
-   * same running shell and replays recent scrollback to `onData`.
-   */
-  sessionId?: string;
-  /**
-   * E2B-style persistence (default `true`): when the connection drops, the
-   * shell keeps running so it can be reconnected via `sessionId`. Set `false`
-   * for an ephemeral terminal that is torn down on disconnect. The server
-   * reaps idle detached shells after a TTL; `kill()` destroys one immediately.
-   */
-  persist?: boolean;
-  /**
-   * Auto-cancel the PTY run after this many seconds with no terminal I/O.
-   * When the window elapses the server completes the underlying run and
-   * DESTROYS the shell (not just a detach) — a reconnect to the same
-   * `sessionId` starts fresh. Unset (default) means no auto-cancel; the
-   * shell lives until you `kill()` it or `persist` reaping kicks in. A
-   * console typically sets this so an abandoned tab cannot hold a VM warm
-   * indefinitely.
-   */
-  cancelTtlSecs?: number;
-  /** Called with each chunk of raw terminal output (ANSI escapes/colors intact). */
-  onData: (bytes: Uint8Array) => void;
-  /** Called once when the terminal closes, with the WebSocket close code if any. */
-  onExit?: (code?: number) => void;
-}
-
-/** A short-lived ticket for opening a PTY WebSocket from a browser. */
-export interface PtyTicket {
-  /** Opaque token to pass as `?ticket=` on the PTY WebSocket URL. */
-  ticket: string;
-  /** Seconds until the ticket expires. */
-  expiresIn: number;
-}
-
-export interface PtyResizeRequest {
-  cols: number;
-  rows: number;
-}
-
-/** A live interactive pseudo-terminal inside a VM. */
-export interface Pty {
-  /** The session this PTY is bound to. */
-  readonly sessionId: string;
-  /** Send raw input bytes (keystrokes), incl. control chars like Ctrl-C (0x03). */
-  sendInput(data: Uint8Array): Promise<void>;
-  /** Resize the terminal; a running full-screen app reflows. */
-  resize(size: PtyResizeRequest): Promise<void>;
-  /** Kill the shell and close the connection. */
-  kill(): Promise<void>;
 }
 
 export class VM {
@@ -608,6 +666,10 @@ export class VM {
   readonly vcpu_count?: number | null;
   readonly memory_mib?: number | null;
   readonly disk_mib?: number | null;
+  readonly network?: NetworkPolicy;
+  readonly max_vcpus?: number | null;
+  readonly max_memory_mib?: number | null;
+  readonly min_memory_mib?: number | null;
   readonly started_at?: string | null;
   readonly root_source_vm_id?: string | null;
   readonly root_source_vm_name?: string | null;
@@ -825,107 +887,52 @@ export class VM {
     return this._client._request("DELETE", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
   }
 
-  /**
-   * Open an interactive pseudo-terminal in this VM, streamed over a WebSocket.
-   * Raw terminal bytes (ANSI escapes/colors) arrive via `onData`; send
-   * keystrokes with `sendInput`, resize with `resize`, tear it down with
-   * `kill`. isatty() is true inside, so interactive programs work — a shell,
-   * vim, htop, a language REPL, or `claude`.
-   *
-   * Node only (uses the optional `ws` package for the authenticated upgrade).
-   *
-   * ```ts
-   * const pty = await vm.createPty({ cols, rows, onData: (b) => term.write(b) });
-   * await pty.sendInput(new TextEncoder().encode("ls -la\n"));
-   * await pty.resize({ cols, rows });
-   * await pty.kill();
-   * ```
-   */
-  async createPty(options: CreatePtyOptions): Promise<Pty> {
-    const cols = options.cols ?? 80;
-    const rows = options.rows ?? 24;
-    const persist = options.persist ?? true;
-    const sessionId = options.sessionId ?? (await this.createSession()).session_id;
-
-    const wsBase = this.baseUrl.replace(/^http/, "ws"); // https→wss, http→ws
-    const params = new URLSearchParams({
-      cols: String(cols),
-      rows: String(rows),
-      persist: String(persist),
-    });
-    if (options.command) params.set("command", options.command);
-    if (options.cancelTtlSecs && options.cancelTtlSecs > 0) {
-      params.set("cancel_ttl_secs", String(Math.floor(options.cancelTtlSecs)));
-    }
-
-    // Node can set the Authorization header on the WS handshake. Browsers
-    // can't, so mint a short-lived ticket (over HTTP, which CAN auth) and pass
-    // it as `?ticket=` — the server validates it in lieu of the header.
-    let headers = this._client._authHeaders();
-    if (!isNodeRuntime()) {
-      const t = await this.createPtyTicket(sessionId);
-      params.set("ticket", t.ticket);
-      headers = {};
-    }
-
-    const url = `${wsBase}${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty?${params.toString()}`;
-    const socket = await openPtySocket(url, headers);
-    socket.onMessage((data) => options.onData(data));
-    socket.onClose((code) => options.onExit?.(code));
-
-    return {
-      sessionId,
-      sendInput: async (data: Uint8Array) => { socket.send(data); },
-      resize: async ({ cols, rows }: PtyResizeRequest) => {
-        socket.send(JSON.stringify({ type: "resize", cols, rows }));
-      },
-      kill: async () => {
-        // Explicitly destroy the persistent shell (a plain close only detaches
-        // it for later reconnect).
-        socket.send(JSON.stringify({ type: "kill" }));
-        socket.close();
-      },
+  async connectPty(options: PtyConnectOptions = {}): Promise<PtyConnection> {
+    const sessionId = options.sessionId ?? sessionIdFrom(await this.createSession());
+    const useTicket = options.useTicket ?? !isNodeRuntime();
+    const params = {
+      cols: options.cols,
+      rows: options.rows,
+      command: options.command,
+      persist: options.persist,
+      cancel_ttl_secs:
+        options.cancelTtlSecs && options.cancelTtlSecs > 0
+          ? Math.floor(options.cancelTtlSecs)
+          : undefined,
     };
+    let ticket: string | undefined;
+    if (useTicket) {
+      const response = await this._client._request<PtyTicketResponse>(
+        "POST",
+        `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty-ticket`,
+        {},
+        this.baseUrl,
+      );
+      ticket = response.ticket;
+    }
+    const url = buildPtyWebSocketUrl(this.baseUrl, this.id, sessionId, { ...params, ticket });
+    const factory = options.webSocketFactory ?? (useTicket ? browserPtyWebSocketFactory : nodePtyWebSocketFactory);
+    const socket = await factory(url, useTicket ? {} : { headers: this._client._authHeaders() });
+    return new PtyConnectionImpl(sessionId, socket);
   }
 
-  /**
-   * Reconnect to a persistent PTY by `sessionId` — the same running shell, with
-   * recent scrollback replayed to `onData`. Equivalent to `createPty` with the
-   * session id of an earlier (persistent) PTY.
-   */
-  async connectPty(options: CreatePtyOptions & { sessionId: string }): Promise<Pty> {
-    return this.createPty(options);
-  }
-
-  /**
-   * Mint a short-lived (5 min) ticket for opening the PTY WebSocket from a
-   * browser (which cannot set an Authorization header). Open
-   * `wss://…/pty?ticket=<ticket>` with it. `createPty` does this automatically
-   * in a browser; call this directly only for a custom xterm.js integration.
-   */
-  async createPtyTicket(sessionId: string): Promise<PtyTicket> {
-    const r = await this._client._request<{ ticket: string; expires_in: number }>(
-      "POST",
-      `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty-ticket`,
-      undefined,
-      this.baseUrl,
-    );
-    return { ticket: r.ticket, expiresIn: r.expires_in };
-  }
-
-  // ── Tunnels: opened as a side effect of fork/run, addressed by port ─
+  // ── Tunnels: VM-scoped, addressed by recoverable tunnel key ───────
   async listTunnels(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
     return this._client._request("GET", buildQuery(`${vmPath(this.id)}/tunnels`, {
       cursor: opts.cursor, limit: opts.limit, state: opts.state,
     }), undefined, this.baseUrl);
   }
 
-  async getTunnel(port: number): Promise<Tunnel> {
-    return this._client._request("GET", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
+  async createTunnel(request: TunnelRequest = {}): Promise<Tunnel> {
+    return this._client._request("POST", `${vmPath(this.id)}/tunnels`, request, this.baseUrl);
   }
 
-  async deleteTunnel(port: number): Promise<DeleteTunnelResponse> {
-    return this._client._request("DELETE", `${vmPath(this.id)}/tunnels/${port}`, undefined, this.baseUrl);
+  async getTunnel(key: string): Promise<Tunnel> {
+    return this._client._request("GET", `${vmPath(this.id)}/tunnels/${pathSegment(key)}`, undefined, this.baseUrl);
+  }
+
+  async deleteTunnel(key: string): Promise<DeleteTunnelResponse> {
+    return this._client._request("DELETE", `${vmPath(this.id)}/tunnels/${pathSegment(key)}`, undefined, this.baseUrl);
   }
 }
 
@@ -941,115 +948,209 @@ function buildQuery(path: string, params: Record<string, unknown>): string {
   return qs ? `${path}?${qs}` : path;
 }
 
+function buildPtyWebSocketUrl(
+  baseUrl: string,
+  vmId: string,
+  sessionId: string,
+  params: { cols?: number; rows?: number; command?: string; persist?: boolean; cancel_ttl_secs?: number; ticket?: string },
+): string {
+  const url = new URL(`${normalizeBaseUrl(baseUrl)}${vmPath(vmId)}/sessions/${pathSegment(sessionId)}/pty`);
+  if (url.protocol === "https:") url.protocol = "wss:";
+  else if (url.protocol === "http:") url.protocol = "ws:";
+  else throw new Error(`unsupported PTY WebSocket protocol: ${url.protocol}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    url.searchParams.set(key, String(value));
+  }
+  return url.toString();
+}
+
+function sessionIdFrom(session: Session): string {
+  const id = session.session_id ?? (session as { id?: string }).id;
+  if (!id) throw new ArkerError("internal", "createSession response missing session_id", 200);
+  return id;
+}
+
+function isNodeRuntime(): boolean {
+  return typeof process !== "undefined" && Boolean(process.versions?.node);
+}
+
+async function nodePtyWebSocketFactory(url: string, init: PtyWebSocketFactoryInit): Promise<PtyWebSocketLike> {
+  const ws = await import("ws");
+  return new ws.default(url, { headers: init.headers }) as unknown as PtyWebSocketLike;
+}
+
+function browserPtyWebSocketFactory(url: string): PtyWebSocketLike {
+  if (typeof globalThis.WebSocket !== "function") {
+    throw new Error("WebSocket is not available in this runtime");
+  }
+  return new globalThis.WebSocket(url);
+}
+
+class PtyConnectionImpl implements PtyConnection {
+  readonly ready: Promise<void>;
+  private readonly dataListeners = new Set<(data: Uint8Array) => void>();
+  private readonly closeListeners = new Set<(event: PtyCloseEvent) => void>();
+  private readonly errorListeners = new Set<(error: unknown) => void>();
+
+  constructor(readonly sessionId: string, private readonly socket: PtyWebSocketLike) {
+    try {
+      socket.binaryType = "arraybuffer";
+    } catch {
+      // Some WebSocket implementations expose binaryType as read-only.
+    }
+    this.ready = waitForSocketOpen(socket);
+    addSocketListener(socket, "message", (event) => {
+      const data = messageData(event);
+      if (data !== undefined) this.emitData(bytesFromMessageData(data));
+    });
+    addSocketListener(socket, "close", (event) => this.emitClose(closeEvent(event)));
+    addSocketListener(socket, "error", (event) => this.emitError(event));
+  }
+
+  onData(listener: (data: Uint8Array) => void): () => void {
+    this.dataListeners.add(listener);
+    return () => this.dataListeners.delete(listener);
+  }
+
+  onClose(listener: (event: PtyCloseEvent) => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
+  onError(listener: (error: unknown) => void): () => void {
+    this.errorListeners.add(listener);
+    return () => this.errorListeners.delete(listener);
+  }
+
+  send(data: PtyInput): void {
+    this.socket.send(ptyInputBytes(data));
+  }
+
+  resize(cols: number, rows: number): void {
+    this.socket.send(JSON.stringify({ type: "resize", cols: clampPtyDimension(cols), rows: clampPtyDimension(rows) }));
+  }
+
+  kill(): void {
+    this.socket.send(JSON.stringify({ type: "kill" }));
+  }
+
+  close(code?: number, reason?: string): void {
+    this.socket.close(code, reason);
+  }
+
+  private emitData(data: Uint8Array): void {
+    for (const listener of this.dataListeners) listener(data);
+  }
+
+  private emitClose(event: PtyCloseEvent): void {
+    for (const listener of this.closeListeners) listener(event);
+  }
+
+  private emitError(error: unknown): void {
+    for (const listener of this.errorListeners) listener(error);
+  }
+}
+
+function waitForSocketOpen(socket: PtyWebSocketLike): Promise<void> {
+  if (socket.readyState === 1) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let removeOpen: (() => void) | undefined;
+    let removeError: (() => void) | undefined;
+    let removeClose: (() => void) | undefined;
+    const cleanup = () => {
+      removeOpen?.();
+      removeError?.();
+      removeClose?.();
+    };
+    removeOpen = addSocketListener(socket, "open", () => {
+      cleanup();
+      resolve();
+    });
+    removeError = addSocketListener(socket, "error", (event) => {
+      cleanup();
+      reject(event instanceof Error ? event : new Error("PTY WebSocket failed to open"));
+    });
+    removeClose = addSocketListener(socket, "close", (event) => {
+      cleanup();
+      const ev = closeEvent(event);
+      reject(new Error(`PTY WebSocket closed before opening${ev.code ? ` (${ev.code})` : ""}`));
+    });
+  });
+}
+
+function addSocketListener(
+  socket: PtyWebSocketLike,
+  type: string,
+  listener: (event: unknown) => void,
+): () => void {
+  if (socket.addEventListener) {
+    socket.addEventListener(type, listener);
+    return () => socket.removeEventListener?.(type, listener);
+  }
+  if (socket.on) {
+    const nodeListener = (...args: unknown[]) => {
+      if (type === "message") listener({ data: args[0] });
+      else if (type === "close") listener({ code: args[0], reason: args[1] });
+      else listener(args[0]);
+    };
+    socket.on(type, nodeListener);
+    return () => socket.off?.(type, nodeListener);
+  }
+  return () => {};
+}
+
+function messageData(event: unknown): unknown {
+  if (event && typeof event === "object" && "data" in event) {
+    return (event as { data?: unknown }).data;
+  }
+  return undefined;
+}
+
+function closeEvent(event: unknown): PtyCloseEvent {
+  if (!event || typeof event !== "object") return {};
+  const raw = event as { code?: unknown; reason?: unknown };
+  return {
+    code: typeof raw.code === "number" ? raw.code : undefined,
+    reason: typeof raw.reason === "string" ? raw.reason : undefined,
+  };
+}
+
+function bytesFromMessageData(data: unknown): Uint8Array {
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (Array.isArray(data)) {
+    const chunks = data.map(bytesFromMessageData);
+    const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return out;
+  }
+  return new Uint8Array();
+}
+
+function ptyInputBytes(data: PtyInput): Uint8Array | ArrayBuffer {
+  if (typeof data === "string") return new TextEncoder().encode(data);
+  return data;
+}
+
+function clampPtyDimension(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(1000, Math.trunc(value)));
+}
+
 function normalizeBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   if (!trimmed) throw new Error("baseUrl must not be empty");
   return trimmed;
-}
-
-// ── PTY WebSocket transport ────────────────────────────────────────────
-// A tiny adapter over the Node `ws` package and the browser WebSocket so the
-// VM.createPty code path is agnostic to which one is in play.
-
-interface PtySocket {
-  send(data: string | Uint8Array): void;
-  onMessage(cb: (data: Uint8Array) => void): void;
-  onClose(cb: (code?: number) => void): void;
-  close(): void;
-}
-
-function isNodeRuntime(): boolean {
-  const g = globalThis as { process?: { versions?: { node?: string } }; window?: unknown };
-  return !!g.process?.versions?.node && typeof g.window === "undefined";
-}
-
-function toUint8(data: unknown): Uint8Array {
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
-  if (Array.isArray(data)) {
-    // `ws` may deliver a fragmented binary message as Buffer[].
-    const parts = data.map((d) => toUint8(d));
-    const total = parts.reduce((n, p) => n + p.length, 0);
-    const out = new Uint8Array(total);
-    let off = 0;
-    for (const p of parts) { out.set(p, off); off += p.length; }
-    return out;
-  }
-  if (typeof data === "string") return new TextEncoder().encode(data);
-  return new Uint8Array(0);
-}
-
-async function openPtySocket(
-  url: string,
-  headers: Record<string, string>,
-): Promise<PtySocket> {
-  if (isNodeRuntime()) {
-    // Node: the WHATWG WebSocket can't set request headers, so use `ws`,
-    // which can carry the Authorization header on the upgrade.
-    let mod: { default?: unknown; WebSocket?: unknown };
-    try {
-      mod = (await import("ws")) as { default?: unknown; WebSocket?: unknown };
-    } catch {
-      throw new Error(
-        "createPty requires the optional 'ws' package in Node — install it with `npm install ws`",
-      );
-    }
-    const WsCtor = (mod.default ?? mod.WebSocket) as new (
-      url: string,
-      opts: { headers: Record<string, string> },
-    ) => WsNodeLike;
-    const ws = new WsCtor(url, { headers });
-    ws.binaryType = "nodebuffer";
-    await new Promise<void>((resolve, reject) => {
-      ws.once("open", () => resolve());
-      ws.once("error", (err: Error) => reject(err));
-    });
-    return {
-      send: (data) => ws.send(data),
-      onMessage: (cb) => ws.on("message", (data: unknown) => cb(toUint8(data))),
-      onClose: (cb) => ws.on("close", (code: number) => cb(code)),
-      close: () => ws.close(),
-    };
-  }
-
-  // Browser: header auth isn't possible on WebSocket; a token-in-query path
-  // is a future addition (see WEBSOCKET_PTY_PLAN.md). Connect anyway so a
-  // same-origin/cookie-authed page can use it.
-  const WsCtor = (globalThis as { WebSocket: new (url: string) => WsBrowserLike }).WebSocket;
-  const ws = new WsCtor(url);
-  ws.binaryType = "arraybuffer";
-  await new Promise<void>((resolve, reject) => {
-    ws.addEventListener("open", () => resolve(), { once: true });
-    ws.addEventListener("error", () => reject(new Error("PTY WebSocket error")), { once: true });
-  });
-  return {
-    send: (data) => ws.send(data),
-    onMessage: (cb) =>
-      ws.addEventListener("message", (ev: { data: unknown }) => cb(toUint8(ev.data))),
-    onClose: (cb) =>
-      ws.addEventListener("close", (ev: { code?: number }) => cb(ev.code)),
-    close: () => ws.close(),
-  };
-}
-
-interface WsNodeLike {
-  binaryType: string;
-  send(data: string | Uint8Array): void;
-  once(event: "open", cb: () => void): void;
-  once(event: "error", cb: (err: Error) => void): void;
-  on(event: "message", cb: (data: unknown) => void): void;
-  on(event: "close", cb: (code: number) => void): void;
-  close(): void;
-}
-
-interface WsBrowserLike {
-  binaryType: string;
-  send(data: string | Uint8Array): void;
-  addEventListener(event: "open", cb: () => void, opts?: { once: boolean }): void;
-  addEventListener(event: "error", cb: () => void, opts?: { once: boolean }): void;
-  addEventListener(event: "message", cb: (ev: { data: unknown }) => void): void;
-  addEventListener(event: "close", cb: (ev: { code?: number }) => void): void;
-  close(): void;
 }
 
 function normalizeRegion(region: string): string {
@@ -1150,6 +1251,9 @@ function parseRunResponse(payload: unknown): RunResult {
       stderrEncoding,
       exitCode: numberField(body.exit_code, "run response.exit_code"),
       failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
+      memoryRequestedMib: optionalNumberOrNull(body.memory_requested_mib),
+      memoryAchievedMib: optionalNumberOrNull(body.memory_achieved_mib),
+      memoryPartial: typeof body.memory_partial === "boolean" ? body.memory_partial : undefined,
     };
   }
   if (typeof body.run_id === "string") {
@@ -1157,7 +1261,6 @@ function parseRunResponse(payload: unknown): RunResult {
       type: "background",
       runId: body.run_id,
       state: typeof body.state === "string" ? body.state : "running",
-      tunnels: Array.isArray(body.tunnels) ? body.tunnels as Tunnel[] : [],
     };
   }
   throw new ArkerError("internal", "unrecognized run response shape", 200);
@@ -1223,6 +1326,11 @@ function stringValue(value: unknown, context: string): string {
 function numberField(value: unknown, context: string): number {
   if (typeof value !== "number") throw new ArkerError("internal", `${context} must be a number`, 200);
   return value;
+}
+
+function optionalNumberOrNull(value: unknown): number | null | undefined {
+  if (value === null || typeof value === "number") return value;
+  return undefined;
 }
 
 function assertWriteComplete(result: SyncWriteResult, context: string): void {

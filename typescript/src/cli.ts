@@ -13,7 +13,7 @@
  *     arker fork <source>      → arker vms fork --image|--vm-id <source>
  *     arker run  <vm> <cmd>    → arker vms run <vm> <cmd>
  *     arker sync <vm> ...      → arker syncs create/read/write on <vm>
- *     arker shell [vm]         → REPL: fork a fresh VM (or attach to one) and exec
+ *     arker shell [vm]         → native PTY shell over WebSocket
  *
  * Resources: vms, runs, sessions, syncs, tunnels, filesystems (alias `fs`).
  * Each supports `ls`, `get`, `rm`, and the resource-specific verbs.
@@ -25,10 +25,10 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
 import type {
+  PtyConnection,
   VM,
   ResourceKind,
   RunResult,
@@ -80,32 +80,35 @@ interface CliConfig {
 }
 
 function readFileConfig(): CliConfig {
-  const path = join(homedir(), ".arker", "config.json");
-  if (!existsSync(path)) return {};
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as CliConfig;
-  } catch {
-    return {};
+  for (const name of ["config.json", "config"]) {
+    const path = join(homedir(), ".arker", name);
+    if (!existsSync(path)) continue;
+    try {
+      return JSON.parse(readFileSync(path, "utf8")) as CliConfig;
+    } catch {
+      return {};
+    }
   }
+  return {};
 }
 
 function clientFromArgs(args: ParsedArgs): Arker {
   const file = readFileConfig();
+  const explicitBaseUrl =
+    (args.flags["base-url"] as string | undefined) ??
+    process.env.ARKER_BASE_URL;
+  const explicitRegion =
+    (args.flags.region as string | undefined) ??
+    process.env.ARKER_REGION;
   const apiKey =
     (args.flags["api-key"] as string | undefined) ??
     process.env.ARKER_API_KEY ??
     file.apiKey;
-  const baseUrl =
-    (args.flags["base-url"] as string | undefined) ??
-    process.env.ARKER_BASE_URL ??
-    file.baseUrl;
+  const baseUrl = explicitBaseUrl ?? (explicitRegion ? undefined : file.baseUrl);
   const controlBaseUrl =
     (args.flags["control-base-url"] as string | undefined) ??
     process.env.ARKER_CONTROL_BASE_URL;
-  const region =
-    (args.flags.region as string | undefined) ??
-    process.env.ARKER_REGION ??
-    file.region;
+  const region = explicitRegion ?? file.region;
   const provider = (args.flags.provider as "aws" | "aws-burst" | undefined) ??
     (process.env.ARKER_PROVIDER as "aws" | "aws-burst" | undefined);
   if (!apiKey) {
@@ -235,13 +238,47 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
   });
+  if (args.flags.json) {
+    out(runResultForJson(result));
+    if (result.type === "completed") process.exitCode = result.exitCode === 0 ? 0 : result.exitCode;
+    return;
+  }
   if (result.type === "completed") {
+    if (result.memoryPartial) {
+      err(`Memory target partially applied: requested ${formatMib(result.memoryRequestedMib)}, achieved ${formatMib(result.memoryAchievedMib)}.`);
+    }
     process.stdout.write(new TextDecoder().decode(result.stdout));
     if (result.stderr.length) process.stderr.write(new TextDecoder().decode(result.stderr));
     process.exitCode = result.exitCode === 0 ? 0 : result.exitCode;
     return;
   }
-  out({ run_id: result.runId, tunnels: result.tunnels });
+  out({ run_id: result.runId, state: result.state });
+}
+
+function formatMib(value: number | null | undefined): string {
+  return typeof value === "number" ? `${value} MiB` : "unknown";
+}
+
+function runResultForJson(result: RunResult): unknown {
+  switch (result.type) {
+    case "completed":
+      return {
+        type: result.type,
+        runId: result.runId,
+        state: result.state,
+        stdout: new TextDecoder().decode(result.stdout),
+        stdoutEncoding: result.stdoutEncoding,
+        stderr: new TextDecoder().decode(result.stderr),
+        stderrEncoding: result.stderrEncoding,
+        exitCode: result.exitCode,
+        failReason: result.failReason,
+        memoryRequestedMib: result.memoryRequestedMib,
+        memoryAchievedMib: result.memoryAchievedMib,
+        memoryPartial: result.memoryPartial,
+      };
+    case "background":
+      return result;
+  }
 }
 
 async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
@@ -405,27 +442,35 @@ async function cmdTunnels(args: ParsedArgs, client: Arker): Promise<void> {
       });
       if (args.flags.json) return out(res);
       for (const t of res.tunnels) {
-        out(`${t.port}\t${t.state}\t${t.protocol}\t${t.url ?? "-"}`);
+        out(`${t.tunnel_key ?? "-"}\t${t.port}\t${t.state}\t${t.protocol}\t${t.url ?? "-"}`);
       }
       if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
       return;
     }
+    case "create": {
+      if (!vm) die("usage: arker tunnels create <vm_id> [--ports 80,8080] [--auth-mode open|authenticated]");
+      const tunnel = await client.vm(vm).createTunnel({
+        ports: parsePorts(args.flags.ports),
+        auth_mode: args.flags["auth-mode"] as "open" | "authenticated" | undefined,
+      });
+      return out(tunnel);
+    }
     case "get": {
-      if (!vm) die("usage: arker tunnels get <vm_id> <port>");
-      const port = Number(rest[1] ?? die("missing port"));
-      out(await client.vm(vm).getTunnel(port));
+      if (!vm) die("usage: arker tunnels get <vm_id> <key>");
+      const key = rest[1] ?? die("missing key");
+      out(await client.vm(vm).getTunnel(key));
       return;
     }
     case "rm":
     case "delete": {
-      if (!vm) die("usage: arker tunnels rm <vm_id> <port>");
-      const port = Number(rest[1] ?? die("missing port"));
-      const r = await client.vm(vm).deleteTunnel(port);
-      out(r.deleted ? `deleted tunnel ${port}` : "delete failed");
+      if (!vm) die("usage: arker tunnels rm <vm_id> <key>");
+      const key = rest[1] ?? die("missing key");
+      const r = await client.vm(vm).deleteTunnel(key);
+      out(r.deleted ? `deleted tunnel ${key}` : "delete failed");
       return;
     }
     default:
-      die(`usage: arker tunnels <ls|get|rm> ...`);
+      die(`usage: arker tunnels <ls|create|get|rm> ...`);
   }
 }
 
@@ -474,22 +519,14 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
 // ── Shell ──────────────────────────────────────────────────────────
 
 async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
-  // Interactive terminal: when attached to a real TTY (and not given a
-  // one-shot command or --exit), drop into a full PTY over WebSocket — vim,
-  // htop, a REPL and `claude` all work. For non-TTY / scripted use
-  // (`arker shell <vm> "cmd" --exit`, pipelines) fall back to the line-based
-  // run REPL below.
-  const _vmId = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
-  const _preload = args.positional.slice(_vmId ? 1 : 0).join(" ").trim();
-  if (process.stdin.isTTY && !_preload && args.flags.exit !== true) {
-    return await cmdPty(args, client);
-  }
-
-  // Attach to an explicit VM by id (--vm-id or a positional vm id),
-  // otherwise fork a fresh one from a source name in the Arker org
-  // (default: ubuntu-full).
+  // Attach to an explicit VM by id (--vm-id or a positional vm id), otherwise
+  // fork a fresh one from a source name in the Arker org (default: ubuntu-full).
   let computer: VM;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
+  const explicitSessionId = args.flags["session-id"] as string | undefined;
+  if (!vmIdArg && explicitSessionId) {
+    die("usage: arker shell <vm_id> --session-id <session_id>");
+  }
   if (vmIdArg) {
     computer = await client.vm(vmIdArg).refresh();
   } else {
@@ -499,224 +536,129 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
       sourceVmName,
       sourceOrgId: ARKER_ORG_ID,
     });
+    err(`forked ${computer.id}`);
   }
-  const header = computer;
 
-  // Persistent session: keeps cd / export / variables across lines. Without
-  // this every `computer.run` lands in a fresh PTY and cd is lost.
-  const session = await computer.createSession({
-    cwd: args.flags.cwd as string | undefined,
-  });
-  const sessionId = session.session_id;
-
-  const timeout = numFlag(args, "timeout");
-  const preload = args.positional.slice(vmIdArg ? 1 : 0).join(" ").trim();
-  const exitAfter = args.flags.exit === true;
-
-  // Print the new VM as a get-style response, then drop into a minimal
-  // `>` REPL. No prefix, no chrome.
-  output.write(JSON.stringify(header, null, 2) + "\n");
-
-  let inFlight = false;
-  let exitCode = 0;
-  try {
-    if (preload && preload !== "exit") {
-      const step = await runShellLine(computer, sessionId, preload, timeout);
-      if (step.kind === "fatal") {
-        err(`shell ended: ${step.message}`);
-        return;
-      }
-      if (step.kind === "recoverable") {
-        err(`error: ${step.message}`);
-        exitCode = 1;
-      } else {
-        exitCode = step.exitCode;
-      }
-    }
-    if (exitAfter || preload === "exit") {
-      process.exit(exitCode);
-    }
-
-    const rl = readline.createInterface({ input, output, prompt: "> " });
-
-    rl.on("SIGINT", () => {
-      // The v1 run API has no cancel; surface the keypress and let the
-      // current command finish (or hit --timeout).
-      if (inFlight) {
-        process.stderr.write("^C\n");
-        return;
-      }
-      process.stdout.write("^C\n");
-      rl.write(null, { ctrl: true, name: "u" });
-      rl.prompt();
+  let sessionId = explicitSessionId;
+  if (!sessionId) {
+    const session = await computer.createSession({
+      cwd: args.flags.cwd as string | undefined,
     });
-
-    rl.prompt();
-    for await (const line of rl) {
-      const cmd = line.trim();
-      if (!cmd) {
-        rl.prompt();
-        continue;
-      }
-      if (cmd === "exit" || cmd === "quit") break;
-      inFlight = true;
-      const step = await runShellLine(computer, sessionId, cmd, timeout);
-      inFlight = false;
-      if (step.kind === "fatal") {
-        err(`shell ended: ${step.message}`);
-        exitCode = 1;
-        break;
-      }
-      if (step.kind === "recoverable") {
-        err(`error: ${step.message}`);
-      }
-      rl.prompt();
-    }
-    rl.close();
-  } finally {
-    // Best-effort cleanup; don't surface noise if the VM is already gone.
-    await computer.deleteSession(sessionId).catch(() => {});
+    sessionId = session.session_id ?? (session as { id?: string }).id;
+    if (!sessionId) die("createSession response missing session_id");
   }
+
+  const persist = args.flags["no-persist"] === true ? false : boolFlag(args, "persist");
+  const colsFlag = numFlag(args, "cols");
+  const rowsFlag = numFlag(args, "rows");
+  const cols = colsFlag ?? output.columns ?? 80;
+  const rows = rowsFlag ?? output.rows ?? 24;
+  // Optional auto-cancel: the server destroys the shell after this many seconds
+  // with no terminal I/O — `arker shell <vm> --cancel-ttl 600`.
+  const cancelTtlSecs = numFlag(args, "cancel-ttl");
+  const pty = await computer.connectPty({
+    sessionId,
+    cols,
+    rows,
+    command: args.flags.command as string | undefined,
+    persist,
+    cancelTtlSecs,
+  });
+
+  err(`connected ${computer.id} session ${sessionId}`);
+  const exitCode = await bridgePty(pty, {
+    fallbackCols: cols,
+    fallbackRows: rows,
+    autoResize: colsFlag === undefined && rowsFlag === undefined && Boolean(output.isTTY),
+  });
   if (exitCode !== 0) process.exit(exitCode);
 }
 
-type ShellStep =
-  | { kind: "ok"; exitCode: number }
-  | { kind: "fatal"; message: string }
-  | { kind: "recoverable"; message: string };
-
-async function runShellLine(
-  computer: VM,
-  sessionId: string,
-  cmd: string,
-  timeout: number | undefined,
-): Promise<ShellStep> {
-  try {
-    const result = await computer.run(cmd, { session_id: sessionId, timeout });
-    if (result.type === "completed") {
-      if (result.stdout.length) process.stdout.write(new TextDecoder().decode(result.stdout));
-      if (result.stderr.length) process.stderr.write(new TextDecoder().decode(result.stderr));
-      const tail =
-        result.stderr.length > 0
-          ? result.stderr[result.stderr.length - 1]
-          : result.stdout.length > 0
-            ? result.stdout[result.stdout.length - 1]
-            : undefined;
-      if (tail !== undefined && tail !== 0x0a) process.stdout.write("\n");
-      return { kind: "ok", exitCode: result.exitCode };
-    }
-    out({ run_id: result.runId });
-    return { kind: "ok", exitCode: 0 };
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    const kind = classifyShellError(message, computer.id);
-    return { kind, message };
-  }
+interface BridgePtyOptions {
+  fallbackCols: number;
+  fallbackRows: number;
+  autoResize: boolean;
 }
 
-function classifyShellError(message: string, vmId: string): "fatal" | "recoverable" {
-  const msg = message.toLowerCase();
-  if (msg.includes("unauthor") || msg.includes("forbidden") || msg.includes("invalid api key")) {
-    return "fatal";
-  }
-  if ((msg.includes("not_found") || msg.includes("not found")) && msg.includes(vmId.toLowerCase())) {
-    return "fatal";
-  }
-  return "recoverable";
-}
+function bridgePty(pty: PtyConnection, options: BridgePtyOptions): Promise<number> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let rawEnabled = false;
+    const wasRaw = Boolean(input.isTTY && input.isRaw);
+    const restoreTerminal = () => {
+      if (rawEnabled && input.isTTY && typeof input.setRawMode === "function") {
+        input.setRawMode(wasRaw);
+      }
+      rawEnabled = false;
+    };
+    const finish = (code: number) => {
+      if (settled) return;
+      settled = true;
+      restoreTerminal();
+      input.off("data", onInput);
+      input.off("end", onInputEnd);
+      process.off("SIGWINCH", onResize);
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+      process.off("SIGHUP", onSighup);
+      process.off("exit", restoreTerminal);
+      offData();
+      offClose();
+      offError();
+      resolve(code);
+    };
+    const onInput = (chunk: Buffer) => {
+      pty.send(chunk);
+    };
+    const onInputEnd = () => {
+      pty.close();
+    };
+    const onResize = () => {
+      pty.resize(output.columns ?? options.fallbackCols, output.rows ?? options.fallbackRows);
+    };
+    const onSigint = () => {
+      pty.send(new Uint8Array([0x03]));
+    };
+    const onSigterm = () => {
+      pty.close();
+      finish(143);
+    };
+    const onSighup = () => {
+      pty.close();
+      finish(129);
+    };
+    const offData = pty.onData((data) => {
+      output.write(data);
+    });
+    const offClose = pty.onClose(() => finish(0));
+    const offError = pty.onError((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      err(`pty error: ${message}`);
+    });
 
-// ── PTY (interactive terminal over WebSocket) ───────────────────────
-
-async function cmdPty(args: ParsedArgs, client: Arker): Promise<void> {
-  // Attach to an explicit VM by id, otherwise fork a fresh one (default
-  // ubuntu-full) in the Arker org.
-  let computer: VM;
-  const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
-  if (vmIdArg) {
-    computer = await client.vm(vmIdArg).refresh();
-  } else {
-    const sourceVmName = (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-full";
-    computer = await client.fork({ sourceVmName, sourceOrgId: ARKER_ORG_ID });
-    err(`forked ${computer.id} from ${sourceVmName}`);
-  }
-  // Optional: launch a specific program (a single binary path) instead of the
-  // login shell, e.g. `arker pty <vm> --command /usr/bin/htop`.
-  const command = args.flags.command as string | undefined;
-  await runInteractivePty(computer, args, command);
-}
-
-/**
- * Bridge the local terminal to a VM PTY over a WebSocket: stdin (raw) →
- * pty.sendInput, pty output → stdout, SIGWINCH → pty.resize. Exits when the
- * remote shell closes. In raw mode every keystroke (incl. Ctrl-C = 0x03,
- * arrows, escape sequences) is forwarded verbatim; the guest tty raises
- * SIGINT inside the VM, exactly like a local terminal.
- */
-async function runInteractivePty(
-  computer: VM,
-  args: ParsedArgs,
-  command: string | undefined,
-): Promise<void> {
-  const stdin = process.stdin;
-  const stdout = process.stdout;
-  const isTty = !!stdin.isTTY;
-  let closed = false;
-
-  const cols = stdout.columns ?? 80;
-  const rows = stdout.rows ?? 24;
-  // Optional auto-cancel: tear the run (and shell) down after this many seconds
-  // with no terminal I/O — `arker pty <vm> --cancel-ttl 600`.
-  const cancelTtlRaw = args.flags["cancel-ttl"];
-  const cancelTtlSecs =
-    cancelTtlRaw === undefined ? undefined : Number(cancelTtlRaw);
-  if (cancelTtlSecs !== undefined && (!Number.isFinite(cancelTtlSecs) || cancelTtlSecs <= 0)) {
-    throw new Error("--cancel-ttl must be a positive number of seconds");
-  }
-
-  const session = await computer.createSession({
-    cwd: args.flags.cwd as string | undefined,
-    pty: true,
-    cols,
-    rows,
-    command,
+    process.once("exit", restoreTerminal);
+    pty.ready
+      .then(() => {
+        if (settled) return;
+        if (input.isTTY && typeof input.setRawMode === "function") {
+          input.setRawMode(true);
+          rawEnabled = true;
+        }
+        input.resume();
+        input.on("data", onInput);
+        input.on("end", onInputEnd);
+        if (options.autoResize) process.on("SIGWINCH", onResize);
+        process.on("SIGINT", onSigint);
+        process.on("SIGTERM", onSigterm);
+        process.on("SIGHUP", onSighup);
+        if (options.autoResize) onResize();
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        err(`pty failed to open: ${message}`);
+        finish(1);
+      });
   });
-
-  const restore = () => {
-    if (isTty) {
-      try { stdin.setRawMode(false); } catch { /* not a tty */ }
-    }
-    stdin.pause();
-  };
-
-  const pty = await computer.createPty({
-    cols,
-    rows,
-    sessionId: session.session_id,
-    command,
-    cancelTtlSecs,
-    onData: (bytes) => { stdout.write(bytes); },
-    onExit: () => {
-      if (closed) return;
-      closed = true;
-      restore();
-      process.exit(0);
-    },
-  });
-
-  if (isTty) {
-    try { stdin.setRawMode(true); } catch { /* not a tty */ }
-  }
-  stdin.resume();
-
-  stdin.on("data", (chunk: Buffer) => {
-    if (!closed) void pty.sendInput(new Uint8Array(chunk));
-  });
-  stdout.on("resize", () => {
-    if (!closed) void pty.resize({ cols: stdout.columns ?? 80, rows: stdout.rows ?? 24 });
-  });
-
-  // Park until the remote shell closes (onExit calls process.exit).
-  await new Promise<void>(() => {});
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -733,6 +675,11 @@ function boolFlag(args: ParsedArgs, name: string): boolean | undefined {
   if (typeof v === "boolean") return v;
   if (v === "false" || v === "0") return false;
   return true;
+}
+
+function parsePorts(value: string | boolean | undefined): number[] | undefined {
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  return value.split(",").map((part) => Number(part.trim())).filter((port) => Number.isFinite(port));
 }
 
 async function readAllStdin(): Promise<Uint8Array> {
@@ -757,8 +704,7 @@ function usage(): never {
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
       "  arker run <vm> <command>                       run a command",
-      "  arker pty [vm_id] [--command P] [--cancel-ttl S]  interactive PTY over WebSocket (vim/htop/REPL/claude)",
-      "  arker shell [vm_id]                            interactive PTY when on a TTY; line REPL when scripted",
+      "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "",
       "Resources:",
       "  arker vms         <ls|get|rm|fork|run> ...",
@@ -775,6 +721,12 @@ function usage(): never {
       "  --base-url <url>           override compute URL (env ARKER_BASE_URL)",
       "  --control-base-url <url>   override CF Worker URL (env ARKER_CONTROL_BASE_URL)",
       "  --json                     emit JSON instead of tabular output",
+      "",
+      "Shell flags:",
+      "  --session-id <id>          reconnect to an existing PTY session",
+      "  --command <path>           shell executable path (default: /bin/bash)",
+      "  --cols <n> --rows <n>      initial terminal size",
+      "  --no-persist               close the remote PTY process on disconnect",
       "",
       `Arker org id: ${ARKER_ORG_ID}`,
     ].join("\n"),
@@ -810,8 +762,6 @@ async function main(): Promise<void> {
         return await cmdSyncs(args, client);
       case "shell":
         return await cmdShell(args, client);
-      case "pty":
-        return await cmdPty(args, client);
       // Resources.
       case "vms":
         return await cmdVms(args, client);

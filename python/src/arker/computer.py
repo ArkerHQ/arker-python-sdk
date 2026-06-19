@@ -12,12 +12,11 @@ import json
 import os
 import re
 import secrets
-import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
+from typing import Any
 
 CHUNK_SIZE = 4 * 1024 * 1024
 
@@ -78,6 +77,12 @@ class Session:
 
 
 @dataclasses.dataclass(frozen=True)
+class TunnelRequest:
+    ports: list[int] | None = None
+    auth_mode: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
 class Tunnel:
     vm_id: str
     port: int
@@ -88,6 +93,9 @@ class Tunnel:
     url: str | None = None
     message: str | None = None
     started_at: str | None = None
+    tunnel_key: str | None = None
+    auth_mode: str | None = None
+    auth_token: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -107,6 +115,10 @@ class Vm:
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
+    network: dict[str, Any] | None = None
+    max_vcpus: int | None = None
+    max_memory_mib: int | None = None
+    min_memory_mib: int | None = None
     worker_id: str | None = None
     tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
 
@@ -161,6 +173,9 @@ class CompletedRunResult:
     # System failure explanation when state is "failed"; distinct from
     # stderr (the program's own error output). None otherwise.
     fail_reason: str | None = None
+    memory_requested_mib: int | None = None
+    memory_achieved_mib: int | None = None
+    memory_partial: bool = False
     type: str = "completed"
 
 
@@ -168,7 +183,6 @@ class CompletedRunResult:
 class BackgroundRunResult:
     run_id: str
     state: str = "running"
-    tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
     type: str = "background"
 
 
@@ -184,7 +198,6 @@ class Run:
     stdout_encoding: str
     stderr: bytes
     stderr_encoding: str
-    tunnels: list[Tunnel]
     exit_code: int | None = None
     # System failure explanation when state is "failed"; distinct from
     # stderr (the program's own error output). None otherwise.
@@ -216,6 +229,51 @@ class ListRunsResponse:
 
 
 @dataclasses.dataclass(frozen=True)
+class OrgRunListRow:
+    source: str
+    t_ms: int
+    request_id: str
+    run_id: str
+    vm_id: str
+    session_id: str
+    region: str
+    status: int
+    total_ms: float
+    queue_ms: float
+    lambda_call_ms: float
+    lambda_duration_ms: int
+    executor_duration_ms: int
+    executor_kind: str
+    executor_cpu_ms: int
+    executor_mem_mb: int
+    lambda_cpu_ms: int
+    lambda_mem_mb: int
+    vm_vcpus: int
+    vm_memory_mib: int
+    path: str
+    method: str
+    command: str
+    source_vm_id: str
+    exit_code: int | None
+    endpoint: str
+    api_key_prefix: str
+    body_bytes_in: int
+    body_bytes_out: int
+    body_in: str
+    body_out: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ListOrgRunsResponse:
+    since: int
+    until: int
+    limit: int
+    offset: int
+    lite: bool
+    rows: list[OrgRunListRow]
+
+
+@dataclasses.dataclass(frozen=True)
 class CancelRunResponse:
     cancelled: bool
 
@@ -240,6 +298,9 @@ class DeleteTunnelResponse:
 @dataclasses.dataclass(frozen=True)
 class ResizeResponse:
     resized: bool
+    memory_requested_mib: int | None = None
+    memory_achieved_mib: int | None = None
+    memory_partial: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -380,6 +441,7 @@ class Arker:
         max_memory_mib: int | None = None,
         disk_mib: int | None = None,
         durable: bool | None = None,
+        tunnel: TunnelRequest | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -430,6 +492,7 @@ class Arker:
             "max_memory_mib": max_memory_mib,
             "disk_mib": disk_mib,
             "durable": durable,
+            "tunnel": _tunnel_request_payload(tunnel),
         }
         burst_ref = source_vm_name or source_vm_id
         use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
@@ -470,6 +533,54 @@ class Arker:
             info = _vm_info(item)
             vms.append(VM(self, info.vm_id, self._base_url_for(info.vm_id), info))
         return ListVmsResponse(vms=vms, next_cursor=_optional_str(payload.get("next_cursor")))
+
+    def list_runs(
+        self,
+        *,
+        since: int | None = None,
+        until: int | None = None,
+        vm: str | None = None,
+        vm_ids: list[str] | None = None,
+        region: str | None = None,
+        provider: str | None = None,
+        source: str | None = None,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        lite: bool | None = None,
+        runtime: str | None = None,
+        endpoint: str | None = None,
+        actions: list[str] | None = None,
+        status: list[str] | None = None,
+        status_min: int | None = None,
+        status_max: int | None = None,
+        sort: str | None = None,
+        dir: str | None = None,
+    ) -> ListOrgRunsResponse:
+        """List run activity across VMs through the control plane."""
+        path = _build_query("/v1/runs", {
+            "since": since,
+            "until": until,
+            "vm": vm,
+            "vms": ",".join(vm_ids) if vm_ids else None,
+            "region": region,
+            "provider": provider,
+            "source": source,
+            "search": search,
+            "limit": limit,
+            "offset": offset,
+            "lite": lite,
+            "runtime": runtime,
+            "endpoint": endpoint,
+            "actions": ",".join(actions) if actions else None,
+            "status": ",".join(status) if status else None,
+            "status_min": status_min,
+            "status_max": status_max,
+            "sort": sort,
+            "dir": dir,
+        })
+        payload = self._request("GET", path, base_url=self._control_base_url)
+        return _org_runs_response(payload)
 
     def get_vm(self, vm_id: str) -> VM:
         info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
@@ -580,6 +691,10 @@ class VM:
     vcpu_count: int | None
     memory_mib: int | None
     disk_mib: int | None
+    network: dict[str, Any] | None
+    max_vcpus: int | None
+    max_memory_mib: int | None
+    min_memory_mib: int | None
     started_at: str | None
     sessions: list[Session] | None
     tunnels: list[Tunnel] | None
@@ -654,7 +769,12 @@ class VM:
     ) -> ResizeResponse:
         body = {"vcpu_count": vcpu_count, "memory_mib": memory_mib, "disk_mib": disk_mib}
         payload = self._client._request("POST", f"{_vm_path(self.id)}/resize", body, base_url=self.base_url)
-        return ResizeResponse(resized=bool(payload.get("resized")))
+        return ResizeResponse(
+            resized=bool(payload.get("resized")),
+            memory_requested_mib=_optional_int(payload.get("memory_requested_mib")),
+            memory_achieved_mib=_optional_int(payload.get("memory_achieved_mib")),
+            memory_partial=_optional_bool(payload.get("memory_partial")),
+        )
 
     def delete(self) -> DeleteVmResponse:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
@@ -815,84 +935,7 @@ class VM:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
         return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
 
-    def create_pty(
-        self,
-        *,
-        on_data: Callable[[bytes], None],
-        cols: int = 80,
-        rows: int = 24,
-        command: str | None = None,
-        session_id: str | None = None,
-        persist: bool = True,
-        on_exit: Callable[[], None] | None = None,
-    ) -> "Pty":
-        """Open an interactive pseudo-terminal in this VM over a WebSocket.
-
-        Raw terminal bytes (ANSI escapes/colors) are delivered to ``on_data``
-        from a background reader thread. Send keystrokes with
-        ``pty.send_input(b"...")`` (control chars like Ctrl-C = b"\\x03" work),
-        resize with ``pty.resize(cols, rows)``, tear down with ``pty.kill()``.
-        ``isatty()`` is true inside, so a shell, vim, htop, a REPL or ``claude``
-        all work.
-
-        With ``persist=True`` (the default), a disconnect keeps the shell
-        running so you can reconnect to the SAME shell — call ``connect_pty``
-        (or ``create_pty``) again with the same ``session_id`` and recent
-        scrollback is replayed. ``pty.kill()`` destroys it immediately; a plain
-        ``close()`` only detaches. Set ``persist=False`` for an ephemeral
-        terminal torn down on disconnect.
-
-        ``command`` is a single executable path (no shell-splitting); defaults
-        to the login shell. Requires the optional ``websocket-client`` package
-        (``pip install 'arker[pty]'``).
-        """
-        try:
-            from websocket import create_connection  # type: ignore[import-untyped]
-        except ImportError as exc:  # pragma: no cover - import guard
-            raise ArkerError(
-                "dependency",
-                "create_pty requires the optional 'websocket-client' package "
-                "(pip install 'arker[pty]')",
-                0,
-            ) from exc
-
-        sid = session_id or self.create_session().session_id
-        ws_base = re.sub(r"^http", "ws", self.base_url)  # https→wss, http→ws
-        params: dict[str, Any] = {"cols": cols, "rows": rows, "persist": str(persist).lower()}
-        if command:
-            params["command"] = command
-        url = f"{ws_base}{_vm_path(self.id)}/sessions/{_segment(sid)}/pty?{urllib.parse.urlencode(params)}"
-        ws = create_connection(
-            url,
-            header=[f"Authorization: Bearer {self._client._api_key}"],
-        )
-        return Pty(ws, sid, on_data, on_exit)
-
-    def connect_pty(
-        self,
-        *,
-        session_id: str,
-        on_data: Callable[[bytes], None],
-        cols: int = 80,
-        rows: int = 24,
-        on_exit: Callable[[], None] | None = None,
-    ) -> "Pty":
-        """Reconnect to a persistent PTY by ``session_id`` (replays scrollback)."""
-        return self.create_pty(
-            on_data=on_data, cols=cols, rows=rows, session_id=session_id, on_exit=on_exit,
-        )
-
-    def create_pty_ticket(self, session_id: str) -> dict[str, Any]:
-        """Mint a short-lived (5 min) ticket for opening the PTY WebSocket from a
-        browser, which cannot send an Authorization header. Open
-        ``wss://.../pty?ticket=<ticket>`` with it. Returns ``{ticket, expires_in}``."""
-        return self._client._request(
-            "POST",
-            f"{_vm_path(self.id)}/sessions/{_segment(session_id)}/pty-ticket",
-            base_url=self.base_url,
-        )
-
-    # ── Tunnels: opened as a side effect of fork/run, addressed by port ─
+    # ── Tunnels: VM-scoped, addressed by recoverable tunnel key ─
     def list_tunnels(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListTunnelsResponse:
         path = _build_query(f"{_vm_path(self.id)}/tunnels", {"cursor": cursor, "limit": limit, "state": state})
         payload = self._client._request("GET", path, base_url=self.base_url)
@@ -901,90 +944,22 @@ class VM:
             next_cursor=_optional_str(payload.get("next_cursor")),
         )
 
-    def get_tunnel(self, port: int) -> Tunnel:
-        payload = self._client._request("GET", f"{_vm_path(self.id)}/tunnels/{port}", base_url=self.base_url)
+    def create_tunnel(self, request: TunnelRequest | dict[str, Any] | None = None, *, ports: list[int] | None = None, auth_mode: str | None = None) -> Tunnel:
+        payload = self._client._request(
+            "POST",
+            f"{_vm_path(self.id)}/tunnels",
+            _tunnel_request_payload(request) or _tunnel_request_payload(TunnelRequest(ports=ports, auth_mode=auth_mode)) or {},
+            base_url=self.base_url,
+        )
         return _tunnel(payload)
 
-    def delete_tunnel(self, port: int) -> DeleteTunnelResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{port}", base_url=self.base_url)
+    def get_tunnel(self, key: str) -> Tunnel:
+        payload = self._client._request("GET", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
+        return _tunnel(payload)
+
+    def delete_tunnel(self, key: str) -> DeleteTunnelResponse:
+        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
         return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
-
-
-class Pty:
-    """A live interactive pseudo-terminal inside a VM (see ``VM.create_pty``).
-
-    Output is delivered to the ``on_data`` callback from a daemon reader
-    thread. Sends are serialized with a lock so input/resize/kill are safe to
-    call from another thread while the reader runs.
-    """
-
-    def __init__(
-        self,
-        ws: Any,
-        session_id: str,
-        on_data: Callable[[bytes], None],
-        on_exit: Callable[[], None] | None,
-    ) -> None:
-        self.session_id = session_id
-        self._ws = ws
-        self._on_data = on_data
-        self._on_exit = on_exit
-        self._send_lock = threading.Lock()
-        self._closed = False
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._reader.start()
-
-    def _read_loop(self) -> None:
-        from websocket import ABNF  # type: ignore[import-untyped]
-
-        try:
-            while not self._closed:
-                opcode, data = self._ws.recv_data()
-                if opcode in (ABNF.OPCODE_BINARY, ABNF.OPCODE_TEXT):
-                    if data:
-                        self._on_data(bytes(data))
-                elif opcode == ABNF.OPCODE_CLOSE:
-                    break
-        except Exception:
-            pass
-        finally:
-            self._closed = True
-            if self._on_exit is not None:
-                self._on_exit()
-
-    def send_input(self, data: bytes) -> None:
-        """Send raw input bytes (keystrokes), incl. control chars like b"\\x03"."""
-        with self._send_lock:
-            if not self._closed:
-                self._ws.send_binary(data)
-
-    def resize(self, cols: int, rows: int) -> None:
-        """Resize the terminal; a running full-screen app reflows."""
-        with self._send_lock:
-            if not self._closed:
-                self._ws.send(json.dumps({"type": "resize", "cols": cols, "rows": rows}))
-
-    def kill(self) -> None:
-        """Kill the remote shell and close the connection."""
-        with self._send_lock:
-            if not self._closed:
-                try:
-                    self._ws.send(json.dumps({"type": "kill"}))
-                except Exception:
-                    pass
-        self.close()
-
-    def close(self) -> None:
-        """Close the WebSocket without sending a kill control message."""
-        self._closed = True
-        try:
-            self._ws.close()
-        except Exception:
-            pass
-
-    def wait(self) -> None:
-        """Block until the terminal closes (the reader thread exits)."""
-        self._reader.join()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -1095,6 +1070,16 @@ def _drop_none(value: Any) -> Any:
     return value
 
 
+def _tunnel_request_payload(value: TunnelRequest | dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, TunnelRequest):
+        return _drop_none({"ports": value.ports, "auth_mode": value.auth_mode})
+    if isinstance(value, dict):
+        return _drop_none(value)
+    raise ArkerError("bad_request", "tunnel request must be a TunnelRequest or dict", 400)
+
+
 def _parse_json(text: str) -> Any:
     if not text:
         return {}
@@ -1177,6 +1162,9 @@ def _tunnel(payload: dict[str, Any]) -> Tunnel:
         url=_optional_str(payload.get("url")),
         message=_optional_str(payload.get("message")),
         started_at=_optional_str(payload.get("started_at")),
+        tunnel_key=_optional_str(payload.get("tunnel_key")),
+        auth_mode=_optional_str(payload.get("auth_mode")),
+        auth_token=_optional_str(payload.get("auth_token")),
     )
 
 
@@ -1217,6 +1205,10 @@ def _vm_info(payload: dict[str, Any]) -> Vm:
         vcpu_count=_optional_int(payload.get("vcpu_count")),
         memory_mib=_optional_int(payload.get("memory_mib")),
         disk_mib=_optional_int(payload.get("disk_mib")),
+        network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
+        max_vcpus=_optional_int(payload.get("max_vcpus")),
+        max_memory_mib=_optional_int(payload.get("max_memory_mib")),
+        min_memory_mib=_optional_int(payload.get("min_memory_mib")),
         worker_id=_optional_str(payload.get("worker_id")),
         tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
     )
@@ -1233,13 +1225,15 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
             run_id=str(payload["run_id"]) if isinstance(payload.get("run_id"), str) else None,
             state=str(payload["state"]) if isinstance(payload.get("state"), str) else "completed",
             fail_reason=_optional_str(payload.get("fail_reason")),
+            memory_requested_mib=_optional_int(payload.get("memory_requested_mib")),
+            memory_achieved_mib=_optional_int(payload.get("memory_achieved_mib")),
+            memory_partial=_optional_bool(payload.get("memory_partial")),
         )
 
     if isinstance(payload.get("run_id"), str):
         return BackgroundRunResult(
             run_id=str(payload["run_id"]),
             state=str(payload["state"]) if isinstance(payload.get("state"), str) else "running",
-            tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
         )
 
     raise ArkerError("internal", "unrecognized run response shape", 200)
@@ -1255,7 +1249,6 @@ def _run_status_response(payload: dict[str, Any]) -> Run:
         stdout_encoding=str(payload["stdout_encoding"]),
         stderr=_decode_bytes(str(payload["stderr"]), str(payload["stderr_encoding"])),
         stderr_encoding=str(payload["stderr_encoding"]),
-        tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
         exit_code=_optional_int(payload.get("exit_code")),
         fail_reason=_optional_str(payload.get("fail_reason")),
         session_id=_optional_str(payload.get("session_id")),
@@ -1278,12 +1271,63 @@ def _run_summary(payload: dict[str, Any]) -> RunSummary:
     )
 
 
+def _org_runs_response(payload: dict[str, Any]) -> ListOrgRunsResponse:
+    return ListOrgRunsResponse(
+        since=int(payload["since"]),
+        until=int(payload["until"]),
+        limit=int(payload["limit"]),
+        offset=int(payload["offset"]),
+        lite=bool(payload["lite"]),
+        rows=[_org_run_list_row(item) for item in payload.get("rows", []) if isinstance(item, dict)],
+    )
+
+
+def _org_run_list_row(payload: dict[str, Any]) -> OrgRunListRow:
+    return OrgRunListRow(
+        source=str(payload["source"]),
+        t_ms=int(payload["t_ms"]),
+        request_id=str(payload["request_id"]),
+        run_id=str(payload["run_id"]),
+        vm_id=str(payload["vm_id"]),
+        session_id=str(payload["session_id"]),
+        region=str(payload["region"]),
+        status=int(payload["status"]),
+        total_ms=float(payload["total_ms"]),
+        queue_ms=float(payload["queue_ms"]),
+        lambda_call_ms=float(payload["lambda_call_ms"]),
+        lambda_duration_ms=int(payload["lambda_duration_ms"]),
+        executor_duration_ms=int(payload["executor_duration_ms"]),
+        executor_kind=str(payload["executor_kind"]),
+        executor_cpu_ms=int(payload["executor_cpu_ms"]),
+        executor_mem_mb=int(payload["executor_mem_mb"]),
+        lambda_cpu_ms=int(payload["lambda_cpu_ms"]),
+        lambda_mem_mb=int(payload["lambda_mem_mb"]),
+        vm_vcpus=int(payload["vm_vcpus"]),
+        vm_memory_mib=int(payload["vm_memory_mib"]),
+        path=str(payload["path"]),
+        method=str(payload["method"]),
+        command=str(payload["command"]),
+        source_vm_id=str(payload["source_vm_id"]),
+        exit_code=_optional_int(payload.get("exit_code")),
+        endpoint=str(payload["endpoint"]),
+        api_key_prefix=str(payload["api_key_prefix"]),
+        body_bytes_in=int(payload["body_bytes_in"]),
+        body_bytes_out=int(payload["body_bytes_out"]),
+        body_in=str(payload["body_in"]),
+        body_out=str(payload["body_out"]),
+    )
+
+
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if isinstance(value, int) else None
+
+
+def _optional_bool(value: Any) -> bool:
+    return value if isinstance(value, bool) else False
 
 # Backwards-compat: previously RunStatusResponse.
 RunStatusResponse = Run

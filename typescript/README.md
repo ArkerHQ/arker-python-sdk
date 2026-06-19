@@ -29,6 +29,27 @@ const data = await vm.sync("/tmp/data.txt"); // read -> Uint8Array
 await vm.delete();
 ```
 
+## Interactive PTY
+
+`arker shell` opens a native PTY session over WebSocket. It does not use SSH and
+does not call `/runs` for each line:
+
+```bash
+arker shell vm_123
+arker shell vm_123 --session-id sess_123
+```
+
+The SDK exposes the same transport:
+
+```ts
+const pty = await vm.connectPty({ cols: 120, rows: 32 });
+pty.onData((chunk) => process.stdout.write(chunk));
+await pty.ready;
+pty.send("echo hello\n");
+pty.resize(100, 30);
+pty.close(); // detach; the session is not deleted
+```
+
 ## Core API
 
 ```ts
@@ -41,6 +62,7 @@ await ar.fork({ sourceVmName, sourceOrgId, name?, durable? });
 await ar.listVms({ state? });
 ar.vm(vmId);                                  // bare handle
 await ar.vm(vmId).run(command, options?);
+await ar.vm(vmId).connectPty({ sessionId?, cols?, rows?, command?, persist? });
 await ar.vm(vmId).resize({ vcpu_count, memory_mib });
 await ar.vm(vmId).delete();
 
@@ -107,6 +129,102 @@ await vm.run("python3 train.py", { background: true, idempotencyKey: crypto.rand
 ```
 
 If the host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Backends without durability return `ArkerError` code `unsupported_operation`.
+
+## Compatibility imports
+
+The SDK includes limited compatibility layers for common Daytona, E2B, and Modal sandbox workflows. These entrypoints keep the original SDK-shaped calls, route through ComputeSDK, use Arker as the first provider, and fall back to the original provider when resolving an existing non-Arker sandbox ID.
+
+For the supported surface below, migration is a one-line import change:
+
+| SDK | Replace | With |
+| --- | --- | --- |
+| Daytona | `import { Daytona } from "@daytonaio/sdk";` | `import { Daytona } from "@arker-ai/sdk/daytona";` |
+| E2B | `import { Sandbox } from "e2b";` | `import { Sandbox } from "@arker-ai/sdk/e2b";` |
+| Modal | `import { ModalClient } from "modal";` | `import { ModalClient } from "@arker-ai/sdk/modal";` |
+
+### Daytona
+
+```ts
+import { Daytona } from "@arker-ai/sdk/daytona";
+
+const daytona = new Daytona({ apiKey: process.env.DAYTONA_API_KEY });
+const sandbox = await daytona.create();
+const result = await sandbox.process.exec("echo hello");
+
+console.log(result.result);
+await daytona.delete(sandbox);
+```
+
+Supported Daytona surface:
+
+- `new Daytona({ apiKey?, arker? })`
+- `daytona.create()`
+- `daytona.get(id)`
+- `daytona.delete(idOrSandbox)`
+- `sandbox.id`
+- `sandbox.process.exec(command)`
+- `sandbox.process.executeCommand(command)`
+- `sandbox.delete()`
+
+### E2B
+
+```ts
+import { Sandbox } from "@arker-ai/sdk/e2b";
+
+const sandbox = await Sandbox.create();
+const result = await sandbox.commands.run("echo hello");
+
+console.log(result.stdout);
+await sandbox.kill();
+```
+
+Supported E2B surface:
+
+- `Sandbox.create()`
+- `Sandbox.create(templateId, { timeoutMs? })`
+- `Sandbox.connect(id)`
+- `sandbox.sandboxId`
+- `sandbox.commands.run(command)`
+- `sandbox.files.read/write/makeDir/list/exists/remove`
+- `sandbox.kill()`
+
+### Modal
+
+```ts
+import { ModalClient } from "@arker-ai/sdk/modal";
+
+const client = new ModalClient({
+  tokenId: process.env.MODAL_TOKEN_ID,
+  tokenSecret: process.env.MODAL_TOKEN_SECRET,
+});
+const sandbox = await client.sandboxes.create();
+const proc = await sandbox.exec(["sh", "-c", "echo hello"]);
+
+console.log(await proc.stdout.readText());
+await sandbox.terminate();
+```
+
+Supported Modal surface:
+
+- `new ModalClient({ tokenId?, tokenSecret?, arker? })`
+- `client.sandboxes.create()`
+- `client.sandboxes.fromId(id)`
+- `sandbox.sandboxId`
+- `sandbox.exec(commandOrArgv, { workdir?, env?, timeoutMs?, stdout?: "pipe", stderr?: "pipe", mode?: "text" })`
+- `process.stdout.readText()`
+- `process.stderr.readText()`
+- `process.wait()`
+- `sandbox.terminate()`
+
+Unsupported provider-specific methods and options throw explicit errors instead of being silently ignored. Arker credentials come from `ARKER_API_KEY` and optional `ARKER_REGION` / `ARKER_BASE_URL`; original provider credentials are only used for fallback.
+
+Compatibility test commands:
+
+```bash
+npm run test:compat
+ARKER_API_KEY=... npm run test:compat-live
+ARKER_API_KEY=... DAYTONA_API_KEY=... E2B_API_KEY=... MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... npm run test:compat-fallback-live
+```
 
 ## License
 

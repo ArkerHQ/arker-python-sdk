@@ -1,10 +1,10 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 
 [[package]]
 name = "arker"
-version = "0.2.1"
+version = "0.5.1"
 source = { editable = "." }
 
 [package.optional-dependencies]
