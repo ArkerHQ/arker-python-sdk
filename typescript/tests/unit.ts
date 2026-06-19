@@ -113,7 +113,8 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
+      network: { reachable: false },
+      resources: { vcpu: 1, memory_mib: 1024, disk_mib: 10240 },
     },
   );
 
@@ -172,7 +173,7 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "printf hello" });
 }
 
-async function testBackgroundRunDoesNotExposeRunScopedTunnels(): Promise<void> {
+async function testBackgroundRunIgnoresUnknownFields(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
     (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
@@ -180,7 +181,7 @@ async function testBackgroundRunDoesNotExposeRunScopedTunnels(): Promise<void> {
     {
       run_id: "run_1",
       state: "running",
-      tunnels: [{ vm_id: "vm_1", port: 8080, visibility: "public", protocol: "http", state: "open" }],
+      unexpected: [{ value: "ignored" }],
     },
   );
 
@@ -189,7 +190,7 @@ async function testBackgroundRunDoesNotExposeRunScopedTunnels(): Promise<void> {
   assert.equal(result.type, "background");
   assert.equal(result.runId, "run_1");
   assert.equal(result.state, "running");
-  assert.equal("tunnels" in (result as unknown as Record<string, unknown>), false);
+  assert.equal("unexpected" in (result as unknown as Record<string, unknown>), false);
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { background: true, command: "sleep 10" });
 }
 
@@ -208,7 +209,8 @@ async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
+      network: { reachable: false },
+      resources: { vcpu: 1, memory_mib: 1024, disk_mib: 10240 },
     },
   );
 
@@ -234,7 +236,8 @@ async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
+      network: { reachable: false },
+      resources: { vcpu: 1, memory_mib: 1024, disk_mib: 10240 },
     },
   );
 
@@ -347,7 +350,7 @@ async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
   assert.equal(fetch.calls[0]!.body, undefined);
 }
 
-async function testListVmsPreservesForkLimitFields(): Promise<void> {
+async function testListVmsPreservesResourceAndLimitFields(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
     (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws",
@@ -360,8 +363,8 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
         public: false,
         state: "running",
         sessions: [],
-        tunnels: [],
-        network: { type: "open" },
+        network: { reachable: true, hostname: "aws-us-west-2-vm_1.arker.app" },
+        resources: { vcpu: 2, memory_mib: 4096, disk_mib: 10240 },
         max_vcpus: 8,
         max_memory_mib: 32768,
         min_memory_mib: 512,
@@ -374,7 +377,8 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
   assert.equal(result.vms[0]!.max_vcpus, 8);
   assert.equal(result.vms[0]!.max_memory_mib, 32768);
   assert.equal(result.vms[0]!.min_memory_mib, 512);
-  assert.deepEqual(result.vms[0]!.network, { type: "open" });
+  assert.deepEqual(result.vms[0]!.resources, { vcpu: 2, memory_mib: 4096, disk_mib: 10240 });
+  assert.deepEqual(result.vms[0]!.network, { reachable: true, hostname: "aws-us-west-2-vm_1.arker.app" });
 }
 
 async function testForkSendsDurableFlag(): Promise<void> {
@@ -389,7 +393,8 @@ async function testForkSendsDurableFlag(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
+      network: { reachable: false },
+      resources: { vcpu: 1, memory_mib: 1024, disk_mib: 10240 },
     },
   );
 
@@ -401,24 +406,26 @@ async function testForkSendsDurableFlag(): Promise<void> {
   );
 }
 
-async function testForkSendsTunnelRequest(): Promise<void> {
+async function testForkSendsNetworkAndResourceRequest(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
     (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
     200,
     {
-      vm_id: "vm_tunnel",
+      vm_id: "vm_network",
       owner_org_id: "owner",
       created_at: "now",
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
+      network: { reachable: true, hostname: "aws-us-west-2-vm_network.arker.app" },
+      resources: { vcpu: 2, memory_mib: 4096, disk_mib: 10240 },
     },
   );
 
   await client(fetch).vm("ubuntu").fork({
-    tunnel: { ports: [8080], auth_mode: "authenticated" },
+    network: { reachable: true, ssh_public_keys: ["ssh-ed25519 AAAA"] },
+    resources: { vcpu: 2, memory_mib: 4096, disk_mib: 10240 },
   });
 
   assert.deepEqual(
@@ -426,49 +433,43 @@ async function testForkSendsTunnelRequest(): Promise<void> {
     {
       source_vm_id: "ubuntu",
       disk: true,
-      tunnel: { ports: [8080], auth_mode: "authenticated" },
+      network: { reachable: true, ssh_public_keys: ["ssh-ed25519 AAAA"] },
+      resources: { vcpu: 2, memory_mib: 4096, disk_mib: 10240 },
     },
   );
 }
 
-async function testTunnelCrudUsesKeys(): Promise<void> {
+async function testPatchVmUsesReachabilityContract(): Promise<void> {
   const fetch = new FakeFetch();
-  const tunnel = {
-    vm_id: "vm_1",
-    port: 8080,
-    visibility: "private",
-    protocol: "http",
-    state: "open",
-    url: "https://p8080-key.tunnels.example",
-    tunnel_key: "key-123",
-    auth_mode: "authenticated",
-    auth_token: "secret-123",
-  };
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/tunnels",
+    (method, url) => method === "PATCH" && url === "https://test.invalid/api/v1/vms/vm_1",
     200,
-    tunnel,
-  );
-  fetch.addJson(
-    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/tunnels/key-123",
-    200,
-    { ...tunnel, auth_token: null },
-  );
-  fetch.addJson(
-    (method, url) => method === "DELETE" && url === "https://test.invalid/api/v1/vms/vm_1/tunnels/key-123",
-    200,
-    { deleted: true },
+    {
+      vm_id: "vm_1",
+      owner_org_id: "owner",
+      created_at: "now",
+      public: false,
+      state: "running",
+      sessions: [],
+      network: {
+        reachable: true,
+        hostname: "aws-us-west-2-vm_1.arker.app",
+        ssh_public_keys: [{ public_key: "ssh-ed25519 AAAA", fingerprint: "SHA256:test" }],
+      },
+      resources: { vcpu: 2, memory_mib: 4096, disk_mib: 10240 },
+    },
   );
 
-  const created = await client(fetch).vm("vm_1").createTunnel({ ports: [8080], auth_mode: "authenticated" });
-  const fetched = await client(fetch).vm("vm_1").getTunnel("key-123");
-  const deleted = await client(fetch).vm("vm_1").deleteTunnel("key-123");
+  const patched = await client(fetch).vm("vm_1").patch({
+    network: { reachable: true, ssh_public_keys: ["ssh-ed25519 AAAA"] },
+    resources: { vcpu: 2, memory_mib: 4096, disk_mib: 10240 },
+  });
 
-  assert.equal(created.tunnel_key, "key-123");
-  assert.equal(created.auth_token, "secret-123");
-  assert.equal(fetched.auth_token, null);
-  assert.deepEqual(deleted, { deleted: true });
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { ports: [8080], auth_mode: "authenticated" });
+  assert.equal(patched.network?.hostname, "aws-us-west-2-vm_1.arker.app");
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), {
+    network: { reachable: true, ssh_public_keys: ["ssh-ed25519 AAAA"] },
+    resources: { vcpu: 2, memory_mib: 4096, disk_mib: 10240 },
+  });
 }
 
 async function testRunSendsIdempotencyKeyHeader(): Promise<void> {
@@ -506,7 +507,6 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
       stderr: "",
       stderr_encoding: "utf-8",
       exit_code: 0,
-      tunnels: [],
       retry_count: 2,
     },
   );
@@ -597,15 +597,15 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 await testForkPostsDirectlyToSourceVm();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
-await testBackgroundRunDoesNotExposeRunScopedTunnels();
+await testBackgroundRunIgnoresUnknownFields();
 await testRegionRoutesGoldensToMainEndpoint();
 await testRegionRoutesArkuntuAliasToBurstEndpoint();
 await testRegionRoutesBurstVmIdsToBurstEndpoint();
 await testListRunsUsesControlPlaneAndFilters();
-await testListVmsPreservesForkLimitFields();
+await testListVmsPreservesResourceAndLimitFields();
 await testForkSendsDurableFlag();
-await testForkSendsTunnelRequest();
-await testTunnelCrudUsesKeys();
+await testForkSendsNetworkAndResourceRequest();
+await testPatchVmUsesReachabilityContract();
 await testRunSendsIdempotencyKeyHeader();
 await testRunStatusReturnsRetryCount();
 await testConnectPtyCreatesSessionAndUsesBearerHeader();

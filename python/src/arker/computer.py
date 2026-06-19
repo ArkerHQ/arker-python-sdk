@@ -77,25 +77,35 @@ class Session:
 
 
 @dataclasses.dataclass(frozen=True)
-class TunnelRequest:
-    ports: list[int] | None = None
-    auth_mode: str | None = None
+class VmResources:
+    vcpu: int | None = None
+    memory_mib: int | None = None
+    disk_mib: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
-class Tunnel:
-    vm_id: str
-    port: int
-    visibility: str
-    protocol: str
-    state: str  # "starting" | "open" | "closed"
-    run_id: str | None = None
-    url: str | None = None
-    message: str | None = None
-    started_at: str | None = None
-    tunnel_key: str | None = None
-    auth_mode: str | None = None
-    auth_token: str | None = None
+class NetworkInput:
+    reachable: bool | None = None
+    ssh_public_keys: list[str] | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SshPublicKeyInfo:
+    public_key: str
+    fingerprint: str
+
+
+@dataclasses.dataclass(frozen=True)
+class VmNetwork:
+    reachable: bool
+    hostname: str | None = None
+    ssh_public_keys: list[SshPublicKeyInfo] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(frozen=True)
+class PatchVmRequest:
+    resources: VmResources | None = None
+    network: NetworkInput | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -112,15 +122,14 @@ class Vm:
     region: str | None = None
     provider: str | None = None
     started_at: str | None = None
-    vcpu_count: int | None = None
-    memory_mib: int | None = None
-    disk_mib: int | None = None
-    network: dict[str, Any] | None = None
+    resources: VmResources = dataclasses.field(default_factory=VmResources)
+    network: VmNetwork = dataclasses.field(default_factory=lambda: VmNetwork(reachable=False))
     max_vcpus: int | None = None
+    min_vcpus: int | None = None
     max_memory_mib: int | None = None
     min_memory_mib: int | None = None
-    worker_id: str | None = None
-    tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
+    max_disk_mib: int | None = None
+    min_disk_mib: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -285,25 +294,6 @@ class ListSessionsResponse:
 
 
 @dataclasses.dataclass(frozen=True)
-class ListTunnelsResponse:
-    tunnels: list[Tunnel]
-    next_cursor: str | None = None
-
-
-@dataclasses.dataclass(frozen=True)
-class DeleteTunnelResponse:
-    deleted: bool
-
-
-@dataclasses.dataclass(frozen=True)
-class ResizeResponse:
-    resized: bool
-    memory_requested_mib: int | None = None
-    memory_achieved_mib: int | None = None
-    memory_partial: bool = False
-
-
-@dataclasses.dataclass(frozen=True)
 class Filesystem:
     filesystem_id: str
     name: str
@@ -434,14 +424,10 @@ class Arker:
         source_org_id: str | None = None,
         name: str | None = None,
         public: bool | None = None,
-        network: bool | str | dict[str, Any] | None = None,
+        network: NetworkInput | dict[str, Any] | None = None,
         disk: bool | None = None,
-        vcpu_count: int | None = None,
-        memory_mib: int | None = None,
-        max_memory_mib: int | None = None,
-        disk_mib: int | None = None,
         durable: bool | None = None,
-        tunnel: TunnelRequest | dict[str, Any] | None = None,
+        resources: VmResources | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -485,14 +471,10 @@ class Arker:
             "source_org_id": source_org_id,
             "name": name,
             "public": public,
-            "network": network,
+            "network": _network_input_payload(network),
             "disk": disk if disk is not None else True,
-            "vcpu_count": vcpu_count,
-            "memory_mib": memory_mib,
-            "max_memory_mib": max_memory_mib,
-            "disk_mib": disk_mib,
             "durable": durable,
-            "tunnel": _tunnel_request_payload(tunnel),
+            "resources": _resources_payload(resources),
         }
         burst_ref = source_vm_name or source_vm_id
         use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
@@ -688,16 +670,16 @@ class VM:
     public: bool | None
     region: str | None
     provider: str | None
-    vcpu_count: int | None
-    memory_mib: int | None
-    disk_mib: int | None
-    network: dict[str, Any] | None
+    resources: VmResources | None
+    network: VmNetwork | None
     max_vcpus: int | None
+    min_vcpus: int | None
     max_memory_mib: int | None
     min_memory_mib: int | None
+    max_disk_mib: int | None
+    min_disk_mib: int | None
     started_at: str | None
     sessions: list[Session] | None
-    tunnels: list[Tunnel] | None
 
     def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, data: Vm | None = None) -> None:
         self._client = client
@@ -760,21 +742,23 @@ class VM:
             extra_headers=headers,
         ))
 
-    def resize(
+    def patch(
         self,
         *,
-        vcpu_count: int | None = None,
-        memory_mib: int | None = None,
-        disk_mib: int | None = None,
-    ) -> ResizeResponse:
-        body = {"vcpu_count": vcpu_count, "memory_mib": memory_mib, "disk_mib": disk_mib}
-        payload = self._client._request("POST", f"{_vm_path(self.id)}/resize", body, base_url=self.base_url)
-        return ResizeResponse(
-            resized=bool(payload.get("resized")),
-            memory_requested_mib=_optional_int(payload.get("memory_requested_mib")),
-            memory_achieved_mib=_optional_int(payload.get("memory_achieved_mib")),
-            memory_partial=_optional_bool(payload.get("memory_partial")),
+        resources: VmResources | dict[str, Any] | None = None,
+        network: NetworkInput | dict[str, Any] | None = None,
+    ) -> VM:
+        payload = self._client._request(
+            "PATCH",
+            _vm_path(self.id),
+            {"resources": _resources_payload(resources), "network": _network_input_payload(network)},
+            base_url=self.base_url,
         )
+        info = _vm_info(payload)
+        return VM(self._client, self.id, self.base_url, info)
+
+    def resize(self, resources: VmResources | dict[str, Any]) -> VM:
+        return self.patch(resources=resources)
 
     def delete(self) -> DeleteVmResponse:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
@@ -935,33 +919,6 @@ class VM:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
         return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
 
-    # ── Tunnels: VM-scoped, addressed by recoverable tunnel key ─
-    def list_tunnels(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListTunnelsResponse:
-        path = _build_query(f"{_vm_path(self.id)}/tunnels", {"cursor": cursor, "limit": limit, "state": state})
-        payload = self._client._request("GET", path, base_url=self.base_url)
-        return ListTunnelsResponse(
-            tunnels=[_tunnel(item) for item in payload.get("tunnels", [])],
-            next_cursor=_optional_str(payload.get("next_cursor")),
-        )
-
-    def create_tunnel(self, request: TunnelRequest | dict[str, Any] | None = None, *, ports: list[int] | None = None, auth_mode: str | None = None) -> Tunnel:
-        payload = self._client._request(
-            "POST",
-            f"{_vm_path(self.id)}/tunnels",
-            _tunnel_request_payload(request) or _tunnel_request_payload(TunnelRequest(ports=ports, auth_mode=auth_mode)) or {},
-            base_url=self.base_url,
-        )
-        return _tunnel(payload)
-
-    def get_tunnel(self, key: str) -> Tunnel:
-        payload = self._client._request("GET", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
-        return _tunnel(payload)
-
-    def delete_tunnel(self, key: str) -> DeleteTunnelResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
-        return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
-
-
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
@@ -1070,14 +1027,24 @@ def _drop_none(value: Any) -> Any:
     return value
 
 
-def _tunnel_request_payload(value: TunnelRequest | dict[str, Any] | None) -> dict[str, Any] | None:
+def _resources_payload(value: VmResources | dict[str, Any] | None) -> dict[str, Any] | None:
     if value is None:
         return None
-    if isinstance(value, TunnelRequest):
-        return _drop_none({"ports": value.ports, "auth_mode": value.auth_mode})
+    if isinstance(value, VmResources):
+        return _drop_none({"vcpu": value.vcpu, "memory_mib": value.memory_mib, "disk_mib": value.disk_mib})
     if isinstance(value, dict):
         return _drop_none(value)
-    raise ArkerError("bad_request", "tunnel request must be a TunnelRequest or dict", 400)
+    raise ArkerError("bad_request", "resources must be VmResources or dict", 400)
+
+
+def _network_input_payload(value: NetworkInput | dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, NetworkInput):
+        return _drop_none({"reachable": value.reachable, "ssh_public_keys": value.ssh_public_keys})
+    if isinstance(value, dict):
+        return _drop_none(value)
+    raise ArkerError("bad_request", "network must be NetworkInput or dict", 400)
 
 
 def _parse_json(text: str) -> Any:
@@ -1151,23 +1118,6 @@ def _session_info(payload: dict[str, Any]) -> Session:
     )
 
 
-def _tunnel(payload: dict[str, Any]) -> Tunnel:
-    return Tunnel(
-        vm_id=str(payload["vm_id"]),
-        port=int(payload["port"]),
-        visibility=str(payload["visibility"]),
-        protocol=str(payload["protocol"]),
-        state=str(payload["state"]),
-        run_id=_optional_str(payload.get("run_id")),
-        url=_optional_str(payload.get("url")),
-        message=_optional_str(payload.get("message")),
-        started_at=_optional_str(payload.get("started_at")),
-        tunnel_key=_optional_str(payload.get("tunnel_key")),
-        auth_mode=_optional_str(payload.get("auth_mode")),
-        auth_token=_optional_str(payload.get("auth_token")),
-    )
-
-
 def _filesystem(payload: dict[str, Any]) -> Filesystem:
     return Filesystem(
         filesystem_id=str(payload["filesystem_id"]),
@@ -1188,6 +1138,32 @@ def _sync(payload: dict[str, Any]) -> Sync:
     )
 
 
+def _vm_resources(payload: Any) -> VmResources:
+    data = payload if isinstance(payload, dict) else {}
+    return VmResources(
+        vcpu=_optional_int(data.get("vcpu")),
+        memory_mib=_optional_int(data.get("memory_mib")),
+        disk_mib=_optional_int(data.get("disk_mib")),
+    )
+
+
+def _ssh_public_key_info(payload: dict[str, Any]) -> SshPublicKeyInfo:
+    return SshPublicKeyInfo(
+        public_key=str(payload["public_key"]),
+        fingerprint=str(payload["fingerprint"]),
+    )
+
+
+def _vm_network(payload: Any) -> VmNetwork:
+    data = payload if isinstance(payload, dict) else {}
+    keys = data.get("ssh_public_keys")
+    return VmNetwork(
+        reachable=bool(data.get("reachable", False)),
+        hostname=_optional_str(data.get("hostname")),
+        ssh_public_keys=[_ssh_public_key_info(item) for item in keys if isinstance(item, dict)] if isinstance(keys, list) else [],
+    )
+
+
 def _vm_info(payload: dict[str, Any]) -> Vm:
     return Vm(
         vm_id=str(payload.get("vm_id") or payload.get("id") or ""),
@@ -1202,15 +1178,14 @@ def _vm_info(payload: dict[str, Any]) -> Vm:
         region=_optional_str(payload.get("region")),
         provider=_optional_str(payload.get("provider")),
         started_at=_optional_str(payload.get("started_at")),
-        vcpu_count=_optional_int(payload.get("vcpu_count")),
-        memory_mib=_optional_int(payload.get("memory_mib")),
-        disk_mib=_optional_int(payload.get("disk_mib")),
-        network=payload.get("network") if isinstance(payload.get("network"), dict) else None,
+        resources=_vm_resources(payload.get("resources")),
+        network=_vm_network(payload.get("network")),
         max_vcpus=_optional_int(payload.get("max_vcpus")),
+        min_vcpus=_optional_int(payload.get("min_vcpus")),
         max_memory_mib=_optional_int(payload.get("max_memory_mib")),
         min_memory_mib=_optional_int(payload.get("min_memory_mib")),
-        worker_id=_optional_str(payload.get("worker_id")),
-        tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
+        max_disk_mib=_optional_int(payload.get("max_disk_mib")),
+        min_disk_mib=_optional_int(payload.get("min_disk_mib")),
     )
 
 

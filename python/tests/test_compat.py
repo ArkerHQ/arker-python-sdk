@@ -62,7 +62,8 @@ def vm_payload(vm_id: str) -> dict[str, Any]:
         "public": False,
         "state": "idle",
         "sessions": [],
-        "tunnels": [],
+        "network": {"reachable": False},
+        "resources": {"vcpu": 1, "memory_mib": 1024, "disk_mib": 10240},
     }
 
 

@@ -63,7 +63,7 @@ await ar.listVms({ state? });
 ar.vm(vmId);                                  // bare handle
 await ar.vm(vmId).run(command, options?);
 await ar.vm(vmId).connectPty({ sessionId?, cols?, rows?, command?, persist? });
-await ar.vm(vmId).resize({ vcpu_count, memory_mib });
+await ar.vm(vmId).patch({ resources: { vcpu: 2, memory_mib: 4096 } });
 await ar.vm(vmId).delete();
 
 // Files inside a VM

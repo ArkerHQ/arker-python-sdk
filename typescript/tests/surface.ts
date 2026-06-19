@@ -1,7 +1,7 @@
 /**
  * Full-surface exercise of the SDK against a live backend.
  * Calls every public method on Arker / Computer / Runs / Sessions /
- * Tunnels / Syncs / Filesystems and reports PASS / FAIL / STUB.
+ * Syncs / Filesystems and reports PASS / FAIL / STUB.
  *
  *   ARKER_API_KEY=... ARKER_BASE_URL=http://host:8080/api tsx tests/surface.ts
  */
@@ -43,7 +43,6 @@ function summarize(r: unknown): string {
   if (Array.isArray((r as any)?.vms)) return `${(r as any).vms.length} vms`;
   if (Array.isArray((r as any)?.runs)) return `${(r as any).runs.length} runs`;
   if (Array.isArray((r as any)?.sessions)) return `${(r as any).sessions.length} sessions`;
-  if (Array.isArray((r as any)?.tunnels)) return `${(r as any).tunnels.length} tunnels`;
   if (Array.isArray((r as any)?.syncs)) return `${(r as any).syncs.length} syncs`;
   if (Array.isArray((r as any)?.filesystems)) return `${(r as any).filesystems.length} filesystems`;
   if ((r as any)?.type) return `run:${(r as any).type}`;
@@ -76,7 +75,7 @@ const computer = arker.vm(vmId);
 await call("Computer.get", () => computer.refresh());
 await call("Computer.run(echo)", () => computer.run("echo surface-hello"));
 const bg = await call("Computer.run(background)", () => computer.run("sleep 1; echo bg", { background: true } as any)) as any;
-await call("Computer.resize", () => computer.resize({ vcpu_count: 2 } as any), { stubOk: true });
+await call("Computer.patch(resources)", () => computer.patch({ resources: { vcpu: 2 } }), { stubOk: true });
 
 // ── Runs ────────────────────────────────────────────────────────────
 const runs = await call("Runs.list", () => computer.listRuns()) as any;
@@ -106,12 +105,6 @@ await call("Syncs.readFile", async () => {
 });
 await call("Syncs.list", () => computer.listSyncs(), { stubOk: true });
 await call("Syncs.delete", () => computer.deleteSync("sync_does_not_exist"), { stubOk: true });
-
-// ── Tunnels ─────────────────────────────────────────────────────────
-await call("Tunnels.list", () => computer.listTunnels(), { stubOk: true });
-await call("Tunnels.create", () => computer.createTunnel({ ports: [8080] }), { stubOk: true });
-await call("Tunnels.get", () => computer.getTunnel("example-key"), { stubOk: true });
-await call("Tunnels.delete", () => computer.deleteTunnel("example-key"), { stubOk: true });
 
 // ── Filesystems get/delete ──────────────────────────────────────────
 await call("Filesystems.get", () => arker.getFilesystem("fs_does_not_exist"), { stubOk: true });

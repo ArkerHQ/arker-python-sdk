@@ -164,18 +164,16 @@ class ArkerComputeSandbox implements SandboxInterface {
   }
 
   async getUrl(options: { port: number; protocol?: string }): Promise<string> {
-    const tunnels = await this.vm.listTunnels({ state: "open" });
-    let tunnel = tunnels.tunnels.find((entry) => entry.port === options.port && entry.url);
-    if (!tunnel) {
-      tunnel = await this.vm.createTunnel({ ports: [options.port] });
+    const vm = this.vm.network ? this.vm : await this.vm.refresh();
+    if (!vm.network?.reachable || !vm.network.hostname) {
+      throw new Error("Arker VM is not reachable. Fork with network.reachable or patch the VM network before requesting a URL.");
     }
-    if (!tunnel.url) {
-      throw new Error(`Arker tunnel for port ${options.port} did not return a URL.`);
-    }
-    if (!options.protocol) return tunnel.url;
 
-    const url = new URL(tunnel.url);
-    url.protocol = `${options.protocol}:`;
+    const protocol = options.protocol ?? "https";
+    const url = new URL(`${protocol}://${vm.network.hostname}`);
+    if ((protocol === "http" && options.port !== 80) || (protocol === "https" && options.port !== 443)) {
+      url.port = String(options.port);
+    }
     return url.toString();
   }
 
