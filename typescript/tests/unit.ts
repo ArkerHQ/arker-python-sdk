@@ -608,7 +608,78 @@ await testForkSendsTunnelRequest();
 await testTunnelCrudUsesKeys();
 await testRunSendsIdempotencyKeyHeader();
 await testRunStatusReturnsRetryCount();
+async function testConnectPtyPassesCancelTtlSecs(): Promise<void> {
+  // ARK-120: cancelTtlSecs must surface as the `cancel_ttl_secs` query param so
+  // the server auto-cancels (destroys) the PTY run after that idle window.
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/sessions",
+    200,
+    { session_id: "sess_1", vm_id: "vm_1", state: "idle", cwd: "/home/user", env: {} },
+  );
+  let openedUrl = "";
+  const factory: PtyWebSocketFactory = (url) => {
+    openedUrl = url;
+    return new FakeWebSocket();
+  };
+  await client(fetch).vm("vm_1").connectPty({
+    cols: 80,
+    rows: 24,
+    cancelTtlSecs: 600,
+    useTicket: false,
+    webSocketFactory: factory,
+  });
+  assert.ok(
+    openedUrl.includes("cancel_ttl_secs=600"),
+    `expected cancel_ttl_secs=600 in PTY url, got: ${openedUrl}`,
+  );
+  // A zero/negative ttl must be omitted (no auto-cancel), not sent as 0.
+  let openedUrl2 = "";
+  const factory2: PtyWebSocketFactory = (url) => {
+    openedUrl2 = url;
+    return new FakeWebSocket();
+  };
+  await client(fetch).vm("vm_1").connectPty({
+    sessionId: "sess_1",
+    cancelTtlSecs: 0,
+    useTicket: false,
+    webSocketFactory: factory2,
+  });
+  assert.ok(
+    !openedUrl2.includes("cancel_ttl_secs"),
+    `cancel_ttl_secs must be omitted when <= 0, got: ${openedUrl2}`,
+  );
+}
+
+async function testConnectPtyDeliversDataAndCloseEvents(): Promise<void> {
+  // The PtyConnection must surface server→client bytes via onData and the
+  // socket close (code/reason) via onClose.
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/sessions",
+    200,
+    { session_id: "sess_1", vm_id: "vm_1", state: "idle", cwd: "/home/user", env: {} },
+  );
+  const socket = new FakeWebSocket();
+  const pty = await client(fetch).vm("vm_1").connectPty({
+    useTicket: false,
+    webSocketFactory: () => socket,
+  });
+  const received: string[] = [];
+  let closed: { code?: number; reason?: string } | undefined;
+  pty.onData((bytes) => received.push(new TextDecoder().decode(bytes)));
+  pty.onClose((event) => { closed = event; });
+  // server emits two output chunks (string + ArrayBuffer), then closes
+  socket.emit("message", { data: "hello " });
+  socket.emit("message", { data: new TextEncoder().encode("world").buffer });
+  assert.equal(received.join(""), "hello world");
+  socket.emit("close", { code: 1000, reason: "bye" });
+  assert.deepEqual(closed, { code: 1000, reason: "bye" });
+}
+
 await testConnectPtyCreatesSessionAndUsesBearerHeader();
 await testConnectPtyUsesTicketForBrowserWebSocket();
+await testConnectPtyPassesCancelTtlSecs();
+await testConnectPtyDeliversDataAndCloseEvents();
 
 console.log("PASS unit");
