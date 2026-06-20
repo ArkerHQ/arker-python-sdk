@@ -328,6 +328,7 @@ export interface components {
         ErrorCode: "unsupported_operation" | "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "network_error";
         ErrorResponse: {
             code: components["schemas"]["ErrorCode"];
+            /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic; server logs retain the underlying cause. */
             message: string;
         };
         /**
@@ -349,6 +350,24 @@ export interface components {
         RunState: "running" | "completed" | "failed" | "cancelled";
         /** @enum {string} */
         ResourceKind: "cpu" | "memory" | "disk";
+        /** @description Outbound egress policy stored on the VM. */
+        NetworkPolicy: {
+            /** @constant */
+            type: "open";
+        } | {
+            /** @constant */
+            type: "blocked";
+        } | {
+            /** @constant */
+            type: "allow";
+            allow: string[];
+        } | {
+            /** @constant */
+            type: "block";
+            block: string[];
+        };
+        /** @description Outbound egress policy input. `true`/`open` means unrestricted; `false`/`blocked`/`none` means deny all. */
+        NetworkPolicyInput: boolean | ("open" | "blocked" | "true" | "false" | "none") | components["schemas"]["NetworkPolicy"];
         ForkRequest: {
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
@@ -362,6 +381,8 @@ export interface components {
             public?: boolean | null;
             /** @description Inbound reachability and SSH authorized keys for the new VM. */
             network?: components["schemas"]["NetworkInput"] | null;
+            /** @description Outbound egress policy for the new VM. Omit to inherit from the source VM, or default to open for image-created VMs with no source. */
+            egress?: components["schemas"]["NetworkPolicyInput"] | null;
             disk?: boolean | null;
             durable?: boolean | null;
             /** @description Resource shape for the new VM. */
@@ -409,6 +430,8 @@ export interface components {
             started_at?: string | null;
             /** @description Inbound reachability settings for this VM. */
             network: components["schemas"]["VmNetwork"];
+            /** @description Outbound egress policy for this VM. */
+            egress?: components["schemas"]["NetworkPolicy"] | null;
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
             max_vcpus?: number | null;
             /** @description Smallest vCPU count accepted for this VM. */

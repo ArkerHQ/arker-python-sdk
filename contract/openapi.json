@@ -1215,7 +1215,8 @@
             "$ref": "#/components/schemas/ErrorCode"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Human-readable, client-safe error message. For `code: \"internal\"`, this is intentionally generic; server logs retain the underlying cause."
           }
         }
       },
@@ -1247,6 +1248,94 @@
           "memory",
           "disk"
         ]
+      },
+      "NetworkPolicy": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "open"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "blocked"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "allow"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "allow"
+              },
+              "allow": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "block"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "block"
+              },
+              "block": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Outbound egress policy stored on the VM."
+      },
+      "NetworkPolicyInput": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "string",
+            "enum": [
+              "open",
+              "blocked",
+              "true",
+              "false",
+              "none"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/NetworkPolicy"
+          }
+        ],
+        "description": "Outbound egress policy input. `true`/`open` means unrestricted; `false`/`blocked`/`none` means deny all."
       },
       "ForkRequest": {
         "type": "object",
@@ -1297,6 +1386,17 @@
               }
             ],
             "description": "Inbound reachability and SSH authorized keys for the new VM."
+          },
+          "egress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NetworkPolicyInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Outbound egress policy for the new VM. Omit to inherit from the source VM, or default to open for image-created VMs with no source."
           },
           "disk": {
             "type": [
@@ -1502,6 +1602,17 @@
           "network": {
             "$ref": "#/components/schemas/VmNetwork",
             "description": "Inbound reachability settings for this VM."
+          },
+          "egress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NetworkPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Outbound egress policy for this VM."
           },
           "max_vcpus": {
             "type": [
