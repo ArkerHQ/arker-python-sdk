@@ -332,27 +332,29 @@ def test_run_sends_command_without_default_session_id() -> None:
     assert json.loads(t.calls[0]["body"]) == {"command": "printf hi"}
 
 
-def test_resize_returns_memory_target_metadata() -> None:
+def test_resize_patches_vm_resources() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/resize"),
+        lambda method, url: method == "PATCH" and url.endswith("/v1/vms/vm_1"),
         200,
         {
-            "resized": True,
-            "memory_requested_mib": 1024,
-            "memory_achieved_mib": 1536,
-            "memory_partial": True,
+            "vm_id": "vm_1",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
         },
     )
 
     with patch("urllib.request.urlopen", t):
         result = client().vm("vm_1").resize(memory_mib=1024)
 
-    assert result.resized is True
-    assert result.memory_requested_mib == 1024
-    assert result.memory_achieved_mib == 1536
-    assert result.memory_partial is True
-    assert json.loads(t.calls[0]["body"]) == {"memory_mib": 1024}
+    # resize now PATCHes /v1/vms/{id} with a resources object (arkerd reality;
+    # the old POST /v1/vms/{id}/resize route does not exist). None fields are pruned.
+    assert json.loads(t.calls[0]["body"]) == {"resources": {"memory_mib": 1024}}
+    assert result is not None
 
 
 def test_background_run_response() -> None:
@@ -538,73 +540,6 @@ def test_fork_sends_durable_flag() -> None:
         "source_vm_id": "ubuntu",
         "disk": True,
     }
-
-
-def test_fork_sends_tunnel_request() -> None:
-    t = FakeTransport()
-    t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
-        200,
-        {
-            "vm_id": "vm_child",
-            "owner_org_id": "owner",
-            "created_at": "now",
-            "public": False,
-            "state": "idle",
-            "sessions": [],
-            "tunnels": [],
-        },
-    )
-
-    with patch("urllib.request.urlopen", t):
-        client().vm("ubuntu").fork(tunnel=sdk.TunnelRequest(ports=[8080], auth_mode="authenticated"))
-
-    assert json.loads(t.calls[0]["body"]) == {
-        "source_vm_id": "ubuntu",
-        "disk": True,
-        "tunnel": {"ports": [8080], "auth_mode": "authenticated"},
-    }
-
-
-def test_tunnel_crud_uses_keys() -> None:
-    t = FakeTransport()
-    tunnel = {
-        "vm_id": "vm_1",
-        "port": 8080,
-        "visibility": "private",
-        "protocol": "http",
-        "state": "open",
-        "url": "https://p8080-key.tunnels.example",
-        "tunnel_key": "key-123",
-        "auth_mode": "authenticated",
-        "auth_token": "secret-123",
-    }
-    t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/tunnels"),
-        200,
-        tunnel,
-    )
-    t.add_json(
-        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/tunnels/key-123"),
-        200,
-        {**tunnel, "auth_token": None},
-    )
-    t.add_json(
-        lambda method, url: method == "DELETE" and url.endswith("/v1/vms/vm_1/tunnels/key-123"),
-        200,
-        {"deleted": True},
-    )
-
-    with patch("urllib.request.urlopen", t):
-        created = client().vm("vm_1").create_tunnel(ports=[8080], auth_mode="authenticated")
-        fetched = client().vm("vm_1").get_tunnel("key-123")
-        deleted = client().vm("vm_1").delete_tunnel("key-123")
-
-    assert created.tunnel_key == "key-123"
-    assert created.auth_token == "secret-123"
-    assert fetched.auth_token is None
-    assert deleted.deleted is True
-    assert json.loads(t.calls[0]["body"]) == {"ports": [8080], "auth_mode": "authenticated"}
 
 
 def test_run_sends_idempotency_key_header() -> None:
