@@ -98,7 +98,7 @@ async function main(): Promise<void> {
   try {
     // warm the VM so the first PTY attach doesn't race a cold start
     await arker.vm(vmId).run("echo warmup", { timeout: 60 }).catch(() => {});
-    const session = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+    const session = await arker.vm(vmId).createSession();
     const sid = session.session_id ?? (session as { id?: string }).id!;
 
     // 1) open + I/O round-trip

@@ -76,7 +76,7 @@ const computer = arker.vm(vmId);
 await call("Computer.get", () => computer.refresh());
 await call("Computer.run(echo)", () => computer.run("echo surface-hello"));
 const bg = await call("Computer.run(background)", () => computer.run("sleep 1; echo bg", { background: true } as any)) as any;
-await call("Computer.resize", () => computer.resize({ vcpu_count: 2 } as any), { stubOk: true });
+await call("Computer.resize", () => computer.resize({ resources: { vcpu: 2 } }), { stubOk: true });
 
 // ── Runs ────────────────────────────────────────────────────────────
 const runs = await call("Runs.list", () => computer.listRuns()) as any;
@@ -106,12 +106,6 @@ await call("Syncs.readFile", async () => {
 });
 await call("Syncs.list", () => computer.listSyncs(), { stubOk: true });
 await call("Syncs.delete", () => computer.deleteSync("sync_does_not_exist"), { stubOk: true });
-
-// ── Tunnels ─────────────────────────────────────────────────────────
-await call("Tunnels.list", () => computer.listTunnels(), { stubOk: true });
-await call("Tunnels.create", () => computer.createTunnel({ ports: [8080] }), { stubOk: true });
-await call("Tunnels.get", () => computer.getTunnel("example-key"), { stubOk: true });
-await call("Tunnels.delete", () => computer.deleteTunnel("example-key"), { stubOk: true });
 
 // ── Filesystems get/delete ──────────────────────────────────────────
 await call("Filesystems.get", () => arker.getFilesystem("fs_does_not_exist"), { stubOk: true });

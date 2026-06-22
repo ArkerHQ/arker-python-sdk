@@ -172,27 +172,6 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "printf hello" });
 }
 
-async function testBackgroundRunDoesNotExposeRunScopedTunnels(): Promise<void> {
-  const fetch = new FakeFetch();
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
-    200,
-    {
-      run_id: "run_1",
-      state: "running",
-      tunnels: [{ vm_id: "vm_1", port: 8080, visibility: "public", protocol: "http", state: "open" }],
-    },
-  );
-
-  const result = await client(fetch).vm("vm_1").run("sleep 10", { background: true });
-
-  assert.equal(result.type, "background");
-  assert.equal(result.runId, "run_1");
-  assert.equal(result.state, "running");
-  assert.equal("tunnels" in (result as unknown as Record<string, unknown>), false);
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { background: true, command: "sleep 10" });
-}
-
 async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   // Computer.fork() always posts to `/v1/fork` on the owning VM's
@@ -401,76 +380,6 @@ async function testForkSendsDurableFlag(): Promise<void> {
   );
 }
 
-async function testForkSendsTunnelRequest(): Promise<void> {
-  const fetch = new FakeFetch();
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
-    200,
-    {
-      vm_id: "vm_tunnel",
-      owner_org_id: "owner",
-      created_at: "now",
-      public: false,
-      state: "idle",
-      sessions: [],
-      tunnels: [],
-    },
-  );
-
-  await client(fetch).vm("ubuntu").fork({
-    tunnel: { ports: [8080], auth_mode: "authenticated" },
-  });
-
-  assert.deepEqual(
-    JSON.parse(fetch.calls[0]!.body!),
-    {
-      source_vm_id: "ubuntu",
-      disk: true,
-      tunnel: { ports: [8080], auth_mode: "authenticated" },
-    },
-  );
-}
-
-async function testTunnelCrudUsesKeys(): Promise<void> {
-  const fetch = new FakeFetch();
-  const tunnel = {
-    vm_id: "vm_1",
-    port: 8080,
-    visibility: "private",
-    protocol: "http",
-    state: "open",
-    url: "https://p8080-key.tunnels.example",
-    tunnel_key: "key-123",
-    auth_mode: "authenticated",
-    auth_token: "secret-123",
-  };
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/tunnels",
-    200,
-    tunnel,
-  );
-  fetch.addJson(
-    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/tunnels/key-123",
-    200,
-    { ...tunnel, auth_token: null },
-  );
-  fetch.addJson(
-    (method, url) => method === "DELETE" && url === "https://test.invalid/api/v1/vms/vm_1/tunnels/key-123",
-    200,
-    { deleted: true },
-  );
-
-  const created = await client(fetch).vm("vm_1").createTunnel({ ports: [8080], auth_mode: "authenticated" });
-  const fetched = await client(fetch).vm("vm_1").getTunnel("key-123");
-  const deleted = await client(fetch).vm("vm_1").deleteTunnel("key-123");
-
-  assert.equal(created.tunnel_key, "key-123");
-  assert.equal(created.auth_token, "secret-123");
-  assert.equal(fetched.auth_token, null);
-  assert.deepEqual(deleted, { deleted: true });
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { ports: [8080], auth_mode: "authenticated" });
-}
-
 async function testRunSendsIdempotencyKeyHeader(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -597,15 +506,12 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 await testForkPostsDirectlyToSourceVm();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
-await testBackgroundRunDoesNotExposeRunScopedTunnels();
 await testRegionRoutesGoldensToMainEndpoint();
 await testRegionRoutesArkuntuAliasToBurstEndpoint();
 await testRegionRoutesBurstVmIdsToBurstEndpoint();
 await testListRunsUsesControlPlaneAndFilters();
 await testListVmsPreservesForkLimitFields();
 await testForkSendsDurableFlag();
-await testForkSendsTunnelRequest();
-await testTunnelCrudUsesKeys();
 await testRunSendsIdempotencyKeyHeader();
 await testRunStatusReturnsRetryCount();
 async function testConnectPtyPassesCancelTtlSecs(): Promise<void> {

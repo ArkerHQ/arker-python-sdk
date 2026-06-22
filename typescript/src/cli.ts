@@ -15,7 +15,7 @@
  *     arker sync <vm> ...      → arker syncs create/read/write on <vm>
  *     arker shell [vm]         → native PTY shell over WebSocket
  *
- * Resources: vms, runs, sessions, syncs, tunnels, filesystems (alias `fs`).
+ * Resources: vms, runs, sessions, syncs, filesystems (alias `fs`).
  * Each supports `ls`, `get`, `rm`, and the resource-specific verbs.
  *
  * Auth: reads `ARKER_API_KEY` from the environment (or `~/.arker/config`).
@@ -139,12 +139,13 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-function fmtVm(vm: VM): string {
+function fmtVm(vm: VM | Vm): string {
   const provider = vm.provider ?? "?";
   const region = vm.region ?? "?";
   const name = vm.name ?? "—";
   const state = vm.state ?? "?";
-  return `${vm.vm_id ?? vm.id}\t${provider}-${region}\t${state}\t${name}`;
+  const id = vm.vm_id ?? (vm as VM).id;
+  return `${id}\t${provider}-${region}\t${state}\t${name}`;
 }
 
 // ── Resources ──────────────────────────────────────────────────────
@@ -186,6 +187,10 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
     }
     case "run": {
       await cmdRun({ ...args, positional: rest }, client);
+      return;
+    }
+    case "resize": {
+      await cmdResize({ ...args, positional: rest }, client);
       return;
     }
     default:
@@ -427,51 +432,24 @@ async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
   output.write(await client.vm(vm).sync(path));
 }
 
-async function cmdTunnels(args: ParsedArgs, client: Arker): Promise<void> {
-  const sub = args.positional[0];
-  const rest = args.positional.slice(1);
-  const vm = rest[0];
-  switch (sub) {
-    case "ls":
-    case "list": {
-      if (!vm) die("usage: arker tunnels ls <vm_id>");
-      const res = await client.vm(vm).listTunnels({
-        state: args.flags.state as "starting" | "open" | "closed" | undefined,
-        cursor: args.flags.cursor as string | undefined,
-        limit: numFlag(args, "limit"),
-      });
-      if (args.flags.json) return out(res);
-      for (const t of res.tunnels) {
-        out(`${t.tunnel_key ?? "-"}\t${t.port}\t${t.state}\t${t.protocol}\t${t.url ?? "-"}`);
-      }
-      if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
-      return;
-    }
-    case "create": {
-      if (!vm) die("usage: arker tunnels create <vm_id> [--ports 80,8080] [--auth-mode open|authenticated]");
-      const tunnel = await client.vm(vm).createTunnel({
-        ports: parsePorts(args.flags.ports),
-        auth_mode: args.flags["auth-mode"] as "open" | "authenticated" | undefined,
-      });
-      return out(tunnel);
-    }
-    case "get": {
-      if (!vm) die("usage: arker tunnels get <vm_id> <key>");
-      const key = rest[1] ?? die("missing key");
-      out(await client.vm(vm).getTunnel(key));
-      return;
-    }
-    case "rm":
-    case "delete": {
-      if (!vm) die("usage: arker tunnels rm <vm_id> <key>");
-      const key = rest[1] ?? die("missing key");
-      const r = await client.vm(vm).deleteTunnel(key);
-      out(r.deleted ? `deleted tunnel ${key}` : "delete failed");
-      return;
-    }
-    default:
-      die(`usage: arker tunnels <ls|create|get|rm> ...`);
+async function cmdResize(args: ParsedArgs, client: Arker): Promise<void> {
+  const vm = args.positional[0];
+  if (!vm) die("usage: arker resize <vm_id> [--memory-mib N] [--vcpu N] [--disk-mib N]");
+  const memoryMib = numFlag(args, "memory-mib");
+  const vcpu = numFlag(args, "vcpu");
+  const diskMib = numFlag(args, "disk-mib");
+  if (memoryMib === undefined && vcpu === undefined && diskMib === undefined) {
+    die("resize: pass at least one of --memory-mib, --vcpu, --disk-mib");
   }
+  const updated = await client.vm(vm).resize({
+    resources: {
+      vcpu: vcpu ?? null,
+      memory_mib: memoryMib ?? null,
+      disk_mib: diskMib ?? null,
+    },
+  });
+  if (args.flags.json) return out(updated);
+  out(fmtVm(updated));
 }
 
 async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
@@ -677,11 +655,6 @@ function boolFlag(args: ParsedArgs, name: string): boolean | undefined {
   return true;
 }
 
-function parsePorts(value: string | boolean | undefined): number[] | undefined {
-  if (typeof value !== "string" || value.trim() === "") return undefined;
-  return value.split(",").map((part) => Number(part.trim())).filter((port) => Number.isFinite(port));
-}
-
 async function readAllStdin(): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   for await (const chunk of input) chunks.push(chunk as Buffer);
@@ -704,6 +677,7 @@ function usage(): never {
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
       "  arker run <vm> <command>                       run a command",
+      "  arker resize <vm> [--memory-mib N] [--vcpu N] [--disk-mib N]   resize a VM (PATCH)",
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "",
       "Resources:",
@@ -711,7 +685,6 @@ function usage(): never {
       "  arker runs        <ls|get|rm> <vm_id> ...",
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
-      "  arker tunnels     <ls|get|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
       "",
       "Flags:",
@@ -769,8 +742,8 @@ async function main(): Promise<void> {
         return await cmdRuns(args, client);
       case "sessions":
         return await cmdSessions(args, client);
-      case "tunnels":
-        return await cmdTunnels(args, client);
+      case "resize":
+        return await cmdResize(args, client);
       case "filesystems":
       case "fs":
         return await cmdFilesystems(args, client);
