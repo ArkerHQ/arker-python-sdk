@@ -163,20 +163,15 @@ class ArkerComputeSandbox implements SandboxInterface {
     };
   }
 
-  async getUrl(options: { port: number; protocol?: string }): Promise<string> {
-    const tunnels = await this.vm.listTunnels({ state: "open" });
-    let tunnel = tunnels.tunnels.find((entry) => entry.port === options.port && entry.url);
-    if (!tunnel) {
-      tunnel = await this.vm.createTunnel({ ports: [options.port] });
-    }
-    if (!tunnel.url) {
-      throw new Error(`Arker tunnel for port ${options.port} did not return a URL.`);
-    }
-    if (!options.protocol) return tunnel.url;
-
-    const url = new URL(tunnel.url);
-    url.protocol = `${options.protocol}:`;
-    return url.toString();
+  async getUrl(_options: { port: number; protocol?: string }): Promise<string> {
+    // arkerd does not expose tunnel/ingress URLs; the public VM API has no
+    // tunnels surface. Inbound reachability is configured via the VM network
+    // settings instead.
+    throw new ArkerError(
+      "unsupported_operation",
+      "getUrl is not supported: the Arker VM API does not expose tunnel URLs",
+      422,
+    );
   }
 
   async destroy(): Promise<void> {

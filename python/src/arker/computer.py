@@ -77,28 +77,6 @@ class Session:
 
 
 @dataclasses.dataclass(frozen=True)
-class TunnelRequest:
-    ports: list[int] | None = None
-    auth_mode: str | None = None
-
-
-@dataclasses.dataclass(frozen=True)
-class Tunnel:
-    vm_id: str
-    port: int
-    visibility: str
-    protocol: str
-    state: str  # "starting" | "open" | "closed"
-    run_id: str | None = None
-    url: str | None = None
-    message: str | None = None
-    started_at: str | None = None
-    tunnel_key: str | None = None
-    auth_mode: str | None = None
-    auth_token: str | None = None
-
-
-@dataclasses.dataclass(frozen=True)
 class Vm:
     vm_id: str
     owner_org_id: str
@@ -120,7 +98,6 @@ class Vm:
     max_memory_mib: int | None = None
     min_memory_mib: int | None = None
     worker_id: str | None = None
-    tunnels: list[Tunnel] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -285,25 +262,6 @@ class ListSessionsResponse:
 
 
 @dataclasses.dataclass(frozen=True)
-class ListTunnelsResponse:
-    tunnels: list[Tunnel]
-    next_cursor: str | None = None
-
-
-@dataclasses.dataclass(frozen=True)
-class DeleteTunnelResponse:
-    deleted: bool
-
-
-@dataclasses.dataclass(frozen=True)
-class ResizeResponse:
-    resized: bool
-    memory_requested_mib: int | None = None
-    memory_achieved_mib: int | None = None
-    memory_partial: bool = False
-
-
-@dataclasses.dataclass(frozen=True)
 class Filesystem:
     filesystem_id: str
     name: str
@@ -435,13 +393,12 @@ class Arker:
         name: str | None = None,
         public: bool | None = None,
         network: bool | str | dict[str, Any] | None = None,
+        egress: bool | str | dict[str, Any] | None = None,
         disk: bool | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
-        max_memory_mib: int | None = None,
         disk_mib: int | None = None,
         durable: bool | None = None,
-        tunnel: TunnelRequest | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -479,6 +436,14 @@ class Arker:
         # irrelevant when forking by id.
         if source_vm_name and source_org_id is None and source_vm_name in GOLDEN_NAMES:
             source_org_id = ARKER_ORG_ID
+        # The contract folds vcpu/memory/disk into a single `resources` object.
+        resources: dict[str, Any] | None = None
+        if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
+            resources = {
+                "vcpu": vcpu_count,
+                "memory_mib": memory_mib,
+                "disk_mib": disk_mib,
+            }
         body = {
             "source_vm_id": source_vm_id,
             "source_vm_name": source_vm_name,
@@ -486,13 +451,10 @@ class Arker:
             "name": name,
             "public": public,
             "network": network,
+            "egress": egress,
             "disk": disk if disk is not None else True,
-            "vcpu_count": vcpu_count,
-            "memory_mib": memory_mib,
-            "max_memory_mib": max_memory_mib,
-            "disk_mib": disk_mib,
             "durable": durable,
-            "tunnel": _tunnel_request_payload(tunnel),
+            "resources": resources,
         }
         burst_ref = source_vm_name or source_vm_id
         use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
@@ -697,7 +659,6 @@ class VM:
     min_memory_mib: int | None
     started_at: str | None
     sessions: list[Session] | None
-    tunnels: list[Tunnel] | None
 
     def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, data: Vm | None = None) -> None:
         self._client = client
@@ -766,15 +727,16 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
-    ) -> ResizeResponse:
-        body = {"vcpu_count": vcpu_count, "memory_mib": memory_mib, "disk_mib": disk_mib}
-        payload = self._client._request("POST", f"{_vm_path(self.id)}/resize", body, base_url=self.base_url)
-        return ResizeResponse(
-            resized=bool(payload.get("resized")),
-            memory_requested_mib=_optional_int(payload.get("memory_requested_mib")),
-            memory_achieved_mib=_optional_int(payload.get("memory_achieved_mib")),
-            memory_partial=_optional_bool(payload.get("memory_partial")),
-        )
+        network: bool | str | dict[str, Any] | None = None,
+    ) -> Vm:
+        """Update this VM's resource allocation (and optionally network) via
+        ``PATCH /v1/vms/{id}``. Returns the updated :class:`Vm`."""
+        resources: dict[str, Any] | None = None
+        if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
+            resources = {"vcpu": vcpu_count, "memory_mib": memory_mib, "disk_mib": disk_mib}
+        body: dict[str, Any] = {"resources": resources, "network": network}
+        payload = self._client._request("PATCH", _vm_path(self.id), body, base_url=self.base_url)
+        return _vm_info(payload)
 
     def delete(self) -> DeleteVmResponse:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
@@ -935,32 +897,6 @@ class VM:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
         return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
 
-    # ── Tunnels: VM-scoped, addressed by recoverable tunnel key ─
-    def list_tunnels(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListTunnelsResponse:
-        path = _build_query(f"{_vm_path(self.id)}/tunnels", {"cursor": cursor, "limit": limit, "state": state})
-        payload = self._client._request("GET", path, base_url=self.base_url)
-        return ListTunnelsResponse(
-            tunnels=[_tunnel(item) for item in payload.get("tunnels", [])],
-            next_cursor=_optional_str(payload.get("next_cursor")),
-        )
-
-    def create_tunnel(self, request: TunnelRequest | dict[str, Any] | None = None, *, ports: list[int] | None = None, auth_mode: str | None = None) -> Tunnel:
-        payload = self._client._request(
-            "POST",
-            f"{_vm_path(self.id)}/tunnels",
-            _tunnel_request_payload(request) or _tunnel_request_payload(TunnelRequest(ports=ports, auth_mode=auth_mode)) or {},
-            base_url=self.base_url,
-        )
-        return _tunnel(payload)
-
-    def get_tunnel(self, key: str) -> Tunnel:
-        payload = self._client._request("GET", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
-        return _tunnel(payload)
-
-    def delete_tunnel(self, key: str) -> DeleteTunnelResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/tunnels/{_segment(key)}", base_url=self.base_url)
-        return DeleteTunnelResponse(deleted=bool(payload.get("deleted")))
-
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -1070,16 +1006,6 @@ def _drop_none(value: Any) -> Any:
     return value
 
 
-def _tunnel_request_payload(value: TunnelRequest | dict[str, Any] | None) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if isinstance(value, TunnelRequest):
-        return _drop_none({"ports": value.ports, "auth_mode": value.auth_mode})
-    if isinstance(value, dict):
-        return _drop_none(value)
-    raise ArkerError("bad_request", "tunnel request must be a TunnelRequest or dict", 400)
-
-
 def _parse_json(text: str) -> Any:
     if not text:
         return {}
@@ -1151,23 +1077,6 @@ def _session_info(payload: dict[str, Any]) -> Session:
     )
 
 
-def _tunnel(payload: dict[str, Any]) -> Tunnel:
-    return Tunnel(
-        vm_id=str(payload["vm_id"]),
-        port=int(payload["port"]),
-        visibility=str(payload["visibility"]),
-        protocol=str(payload["protocol"]),
-        state=str(payload["state"]),
-        run_id=_optional_str(payload.get("run_id")),
-        url=_optional_str(payload.get("url")),
-        message=_optional_str(payload.get("message")),
-        started_at=_optional_str(payload.get("started_at")),
-        tunnel_key=_optional_str(payload.get("tunnel_key")),
-        auth_mode=_optional_str(payload.get("auth_mode")),
-        auth_token=_optional_str(payload.get("auth_token")),
-    )
-
-
 def _filesystem(payload: dict[str, Any]) -> Filesystem:
     return Filesystem(
         filesystem_id=str(payload["filesystem_id"]),
@@ -1210,7 +1119,6 @@ def _vm_info(payload: dict[str, Any]) -> Vm:
         max_memory_mib=_optional_int(payload.get("max_memory_mib")),
         min_memory_mib=_optional_int(payload.get("min_memory_mib")),
         worker_id=_optional_str(payload.get("worker_id")),
-        tunnels=[_tunnel(t) for t in payload.get("tunnels", []) if isinstance(t, dict)],
     )
 
 

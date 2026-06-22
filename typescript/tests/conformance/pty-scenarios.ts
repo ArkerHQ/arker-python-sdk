@@ -91,7 +91,7 @@ async function main(): Promise<void> {
 
     // ---- 1) signals: Ctrl-C interrupts a running foreground command ----
     {
-      const s = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+      const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
       const a = await live(vmId, sid);
       check("signals: shell is live", a !== null);
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
 
     // ---- 2) env + cwd propagation from createSession ----
     {
-      const s = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24, env: { PTY_SCN: "envOK" }, cwd: "/tmp" } as Record<string, unknown>);
+      const s = await arker.vm(vmId).createSession({ env: { PTY_SCN: "envOK" }, cwd: "/tmp" });
       const sid = s.session_id ?? (s as { id?: string }).id!;
       const a = await live(vmId, sid);
       check("env/cwd: shell is live", a !== null);
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
 
     // ---- 4) scrollback replay: output before disconnect is replayed on reattach ----
     {
-      const s = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+      const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
       const a = await live(vmId, sid);
       check("scrollback: shell is live", a !== null);
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
 
     // ---- 5) large output integrity (ordered + complete) ----
     {
-      const s = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+      const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
       const a = await live(vmId, sid);
       check("large-output: shell is live", a !== null);
@@ -183,8 +183,8 @@ async function main(): Promise<void> {
 
     // ---- 6) concurrent independent PTY sessions ----
     {
-      const s1 = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
-      const s2 = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+      const s1 = await arker.vm(vmId).createSession();
+      const s2 = await arker.vm(vmId).createSession();
       const sid1 = s1.session_id ?? (s1 as { id?: string }).id!;
       const sid2 = s2.session_id ?? (s2 as { id?: string }).id!;
       const a = await live(vmId, sid1);
@@ -205,7 +205,7 @@ async function main(): Promise<void> {
 
     // ---- 7) exec-before-PTY corner case (#42): run() then attach a PTY ----
     {
-      const s = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+      const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
       // drive a normal /run on this session FIRST, then attach a PTY to the same session
       await arker.vm(vmId).run("echo PRERUN", { sessionId: sid, timeout: 60 } as Record<string, unknown>).catch(() => {});
@@ -224,7 +224,7 @@ async function main(): Promise<void> {
     //   cancel_ttl_secs the bridge cancels the run and DESTROYS the shell (the WS
     //   closes server-side). This is NOT a detach timer — it fires on the live conn.
     {
-      const s = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+      const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
       const a = await live(vmId, sid, { cancelTtlSecs: 6 });
       check("cancel_ttl: shell is live", a !== null);
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
 
     // ---- 9) cold reconnect after idle-TTL suspend keeps the same shell ----
     {
-      const s = await arker.vm(vmId).createSession({ pty: true, cols: 80, rows: 24 });
+      const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
       const a = await live(vmId, sid);
       check("cold-reconnect: shell is live", a !== null);

@@ -74,30 +74,7 @@ export interface paths {
         delete: operations["deleteVm"];
         options?: never;
         head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vms/{id}/resize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * @description Resize VM resources. Per-run resource overrides can also be
-         *     passed via `RunRequest` and are independent of this endpoint;
-         *     this endpoint sets the VM's baseline allocation.
-         */
-        post: operations["resizeVm"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
+        patch: operations["patchVm"];
         trace?: never;
     };
     "/v1/vms/{id}/runs": {
@@ -306,24 +283,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/tunnels": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        get: operations["listTunnels"];
-        put?: never;
-        post: operations["createTunnel"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/filesystems": {
         parameters: {
             query?: never;
@@ -358,26 +317,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/tunnels/{key}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-                /** @description Recoverable tunnel identity returned as `Tunnel.tunnel_key` and embedded in tunnel URLs. */
-                key: components["parameters"]["TunnelKey"];
-            };
-            cookie?: never;
-        };
-        get: operations["getTunnel"];
-        put?: never;
-        post?: never;
-        delete: operations["deleteTunnel"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -389,6 +328,7 @@ export interface components {
         ErrorCode: "unsupported_operation" | "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "network_error";
         ErrorResponse: {
             code: components["schemas"]["ErrorCode"];
+            /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic; server logs retain the underlying cause. */
             message: string;
         };
         /**
@@ -408,34 +348,26 @@ export interface components {
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /**
-         * @description `starting` = backend is allocating the tunnel; `open` = accepting
-         *     connections; `closed` = torn down or never came up.
-         * @enum {string}
-         */
-        TunnelState: "starting" | "open" | "closed";
         /** @enum {string} */
         ResourceKind: "cpu" | "memory" | "disk";
-        NetworkPolicy: components["schemas"]["NetworkPolicyOpen"] | components["schemas"]["NetworkPolicyBlocked"] | components["schemas"]["NetworkPolicyAllow"] | components["schemas"]["NetworkPolicyBlock"];
-        NetworkPolicyOpen: {
+        /** @description Outbound egress policy stored on the VM. */
+        NetworkPolicy: {
             /** @constant */
             type: "open";
-        };
-        NetworkPolicyBlocked: {
+        } | {
             /** @constant */
             type: "blocked";
-        };
-        NetworkPolicyAllow: {
+        } | {
             /** @constant */
             type: "allow";
             allow: string[];
-        };
-        NetworkPolicyBlock: {
+        } | {
             /** @constant */
             type: "block";
             block: string[];
         };
-        NetworkPolicyInput: boolean | string | components["schemas"]["NetworkPolicy"];
+        /** @description Outbound egress policy input. `true`/`open` means unrestricted; `false`/`blocked`/`none` means deny all. */
+        NetworkPolicyInput: boolean | ("open" | "blocked" | "true" | "false" | "none") | components["schemas"]["NetworkPolicy"];
         ForkRequest: {
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
@@ -447,16 +379,14 @@ export interface components {
             name?: string | null;
             /** @description Make the new VM publicly forkable from other orgs. */
             public?: boolean | null;
-            network?: components["schemas"]["NetworkPolicyInput"] | null;
-            /** @default true */
-            disk?: boolean;
-            vcpu_count?: number | null;
-            memory_mib?: number | null;
-            max_memory_mib?: number | null;
-            disk_mib?: number | null;
+            /** @description Inbound reachability and SSH authorized keys for the new VM. */
+            network?: components["schemas"]["NetworkInput"] | null;
+            /** @description Outbound egress policy for the new VM. Omit to inherit from the source VM, or default to open for image-created VMs with no source. */
+            egress?: components["schemas"]["NetworkPolicyInput"] | null;
+            disk?: boolean | null;
             durable?: boolean | null;
-            /** @description Optional VM-scoped tunnel customization. Omitting it allocates an open any-port tunnel where supported. */
-            tunnel?: components["schemas"]["TunnelRequest"] | null;
+            /** @description Resource shape for the new VM. */
+            resources?: components["schemas"]["VmResources"] | null;
         };
         Session: {
             session_id: string;
@@ -498,21 +428,25 @@ export interface components {
             /** @enum {string|null} */
             provider?: "aws" | "aws-burst" | null;
             started_at?: string | null;
-            vcpu_count?: number | null;
-            memory_mib?: number | null;
-            disk_mib?: number | null;
-            /** @description Effective VM fork-time egress policy. */
-            network?: components["schemas"]["NetworkPolicy"];
+            /** @description Inbound reachability settings for this VM. */
+            network: components["schemas"]["VmNetwork"];
+            /** @description Outbound egress policy for this VM. */
+            egress?: components["schemas"]["NetworkPolicy"] | null;
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
             max_vcpus?: number | null;
+            /** @description Smallest vCPU count accepted for this VM. */
+            min_vcpus?: number | null;
             /** @description Hard memory ceiling (MiB) a fork can hotplug up to. */
             max_memory_mib?: number | null;
             /** @description Non-hotpluggable base memory (MiB). */
             min_memory_mib?: number | null;
-            /** @description Worker host that owns this VM. Used by routers to populate caches without a fresh PlanetScale lookup. */
-            worker_id?: string | null;
+            /** @description Smallest disk size (MiB) accepted for this VM. `0` means nodisk. */
+            min_disk_mib?: number | null;
+            /** @description Largest disk size (MiB) accepted for this VM. `0` means nodisk. */
+            max_disk_mib?: number | null;
             sessions: components["schemas"]["Session"][];
-            tunnels?: components["schemas"]["Tunnel"][];
+            /** @description Current VM resource allocation. */
+            resources: components["schemas"]["VmResources"];
         };
         ListVmsResponse: {
             vms: components["schemas"]["Vm"][];
@@ -698,41 +632,6 @@ export interface components {
             protocol: string;
             url?: string | null;
         };
-        Tunnel: {
-            /** @description The VM this tunnel belongs to. Always populated so flat tunnel listings work without restructuring. */
-            vm_id: string;
-            /** @description Unique-per-VM identifier. */
-            port: number;
-            /** @description The Run that opened this tunnel, if any. VM-scoped tunnels created at fork time or via `POST /vms/{id}/tunnels` have `run_id: null`. */
-            run_id?: string | null;
-            visibility: string;
-            protocol: string;
-            url?: string | null;
-            state: components["schemas"]["TunnelState"];
-            message?: string | null;
-            started_at?: string | null;
-            vm_name?: string | null;
-            source_org_id?: string | null;
-            region?: string | null;
-            /** @enum {string|null} */
-            provider?: "aws" | "aws-burst" | null;
-            /** @description Recoverable tunnel identity embedded in URLs (`p{port}-{key}`). Not a secret. Present on VM-scoped tunnel responses. */
-            tunnel_key?: string | null;
-            /**
-             * @description `open` or `authenticated` for VM-scoped tunnels.
-             * @enum {string|null}
-             */
-            auth_mode?: "open" | "authenticated" | null;
-            /** @description One-time bearer secret returned only when allocating an authenticated tunnel; never echoed on listings. */
-            auth_token?: string | null;
-        };
-        ListTunnelsResponse: {
-            tunnels: components["schemas"]["Tunnel"][];
-            next_cursor?: string | null;
-        };
-        DeleteTunnelResponse: {
-            deleted: boolean;
-        };
         CancelRunResponse: {
             cancelled: boolean;
         };
@@ -741,30 +640,6 @@ export interface components {
                 [key: string]: string;
             } | null;
             cwd?: string | null;
-            pty?: boolean | null;
-            cols?: number | null;
-            rows?: number | null;
-            command?: string | null;
-        };
-        ResizeRequest: {
-            vcpu_count?: number | null;
-            memory_mib?: number | null;
-            disk_mib?: number | null;
-        };
-        ResizeResponse: {
-            resized: boolean;
-            /**
-             * Format: uint64
-             * @description Requested total memory (MiB), present only when the request carried memory_mib.
-             */
-            memory_requested_mib?: number;
-            /**
-             * Format: uint64
-             * @description Achieved total memory (MiB). virtio-mem unplug is best-effort, so this can exceed memory_requested_mib when guest pages are pinned.
-             */
-            memory_achieved_mib?: number;
-            /** @description True when a memory target was requested but the runtime could not reach it (achieved differs from requested beyond virtio-mem block granularity). Treat as target-not-met. */
-            memory_partial?: boolean;
         };
         Sync: {
             sync_id: string;
@@ -893,18 +768,31 @@ export interface components {
         FilesystemCreateRequest: {
             name: string;
         };
-        TunnelRequest: {
-            /**
-             * @description Allowed VM ports for this tunnel. Omitted, null, or empty means any port.
-             * @default []
-             */
-            ports?: number[] | null;
-            /**
-             * @description `open` allows unauthenticated tunnel requests. `authenticated` returns a one-time bearer `auth_token` and requires it on tunnel requests.
-             * @default open
-             * @enum {string|null}
-             */
-            auth_mode?: "open" | "authenticated" | null;
+        VmResources: {
+            vcpu?: number | null;
+            memory_mib?: number | null;
+            disk_mib?: number | null;
+        };
+        NetworkInput: {
+            /** @description Enable inbound reachability for this VM. Defaults to false. */
+            reachable?: boolean | null;
+            /** @description OpenSSH public keys authorized for terminator auth and in-VM sshd injection. */
+            ssh_public_keys?: string[];
+        };
+        SshPublicKeyInfo: {
+            public_key: string;
+            fingerprint: string;
+        };
+        VmNetwork: {
+            reachable: boolean;
+            /** @description Stable per-VM hostname, present when reachable is true. */
+            hostname?: string | null;
+            /** @description Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty. */
+            ssh_public_keys?: components["schemas"]["SshPublicKeyInfo"][];
+        };
+        PatchVmRequest: {
+            resources?: components["schemas"]["VmResources"] | null;
+            network?: components["schemas"]["NetworkInput"] | null;
         };
     };
     responses: {
@@ -937,8 +825,6 @@ export interface components {
         Cursor: string | null;
         /** @description Max items per page. Backend caps may apply. */
         Limit: number;
-        /** @description Recoverable tunnel identity returned as `Tunnel.tunnel_key` and embedded in tunnel URLs. */
-        TunnelKey: string;
     };
     requestBodies: never;
     headers: never;
@@ -1114,7 +1000,7 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    resizeVm: {
+    patchVm: {
         parameters: {
             query?: never;
             header?: never;
@@ -1125,20 +1011,19 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ResizeRequest"];
+                "application/json": components["schemas"]["PatchVmRequest"];
             };
         };
         responses: {
-            /** @description Resize result. */
+            /** @description Updated VM details. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResizeResponse"];
+                    "application/json": components["schemas"]["Vm"];
                 };
             };
-            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
@@ -1535,62 +1420,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    listTunnels: {
-        parameters: {
-            query?: {
-                /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
-                cursor?: components["parameters"]["Cursor"];
-                /** @description Max items per page. Backend caps may apply. */
-                limit?: components["parameters"]["Limit"];
-                state?: components["schemas"]["TunnelState"];
-            };
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Tunnels on this VM. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListTunnelsResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    createTunnel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": components["schemas"]["TunnelRequest"];
-            };
-        };
-        responses: {
-            /** @description Created tunnel. `auth_token` is returned only once for authenticated tunnels. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Tunnel"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     listFilesystems: {
         parameters: {
             query?: {
@@ -1685,56 +1514,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeleteFilesystemResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    getTunnel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-                /** @description Recoverable tunnel identity returned as `Tunnel.tunnel_key` and embedded in tunnel URLs. */
-                key: components["parameters"]["TunnelKey"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Tunnel details. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Tunnel"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    deleteTunnel: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-                /** @description Recoverable tunnel identity returned as `Tunnel.tunnel_key` and embedded in tunnel URLs. */
-                key: components["parameters"]["TunnelKey"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Delete result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeleteTunnelResponse"];
                 };
             };
             default: components["responses"]["Error"];

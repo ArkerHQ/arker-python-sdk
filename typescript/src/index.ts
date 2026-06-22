@@ -48,7 +48,7 @@ const BURST_SOURCE_REFS = new Set(["arkuntu"]);
 const BURST_VM_ID = /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$/;
 
 type FetchLike = typeof fetch;
-type HttpMethod = "GET" | "POST" | "DELETE";
+type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 type JsonObject = Record<string, unknown>;
 
 interface BufferValue extends Uint8Array {
@@ -94,7 +94,6 @@ export interface ArkerOptions {
 export type VmState = ApiSchema<"VmState">;
 export type SessionState = ApiSchema<"SessionState">;
 export type RunState = ApiSchema<"RunState">;
-export type TunnelState = ApiSchema<"TunnelState">;
 export type ResourceKind = ApiSchema<"ResourceKind">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
 
@@ -103,6 +102,9 @@ export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
 export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
 export type ForkRequest = ApiSchema<"ForkRequest">;
 export type ForkOptions = ForkRequest;
+export type VmResources = ApiSchema<"VmResources">;
+export type VmNetwork = ApiSchema<"VmNetwork">;
+export type NetworkInput = ApiSchema<"NetworkInput">;
 export type Session = ApiSchema<"Session">;
 export type Vm = ApiSchema<"Vm">;
 export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
@@ -144,10 +146,6 @@ export type RunOptions = Partial<Omit<RunRequest, "command">> & {
 };
 export type InboundPortRequest = ApiSchema<"InboundPortRequest">;
 export type NetworkRequest = ApiSchema<"NetworkRequest">;
-export type TunnelRequest = ApiSchema<"TunnelRequest">;
-export type Tunnel = ApiSchema<"Tunnel">;
-export type ListTunnelsResponse = ApiSchema<"ListTunnelsResponse">;
-export type DeleteTunnelResponse = ApiSchema<"DeleteTunnelResponse">;
 export type NetworkStatus = ApiSchema<"NetworkStatus">;
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
@@ -160,10 +158,11 @@ export type ListOrgRunsResponse = ApiSchema<"ListOrgRunsResponse">;
 export type RunListRow = OrgRunListRow;
 export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
-// ── Sessions / resize ──────────────────────────────────────────────
+// ── Sessions ───────────────────────────────────────────────────────
 export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
-export type ResizeRequest = ApiSchema<"ResizeRequest">;
-export type ResizeResponse = ApiSchema<"ResizeResponse">;
+
+// ── VM resize (PATCH /v1/vms/{id}) ─────────────────────────────────
+export type PatchVmRequest = ApiSchema<"PatchVmRequest">;
 
 // ── Errors ─────────────────────────────────────────────────────────
 export type ErrorResponse = ApiSchema<"ErrorResponse">;
@@ -179,8 +178,6 @@ export type RunNetworkRequest = NetworkRequest;
 export type RunNetworkStatus = NetworkStatus;
 /** @deprecated Use `InboundPortRequest`. */
 export type RunInboundPortRequest = InboundPortRequest;
-/** @deprecated Use `Tunnel`. */
-export type RunTunnelStatus = Tunnel;
 
 // ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
@@ -440,6 +437,23 @@ export class Arker {
       (src.sourceVmName !== undefined && GOLDEN_NAMES.has(src.sourceVmName)
         ? ARKER_ORG_ID
         : undefined);
+    // Back-compat: callers used to pass flat resource fields
+    // (vcpu_count / memory_mib / disk_mib). The contract now folds these
+    // into a single `resources` object, so map any legacy flat fields in.
+    const legacy = src as {
+      vcpu_count?: number | null;
+      memory_mib?: number | null;
+      disk_mib?: number | null;
+    };
+    const resources: VmResources | null =
+      src.resources ??
+      (legacy.vcpu_count != null || legacy.memory_mib != null || legacy.disk_mib != null
+        ? {
+            vcpu: legacy.vcpu_count ?? null,
+            memory_mib: legacy.memory_mib ?? null,
+            disk_mib: legacy.disk_mib ?? null,
+          }
+        : null);
     const body: ForkRequest = {
       source_vm_id: src.sourceVmId ?? null,
       source_vm_name: src.sourceVmName ?? null,
@@ -447,13 +461,10 @@ export class Arker {
       name: src.name ?? null,
       public: src.public ?? null,
       network: src.network ?? null,
+      egress: src.egress ?? null,
       disk: src.disk ?? true,
-      vcpu_count: src.vcpu_count ?? null,
-      memory_mib: src.memory_mib ?? null,
-      max_memory_mib: src.max_memory_mib ?? null,
-      disk_mib: src.disk_mib ?? null,
       durable: src.durable ?? null,
-      tunnel: src.tunnel ?? null,
+      resources,
     };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
@@ -675,7 +686,6 @@ export class VM {
   readonly root_source_vm_name?: string | null;
   readonly worker_id?: string | null;
   readonly sessions?: Session[];
-  readonly tunnels?: Tunnel[];
 
   constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), data?: Vm) {
     this._client = client;
@@ -826,8 +836,33 @@ export class VM {
     throw new ArkerError(lastError?.code ?? "internal", lastError?.message ?? "write failed", 200);
   }
 
-  async resize(request: ResizeRequest): Promise<ResizeResponse> {
-    return this._client._request("POST", `${vmPath(this.id)}/resize`, request, this.baseUrl);
+  /**
+   * Update this VM's resource allocation and/or network settings via
+   * `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
+   *
+   * Accepts either a `PatchVmRequest` (`{ resources, network }`) or, for
+   * convenience, flat resource fields (`{ vcpu, memory_mib, disk_mib }`)
+   * which are folded into `resources`.
+   */
+  async resize(
+    request:
+      | PatchVmRequest
+      | (VmResources & Pick<PatchVmRequest, "network">),
+  ): Promise<Vm> {
+    const r = request as PatchVmRequest &
+      VmResources & { resources?: VmResources | null };
+    const body: PatchVmRequest =
+      r.resources !== undefined || (r.vcpu === undefined && r.memory_mib === undefined && r.disk_mib === undefined)
+        ? { resources: r.resources ?? null, network: r.network ?? null }
+        : {
+            resources: {
+              vcpu: r.vcpu ?? null,
+              memory_mib: r.memory_mib ?? null,
+              disk_mib: r.disk_mib ?? null,
+            },
+            network: r.network ?? null,
+          };
+    return this._client._request("PATCH", vmPath(this.id), body, this.baseUrl);
   }
 
   async delete(): Promise<DeleteVmResponse> {
@@ -914,25 +949,6 @@ export class VM {
     const factory = options.webSocketFactory ?? (useTicket ? browserPtyWebSocketFactory : nodePtyWebSocketFactory);
     const socket = await factory(url, useTicket ? {} : { headers: this._client._authHeaders() });
     return new PtyConnectionImpl(sessionId, socket);
-  }
-
-  // ── Tunnels: VM-scoped, addressed by recoverable tunnel key ───────
-  async listTunnels(opts: ListOpts & { state?: TunnelState } = {}): Promise<ListTunnelsResponse> {
-    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/tunnels`, {
-      cursor: opts.cursor, limit: opts.limit, state: opts.state,
-    }), undefined, this.baseUrl);
-  }
-
-  async createTunnel(request: TunnelRequest = {}): Promise<Tunnel> {
-    return this._client._request("POST", `${vmPath(this.id)}/tunnels`, request, this.baseUrl);
-  }
-
-  async getTunnel(key: string): Promise<Tunnel> {
-    return this._client._request("GET", `${vmPath(this.id)}/tunnels/${pathSegment(key)}`, undefined, this.baseUrl);
-  }
-
-  async deleteTunnel(key: string): Promise<DeleteTunnelResponse> {
-    return this._client._request("DELETE", `${vmPath(this.id)}/tunnels/${pathSegment(key)}`, undefined, this.baseUrl);
   }
 }
 
