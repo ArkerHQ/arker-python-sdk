@@ -12,11 +12,12 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 CHUNK_SIZE = 4 * 1024 * 1024
 
@@ -897,6 +898,233 @@ class VM:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
         return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
 
+    # ── Interactive PTY ────────────────────────────────────────────────
+    def create_pty(
+        self,
+        *,
+        on_data: Callable[[bytes], None] | None = None,
+        session_id: str | None = None,
+        cols: int | None = None,
+        rows: int | None = None,
+        command: str | None = None,
+        persist: bool | None = None,
+        cancel_ttl_secs: int | None = None,
+        on_close: Callable[[Pty.CloseEvent], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+        use_ticket: bool = True,
+    ) -> Pty:
+        """Open an interactive pseudo-terminal in this VM over a WebSocket.
+
+        Mirrors the TypeScript ``connectPty``. Creates a session if
+        ``session_id`` is omitted, mints a browser PTY ticket
+        (``POST .../pty-ticket``), then opens the PTY WebSocket against this
+        VM's *regional* base url. Server→client binary frames are delivered to
+        ``on_data`` from a background reader thread.
+
+        Reconnect/persist: pass an existing ``session_id`` with
+        ``persist=True`` (the default backend behavior) to reattach to a
+        running shell (scrollback is replayed).
+
+        Requires the ``websocket-client`` package — ``pip install 'arker[pty]'``.
+        """
+        sid = session_id or self.create_session().session_id
+
+        params: dict[str, Any] = {
+            "cols": _clamp_pty_dimension(cols) if cols is not None else None,
+            "rows": _clamp_pty_dimension(rows) if rows is not None else None,
+            "command": command,
+            "persist": persist,
+            "cancel_ttl_secs": int(cancel_ttl_secs)
+            if cancel_ttl_secs and cancel_ttl_secs > 0
+            else None,
+        }
+
+        ticket: str | None = None
+        headers: dict[str, str] | None = None
+        if use_ticket:
+            response = self._client._request(
+                "POST",
+                f"{_vm_path(self.id)}/sessions/{_segment(sid)}/pty-ticket",
+                {},
+                base_url=self.base_url,
+            )
+            ticket = str(response["ticket"])
+        else:
+            # Header auth (server-side use): Bearer key on the WS upgrade.
+            headers = {"authorization": f"Bearer {self._client._api_key}"}
+
+        ws_params = dict(params)
+        if ticket is not None:
+            ws_params["ticket"] = ticket
+        url = _build_pty_ws_url(self.base_url, self.id, sid, ws_params)
+
+        return Pty(
+            session_id=sid,
+            url=url,
+            headers=headers,
+            on_data=on_data,
+            on_close=on_close,
+            on_error=on_error,
+        )
+
+
+class Pty:
+    """An interactive pseudo-terminal connection to a VM over a WebSocket.
+
+    Mirrors the TypeScript ``PtyConnection``. Server→client terminal output is
+    delivered to the ``on_data`` callback from a background reader thread; use
+    :meth:`send_input` to write stdin, :meth:`resize` to change dimensions,
+    :meth:`kill` to destroy the shell, and :meth:`close` to detach.
+
+    Obtain one via :meth:`VM.create_pty`. Requires the ``websocket-client``
+    package (``pip install 'arker[pty]'``).
+    """
+
+    @dataclasses.dataclass
+    class CloseEvent:
+        code: int | None = None
+        reason: str | None = None
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        on_data: Callable[[bytes], None] | None = None,
+        on_close: Callable[[Pty.CloseEvent], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+        connect_timeout: float = 30.0,
+    ) -> None:
+        try:
+            import websocket  # type: ignore
+        except ImportError as error:  # pragma: no cover - import guard
+            raise ArkerError(
+                "missing_dependency",
+                "interactive PTY needs the 'websocket-client' package; "
+                "install with: pip install 'arker[pty]'",
+                0,
+            ) from error
+
+        self.session_id = session_id
+        self._data_listeners: list[Callable[[bytes], None]] = []
+        self._close_listeners: list[Callable[[Pty.CloseEvent], None]] = []
+        self._error_listeners: list[Callable[[Exception], None]] = []
+        if on_data is not None:
+            self._data_listeners.append(on_data)
+        if on_close is not None:
+            self._close_listeners.append(on_close)
+        if on_error is not None:
+            self._error_listeners.append(on_error)
+
+        self._open = threading.Event()
+        self._open_error: Exception | None = None
+        self._closed = False
+
+        header_list = [f"{k}: {v}" for k, v in (headers or {}).items()]
+        self._ws = websocket.WebSocketApp(
+            url,
+            header=header_list,
+            on_open=self._handle_open,
+            on_message=self._handle_message,
+            on_error=self._handle_error,
+            on_close=self._handle_close,
+        )
+        self._thread = threading.Thread(
+            target=self._ws.run_forever, name="arker-pty", daemon=True
+        )
+        self._thread.start()
+
+        if not self._open.wait(timeout=connect_timeout):
+            self.close()
+            raise ArkerError("network_error", "PTY WebSocket failed to open (timeout)", 0)
+        if self._open_error is not None:
+            raise ArkerError("network_error", f"PTY WebSocket failed to open: {self._open_error}", 0)
+
+    # ── Listener registration ──────────────────────────────────────────
+    def on_data(self, listener: Callable[[bytes], None]) -> Callable[[], None]:
+        self._data_listeners.append(listener)
+        return lambda: self._data_listeners.remove(listener) if listener in self._data_listeners else None
+
+    def on_close(self, listener: Callable[[Pty.CloseEvent], None]) -> Callable[[], None]:
+        self._close_listeners.append(listener)
+        return lambda: self._close_listeners.remove(listener) if listener in self._close_listeners else None
+
+    def on_error(self, listener: Callable[[Exception], None]) -> Callable[[], None]:
+        self._error_listeners.append(listener)
+        return lambda: self._error_listeners.remove(listener) if listener in self._error_listeners else None
+
+    # ── I/O ─────────────────────────────────────────────────────────────
+    def send_input(self, data: bytes | str) -> None:
+        """Write stdin bytes to the terminal (a binary frame)."""
+        import websocket  # type: ignore
+
+        payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        self._ws.send(payload, opcode=websocket.ABNF.OPCODE_BINARY)
+
+    # Alias matching the TS ``send`` surface.
+    send = send_input
+
+    def resize(self, cols: int, rows: int) -> None:
+        """Resize the terminal (a JSON control frame)."""
+        self._send_control({
+            "type": "resize",
+            "cols": _clamp_pty_dimension(cols),
+            "rows": _clamp_pty_dimension(rows),
+        })
+
+    def kill(self) -> None:
+        """Destroy the shell (a JSON ``kill`` control frame)."""
+        self._send_control({"type": "kill"})
+
+    def ping(self) -> None:
+        self._send_control({"type": "ping"})
+
+    def close(self, code: int | None = None, reason: str | None = None) -> None:
+        """Detach: close the WebSocket. With ``persist`` the shell keeps
+        running and can be reattached via the same ``session_id``."""
+        try:
+            if code is not None:
+                self._ws.close(status=code, reason=(reason or "").encode("utf-8"))
+            else:
+                self._ws.close()
+        except Exception:
+            pass
+
+    # ── Internals ───────────────────────────────────────────────────────
+    def _send_control(self, message: dict[str, Any]) -> None:
+        import websocket  # type: ignore
+
+        self._ws.send(json.dumps(message), opcode=websocket.ABNF.OPCODE_TEXT)
+
+    def _handle_open(self, _ws: Any) -> None:
+        self._open.set()
+
+    def _handle_message(self, _ws: Any, message: Any) -> None:
+        if isinstance(message, str):
+            message = message.encode("utf-8")
+        for listener in list(self._data_listeners):
+            listener(message)
+
+    def _handle_error(self, _ws: Any, error: Any) -> None:
+        exc = error if isinstance(error, Exception) else Exception(str(error))
+        if not self._open.is_set():
+            self._open_error = exc
+            self._open.set()
+        for listener in list(self._error_listeners):
+            listener(exc)
+
+    def _handle_close(self, _ws: Any, code: Any, reason: Any) -> None:
+        self._closed = True
+        # Unblock the constructor if we closed before opening.
+        self._open.set()
+        event = Pty.CloseEvent(
+            code=int(code) if isinstance(code, int) else None,
+            reason=reason if isinstance(reason, str) else None,
+        )
+        for listener in list(self._close_listeners):
+            listener(event)
+
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -996,6 +1224,35 @@ def _vm_path(vm_id: str) -> str:
 
 def _segment(value: str) -> str:
     return urllib.parse.quote(value, safe="")
+
+
+def _clamp_pty_dimension(value: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, min(1000, n))
+
+
+def _build_pty_ws_url(base_url: str, vm_id: str, session_id: str, params: dict[str, Any]) -> str:
+    """Build the ``wss://`` PTY URL for ``base_url`` (the VM's regional base)."""
+    http_url = f"{_normalize_base_url(base_url)}{_vm_path(vm_id)}/sessions/{_segment(session_id)}/pty"
+    parsed = urllib.parse.urlsplit(http_url)
+    if parsed.scheme == "https":
+        scheme = "wss"
+    elif parsed.scheme == "http":
+        scheme = "ws"
+    else:
+        raise ValueError(f"unsupported PTY WebSocket protocol: {parsed.scheme}")
+    pairs: list[tuple[str, str]] = []
+    for key, value in params.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        pairs.append((key, str(value)))
+    query = urllib.parse.urlencode(pairs)
+    return urllib.parse.urlunsplit((scheme, parsed.netloc, parsed.path, query, ""))
 
 
 def _drop_none(value: Any) -> Any:
