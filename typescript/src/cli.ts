@@ -222,14 +222,34 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   }
 
   if (!sourceVmId && !sourceVmName) {
-    die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]");
+    die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]\n" +
+        "       [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]");
   }
+
+  // Resource overrides — same flag names as `arker resize` for consistency.
+  // Folded into the contract's single `resources` object; unset fields stay
+  // null so the source VM's defaults apply.
+  const vcpu = numFlag(args, "vcpu");
+  const memoryMib = numFlag(args, "memory-mib");
+  const diskMib = numFlag(args, "disk-mib");
+  const hasResources = vcpu !== undefined || memoryMib !== undefined || diskMib !== undefined;
+  const resources = hasResources
+    ? { vcpu: vcpu ?? null, memory_mib: memoryMib ?? null, disk_mib: diskMib ?? null }
+    : undefined;
+
+  // --no-disk forks a nodisk (memory-backed) VM; default leaves disk to the
+  // SDK (which defaults disk=true). (Inbound reachability is intentionally not
+  // exposed on the CLI yet — see the descoped SSH/reachability work.)
+  const disk = boolFlag(args, "no-disk") ? false : undefined;
+
   const computer = await client.fork({
     sourceVmId,
     sourceVmName,
     sourceOrgId,
     name,
     public: publicFlag,
+    ...(resources ? { resources } : {}),
+    ...(disk !== undefined ? { disk } : {}),
   });
   out({ vm_id: computer.id });
 }
@@ -238,11 +258,14 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
   const vmId = args.positional[0] ?? die("usage: arker run <vm_id> <command...>");
   const command = args.positional.slice(1).join(" ");
   if (!command) die("missing command to run");
+  const sessionIdx = numFlag(args, "session-idx");
   const result: RunResult = await client.vm(vmId).run(command, {
     background: boolFlag(args, "background"),
     timeout: numFlag(args, "timeout"),
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
+    session_id: args.flags["session-id"] as string | undefined,
+    ...(sessionIdx !== undefined ? { session_idx: sessionIdx } : {}),
   });
   if (args.flags.json) {
     out(runResultForJson(result));
@@ -873,7 +896,9 @@ function usage(): never {
       "  arker fork --source-vm-id <id>                 fork by global id",
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
-      "  arker run <vm> <command>                       run a command",
+      "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
+      "                                                 fork with resource/network overrides",
+      "  arker run <vm> <command> [--session-id <id>] [--session-idx N]   run a command",
       "  arker resize <vm> [--memory-mib N] [--vcpu N] [--disk-mib N]   resize a VM (PATCH)",
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "  arker ssh <vm_id>                              register your SSH key + print the ssh command",
@@ -894,6 +919,20 @@ function usage(): never {
       "  --base-url <url>           override compute URL (env ARKER_BASE_URL)",
       "  --control-base-url <url>   override CF Worker URL (env ARKER_CONTROL_BASE_URL)",
       "  --json                     emit JSON instead of tabular output",
+      "",
+      "Fork flags:",
+      "  --vcpu <n>                 vCPU count for the new VM (capped by source max_vcpus)",
+      "  --memory-mib <n>           memory (MiB) for the new VM",
+      "  --disk-mib <n>             disk size (MiB) for the new VM",
+      "  --no-disk                  fork a memory-backed (nodisk) VM",
+      "",
+      "Run flags:",
+      "  --session-id <ulid>        run in a specific existing session",
+      "  --session-idx <n>          run in the session at this index (default 0)",
+      "  --background               return a run id instead of blocking",
+      "  --timeout <secs>           per-run timeout",
+      "  --acquire <list>           warm resources before the run (cpu,memory,disk)",
+      "  --release <list>           release resources after the run (cpu,memory,disk)",
       "",
       "Shell flags:",
       "  --session-id <id>          reconnect to an existing PTY session",
