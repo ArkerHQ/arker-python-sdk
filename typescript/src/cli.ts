@@ -23,6 +23,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
@@ -639,6 +640,202 @@ function bridgePty(pty: PtyConnection, options: BridgePtyOptions): Promise<numbe
   });
 }
 
+// ── SSH ────────────────────────────────────────────────────────────
+//
+// Onboarding flow: a user runs `arker ssh <vm_id>` and is dropped into a
+// shell over real OpenSSH. To make that turnkey the CLI:
+//   1. Resolves (or generates) a local SSH key pair.
+//   2. Registers the public key against the account via the authed API
+//      (POST /v1/account/ssh-keys). The key is account-scoped, so this
+//      runs once and is a no-op (idempotent) on subsequent calls.
+//   3. Prints — or with --connect/-c, execs — the ready-to-run
+//      `ssh <vm_id>@<host>` command. The username IS the VM id; arkerd's
+//      SSH server (aws/arkerd/src/ssh/server.rs) parses it as the target.
+//
+// The public SSH endpoint is fronted by AWS Global Accelerator on port 22
+// in regions with enableGlobalAccelerator. The default host below
+// (aws-<region>.arker.ai) matches the value arkerd bakes into ARKER_SSH_HOST
+// (infra/region/index.ts sshHostname); override with --host / ARKER_SSH_HOST
+// when the regional DNS does not point at the accelerator's port-22 IPs.
+
+interface AccountSshKeyInfo {
+  id: string;
+  fingerprint: string;
+  label?: string | null;
+  public_key?: string | null;
+  created_at?: string;
+  last_used_at?: string | null;
+}
+
+const SSH_PORT_DEFAULT = 22;
+
+function defaultIdentityBase(): string {
+  return join(homedir(), ".ssh", "id_ed25519");
+}
+
+// Resolve the local SSH key pair, generating an ed25519 pair if asked and
+// none exists. Returns the public key text and the private key path (for the
+// printed `ssh -i` command).
+function resolveLocalSshKey(
+  args: ParsedArgs,
+): { publicKey: string; privateKeyPath: string; publicKeyPath: string } {
+  const explicit = args.flags.identity as string | undefined;
+  // --identity may point at either the private or the .pub; normalise.
+  const privateKeyPath = explicit
+    ? explicit.replace(/\.pub$/, "")
+    : defaultIdentityBase();
+  const publicKeyPath = `${privateKeyPath}.pub`;
+
+  if (!existsSync(publicKeyPath)) {
+    if (!boolFlag(args, "generate")) {
+      die(
+        `no SSH public key at ${publicKeyPath}. ` +
+          `Pass --identity <path>, or --generate to create an ed25519 key pair.`,
+      );
+    }
+    err(`generating ed25519 key pair at ${privateKeyPath}`);
+    const gen = spawnSync(
+      "ssh-keygen",
+      ["-t", "ed25519", "-N", "", "-f", privateKeyPath, "-C", "arker-cli"],
+      { stdio: "inherit" },
+    );
+    if (gen.status !== 0) die("ssh-keygen failed to generate a key pair");
+  }
+
+  const publicKey = readFileSync(publicKeyPath, "utf8").trim();
+  if (!publicKey) die(`SSH public key at ${publicKeyPath} is empty`);
+  return { publicKey, privateKeyPath, publicKeyPath };
+}
+
+// Register a public key against the account. Idempotent: arkerd returns the
+// existing row (200) when the same key is already registered for this org,
+// and a flat {code,message} 409 only when the key belongs to a *different*
+// account — surfaced as a clear error.
+async function registerAccountSshKey(
+  client: Arker,
+  publicKey: string,
+  label: string | undefined,
+): Promise<AccountSshKeyInfo> {
+  return client._request<AccountSshKeyInfo>(
+    "POST",
+    "/v1/account/ssh-keys",
+    { public_key: publicKey, label: label ?? null },
+    client.baseUrl,
+  );
+}
+
+// Derive the customer-facing SSH host. Precedence: --host, ARKER_SSH_HOST,
+// then aws-<region>.arker.ai (the value arkerd bakes into config for the
+// regional accelerator). Falls back to the compute base hostname.
+function resolveSshHost(args: ParsedArgs, client: Arker): string {
+  const explicit =
+    (args.flags.host as string | undefined) ?? process.env.ARKER_SSH_HOST;
+  if (explicit) return explicit;
+  if (client.region) return `aws-${client.region}.arker.ai`;
+  try {
+    return new URL(client.baseUrl).hostname;
+  } catch {
+    die("could not determine SSH host; pass --host <hostname>");
+  }
+}
+
+async function cmdSsh(args: ParsedArgs, client: Arker): Promise<void> {
+  const vmId =
+    (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
+  if (!vmId) {
+    die(
+      "usage: arker ssh <vm_id> [--identity <path>] [--generate] " +
+        "[--host <h>] [--port <n>] [--connect|-c] [--skip-register]",
+    );
+  }
+
+  const { publicKey, privateKeyPath } = resolveLocalSshKey(args);
+
+  if (!boolFlag(args, "skip-register")) {
+    const label =
+      (args.flags.label as string | undefined) ?? `arker-cli ${homedir().split("/").pop() ?? ""}`.trim();
+    try {
+      const key = await registerAccountSshKey(client, publicKey, label);
+      err(`registered SSH key ${key.fingerprint}${key.label ? ` (${key.label})` : ""}`);
+    } catch (e) {
+      if (e instanceof ArkerError && e.status === 409) {
+        die(`this SSH key is already registered to a different account: ${e.message}`);
+      }
+      if (e instanceof ArkerError && e.status === 403) {
+        die(
+          "your API key lacks the developer role required to register SSH keys. " +
+            "Register the key in the console, then re-run with --skip-register.",
+        );
+      }
+      throw e;
+    }
+  }
+
+  const host = resolveSshHost(args, client);
+  const port = numFlag(args, "port") ?? SSH_PORT_DEFAULT;
+  const sshArgs = [
+    "-i",
+    privateKeyPath,
+    ...(port !== 22 ? ["-p", String(port)] : []),
+    `${vmId}@${host}`,
+  ];
+  const command = `ssh ${sshArgs.join(" ")}`;
+
+  if (boolFlag(args, "connect") || boolFlag(args, "c")) {
+    err(`connecting: ${command}`);
+    const r = spawnSync("ssh", sshArgs, { stdio: "inherit" });
+    process.exit(r.status ?? 1);
+  }
+
+  // Default: print the ready-to-paste command. stdout-only so it can be
+  // captured (`eval "$(arker ssh <vm> --print)"` style).
+  out(command);
+}
+
+async function cmdSshKeys(args: ParsedArgs, client: Arker): Promise<void> {
+  const sub = args.positional[0];
+  const rest = args.positional.slice(1);
+  switch (sub) {
+    case undefined:
+    case "ls":
+    case "list": {
+      const res = await client._request<{ keys: AccountSshKeyInfo[] }>(
+        "GET",
+        "/v1/account/ssh-keys",
+        undefined,
+        client.baseUrl,
+      );
+      if (args.flags.json) return out(res);
+      for (const k of res.keys) {
+        out(`${k.id}\t${k.fingerprint}\t${k.label ?? "—"}`);
+      }
+      return;
+    }
+    case "add": {
+      const { publicKey } = resolveLocalSshKey(args);
+      const label = args.flags.label as string | undefined;
+      const key = await registerAccountSshKey(client, publicKey, label);
+      if (args.flags.json) return out(key);
+      out(`${key.id}\t${key.fingerprint}\t${key.label ?? "—"}`);
+      return;
+    }
+    case "rm":
+    case "delete": {
+      const id = rest[0] ?? die("usage: arker ssh-keys rm <key_id>");
+      const r = await client._request<{ deleted: boolean }>(
+        "DELETE",
+        `/v1/account/ssh-keys/${encodeURIComponent(id)}`,
+        undefined,
+        client.baseUrl,
+      );
+      out(r.deleted ? `deleted ${id}` : "delete failed");
+      return;
+    }
+    default:
+      die("usage: arker ssh-keys <ls|add|rm> ...");
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 function numFlag(args: ParsedArgs, name: string): number | undefined {
@@ -679,6 +876,8 @@ function usage(): never {
       "  arker run <vm> <command>                       run a command",
       "  arker resize <vm> [--memory-mib N] [--vcpu N] [--disk-mib N]   resize a VM (PATCH)",
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
+      "  arker ssh <vm_id>                              register your SSH key + print the ssh command",
+      "  arker ssh <vm_id> --connect                    register + drop straight into the ssh session",
       "",
       "Resources:",
       "  arker vms         <ls|get|rm|fork|run> ...",
@@ -686,6 +885,7 @@ function usage(): never {
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
+      "  arker ssh-keys    <ls|add|rm> ...           manage account SSH keys",
       "",
       "Flags:",
       "  --api-key <key>            (or env ARKER_API_KEY)",
@@ -700,6 +900,15 @@ function usage(): never {
       "  --command <path>           shell executable path (default: /bin/bash)",
       "  --cols <n> --rows <n>      initial terminal size",
       "  --no-persist               close the remote PTY process on disconnect",
+      "",
+      "SSH flags:",
+      "  --identity <path>          local key (private or .pub); default ~/.ssh/id_ed25519",
+      "  --generate                 create an ed25519 key pair if none exists",
+      "  --host <hostname>          SSH host (or env ARKER_SSH_HOST; default aws-<region>.arker.ai)",
+      "  --port <n>                 SSH port (default 22)",
+      "  --connect, -c              exec ssh instead of just printing the command",
+      "  --skip-register            don't register the key (assume already registered)",
+      "  --label <text>             label for the registered key",
       "",
       `Arker org id: ${ARKER_ORG_ID}`,
     ].join("\n"),
@@ -735,6 +944,11 @@ async function main(): Promise<void> {
         return await cmdSyncs(args, client);
       case "shell":
         return await cmdShell(args, client);
+      case "ssh":
+        return await cmdSsh(args, client);
+      case "ssh-keys":
+      case "ssh_keys":
+        return await cmdSshKeys(args, client);
       // Resources.
       case "vms":
         return await cmdVms(args, client);

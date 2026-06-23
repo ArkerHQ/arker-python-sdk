@@ -34,6 +34,9 @@ async function runCli(baseUrl: string, args: string[]): Promise<CliResult> {
       ...process.env,
       ARKER_API_KEY: "ark_live_test",
       ARKER_BASE_URL: baseUrl,
+      // Suppress Node's own runtime warnings (e.g. tsx's DEP0205 module.register
+      // deprecation on Node >=22) so stderr reflects only what the CLI itself writes.
+      NODE_NO_WARNINGS: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
