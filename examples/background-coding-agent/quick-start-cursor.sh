@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Background coding agent — quick start
+# Background coding agent — quick start (Cursor)
 #
 # Forks a fresh machine from the public `ubuntu-full` golden and runs the Cursor
 # CLI agent inside it to make a small code change. A background coding agent is
