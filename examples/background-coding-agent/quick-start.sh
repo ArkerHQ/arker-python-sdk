@@ -24,7 +24,9 @@ echo "forked machine: $VM"
 # ── 3. Run the Cursor CLI agent inside the machine ──────────────────────────
 # Install the Cursor CLI, then have it carry out a basic task.
 arker run "$VM" "curl https://cursor.com/install -fsS | bash"
-arker run "$VM" "CURSOR_API_KEY=$CURSOR_API_KEY cursor-agent -p 'create hello.py that prints hello world, then run it'"
+# `-f` (trust this directory) is required for non-interactive use; without it
+# cursor-agent stops on a "Workspace Trust Required" prompt and never runs.
+arker run "$VM" "CURSOR_API_KEY=$CURSOR_API_KEY cursor-agent -f -p 'create hello.py that prints hello world, then run it'"
 
 # ── 4. Clean up ─────────────────────────────────────────────────────────────
 arker rm "$VM"
