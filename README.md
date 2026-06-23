@@ -68,3 +68,7 @@ VM=$(arker fork ubuntu-full | jq -r .vm_id)   # public golden — org inferred
 arker run "$VM" "python3 -c 'print(2 + 2)'"
 arker rm "$VM"
 ```
+
+### Get Started
+
+Read the [docs](https://arker.ai/docs) and browse the [examples](./examples).
