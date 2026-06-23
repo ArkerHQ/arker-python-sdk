@@ -24,6 +24,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
@@ -35,6 +36,18 @@ import type {
   RunResult,
   Vm,
 } from "./index.js";
+
+// Version string for `--version` and the help header. Read from the
+// published package.json (dist/cli.js → ../package.json) so it never
+// drifts from the release. Falls back to "unknown" if unreadable.
+const VERSION: string = (() => {
+  try {
+    return (createRequire(import.meta.url)("../package.json") as { version: string })
+      .version;
+  } catch {
+    return "unknown";
+  }
+})();
 
 // ── Argv parsing ───────────────────────────────────────────────────
 
@@ -93,6 +106,9 @@ function readFileConfig(): CliConfig {
   return {};
 }
 
+// Region the CLI falls back to when none is given via flag, env, or config.
+const DEFAULT_REGION = "us-west-2";
+
 function clientFromArgs(args: ParsedArgs): Arker {
   const file = readFileConfig();
   const explicitBaseUrl =
@@ -109,14 +125,16 @@ function clientFromArgs(args: ParsedArgs): Arker {
   const controlBaseUrl =
     (args.flags["control-base-url"] as string | undefined) ??
     process.env.ARKER_CONTROL_BASE_URL;
-  const region = explicitRegion ?? file.region;
+  // Region: explicit flag/env, then the saved config, then a default of
+  // us-west-2 so the CLI works out of the box. If a base URL is already
+  // resolved (explicit or from config) it drives the endpoint and region
+  // can stay unset.
+  const region =
+    explicitRegion ?? file.region ?? (baseUrl ? undefined : DEFAULT_REGION);
   const provider = (args.flags.provider as "aws" | "aws-burst" | undefined) ??
     (process.env.ARKER_PROVIDER as "aws" | "aws-burst" | undefined);
   if (!apiKey) {
     die("Missing API key. Set ARKER_API_KEY or pass --api-key.");
-  }
-  if (!baseUrl && !region) {
-    die("Missing region. Set ARKER_REGION or pass --region (e.g. us-west-2). --provider (aws|aws-burst) defaults to aws.");
   }
   return new Arker({ apiKey, baseUrl, region, provider, controlBaseUrl });
 }
@@ -884,7 +902,7 @@ async function readAllStdin(): Promise<Uint8Array> {
 function usage(): never {
   out(
     [
-      "arker — VM control plane CLI",
+      `arker v${VERSION}`,
       "",
       "Usage:",
       "  arker <command> [args]",
@@ -901,8 +919,6 @@ function usage(): never {
       "  arker run <vm> <command> [--session-id <id>] [--session-idx N]   run a command",
       "  arker resize <vm> [--memory-mib N] [--vcpu N] [--disk-mib N]   resize a VM (PATCH)",
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
-      "  arker ssh <vm_id>                              register your SSH key + print the ssh command",
-      "  arker ssh <vm_id> --connect                    register + drop straight into the ssh session",
       "",
       "Resources:",
       "  arker vms         <ls|get|rm|fork|run> ...",
@@ -910,12 +926,11 @@ function usage(): never {
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
-      "  arker ssh-keys    <ls|add|rm> ...           manage account SSH keys",
       "",
       "Flags:",
       "  --api-key <key>            (or env ARKER_API_KEY)",
       "  --region <region>          (or env ARKER_REGION; e.g. us-west-2)",
-      "  --provider <aws|aws-burst> (or env ARKER_PROVIDER; default aws)",
+      "  --provider <aws>           (or env ARKER_PROVIDER; default aws)",
       "  --base-url <url>           override compute URL (env ARKER_BASE_URL)",
       "  --control-base-url <url>   override CF Worker URL (env ARKER_CONTROL_BASE_URL)",
       "  --json                     emit JSON instead of tabular output",
@@ -939,17 +954,6 @@ function usage(): never {
       "  --command <path>           shell executable path (default: /bin/bash)",
       "  --cols <n> --rows <n>      initial terminal size",
       "  --no-persist               close the remote PTY process on disconnect",
-      "",
-      "SSH flags:",
-      "  --identity <path>          local key (private or .pub); default ~/.ssh/id_ed25519",
-      "  --generate                 create an ed25519 key pair if none exists",
-      "  --host <hostname>          SSH host (or env ARKER_SSH_HOST; default aws-<region>.arker.ai)",
-      "  --port <n>                 SSH port (default 22)",
-      "  --connect, -c              exec ssh instead of just printing the command",
-      "  --skip-register            don't register the key (assume already registered)",
-      "  --label <text>             label for the registered key",
-      "",
-      `Arker org id: ${ARKER_ORG_ID}`,
     ].join("\n"),
   );
   process.exit(2);
@@ -983,11 +987,10 @@ async function main(): Promise<void> {
         return await cmdSyncs(args, client);
       case "shell":
         return await cmdShell(args, client);
-      case "ssh":
-        return await cmdSsh(args, client);
-      case "ssh-keys":
-      case "ssh_keys":
-        return await cmdSshKeys(args, client);
+      // SSH is descoped/unsupported and hidden from the interface. The
+      // implementation below (cmdSsh / cmdSshKeys) is kept intact; re-add
+      // the `ssh` / `ssh-keys` cases here and their help entries to expose
+      // it once the server-side SSH path is supported.
       // Resources.
       case "vms":
         return await cmdVms(args, client);
@@ -1017,3 +1020,10 @@ void main();
 // Touch ResourceKind to keep the import alive for downstream callers
 // that re-export from this module via `tsc --declaration` in future.
 void (null as unknown as ResourceKind);
+
+// SSH is descoped/hidden from the interface (no `ssh` / `ssh-keys` command
+// dispatch above), but the implementation is intentionally retained so it can
+// be re-exposed in one step once supported. Reference it here to keep the
+// definitions and their imports alive.
+void cmdSsh;
+void cmdSshKeys;
