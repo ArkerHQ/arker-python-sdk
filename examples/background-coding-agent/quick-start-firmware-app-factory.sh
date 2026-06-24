@@ -15,6 +15,7 @@ set -uo pipefail
 
 GCC="arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -nostartfiles -nostdlib -ffreestanding -O2 -T fw.ld fw.c -o fw.elf"
 QEMU="qemu-system-arm -M lm3s6965evb -cpu cortex-m3 -nographic -semihosting -kernel fw.elf"
+CHANGE2="${1:-after the ticks, print a countdown: 3, then 2, then 1, then DONE}"
 
 # Baseline firmware. w0() prints a string over ARM semihosting (noinline so -O2
 # can't clobber r0); main() just boots. The agent extends this.
@@ -64,5 +65,18 @@ echo "# firmware output:"
 run "$VM" "cd /work && { $GCC && $QEMU; } > out.txt 2>&1"
 show "$VM" /work/out.txt
 
+# Fork the VM: an instant checkpoint carrying the toolchain AND the firmware so
+# far, so the next change builds on it with no re-setup.
+echo "# fork checkpoint from the current state"
+CP=$(arker fork --source-vm-id "$VM" | jq -r .vm_id); echo "# forked $CP"
+
+echo "# agent (on the fork, building on the prior firmware): $CHANGE2"
+run "$CP" "cd /work && CURSOR_API_KEY=\$(cat .key) cursor-agent -f -p 'Edit /work/fw.c to also $CHANGE2, using the existing w0() helper. Keep all prior output. Build with $GCC and run with $QEMU; iterate until it runs cleanly.' >/dev/null 2>&1"
+
+echo "# firmware output (fork, with both changes):"
+run "$CP" "cd /work && { $GCC && $QEMU; } > out.txt 2>&1"
+show "$CP" /work/out.txt
+
 echo "# done"
 arker rm "$VM" >/dev/null 2>&1 || true
+arker rm "$CP" >/dev/null 2>&1 || true
