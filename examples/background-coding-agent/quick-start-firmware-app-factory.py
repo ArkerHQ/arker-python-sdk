@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Firmware app-factory quick start: build, validate, snapshot.
+"""Firmware app-factory quick start: coding agent, cross-compile, simulate.
 
-Fork a fresh sandbox, cross-compile firmware for a Cortex-M MCU at an exact
-commit, run a smoke test under QEMU in TCG mode (foreign arch, no hardware,
-no nested virt, no GPU), then snapshot the exact VM that passed the gate as
-the release artifact. The release IS the validated state: restorable byte for
-byte and traceable to the commit, not a rebuild from HEAD.
+A background firmware-coding agent on Arker: fork a sandbox, let the Cursor CLI
+agent WRITE the firmware, CROSS-COMPILE it for a Cortex-M MCU, and SIMULATE it
+under QEMU in TCG mode (foreign arch, no hardware, no nested virt, no GPU).
+Finally snapshot the exact VM that passed the gate as the release artifact, so
+the release IS the validated state, not a rebuild from HEAD.
+
+Swap Cursor for Codex or Claude Code by changing the install + agent call in
+step 2; the rest is identical.
 
 Run:
     pip install arker
-    ARKER_API_KEY=ark_live_...  ARKER_REGION=us-west-2  python quick-start-firmware-app-factory.py
+    ARKER_API_KEY=ark_live_...  ARKER_REGION=us-west-2  CURSOR_API_KEY=...  python quick-start-firmware-app-factory.py
 """
+import os
+import shlex
 import time
 from arker import Arker
 
 ar = Arker()  # reads ARKER_API_KEY and ARKER_REGION (or pass region="us-west-2")
+CURSOR_API_KEY = os.environ["CURSOR_API_KEY"]  # https://cursor.com/dashboard
 
 
 def sh(command, timeout=600):
@@ -26,68 +32,47 @@ def sh(command, timeout=600):
         r = vm.get_run(r.run_id)
     return r
 
-# A self-contained firmware project so the example runs as-is. In practice this
-# is your firmware repo, already cloned into the golden; skip straight to the
-# fetch/checkout below.
-SETUP_SRC = r"""
-set -e
-mkdir -p /src && cd /src
-cat > firmware.c <<'EOF'
-#include <stdint.h>
-static void w0(const char *s){register int r0 asm("r0")=0x04;register const char *r1 asm("r1")=s;
-  asm volatile("bkpt 0xAB"::"r"(r0),"r"(r1):"memory");}
-static void halt(void){register int r0 asm("r0")=0x18;register int r1 asm("r1")=0x20026;
-  asm volatile("bkpt 0xAB"::"r"(r0),"r"(r1):"memory");}
-int main(void){ w0("SMOKE_OK\n"); halt(); return 0; }
-void Reset_Handler(void){ main(); for(;;){} }
-__attribute__((section(".vectors"),used)) static void(*const v[])(void)={
-  (void(*)(void))0x20010000, Reset_Handler };
-EOF
-cat > link.ld <<'EOF'
-ENTRY(Reset_Handler)
-MEMORY {
-  FLASH (rx)  : ORIGIN = 0x00000000, LENGTH = 256K
-  RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 64K
-}
-SECTIONS {
-  .text : { KEEP(*(.vectors)) *(.text*) *(.rodata*) } > FLASH
-  .data : { *(.data*) } > RAM AT > FLASH
-  .bss  : { *(.bss*)  } > RAM
-}
-EOF
-git init -q && git add .
-git -c user.email=ci@arker.ai -c user.name=ci commit -q -m "firmware v1"
-"""
 
-# 1. Fork a fresh sandbox; install the cross-toolchain + emulator.
-vm = ar.fork("ubuntu-full", name="firmware-build")
+# The task for the agent. In practice this comes from your issue tracker or CI;
+# the expected marker (SMOKE_OK) is the test the firmware must satisfy.
+PROMPT = (
+    "Write a minimal Cortex-M3 bare-metal firmware for QEMU machine lm3s6965evb. "
+    "Files: fw.c and a linker script fw.ld in the current directory. Vector table "
+    "in section .vectors with [0]=initial SP 0x20010000 and [1]=Reset_Handler; "
+    "flash at 0x0, 64K SRAM at 0x20000000. main() must print exactly SMOKE_OK via "
+    "ARM semihosting (SYS_WRITE0, bkpt 0xAB) then exit via SYS_EXIT. It must build "
+    "with: arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -nostartfiles -nostdlib "
+    "-ffreestanding -O2 -T fw.ld fw.c -o fw.elf . Iterate until fw.elf builds."
+)
+
+# 1. Fork a sandbox; install the Cursor CLI + the embedded toolchain.
+vm = ar.fork("ubuntu-full", name="firmware-agent")
+sh("curl https://cursor.com/install -fsS | bash", timeout=300)
 sh("export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && "
-       "apt-get install -y -qq gcc-arm-none-eabi qemu-system-arm", timeout=600)
-sh(SETUP_SRC, timeout=120)
+   "apt-get install -y -qq gcc-arm-none-eabi qemu-system-arm", timeout=600)
 
-# Pin to an exact commit (a coding agent or CI would supply this).
-COMMIT = sh("git -C /src rev-parse --short HEAD").stdout.decode().strip()
+# 2. Run the coding agent: it writes the firmware (-f trusts the dir non-interactively).
+sh(f"mkdir -p /work && cd /work && CURSOR_API_KEY={CURSOR_API_KEY} "
+   f"cursor-agent -f -p {shlex.quote(PROMPT)}", timeout=600)
 
-# 2. Cross-compile the firmware for the target MCU at that commit.
-sh(f"git -C /src checkout -q {COMMIT}")
-b = sh("mkdir -p /build && arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb "
-           "-nostartfiles -nostdlib -ffreestanding -O2 -T /src/link.ld "
-           "/src/firmware.c -o /build/fw.elf")
+# 3. Cross-compile the agent's firmware for the target MCU.
+b = sh("cd /work && arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -nostartfiles "
+       "-nostdlib -ffreestanding -O2 -T fw.ld fw.c -o fw.elf")
 assert b.exit_code == 0, b.stderr.decode()
 
-# 3. Validation gate: run the smoke test under QEMU in TCG mode (foreign arch,
-#    no hardware, no nested virt, no GPU). QEMU semihosting writes to stderr,
-#    so fold both streams together when checking the result.
-t = sh("qemu-system-arm -M lm3s6965evb -cpu cortex-m3 -nographic "
-       "-semihosting -kernel /build/fw.elf")
+# 4. Validation gate: simulate under QEMU in TCG mode (foreign arch, no hardware,
+#    no nested virt, no GPU). QEMU semihosting writes to stderr, so fold streams.
+t = sh("cd /work && qemu-system-arm -M lm3s6965evb -cpu cortex-m3 -nographic "
+       "-semihosting -kernel fw.elf")
 log = (t.stdout + t.stderr).decode()
-passed = t.exit_code == 0 and "SMOKE_OK" in log
+# The smoke marker is the contract. A bare-metal image's QEMU exit code depends
+# on how the firmware calls SYS_EXIT, so gate on the emitted output, not on it.
+passed = "SMOKE_OK" in log
 print("smoke test:", "SMOKE_OK" if passed else "FAILED")
 
-# 4. The release IS the validated state: snapshot the exact VM that passed.
-#    Restorable byte for byte, traceable to the commit, not a rebuild from HEAD.
+# 5. The release IS the validated state: snapshot the exact VM that passed.
 if passed:
-    artifact = ar.fork(vm, name=f"release-{COMMIT}")
+    artifact = ar.fork(vm, name="firmware-release")
     print("validated artifact:", artifact.id)
 else:
     raise SystemExit("smoke test failed; not releasing")
