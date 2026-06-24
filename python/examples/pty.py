@@ -32,7 +32,7 @@ def main() -> None:
         sys.stdout.buffer.write(b)
         sys.stdout.buffer.flush()
 
-    pty = vm.create_pty(cols=cols, rows=rows, on_data=on_data)
+    pty = vm.connect_pty(cols=cols, rows=rows, on_data=on_data)
 
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd) if sys.stdin.isatty() else None

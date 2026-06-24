@@ -898,8 +898,29 @@ class VM:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
         return DeleteSessionResponse(deleted=bool(payload.get("deleted")))
 
+    def update_session(
+        self,
+        session_id: str,
+        *,
+        cols: int | None = None,
+        rows: int | None = None,
+        timeout_secs: int | None = None,
+    ) -> dict[str, Any]:
+        """Update a session via ``PATCH /v1/vms/{id}/sessions/{sid}``: resize its
+        PTY (``cols``/``rows``) and/or set the idle ``timeout_secs``. Works whether
+        or not a PTY is currently attached — the REST equivalent of
+        :meth:`Pty.resize` (which sends an in-band control frame on the live
+        WebSocket).
+        """
+        return self._client._request(
+            "PATCH",
+            f"{_vm_path(self.id)}/sessions/{_segment(session_id)}",
+            {"cols": cols, "rows": rows, "timeout_secs": timeout_secs},
+            base_url=self.base_url,
+        )
+
     # ── Interactive PTY ────────────────────────────────────────────────
-    def create_pty(
+    def connect_pty(
         self,
         *,
         on_data: Callable[[bytes], None] | None = None,
@@ -976,7 +997,7 @@ class Pty:
     :meth:`send_input` to write stdin, :meth:`resize` to change dimensions,
     :meth:`kill` to destroy the shell, and :meth:`close` to detach.
 
-    Obtain one via :meth:`VM.create_pty`. Requires the ``websocket-client``
+    Obtain one via :meth:`VM.connect_pty`. Requires the ``websocket-client``
     package (``pip install 'arker[pty]'``).
     """
 

@@ -922,6 +922,24 @@ export class VM {
     return this._client._request("DELETE", `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`, undefined, this.baseUrl);
   }
 
+  /**
+   * Update a session via `PATCH /v1/vms/{id}/sessions/{sid}`: resize its PTY
+   * (`cols`/`rows`) and/or set the idle `timeoutSecs`. Works whether or not a
+   * PTY is currently attached — the REST equivalent of {@link PtyConnection.resize}
+   * (which sends an in-band control frame on the live WebSocket).
+   */
+  async updateSession(
+    sessionId: string,
+    update: { cols?: number; rows?: number; timeoutSecs?: number },
+  ): Promise<{ ok: boolean; session_id: string }> {
+    return this._client._request(
+      "PATCH",
+      `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`,
+      { cols: update.cols, rows: update.rows, timeout_secs: update.timeoutSecs },
+      this.baseUrl,
+    );
+  }
+
   async connectPty(options: PtyConnectOptions = {}): Promise<PtyConnection> {
     const sessionId = options.sessionId ?? sessionIdFrom(await this.createSession());
     const useTicket = options.useTicket ?? !isNodeRuntime();

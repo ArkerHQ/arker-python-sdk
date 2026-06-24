@@ -671,6 +671,56 @@
           }
         }
       },
+      "patch": {
+        "operationId": "patchSession",
+        "summary": "Update a session (resize PTY / set timeout)",
+        "description": "Resize the session's PTY (cols/rows) and/or update its idle timeout. Resize is delivered to a LIVE attached PTY in-band; if the PTY is detached, it is applied directly to the session's runtime; if no PTY has ever attached, the call is accepted as a no-op. REST equivalent of the WebSocket {\"type\":\"resize\"} control frame — usable from any client, attached or not.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cols": {
+                    "type": "integer",
+                    "description": "New terminal width in columns (1-1000). Provide together with rows."
+                  },
+                  "rows": {
+                    "type": "integer",
+                    "description": "New terminal height in rows (1-1000). Provide together with cols."
+                  },
+                  "timeout_secs": {
+                    "type": "integer",
+                    "description": "Idle auto-cancel window for the PTY; applies on the next attach."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Patched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "session_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
       "delete": {
         "operationId": "deleteSession",
         "responses": {

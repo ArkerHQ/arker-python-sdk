@@ -76,7 +76,7 @@ import sys
 vm = ar.fork("ubuntu-full")
 
 # on_data is called from a background reader thread with raw output bytes.
-pty = vm.create_pty(
+pty = vm.connect_pty(
     cols=80,
     rows=24,
     on_data=lambda b: sys.stdout.buffer.write(b) or sys.stdout.flush(),
