@@ -6,6 +6,7 @@ endpoints, or pass base_url directly for internal/dev targets.
 
 from __future__ import annotations
 
+import atexit
 import base64
 import dataclasses
 import json
@@ -14,10 +15,10 @@ import re
 import secrets
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any, Callable
+
+import httpx
 
 CHUNK_SIZE = 4 * 1024 * 1024
 
@@ -600,7 +601,7 @@ class Arker:
         for attempt in range(self._retry.attempts):
             try:
                 status, raw = _http(method, url, headers, data)
-            except urllib.error.URLError as error:
+            except httpx.RequestError as error:
                 if attempt < self._retry.attempts - 1:
                     time.sleep(self._retry_delay(attempt))
                     continue
@@ -770,8 +771,9 @@ class VM:
         url = payload.get("presigned_url")
         if not isinstance(url, str) or not url:
             raise ArkerError("internal", "read response missing content/presigned_url", 200)
-        with urllib.request.urlopen(url, timeout=300) as response:
-            return response.read()
+        response = _http_client.get(url, timeout=300)
+        response.raise_for_status()
+        return response.content
 
     def _sync_write_inline(self, path: str, data: bytes) -> None:
         result = self._send_one_write({
@@ -793,18 +795,15 @@ class VM:
     def _put_presigned(self, url: str, data: bytes) -> None:
         for attempt in range(self._client._retry.attempts):
             try:
-                req = urllib.request.Request(url, method="PUT", data=data)
-                with urllib.request.urlopen(req, timeout=PRESIGNED_PUT_TIMEOUT_S) as response:
-                    if response.status < 400:
-                        return
-                    status = response.status
-            except urllib.error.HTTPError as error:
-                status = error.code
-            except urllib.error.URLError as error:
+                response = _http_client.put(url, content=data, timeout=PRESIGNED_PUT_TIMEOUT_S)
+            except httpx.RequestError as error:
                 if attempt == self._client._retry.attempts - 1:
                     raise ArkerError("network_error", f"upload PUT failed: {error}", 0) from error
                 time.sleep(self._client._retry_delay(attempt))
                 continue
+            if response.status_code < 400:
+                return
+            status = response.status_code
             if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
                 raise ArkerError("internal", f"upload PUT failed: {status}", status)
             time.sleep(self._client._retry_delay(attempt))
@@ -1150,13 +1149,16 @@ class Pty:
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
+# Shared HTTP/2 client. One connection pool for the process, so concurrent requests
+# multiplex over a single connection per host. HTTP/2 is negotiated via ALPN; hosts
+# that don't offer it (e.g. presigned storage transfers) fall back to HTTP/1.1.
+_http_client = httpx.Client(http2=True)
+atexit.register(_http_client.close)
+
+
 def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, method=method, headers=headers, data=data)
-    try:
-        with urllib.request.urlopen(req, timeout=120) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as error:
-        return error.code, error.read()
+    response = _http_client.request(method, url, headers=headers, content=data, timeout=120)
+    return response.status_code, response.content
 
 
 def _build_query(path: str, params: dict[str, Any]) -> str:

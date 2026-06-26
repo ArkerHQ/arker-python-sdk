@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "arker"
-version = "0.6.3"
+version = "0.7.0"
 description = "Python client for the Arker virtual computer platform."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,8 +22,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
 ]
-# Zero runtime dependencies — stdlib `urllib` only.
-dependencies = []
+# httpx is the HTTP backend; the http2 extra pulls in `h2` so requests negotiate
+# HTTP/2 (falling back to HTTP/1.1 per host via ALPN).
+dependencies = ["httpx[http2]>=0.27"]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
