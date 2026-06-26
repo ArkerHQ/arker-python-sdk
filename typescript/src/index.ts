@@ -349,6 +349,7 @@ export class Arker {
   readonly provider: "aws" | "aws-burst";
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
+  private readonly http2: boolean;
   private readonly retry: RetryConfig;
 
   constructor(opts: ArkerOptions = {}) {
@@ -374,6 +375,8 @@ export class Arker {
     this.region = region ? normalizeRegion(region) : undefined;
     this.provider = effectiveProvider;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
+    // A custom fetch owns transport; otherwise prefer HTTP/2 multiplexing on Node.
+    this.http2 = opts.fetch === undefined;
     this.retry = normalizeRetry(opts.retry);
 
     if (!this.fetchImpl) throw new Error("fetch is required in this runtime");
@@ -577,11 +580,10 @@ export class Arker {
         if (value !== undefined) headers[key] = value;
       }
     }
-    const init: RequestInit = { method, headers };
-
+    let requestBody: string | undefined;
     if (body !== undefined) {
       headers["content-type"] = "application/json";
-      init.body = JSON.stringify(withoutUndefined(body));
+      requestBody = JSON.stringify(withoutUndefined(body));
     }
 
     let lastStatus = 0;
@@ -590,23 +592,22 @@ export class Arker {
 
     for (let attempt = 0; attempt < this.retry.attempts; attempt++) {
       try {
-        const response = await this.fetchImpl(url, init);
-        const text = await response.text();
+        const { status, ok, text } = await sendRequest(url, { method, headers, body: requestBody }, this.fetchImpl, this.http2);
         const payload = parseJson(text);
         const parsedError = extractError(payload);
 
-        lastStatus = response.status;
+        lastStatus = status;
         lastText = text;
         lastError = parsedError;
 
-        if (isRetryable(response.status, parsedError) && attempt < this.retry.attempts - 1) {
+        if (isRetryable(status, parsedError) && attempt < this.retry.attempts - 1) {
           await sleep(retryDelay(this.retry, attempt));
           continue;
         }
 
-        if (parsedError) throw new ArkerError(parsedError.code, parsedError.message, response.status);
-        if (!response.ok) {
-          throw new ArkerError("internal", lastText.slice(0, 300) || `HTTP ${response.status}`, response.status);
+        if (parsedError) throw new ArkerError(parsedError.code, parsedError.message, status);
+        if (!ok) {
+          throw new ArkerError("internal", lastText.slice(0, 300) || `HTTP ${status}`, status);
         }
 
         return payload as T;
@@ -1417,4 +1418,108 @@ function base64ToBytes(text: string): Uint8Array {
 
 function bufferConstructor(): BufferConstructorLike | undefined {
   return (globalThis as unknown as { Buffer?: BufferConstructorLike }).Buffer;
+}
+
+// ── Transport ───────────────────────────────────────────────────────
+
+interface TransportResponse {
+  status: number;
+  ok: boolean;
+  text: string;
+}
+
+type Http2Module = typeof import("node:http2");
+type Http2Session = ReturnType<Http2Module["connect"]>;
+
+let http2Module: Promise<Http2Module | null> | undefined;
+function loadHttp2(): Promise<Http2Module | null> {
+  return (http2Module ??= (async () => {
+    const proc = (globalThis as unknown as { process?: { versions?: { node?: string } } }).process;
+    if (!proc?.versions?.node) return null;
+    try {
+      return (await import(/* webpackIgnore: true */ /* @vite-ignore */ "node:http2")) as Http2Module;
+    } catch {
+      return null;
+    }
+  })());
+}
+
+// Matches the 120s ceiling the Python client and the fetch paths use.
+const HTTP2_REQUEST_TIMEOUT_MS = 120_000;
+
+// One HTTP/2 session per origin; concurrent requests multiplex over it as streams.
+// `confirmed` flips on the first response so the caller can fall back to fetch if the
+// origin turns out not to speak HTTP/2.
+class Http2Connection {
+  confirmed = false;
+  private streams = 0;
+  private readonly session: Http2Session;
+
+  constructor(http2: Http2Module, origin: string) {
+    this.session = http2.connect(origin);
+    this.session.on("error", () => {});
+  }
+
+  get closed(): boolean {
+    return this.session.closed || this.session.destroyed;
+  }
+
+  request(method: string, path: string, headers: Record<string, string>, body?: string): Promise<TransportResponse> {
+    // Ref the socket only while requests are in flight, so a pending request keeps
+    // the process alive but an idle connection still lets it exit.
+    if (this.streams === 0) this.session.ref();
+    this.streams++;
+    return new Promise<TransportResponse>((resolve, reject) => {
+      const stream = this.session.request({ ...headers, ":method": method, ":path": path });
+      let status = 0;
+      let text = "";
+      stream.setEncoding("utf8");
+      // Bound the request so a stalled stream — e.g. a half-open session reused after
+      // an idle timeout — rejects instead of hanging the caller indefinitely.
+      stream.setTimeout(HTTP2_REQUEST_TIMEOUT_MS, () => stream.destroy(new Error("HTTP/2 request timed out")));
+      stream.on("response", (responseHeaders) => {
+        this.confirmed = true;
+        status = Number(responseHeaders[":status"]) || 0;
+      });
+      stream.on("data", (chunk: string) => { text += chunk; });
+      stream.on("end", () => resolve({ status, ok: status >= 200 && status < 300, text }));
+      stream.on("error", reject);
+      stream.end(body);
+    }).finally(() => {
+      if (--this.streams === 0) this.session.unref();
+    });
+  }
+}
+
+const http2Connections = new Map<string, Http2Connection | null>();
+
+async function sendRequest(
+  url: string,
+  init: { method: string; headers: Record<string, string>; body?: string },
+  fetchImpl: FetchLike,
+  http2Enabled: boolean,
+): Promise<TransportResponse> {
+  if (http2Enabled) {
+    const http2 = await loadHttp2();
+    if (http2) {
+      const { origin, pathname, search } = new URL(url);
+      const cached = http2Connections.get(origin); // null => origin known not to speak HTTP/2
+      if (cached !== null) {
+        let connection = cached;
+        if (!connection || connection.closed) {
+          connection = new Http2Connection(http2, origin);
+          http2Connections.set(origin, connection);
+        }
+        try {
+          return await connection.request(init.method, `${pathname}${search}`, init.headers, init.body);
+        } catch (error) {
+          // Origin proved non-HTTP/2 before any success: disable it, use fetch.
+          if (connection.confirmed) throw error;
+          http2Connections.set(origin, null);
+        }
+      }
+    }
+  }
+  const response = await fetchImpl(url, init as RequestInit);
+  return { status: response.status, ok: response.ok, text: await response.text() };
 }

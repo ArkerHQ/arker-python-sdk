@@ -1,0 +1,42 @@
+name: CI
+
+# Runs the unit suites on every PR and on pushes to main. The publish workflows only
+# fire on release tags, so this is what actually gates changes.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (pulls httpx[http2] + pytest)
+        run: python -m pip install -e ".[test]"
+      - name: Test
+        run: python -m pytest
+
+  typescript:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install deps
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm run test

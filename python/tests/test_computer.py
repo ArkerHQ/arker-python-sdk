@@ -1,33 +1,19 @@
 from __future__ import annotations
 
 import base64
-import io
 import json
-import urllib.error
+from contextlib import contextmanager
 from typing import Any
-from unittest.mock import patch
 
+import httpx
 import pytest
 
 import arker.computer as sdk
 
 
-class FakeResp:
-    def __init__(self, status: int, body: bytes) -> None:
-        self.status = status
-        self._body = body
-
-    def read(self) -> bytes:
-        return self._body
-
-    def __enter__(self) -> "FakeResp":
-        return self
-
-    def __exit__(self, *_: Any) -> None:
-        return None
-
-
 class FakeTransport:
+    """Scripts httpx responses by (method, url); drive it with ``use_transport``."""
+
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.script: list[tuple[Any, int, bytes]] = []
@@ -38,20 +24,29 @@ class FakeTransport:
     def add_raw(self, predicate, status: int, body: bytes) -> None:
         self.script.append((predicate, status, body))
 
-    def __call__(self, req, timeout=None):  # type: ignore[no-untyped-def]
-        url = req.full_url if hasattr(req, "full_url") else req
-        method = req.get_method() if hasattr(req, "get_method") else "GET"
-        body = req.data if hasattr(req, "data") else None
-        self.calls.append({"method": method, "url": url, "body": body, "timeout": timeout})
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        method = request.method
+        url = str(request.url)
+        self.calls.append({"method": method, "url": url, "body": request.content or None, "headers": request.headers})
 
         for index, (predicate, status, payload) in enumerate(self.script):
             if predicate(method, url):
                 self.script.pop(index)
-                if 200 <= status < 400:
-                    return FakeResp(status, payload)
-                raise urllib.error.HTTPError(url, status, "fake", {}, io.BytesIO(payload))
+                return httpx.Response(status, content=payload)
 
         raise AssertionError(f"no scripted response for {method} {url}")
+
+
+@contextmanager
+def use_transport(t: FakeTransport):
+    """Route the SDK's shared client through ``t`` for the duration."""
+    previous = sdk._http_client
+    sdk._http_client = httpx.Client(transport=httpx.MockTransport(t.handler))
+    try:
+        yield
+    finally:
+        sdk._http_client.close()
+        sdk._http_client = previous
 
 
 def client() -> sdk.Arker:
@@ -98,7 +93,7 @@ def test_fork_posts_directly_to_source_vm() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         vm = client().vm("ubuntu").fork(name="demo")
 
     assert vm.id == "vm_child"
@@ -115,7 +110,7 @@ def test_fork_accepts_legacy_id_response() -> None:
         {"id": "vm_child"},
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         vm = client().vm("ubuntu").fork()
 
     assert vm.id == "vm_child"
@@ -137,7 +132,7 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         arker = region_client()
         vm = arker.vm("ubuntu").fork()
 
@@ -154,7 +149,7 @@ def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
         {"id": "legacy_child_without_suffix"},
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         vm = region_client().vm("arkuntu").fork()
 
     assert vm.id == "legacy_child_without_suffix"
@@ -176,7 +171,7 @@ def test_region_routes_burst_vm_ids_to_burst_endpoint() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         region_client().vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hi")
 
     assert t.calls[0]["url"] == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs"
@@ -205,7 +200,7 @@ def test_list_uses_configured_base_url() -> None:
         }]},
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         result = client().list_vms()
 
     assert isinstance(result, sdk.ListVmsResponse)
@@ -272,7 +267,7 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
         control_base_url="https://control.invalid/api",
         retry=False,
     )
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         result = arker.list_runs(
             since=10,
             until=20,
@@ -319,7 +314,7 @@ def test_run_sends_command_without_default_session_id() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         result = client().vm("vm_1").run("printf hi")
 
     assert isinstance(result, sdk.CompletedRunResult)
@@ -348,7 +343,7 @@ def test_resize_patches_vm_resources() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         result = client().vm("vm_1").resize(memory_mib=1024)
 
     # resize now PATCHes /v1/vms/{id} with a resources object (arkerd reality;
@@ -369,7 +364,7 @@ def test_background_run_response() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         result = client().vm("vm_1").run("sleep 10", background=True)
 
     assert isinstance(result, sdk.BackgroundRunResult)
@@ -383,7 +378,7 @@ def test_flat_error_response_becomes_arker_error() -> None:
     t = FakeTransport()
     t.add_json(lambda _method, _url: True, 404, {"code": "not_found", "message": "missing"})
 
-    with patch("urllib.request.urlopen", t), pytest.raises(sdk.ArkerError) as caught:
+    with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
         client().vm("missing").delete()
 
     assert caught.value.code == "not_found"
@@ -394,7 +389,7 @@ def test_legacy_nested_error_response_still_parses() -> None:
     t = FakeTransport()
     t.add_json(lambda _method, _url: True, 404, {"ok": False, "error": {"code": "not_found", "message": "missing"}})
 
-    with patch("urllib.request.urlopen", t), pytest.raises(sdk.ArkerError) as caught:
+    with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
         client().vm("missing").delete()
 
     assert caught.value.code == "not_found"
@@ -405,7 +400,7 @@ def test_nested_error_response_without_ok_still_parses() -> None:
     t = FakeTransport()
     t.add_json(lambda _method, _url: True, 503, {"error": {"code": "unavailable", "message": "try later"}})
 
-    with patch("urllib.request.urlopen", t), pytest.raises(sdk.ArkerError) as caught:
+    with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
         client().vm("missing").delete()
 
     assert caught.value.code == "unavailable"
@@ -419,7 +414,7 @@ def test_retry_on_503_then_success(monkeypatch) -> None:
     t.add_raw(predicate, 503, b"service unavailable")
     t.add_json(predicate, 200, {"ok": True, "op": "read", "path": "/home/user/x", "size": 2, "content": "ok", "encoding": "utf-8"})
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         assert sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x") == b"ok"
 
     assert len(t.calls) == 2
@@ -441,7 +436,7 @@ def test_read_inline_base64() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         assert client().vm("vm_1").sync("/home/user/bin") == payload
 
 
@@ -454,7 +449,7 @@ def test_read_presigned_follows_url() -> None:
     )
     t.add_raw(lambda method, url: method == "GET" and url == "https://s3.invalid/file", 200, b"hello")
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         assert client().vm("vm_1").sync("/home/user/big") == b"hello"
 
 
@@ -473,7 +468,7 @@ def test_small_write_uses_inline_chunk() -> None:
         }]},
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         client().vm("vm_1").sync("/home/user/x", b"hello world")
 
     body = json.loads(t.calls[0]["body"])
@@ -507,7 +502,7 @@ def test_large_write_uses_presigned_bypass() -> None:
         "written": True,
     }]})
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         client().vm("vm_1").sync("/home/user/big", payload)
 
     assert [call["method"] for call in t.calls] == ["POST", "PUT", "POST"]
@@ -531,7 +526,7 @@ def test_fork_sends_durable_flag() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         client().vm("ubuntu").fork(durable=True)
 
     # Computer.fork auto-fills source_vm_id; disk defaults to True.
@@ -556,16 +551,10 @@ def test_run_sends_idempotency_key_header() -> None:
         },
     )
 
-    captured: list[dict[str, str]] = []
-
-    def transport(req, timeout=None):
-        captured.append({k.lower(): v for k, v in req.header_items()})
-        return t(req, timeout=timeout)
-
-    with patch("urllib.request.urlopen", transport):
+    with use_transport(t):
         client().vm("vm_1").run("printf hi", idempotency_key="key-abc")
 
-    assert captured[0]["idempotency-key"] == "key-abc"
+    assert t.calls[0]["headers"]["idempotency-key"] == "key-abc"
 
 
 def test_run_status_parses_retry_count() -> None:
@@ -587,7 +576,7 @@ def test_run_status_parses_retry_count() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         status = client().vm("vm_1").get_run("run_1")
 
     assert status.retry_count == 2
@@ -611,7 +600,7 @@ def test_run_status_defaults_retry_count_when_missing() -> None:
         },
     )
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         status = client().vm("vm_1").get_run("run_1")
 
     assert status.retry_count == 0
@@ -638,7 +627,7 @@ def test_per_entry_internal_error_retries(monkeypatch) -> None:
         "written": True,
     }]})
 
-    with patch("urllib.request.urlopen", t):
+    with use_transport(t):
         sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x", b"hello")
 
     assert len(t.calls) == 2
