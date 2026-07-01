@@ -48,7 +48,7 @@ const BURST_SOURCE_REFS = new Set(["arkuntu"]);
 const BURST_VM_ID = /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$/;
 
 type FetchLike = typeof fetch;
-type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 type JsonObject = Record<string, unknown>;
 
 interface BufferValue extends Uint8Array {
@@ -100,6 +100,16 @@ export type ErrorCode = ApiSchema<"ErrorCode">;
 // ── Core resources ─────────────────────────────────────────────────
 export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
 export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
+// ── ARK-125 egress policy (fine-grained outbound rules) ────────────
+export type PolicyDoc = ApiSchema<"PolicyDoc">;
+export type PolicyEntry = ApiSchema<"PolicyEntry">;
+export type PolicyMatch = ApiSchema<"PolicyMatch">;
+export type PolicyAction = ApiSchema<"PolicyAction">;
+export type Rewrite = ApiSchema<"Rewrite">;
+export type PutPoliciesResponse = ApiSchema<"PutPoliciesResponse">;
+/** A `ports` element: a single port (`80`) or an inclusive `[start, end]`
+ * range (`[1000, 2000]`). A `ports` list may mix the two. */
+export type PortSpec = NonNullable<PolicyMatch["ports"]>[number];
 export type ForkRequest = ApiSchema<"ForkRequest">;
 export type ForkOptions = ForkRequest;
 export type VmResources = ApiSchema<"VmResources">;
@@ -468,6 +478,9 @@ export class Arker {
       disk: src.disk ?? true,
       durable: src.durable ?? null,
       resources,
+      // ARK-125: omit to inherit the source's policy; pass a doc to override
+      // (an empty `{ policies: [] }` clears to allow-all, NOT inherit).
+      policies: src.policies ?? null,
     };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
@@ -868,6 +881,34 @@ export class VM {
 
   async delete(): Promise<DeleteVmResponse> {
     return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
+  }
+
+  // ── ARK-125 egress policy ────────────────────────────────────────
+  /**
+   * Read this VM's outbound egress policy document (ARK-125). Returns an
+   * empty doc (`{}`) when no policy is set.
+   */
+  async getPolicies(): Promise<PolicyDoc> {
+    return this._client._request<PolicyDoc>("GET", `${vmPath(this.id)}/policies`, undefined, this.baseUrl);
+  }
+
+  /**
+   * Replace this VM's outbound egress policy with `doc` — an ordered,
+   * first-match-wins rule list. An empty doc (`{}` or `{ policies: [] }`)
+   * clears the policy to allow-all. Returns the stored policy plus the
+   * domains it escalates to MITM and any degrade warnings.
+   *
+   *     await vm.setPolicies({
+   *       policies: [
+   *         { type: "network.outbound",
+   *           match: { domains: ["github.com"], ports: [443] },
+   *           action: "allow" },
+   *         { type: "network.outbound", action: "deny" },
+   *       ],
+   *     });
+   */
+  async setPolicies(doc: PolicyDoc): Promise<PutPoliciesResponse> {
+    return this._client._request<PutPoliciesResponse>("PUT", `${vmPath(this.id)}/policies`, doc, this.baseUrl);
   }
 
   // ── Syncs: bindings of a filesystem into this VM at a path ────────

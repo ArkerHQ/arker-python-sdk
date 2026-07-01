@@ -401,6 +401,7 @@ class Arker:
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         durable: bool | None = None,
+        policies: dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -418,6 +419,13 @@ class Arker:
         a known public golden, otherwise to your own org; an explicit value
         always wins, and it's irrelevant when forking by id. ``name``
         (optional) is the *new* VM's name in your org.
+
+        ``policies`` (ARK-125) is the child's outbound egress policy document.
+        Omit it (``None``) to inherit the source VM's policy, re-encrypted under
+        the child's own key. Pass a doc to override it — even an empty
+        ``{"policies": []}``, which clears to allow-all rather than inheriting.
+        Distinct from ``egress`` (the legacy coarse policy) and ``network``
+        (inbound reachability).
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -457,6 +465,9 @@ class Arker:
             "disk": disk if disk is not None else True,
             "durable": durable,
             "resources": resources,
+            # ARK-125: omit to inherit the source's egress policy; pass a doc to
+            # override (an empty ``{"policies": []}`` clears to allow-all).
+            "policies": policies,
         }
         burst_ref = source_vm_name or source_vm_id
         use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
@@ -743,6 +754,31 @@ class VM:
     def delete(self) -> DeleteVmResponse:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
         return DeleteVmResponse(deleted=bool(payload.get("deleted")))
+
+    def get_policies(self) -> dict[str, Any]:
+        """Read this VM's outbound egress policy document (ARK-125) via
+        ``GET /v1/vms/{id}/policies``. Returns an empty doc (``{}``) when no
+        policy is set; read its rules as ``doc["policies"]``."""
+        return self._client._request("GET", f"{_vm_path(self.id)}/policies", base_url=self.base_url)
+
+    def set_policies(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """Replace this VM's outbound egress policy with ``doc`` — an ordered,
+        first-match-wins rule list — via ``PUT /v1/vms/{id}/policies``. An empty
+        doc (``{}`` or ``{"policies": []}``) clears the policy to allow-all.
+
+        Returns the ``PutPoliciesResponse``: the stored ``policy`` plus the
+        ``mitm_domains`` it escalates to MITM and any degrade ``warnings``::
+
+            vm.set_policies({
+                "policies": [
+                    {"type": "network.outbound",
+                     "match": {"domains": ["github.com"], "ports": [443]},
+                     "action": "allow"},
+                    {"type": "network.outbound", "action": "deny"},
+                ],
+            })
+        """
+        return self._client._request("PUT", f"{_vm_path(self.id)}/policies", doc, base_url=self.base_url)
 
     def sync(self, path: str, data: bytes | str | None = None) -> bytes | None:
         """Read or write a file in this VM over ``POST /v1/vms/{id}/sync``.
