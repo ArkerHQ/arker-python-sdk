@@ -59,6 +59,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vms/{id}/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getVmPolicies"];
+        put: operations["putVmPolicies"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vms/{id}": {
         parameters: {
             query?: never;
@@ -154,7 +172,11 @@ export interface paths {
         delete: operations["deleteSession"];
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update a session (resize PTY / set timeout)
+         * @description Resize the session's PTY (cols/rows) and/or update its idle timeout. Resize is delivered to a LIVE attached PTY in-band; if the PTY is detached, it is applied directly to the session's runtime; if no PTY has ever attached, the call is accepted as a no-op. REST equivalent of the WebSocket {"type":"resize"} control frame — usable from any client, attached or not.
+         */
+        patch: operations["patchSession"];
         trace?: never;
     };
     "/v1/vms/{id}/sessions/{sid}/pty": {
@@ -387,6 +409,62 @@ export interface components {
             durable?: boolean | null;
             /** @description Resource shape for the new VM. */
             resources?: components["schemas"]["VmResources"] | null;
+            /** @description ARK-125 outbound policy for the new VM. Omit (null) to inherit the source VM's policy, re-encrypted under the child's own key. Present (even an empty doc) replaces it: an empty doc clears to allow-all rather than inheriting. Distinct from `egress` (legacy NetworkPolicy) and `network` (inbound). */
+            policies?: components["schemas"]["PolicyDoc"] | null;
+        };
+        /** @description A VM's egress policy document (ARK-125): an ordered, first-match-wins rule list. Empty `policies` means no policy (allow-all). The engine default when no rule matches is DENY (fail-closed); an explicit catch-all `{ "type": "network.outbound", "action": "allow" }` rule expresses default-allow. */
+        PolicyDoc: {
+            policies?: components["schemas"]["PolicyEntry"][];
+        };
+        /** @description One policy rule. `match` AND's its present fields (absent ⇒ catch-all). */
+        PolicyEntry: {
+            /**
+             * @description Event family. Only network.outbound is supported; an unknown value is rejected with 400.
+             * @enum {string}
+             */
+            type: "network.outbound";
+            match?: components["schemas"]["PolicyMatch"];
+            action: components["schemas"]["PolicyAction"];
+        };
+        /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `domains` are mutually exclusive. L4 fields = ports/ips/domains; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field needs the MITM proxy (not built yet); until it ships an L7 rule degrades to its domain/L4 projection — allow → domain-allow, deny/rewrite → fail-closed deny. */
+        PolicyMatch: {
+            /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. */
+            ports?: (number | number[])[];
+            /** @description IPs or CIDRs. */
+            ips?: string[];
+            /** @description Label-boundary suffix match: `github.com` matches `api.github.com`, not `evilgithub.com`. */
+            domains?: string[];
+            methods?: string[];
+            /** @description Full-segment path prefixes. */
+            paths?: string[];
+            /** @description Header name → any-of values (names AND'd, a name's values OR'd). */
+            headers?: {
+                [key: string]: string[];
+            };
+            body_contains?: string[];
+        };
+        /** @description allow / deny, or a rewrite object. `rewrite` needs the MITM data-path; until it ships a rewrite rule is inert (treated as deny). */
+        PolicyAction: ("allow" | "deny") | {
+            rewrite: components["schemas"]["Rewrite"];
+        };
+        /** @description Mutate-and-forward (the only mutating action). Static for now — request-time interpolation is future work. */
+        Rewrite: {
+            host?: string;
+            path?: string;
+            /** @description Merge-set these request headers (not replace-all). */
+            headers?: {
+                [key: string]: string;
+            };
+            remove_headers?: string[];
+        };
+        /** @description Response to PUT /v1/vms/{id}/policies. */
+        PutPoliciesResponse: {
+            /** @description The stored policy document — read its rules as `policy.policies`. */
+            policy: components["schemas"]["PolicyDoc"];
+            /** @description Domains the policy would escalate to MITM once the data-path ships. */
+            mitm_domains?: string[];
+            /** @description Non-fatal notes (e.g. L7/rewrite rules degraded until the MITM data-path ships). */
+            warnings?: string[];
         };
         Session: {
             session_id: string;
@@ -954,6 +1032,56 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    getVmPolicies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The VM's egress policy document (empty when none is set). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyDoc"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    putVmPolicies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyDoc"];
+            };
+        };
+        responses: {
+            /** @description Stored policy, plus the domains it escalates to MITM and any degrade warnings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PutPoliciesResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     getVm: {
         parameters: {
             query?: never;
@@ -1239,6 +1367,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeleteSessionResponse"];
+                };
+            };
+            422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
+    patchSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+                sid: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description New terminal width in columns (1-1000). Provide together with rows. */
+                    cols?: number;
+                    /** @description New terminal height in rows (1-1000). Provide together with cols. */
+                    rows?: number;
+                    /** @description Idle auto-cancel window for the PTY; applies on the next attach. */
+                    timeout_secs?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Patched. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        ok?: boolean;
+                        session_id?: string;
+                    };
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
