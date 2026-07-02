@@ -102,6 +102,31 @@ def test_fork_posts_directly_to_source_vm() -> None:
     assert body == {"name": "demo", "source_vm_id": "ubuntu", "disk": True}
 
 
+def test_fork_infers_arker_org_for_macos_full_golden() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        {
+            "vm_id": "vm_macos",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "network": {"reachable": False},
+            "resources": {"vcpu": 4, "memory_mib": 8192, "disk_mib": 10240},
+        },
+    )
+
+    with use_transport(t):
+        vm = client().fork("macos-full")
+
+    assert vm.id == "vm_macos"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {"source_vm_name": "macos-full", "source_org_id": "ArkerHQ", "disk": True}
+
+
 def test_fork_accepts_legacy_id_response() -> None:
     t = FakeTransport()
     t.add_json(

@@ -16,6 +16,7 @@ venv/
 node_modules/
 *.log
 .tsbuildinfo
+typescript/ios-qa-artifacts/
 
 # IDE
 .idea/

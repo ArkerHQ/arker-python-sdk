@@ -43,6 +43,7 @@
     "build": "tsup src/index.ts src/cli.ts src/daytona.ts src/e2b.ts src/modal.ts --format esm,cjs --dts --clean --target=node18",
     "check:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts --check",
     "demo": "tsx tests/demo.ts",
+    "example:ios-qa": "tsx examples/ios-qa.ts",
     "generate:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts",
     "smoke": "tsx tests/conformance/fork-run-sync.ts",
     "test": "tsx tests/unit.ts && tsx tests/compat.ts && tsx tests/cli.ts && tsx tests/http2.ts",
