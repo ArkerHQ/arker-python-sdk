@@ -3,8 +3,8 @@
 # Policies as code — quick start (host-enforced network policy)
 #
 # Forks a machine from the public `ubuntu-full` golden and attaches a network
-# policy DOCUMENT: an ordered, first-match-wins list of `network.outbound` rules
-# that allow / deny / rewrite each request, enforced in the host network path (a
+# policy DOCUMENT: an ordered, first-match-wins list of `outbound` rules
+# that allow / deny / rewrite / gate each request, enforced in the host network path (a
 # process in the VM can't flush iptables to escape it). The CLI has no policy
 # verb, so we PUT the document to the API; everything else is `arker fork`/`run`.
 #
@@ -28,22 +28,21 @@ cleanup() { arker rm "$VM" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 # ── 3. Attach the policy document (PUT /v1/vms/{id}/policies) ────────────────
-#   1. rewrite httpbin.org — inject x-api-key from a SECRET the guest never sees,
-#      and strip the guest's own authorization header
+#   1. rewrite httpbin.org: inject x-api-key and strip the guest's own
+#      authorization header
 #   2. deny openai.com
 #   3. allow everything else
-# '${secret:DEMO_KEY}' stays literal (single quotes) so the HOST substitutes it
-# on the way out — the guest never sees the real value.
+# The injected credential is stored in the policy on the HOST (encrypted at rest,
+# redacted on GET) and merged in as the request leaves; the guest never sees it.
 curl -fsS -X PUT "$BASE/v1/vms/$VM/policies" \
   -H "authorization: Bearer $ARKER_API_KEY" -H 'content-type: application/json' \
   -d '{
     "policies": [
-      {"type":"network.outbound","match":{"domains":["httpbin.org"]},
-       "action":{"rewrite":{"headers":{"x-api-key":"${secret:DEMO_KEY}"},"remove_headers":["authorization"]}}},
-      {"type":"network.outbound","match":{"domains":["openai.com"]},"action":"deny"},
-      {"type":"network.outbound","action":"allow"}
-    ],
-    "secrets": {"DEMO_KEY":"sk-demo-the-guest-never-sees-this"}
+      {"type":"outbound","match":{"hosts":["httpbin.org"]},
+       "action":{"rewrite":{"headers":{"x-api-key":"sk-demo-the-guest-never-sees-this"},"remove_headers":["authorization"]}}},
+      {"type":"outbound","match":{"hosts":["openai.com"]},"action":"deny"},
+      {"type":"outbound","action":"allow"}
+    ]
   }' >/dev/null
 echo "attached policy (rewrite httpbin · deny openai · allow *)"
 

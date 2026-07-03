@@ -40,7 +40,8 @@ ar.fork(source_vm_name=..., source_org_id=..., name=None, durable=False)
 ar.list_vms(state=None)
 ar.vm(vm_id)                                  # bare handle
 ar.vm(vm_id).run(command, **options)
-ar.vm(vm_id).resize(vcpu_count=..., memory_mib=...)
+ar.vm(vm_id).update(vcpu_count=..., memory_mib=...)   # PATCH resources / network
+ar.vm(vm_id).update_policies({"policies": [...]})     # PUT outbound policy doc
 ar.vm(vm_id).delete()
 
 # Files inside a VM

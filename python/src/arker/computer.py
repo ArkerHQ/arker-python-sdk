@@ -396,6 +396,7 @@ class Arker:
         public: bool | None = None,
         network: bool | str | dict[str, Any] | None = None,
         egress: bool | str | dict[str, Any] | None = None,
+        policies: dict[str, Any] | None = None,
         disk: bool | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
@@ -454,6 +455,7 @@ class Arker:
             "public": public,
             "network": network,
             "egress": egress,
+            "policies": policies,
             "disk": disk if disk is not None else True,
             "durable": durable,
             "resources": resources,
@@ -723,7 +725,7 @@ class VM:
             extra_headers=headers,
         ))
 
-    def resize(
+    def update(
         self,
         *,
         vcpu_count: int | None = None,
@@ -731,14 +733,34 @@ class VM:
         disk_mib: int | None = None,
         network: bool | str | dict[str, Any] | None = None,
     ) -> Vm:
-        """Update this VM's resource allocation (and optionally network) via
-        ``PATCH /v1/vms/{id}``. Returns the updated :class:`Vm`."""
+        """Update this VM's resource allocation and/or inbound reachability
+        (``network`` carries ``reachable`` and ``ssh_public_keys``) via
+        ``PATCH /v1/vms/{id}``. Returns the updated :class:`Vm`. For outbound
+        policies use :meth:`update_policies`."""
         resources: dict[str, Any] | None = None
         if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
             resources = {"vcpu": vcpu_count, "memory_mib": memory_mib, "disk_mib": disk_mib}
         body: dict[str, Any] = {"resources": resources, "network": network}
         payload = self._client._request("PATCH", _vm_path(self.id), body, base_url=self.base_url)
         return _vm_info(payload)
+
+    def update_policies(self, policies: dict[str, Any]) -> dict[str, Any]:
+        """Replace this VM's outbound policy document via
+        ``PUT /v1/vms/{id}/policies``. ``policies`` is a PolicyDoc,
+        ``{"policies": [{"type": "outbound", "match": {...}, "action": ...}]}``;
+        pass ``{}`` to clear it to allow-all. Inject credentials inline in a
+        rewrite/gate's ``headers`` (they are encrypted at rest and redacted on
+        read). Returns ``{"policy", "mitm_domains", "warnings"}``."""
+        return self._client._request(
+            "PUT", _vm_path(self.id) + "/policies", policies, base_url=self.base_url
+        )
+
+    def get_policies(self) -> dict[str, Any]:
+        """Fetch this VM's outbound policy document via
+        ``GET /v1/vms/{id}/policies`` (empty when none is set; secrets redacted)."""
+        return self._client._request(
+            "GET", _vm_path(self.id) + "/policies", base_url=self.base_url
+        )
 
     def delete(self) -> DeleteVmResponse:
         payload = self._client._request("DELETE", _vm_path(self.id), base_url=self.base_url)
@@ -750,7 +772,7 @@ class VM:
         Omit ``data`` to read (returns ``bytes``); pass ``data`` to write
         (returns ``None``). Inline transfer for small files, presigned
         uploads for large ones. To mount a standalone filesystem into the
-        VM, use ``vm.syncs.create``.
+        VM, use ``vm.create_sync``.
         """
         if data is None:
             return self._sync_read(path)

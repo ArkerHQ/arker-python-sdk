@@ -48,7 +48,7 @@ const BURST_SOURCE_REFS = new Set(["arkuntu"]);
 const BURST_VM_ID = /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$/;
 
 type FetchLike = typeof fetch;
-type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 type JsonObject = Record<string, unknown>;
 
 interface BufferValue extends Uint8Array {
@@ -100,8 +100,79 @@ export type ErrorCode = ApiSchema<"ErrorCode">;
 // ── Core resources ─────────────────────────────────────────────────
 export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
 export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
+
+// ── Outbound egress policies (ARK-125) ─────────────────────────────
+// Hand-authored: the generated api-types are a step behind the contract,
+// which carries `policies` on ForkRequest and PUT /v1/vms/{id}/policies.
+/** Match criteria. Present fields are AND'd; list values are OR'd; an absent
+ *  field imposes no constraint. `ips` and `hosts` are mutually exclusive. */
+export type PolicyMatch = {
+  /** L4. IPs or CIDRs. Mutually exclusive with `hosts`. */
+  ips?: string[];
+  /** L4. Single ports and/or inclusive `[start, end]` ranges. */
+  ports?: (number | [number, number])[];
+  /** L4. Label-boundary host suffixes (SNI/Host): `github.com` matches
+   *  `api.github.com`, not `evilgithub.com`. Mutually exclusive with `ips`. */
+  hosts?: string[];
+  /** L7. HTTP methods (case-insensitive). */
+  methods?: string[];
+  /** L7. Full-segment path prefixes (must start with `/`). */
+  paths?: string[];
+  /** L7. Header name → any-of values (names AND'd, a name's values OR'd). */
+  headers?: Record<string, string[]>;
+  /** L7. Body substrings, OR'd. */
+  body_contains?: string[];
+};
+/** Mutate the request, then forward upstream. String values interpolate
+ *  `$domain` / `$path` / `$method` / `$vm_id` / `$body`. */
+export type Rewrite = {
+  host?: string;
+  path?: string;
+  /** Merge-set (not replace-all); applied after `remove_headers`. */
+  headers?: Record<string, string>;
+  remove_headers?: string[];
+  body?: string;
+};
+/** Blocking outbound HTTP check made before the guest connection opens; the
+ *  response status decides whether the guest request proceeds. */
+export type Gate = {
+  /** Target endpoint INCLUDING scheme. Not interpolated (SSRF guard). */
+  host: string;
+  path?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  /** JSON body; string leaves are interpolated and JSON-escaped. */
+  body?: unknown;
+  /** HTTP statuses that mean allow. Required, non-empty. */
+  allow_on_status: number[];
+  /** Verdict on timeout / connection failure. Default true (fail-closed). */
+  deny_on_timeout?: boolean;
+  timeout_ms?: number;
+};
+/** `allow` / `deny`, or a mutating object with at least one of `rewrite` / `gate`. */
+export type PolicyAction = "allow" | "deny" | { rewrite?: Rewrite; gate?: Gate };
+export type PolicyEntry = {
+  /** Only `"outbound"` is supported (legacy `"network.outbound"` still accepted on input). */
+  type: "outbound";
+  match?: PolicyMatch;
+  action: PolicyAction;
+};
+/** Ordered, first-match-wins outbound policy. No match ⇒ deny (fail-closed);
+ *  empty `policies` ⇒ allow-all. Unknown top-level keys are rejected. Inject
+ *  credentials inline in `rewrite.headers` / `gate.headers` — they are
+ *  encrypted at rest and redacted (`"***"`) on read, so a GET is not
+ *  round-trippable. */
+export type PolicyDoc = {
+  policies?: PolicyEntry[];
+};
+export type PutPoliciesResponse = {
+  policy: PolicyDoc;
+  mitm_domains?: string[];
+  warnings?: string[];
+};
+
 export type ForkRequest = ApiSchema<"ForkRequest">;
-export type ForkOptions = ForkRequest;
+export type ForkOptions = ForkRequest & { policies?: PolicyDoc | null };
 export type VmResources = ApiSchema<"VmResources">;
 export type VmNetwork = ApiSchema<"VmNetwork">;
 export type NetworkInput = ApiSchema<"NetworkInput">;
@@ -161,7 +232,7 @@ export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 // ── Sessions ───────────────────────────────────────────────────────
 export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
 
-// ── VM resize (PATCH /v1/vms/{id}) ─────────────────────────────────
+// ── VM update (PATCH /v1/vms/{id}) ─────────────────────────────────
 export type PatchVmRequest = ApiSchema<"PatchVmRequest">;
 
 // ── Errors ─────────────────────────────────────────────────────────
@@ -408,12 +479,12 @@ export class Arker {
    * `VM`, extra fork options go in the second `opts` argument.
    */
   async fork(
-    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>),
-    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> = {},
+    source: string | VM | (ForkSource & Partial<Omit<ForkOptions, "source_vm_id" | "source_vm_name" | "source_org_id">>),
+    opts: Partial<Omit<ForkOptions, "source_vm_id" | "source_vm_name" | "source_org_id">> = {},
   ): Promise<VM> {
     // Normalize the source: a name string, a VM handle (use its id), or a
     // ForkSource object.
-    const src: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> =
+    const src: ForkSource & Partial<Omit<ForkOptions, "source_vm_id" | "source_vm_name" | "source_org_id">> =
       typeof source === "string"
         ? { sourceVmName: source, ...opts }
         : source instanceof VM
@@ -457,7 +528,7 @@ export class Arker {
             disk_mib: legacy.disk_mib ?? null,
           }
         : null);
-    const body: ForkRequest = {
+    const body: ForkRequest & { policies?: PolicyDoc | null } = {
       source_vm_id: src.sourceVmId ?? null,
       source_vm_name: src.sourceVmName ?? null,
       source_org_id: sourceOrgId ?? null,
@@ -465,6 +536,7 @@ export class Arker {
       public: src.public ?? null,
       network: src.network ?? null,
       egress: src.egress ?? null,
+      policies: src.policies ?? null,
       disk: src.disk ?? true,
       durable: src.durable ?? null,
       resources,
@@ -744,7 +816,7 @@ export class VM {
    *     const bytes = await vm.sync("/home/user/out.txt");   // read
    *     await vm.sync("/home/user/in.txt", "hello\n");       // write
    *
-   * To mount a standalone filesystem into the VM, use `vm.syncs.create`.
+   * To mount a standalone filesystem into the VM, use `vm.createSync`.
    */
   async sync(path: string): Promise<Uint8Array>;
   async sync(path: string, data: Uint8Array | string): Promise<void>;
@@ -838,14 +910,16 @@ export class VM {
   }
 
   /**
-   * Update this VM's resource allocation and/or network settings via
-   * `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
+   * Update this VM's resource allocation and/or inbound reachability
+   * (`network` carries `reachable` and `ssh_public_keys`) via
+   * `PATCH /v1/vms/{id}`. Returns the updated `Vm`. For outbound policies use
+   * {@link VM.updatePolicies}.
    *
    * Accepts either a `PatchVmRequest` (`{ resources, network }`) or, for
    * convenience, flat resource fields (`{ vcpu, memory_mib, disk_mib }`)
    * which are folded into `resources`.
    */
-  async resize(
+  async update(
     request:
       | PatchVmRequest
       | (VmResources & Pick<PatchVmRequest, "network">),
@@ -864,6 +938,33 @@ export class VM {
             network: r.network ?? null,
           };
     return this._client._request("PATCH", vmPath(this.id), body, this.baseUrl);
+  }
+
+  /**
+   * Replace this VM's outbound policy document via
+   * `PUT /v1/vms/{id}/policies`. Pass `{}` to clear it to unrestricted
+   * outbound. Returns `{ policy, mitm_domains, warnings }`.
+   */
+  async updatePolicies(policies: PolicyDoc): Promise<PutPoliciesResponse> {
+    return this._client._request(
+      "PUT",
+      `${vmPath(this.id)}/policies`,
+      policies,
+      this.baseUrl,
+    );
+  }
+
+  /**
+   * Fetch this VM's outbound policy document via `GET /v1/vms/{id}/policies`
+   * (empty when none is set; secret values are redacted).
+   */
+  async getPolicies(): Promise<PolicyDoc> {
+    return this._client._request(
+      "GET",
+      `${vmPath(this.id)}/policies`,
+      undefined,
+      this.baseUrl,
+    );
   }
 
   async delete(): Promise<DeleteVmResponse> {
