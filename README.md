@@ -69,6 +69,16 @@ arker run "$VM" "python3 -c 'print(2 + 2)'"
 arker rm "$VM"
 ```
 
+### Examples
+
+Runnable quick-starts in [`examples/`](./examples):
+
+- [`browser/`](./examples/browser) — fork a running Chromium and reopen the checkpoint live over VNC
+- [`android/`](./examples/android) — a real Android device (redroid): install and drive an app
+- [`ios/`](./examples/ios) — an iPhone simulator inside a macOS VM
+- [`coding-agent/`](./examples/coding-agent) — background coding agents (Claude Code, Codex, Cursor, …)
+- [`policies/`](./examples/policies) — host-enforced egress policy as code
+
 ### Get Started
 
 Read the [docs](https://arker.ai/docs) and browse the [examples](./examples).

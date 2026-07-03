@@ -24,3 +24,7 @@ node_modules/
 # OS
 .DS_Store
 typescript/dist-types/
+
+# Example run outputs (screenshots the quick-starts save to the working dir)
+*-screenshot.png
+checkpoint-*.png
