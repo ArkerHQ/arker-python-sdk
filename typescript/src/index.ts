@@ -750,7 +750,7 @@ export class VM {
   readonly vcpu_count?: number | null;
   readonly memory_mib?: number | null;
   readonly disk_mib?: number | null;
-  readonly network?: NetworkPolicy;
+  readonly network?: VmNetwork;
   readonly max_vcpus?: number | null;
   readonly max_memory_mib?: number | null;
   readonly min_memory_mib?: number | null;
