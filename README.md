@@ -73,10 +73,11 @@ arker rm "$VM"
 
 Runnable quick-starts in [`examples/`](./examples):
 
-- [`browser/`](./examples/browser) — fork a running Chromium and reopen the checkpoint live over VNC
+- [`browser/`](./examples/browser) — open two Wikipedia pages and fork a live checkpoint at each
 - [`android/`](./examples/android) — a real Android device (redroid): install and drive an app
 - [`ios/`](./examples/ios) — an iPhone simulator inside a macOS VM
-- [`coding-agent/`](./examples/coding-agent) — background coding agents (Claude Code, Codex, Cursor, …)
+- [`coding-agent/`](./examples/coding-agent) — background coding agents (Claude Code, Codex, Cursor)
+- [`firmware/`](./examples/firmware) — a coding agent edits firmware and runs it on QEMU
 - [`policies/`](./examples/policies) — host-enforced egress policy as code
 
 ### Get Started
