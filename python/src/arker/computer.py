@@ -54,6 +54,7 @@ GOLDEN_NAMES = frozenset({
     "ubuntu-py-repl", "ubuntu-js-repl",
     "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
     "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
+    "macos-full",
 })
 
 

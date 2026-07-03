@@ -29,6 +29,7 @@ const GOLDEN_NAMES = new Set<string>([
   "ubuntu-py-repl", "ubuntu-js-repl",
   "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
   "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
+  "macos-full",
 ]);
 
 const DEFAULT_RETRY_ATTEMPTS = 4;

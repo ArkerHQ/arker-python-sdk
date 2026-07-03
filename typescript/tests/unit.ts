@@ -126,6 +126,33 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
   );
 }
 
+async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    {
+      vm_id: "vm_macos",
+      owner_org_id: "owner",
+      created_at: "now",
+      public: false,
+      state: "idle",
+      sessions: [],
+      network: { reachable: false },
+      resources: { vcpu: 4, memory_mib: 8192, disk_mib: 10240 },
+    },
+  );
+
+  const vm = await client(fetch).fork("macos-full");
+
+  assert.equal(vm.id, "vm_macos");
+  const body = JSON.parse(fetch.calls[0]!.body!);
+  assert.equal(body.source_vm_name, "macos-full");
+  assert.equal(body.source_org_id, "ArkerHQ");
+  assert.equal(body.disk, true);
+  assert.equal(body.platforms, undefined);
+}
+
 async function testNestedErrorWithoutOkStillParses(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -504,6 +531,7 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 }
 
 await testForkPostsDirectlyToSourceVm();
+await testForkInfersArkerOrgForMacosFullGolden();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testRegionRoutesGoldensToMainEndpoint();
