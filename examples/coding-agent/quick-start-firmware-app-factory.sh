@@ -54,8 +54,9 @@ show() { arker run "$1" "{ set +x; } 2>/dev/null; cat $2" 2>&1 | grep -vaE '^\+\
 
 VM=$(arker fork ubuntu-full | jq -r .vm_id); echo "# forked $VM"
 
-echo "# setup: install cross-toolchain + headless QEMU, seed baseline firmware"
+echo "# setup: install the Cursor agent + cross-toolchain + headless QEMU, seed baseline firmware"
 run "$VM" "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends gcc-arm-none-eabi qemu-system-arm >/dev/null"
+run "$VM" "curl https://cursor.com/install -fsS | bash >/dev/null 2>&1"
 run "$VM" "mkdir -p /work && echo $(b64 "$FW_C") | base64 -d > /work/fw.c && echo $(b64 "$FW_LD") | base64 -d > /work/fw.ld && printf %s '$CURSOR_API_KEY' > /work/.key"
 
 echo "# agent: add 'tick' x3 to the firmware"

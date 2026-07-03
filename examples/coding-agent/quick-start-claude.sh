@@ -24,6 +24,8 @@ echo "forked machine: $VM"
 # ── 3. Run the Claude Code agent inside the machine ─────────────────────────
 # Install Claude Code, then have it carry out a basic task.
 arker run "$VM" "npm install -g @anthropic-ai/claude-code"
+# A long install returns as soon as it goes async, so wait for the CLI to appear.
+for _ in $(seq 40); do arker run "$VM" "command -v claude" >/dev/null 2>&1 && break; sleep 3; done
 # `-p` is the non-interactive (print) mode; `--dangerously-skip-permissions`
 # auto-approves tool use. The golden runs as root, so `IS_SANDBOX=1` tells Claude
 # Code it's safe to skip permissions there — true, since the VM is isolated.

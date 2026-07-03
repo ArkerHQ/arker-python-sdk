@@ -23,6 +23,8 @@ echo "forked machine: $VM"
 
 # ── 3. Install + authenticate the Codex CLI inside the machine ──────────────
 arker run "$VM" "npm install -g @openai/codex"
+# A long install returns as soon as it goes async, so wait for the CLI to appear.
+for _ in $(seq 40); do arker run "$VM" "command -v codex" >/dev/null 2>&1 && break; sleep 3; done
 # Codex reads the key from stdin and stores it in ~/.codex/auth.json, so later
 # `codex exec` calls are already authenticated.
 arker run "$VM" "printf '%s' '$OPENAI_API_KEY' | codex login --with-api-key"
