@@ -16,7 +16,10 @@ VM=$(arker fork ubuntu-full | jq -r .vm_id)
 echo "forked $VM"
 trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
 
-arker run "$VM" "curl https://cursor.com/install -fsS | bash"
-until arker run "$VM" "command -v cursor-agent" >/dev/null 2>&1; do sleep 3; done
-# -f trusts the workspace (required non-interactively)
-arker run "$VM" "CURSOR_API_KEY=$CURSOR_API_KEY cursor-agent -f -p 'create hello.py that prints hello world, then run it'"
+# cursor-agent is already baked into the ubuntu-full golden — fork lands warm, no install.
+# -f trusts the workspace (required non-interactively).
+# The agent runs for minutes; a synchronous `arker run` is capped at 300s by the HTTP layer,
+# so start it in the background and poll for completion (up to arkerd's 1h exec limit).
+RID=$(arker run "$VM" "CURSOR_API_KEY=$CURSOR_API_KEY cursor-agent -f -p 'create hello.py that prints hello world, then run it'" --background | jq -r .run_id)
+until [ "$(arker runs get "$VM" "$RID" 2>/dev/null | jq -r .state)" != running ]; do sleep 5; done
+arker runs get "$VM" "$RID" 2>/dev/null | jq -r '.stdout // ""'

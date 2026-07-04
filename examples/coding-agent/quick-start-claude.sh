@@ -16,7 +16,10 @@ VM=$(arker fork ubuntu-full | jq -r .vm_id)
 echo "forked $VM"
 trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
 
-arker run "$VM" "npm install -g @anthropic-ai/claude-code"
-until arker run "$VM" "command -v claude" >/dev/null 2>&1; do sleep 3; done
-# IS_SANDBOX=1 + --dangerously-skip-permissions auto-approve tool use (safe: the VM is isolated)
-arker run "$VM" "IS_SANDBOX=1 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY claude -p 'create hello.py that prints hello world, then run it' --dangerously-skip-permissions"
+# claude-code is already baked into the ubuntu-full golden — fork lands warm, no install.
+# IS_SANDBOX=1 + --dangerously-skip-permissions auto-approve tool use (safe: the VM is isolated).
+# The agent runs for minutes; a synchronous `arker run` is capped at 300s by the HTTP layer,
+# so start it in the background and poll for completion (up to arkerd's 1h exec limit).
+RID=$(arker run "$VM" "IS_SANDBOX=1 ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY claude -p 'create hello.py that prints hello world, then run it' --dangerously-skip-permissions" --background | jq -r .run_id)
+until [ "$(arker runs get "$VM" "$RID" 2>/dev/null | jq -r .state)" != running ]; do sleep 5; done
+arker runs get "$VM" "$RID" 2>/dev/null | jq -r '.stdout // ""'

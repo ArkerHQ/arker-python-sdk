@@ -16,8 +16,11 @@ VM=$(arker fork ubuntu-full | jq -r .vm_id)
 echo "forked $VM"
 trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
 
-arker run "$VM" "npm install -g @openai/codex"
-until arker run "$VM" "command -v codex" >/dev/null 2>&1; do sleep 3; done
+# codex is already baked into the ubuntu-full golden — fork lands warm, no install.
 arker run "$VM" "printf '%s' '$OPENAI_API_KEY' | codex login --with-api-key"
-# --dangerously-bypass... skips approvals + Codex's own sandbox (safe: the VM is isolated)
-arker run "$VM" "codex exec --dangerously-bypass-approvals-and-sandbox 'create hello.py that prints hello world, then run it'"
+# --dangerously-bypass... skips approvals + Codex's own sandbox (safe: the VM is isolated).
+# The agent runs for minutes; a synchronous `arker run` is capped at 300s by the HTTP layer,
+# so start it in the background and poll for completion (up to arkerd's 1h exec limit).
+RID=$(arker run "$VM" "codex exec --dangerously-bypass-approvals-and-sandbox 'create hello.py that prints hello world, then run it'" --background | jq -r .run_id)
+until [ "$(arker runs get "$VM" "$RID" 2>/dev/null | jq -r .state)" != running ]; do sleep 5; done
+arker runs get "$VM" "$RID" 2>/dev/null | jq -r '.stdout // ""'

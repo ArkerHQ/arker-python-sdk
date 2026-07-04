@@ -42,21 +42,22 @@ SECTIONS {
 }'
 
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
-# run a command and wait for it to finish (long ones go async)
+# run a command in the background and wait for it to finish. Background + poll (not a
+# synchronous `arker run`) because agent runs routinely exceed the 300s HTTP request cap.
 run() {
-  local r rid
-  r=$(arker run "$1" "{ set +x; } 2>/dev/null; $2" 2>&1)
-  rid=$(printf '%s' "$r" | jq -r '.run_id? // empty' 2>/dev/null || true)
-  [ -n "${rid:-}" ] && until [ "$(arker runs get "$1" "$rid" 2>/dev/null | jq -r .state)" != running ]; do sleep 3; done
+  local rid
+  rid=$(arker run "$1" "{ set +x; } 2>/dev/null; $2" --background 2>/dev/null | jq -r '.run_id // empty' 2>/dev/null || true)
+  [ -n "${rid:-}" ] && until [ "$(arker runs get "$1" "$rid" 2>/dev/null | jq -r .state 2>/dev/null)" != running ]; do sleep 3; done
   return 0
 }
 show() { arker run "$1" "{ set +x; } 2>/dev/null; cat $2" 2>&1 | grep -vaE '^\+\+? ' || true; }
 
 VM=$(arker fork ubuntu-full | jq -r .vm_id); echo "# forked $VM"
 
-echo "# install toolchain + agent, seed firmware"
+# cursor-agent is already baked into the ubuntu-full golden. Only the embedded ARM
+# toolchain (gcc-arm-none-eabi + qemu-system-arm) isn't, so that's all we install.
+echo "# install ARM toolchain, seed firmware"
 run "$VM" "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends gcc-arm-none-eabi qemu-system-arm >/dev/null"
-run "$VM" "curl https://cursor.com/install -fsS | bash >/dev/null 2>&1"
 run "$VM" "mkdir -p /work && echo $(b64 "$FW_C") | base64 -d > /work/fw.c && echo $(b64 "$FW_LD") | base64 -d > /work/fw.ld && printf %s '$CURSOR_API_KEY' > /work/.key"
 
 echo "# agent: add 'tick' x3"
