@@ -25,3 +25,7 @@ typescript/ios-qa-artifacts/
 # OS
 .DS_Store
 typescript/dist-types/
+
+# Example run outputs
+*-screenshot.png
+checkpoint-*.png
