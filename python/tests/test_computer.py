@@ -369,7 +369,7 @@ def test_resize_patches_vm_resources() -> None:
     )
 
     with use_transport(t):
-        result = client().vm("vm_1").resize(memory_mib=1024)
+        result = client().vm("vm_1").update(memory_mib=1024)
 
     # resize now PATCHes /v1/vms/{id} with a resources object (arkerd reality;
     # the old POST /v1/vms/{id}/resize route does not exist). None fields are pruned.

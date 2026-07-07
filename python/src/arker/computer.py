@@ -735,7 +735,7 @@ class VM:
             extra_headers=headers,
         ))
 
-    def resize(
+    def update(
         self,
         *,
         vcpu_count: int | None = None,
@@ -743,7 +743,8 @@ class VM:
         disk_mib: int | None = None,
         network: bool | str | dict[str, Any] | None = None,
     ) -> Vm:
-        """Update this VM's resource allocation (and optionally network) via
+        """Update this VM's resource allocation and/or inbound reachability
+        (``network`` carries ``reachable`` and ``ssh_public_keys``) via
         ``PATCH /v1/vms/{id}``. Returns the updated :class:`Vm`."""
         resources: dict[str, Any] | None = None
         if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
