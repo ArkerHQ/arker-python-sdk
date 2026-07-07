@@ -76,7 +76,7 @@ const computer = arker.vm(vmId);
 await call("Computer.get", () => computer.refresh());
 await call("Computer.run(echo)", () => computer.run("echo surface-hello"));
 const bg = await call("Computer.run(background)", () => computer.run("sleep 1; echo bg", { background: true } as any)) as any;
-await call("Computer.resize", () => computer.resize({ resources: { vcpu: 2 } }), { stubOk: true });
+await call("Computer.update", () => computer.update({ resources: { vcpu: 2 } }), { stubOk: true });
 
 // ── Runs ────────────────────────────────────────────────────────────
 const runs = await call("Runs.list", () => computer.listRuns()) as any;

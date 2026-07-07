@@ -208,8 +208,8 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
       await cmdRun({ ...args, positional: rest }, client);
       return;
     }
-    case "resize": {
-      await cmdResize({ ...args, positional: rest }, client);
+    case "update": {
+      await cmdUpdate({ ...args, positional: rest }, client);
       return;
     }
     default:
@@ -244,7 +244,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
         "       [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]");
   }
 
-  // Resource overrides — same flag names as `arker resize` for consistency.
+  // Resource overrides — same flag names as `arker update` for consistency.
   // Folded into the contract's single `resources` object; unset fields stay
   // null so the source VM's defaults apply.
   const vcpu = numFlag(args, "vcpu");
@@ -474,16 +474,16 @@ async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
   output.write(await client.vm(vm).sync(path));
 }
 
-async function cmdResize(args: ParsedArgs, client: Arker): Promise<void> {
+async function cmdUpdate(args: ParsedArgs, client: Arker): Promise<void> {
   const vm = args.positional[0];
-  if (!vm) die("usage: arker resize <vm_id> [--memory-mib N] [--vcpu N] [--disk-mib N]");
+  if (!vm) die("usage: arker update <vm_id> [--memory-mib N] [--vcpu N] [--disk-mib N]");
   const memoryMib = numFlag(args, "memory-mib");
   const vcpu = numFlag(args, "vcpu");
   const diskMib = numFlag(args, "disk-mib");
   if (memoryMib === undefined && vcpu === undefined && diskMib === undefined) {
-    die("resize: pass at least one of --memory-mib, --vcpu, --disk-mib");
+    die("update: pass at least one of --memory-mib, --vcpu, --disk-mib");
   }
-  const updated = await client.vm(vm).resize({
+  const updated = await client.vm(vm).update({
     resources: {
       vcpu: vcpu ?? null,
       memory_mib: memoryMib ?? null,
@@ -917,7 +917,7 @@ function usage(): never {
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource/network overrides",
       "  arker run <vm> <command> [--session-id <id>] [--session-idx N]   run a command",
-      "  arker resize <vm> [--memory-mib N] [--vcpu N] [--disk-mib N]   resize a VM (PATCH)",
+      "  arker update <vm> [--memory-mib N] [--vcpu N] [--disk-mib N]   update a VM (PATCH)",
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "",
       "Resources:",
@@ -998,8 +998,8 @@ async function main(): Promise<void> {
         return await cmdRuns(args, client);
       case "sessions":
         return await cmdSessions(args, client);
-      case "resize":
-        return await cmdResize(args, client);
+      case "update":
+        return await cmdUpdate(args, client);
       case "filesystems":
       case "fs":
         return await cmdFilesystems(args, client);
