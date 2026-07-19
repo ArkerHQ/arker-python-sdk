@@ -280,6 +280,7 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
   const result: RunResult = await client.vm(vmId).run(command, {
     background: boolFlag(args, "background"),
     timeout: numFlag(args, "timeout"),
+    time_to_background: numFlag(args, "time-to-background"),
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
     session_id: args.flags["session-id"] as string | undefined,
@@ -945,7 +946,8 @@ function usage(): never {
       "  --session-id <ulid>        run in a specific existing session",
       "  --session-idx <n>          run in the session at this index (default 0)",
       "  --background               return a run id instead of blocking",
-      "  --timeout <secs>           per-run timeout",
+      "  --timeout <ms>             exec/kill bound: max ms the command runs before it is killed (0 = unbounded; server default ~1h)",
+      "  --time-to-background <ms>  sync window: ms the call blocks before returning a run id (default 30000)",
       "  --acquire <list>           warm resources before the run (cpu,memory,disk)",
       "  --release <list>           release resources after the run (cpu,memory,disk)",
       "",

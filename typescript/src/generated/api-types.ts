@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/v1/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Public health/readiness probe. The response body is intentionally minimal and does not expose host, region, release, or golden-image internals. */
+        get: operations["health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/fork": {
         parameters: {
             query?: never;
@@ -59,24 +76,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/vms/{id}/policies": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        get: operations["getVmPolicies"];
-        put: operations["putVmPolicies"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/vms/{id}": {
         parameters: {
             query?: never;
@@ -93,6 +92,24 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["patchVm"];
+        trace?: never;
+    };
+    "/v1/vms/{id}/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getVmPolicies"];
+        put: operations["putVmPolicies"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/vms/{id}/runs": {
@@ -343,11 +360,20 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        HealthResponse: {
+            /** @description Readiness status. `ok` means the service is ready; other values may be returned with HTTP 503. */
+            status: string;
+            /**
+             * Format: date-time
+             * @description Server time when the health response was generated.
+             */
+            timestamp: string;
+        };
         /**
-         * @description Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature.
+         * @description Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature. `payment_required` means billing setup or payment is required before new compute can start.
          * @enum {string}
          */
-        ErrorCode: "unsupported_operation" | "bad_request" | "unauthorized" | "forbidden" | "not_found" | "conflict" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "network_error";
+        ErrorCode: "unsupported_operation" | "bad_request" | "unauthorized" | "forbidden" | "payment_required" | "not_found" | "conflict" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "network_error";
         ErrorResponse: {
             code: components["schemas"]["ErrorCode"];
             /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic; server logs retain the underlying cause. */
@@ -390,6 +416,84 @@ export interface components {
         };
         /** @description Outbound egress policy input. `true`/`open` means unrestricted; `false`/`blocked`/`none` means deny all. */
         NetworkPolicyInput: boolean | ("open" | "blocked" | "true" | "false" | "none") | components["schemas"]["NetworkPolicy"];
+        /** @description A VM's egress policy document (ARK-125): an ordered, first-match-wins rule list. Empty `policies` means no policy (allow-all). The engine default when no rule matches is DENY (fail-closed); an explicit catch-all `{ "type": "outbound", "action": "allow" }` rule expresses default-allow. */
+        PolicyDoc: {
+            policies?: components["schemas"]["PolicyEntry"][];
+        };
+        /** @description One policy rule. `match` AND's its present fields (absent ⇒ catch-all). */
+        PolicyEntry: {
+            /**
+             * @description Event family. Only outbound is supported; an unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input.
+             * @enum {string}
+             */
+            type: "outbound";
+            match?: components["schemas"]["PolicyMatch"];
+            action: components["schemas"]["PolicyAction"];
+        };
+        /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field needs the MITM proxy (not built yet); until it ships an L7 rule degrades to its host/L4 projection — allow → host-allow, deny/rewrite → fail-closed deny. */
+        PolicyMatch: {
+            /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. */
+            ports?: (number | number[])[];
+            /** @description IPs or CIDRs. */
+            ips?: string[];
+            /** @description Label-boundary suffix match on the request host: `github.com` matches `api.github.com`, not `evilgithub.com`. */
+            hosts?: string[];
+            methods?: string[];
+            /** @description Full-segment path prefixes. */
+            paths?: string[];
+            /** @description Header name → any-of values (names AND'd, a name's values OR'd). */
+            headers?: {
+                [key: string]: string[];
+            };
+            body_contains?: string[];
+        };
+        /** @description allow / deny, or a mutating object `{ rewrite?, gate? }`. A mutating action needs the MITM data-path (terminate TLS to rewrite headers / read the body / gate the request). */
+        PolicyAction: ("allow" | "deny") | {
+            rewrite?: components["schemas"]["Rewrite"];
+            gate?: components["schemas"]["Gate"];
+        };
+        /** @description Mutate-and-forward. Host/path/header/body values support request-time `$`-token interpolation: `$domain`, `$path`, `$method`, `$vm_id`, `$body` (the request body as received, also `${…}`-braced), and `$$` for a literal `$`. Unknown/unresolved tokens pass through unchanged. */
+        Rewrite: {
+            host?: string;
+            path?: string;
+            /** @description Merge-set these request headers (not replace-all). */
+            headers?: {
+                [key: string]: string;
+            };
+            remove_headers?: string[];
+            /** @description Replace the request body entirely with this (interpolated) value; `$body` re-injects the original body. Absent = body forwarded unchanged. */
+            body?: string;
+        };
+        /** @description `action.gate`: a BLOCKING outbound HTTP check. When the rule matches, the proxy makes this HTTP request and WAITS before opening the guest's outbound connection; the response STATUS decides — status in `allow_on_status` => forward (applying any sibling `rewrite`), any other status => deny (403). A timeout / connection failure => `deny_on_timeout` (default fail-closed). Generic client: the target may be any endpoint (external authz / LLM / the arker `/run` API); the run-spec, if any, lives in `body`. `path` / header VALUES / string leaves of `body` are `$`-interpolated ($domain/$path/$method/$vm_id/$body); `host` is NOT interpolated (SSRF lever). Values injected into the JSON `body` are JSON-escaped. The outbound connection is SSRF-reguarded (refuses internal / link-local / RFC1918). */
+        Gate: {
+            /** @description Target endpoint INCLUDING scheme, e.g. https://authz.example.com. Not interpolated. */
+            host: string;
+            /** @description Request path (interpolated). Default /. */
+            path?: string;
+            /** @description HTTP method. Default GET. */
+            method?: string;
+            /** @description Request headers (values interpolated). A stored credential (e.g. authorization) is encrypted at rest and REDACTED on policy read-back. */
+            headers?: {
+                [key: string]: string;
+            };
+            /** @description JSON request body; string leaves are interpolated and JSON-escaped. Absent = no body. */
+            body?: unknown;
+            /** @description HTTP status codes that mean ALLOW. Any other status denies. Must be non-empty. */
+            allow_on_status: number[];
+            /** @description Verdict on timeout / connection failure: true = deny (fail-closed, default), false = allow (fail-open). */
+            deny_on_timeout?: boolean;
+            /** @description Max wall-clock for the gate call before it is abandoned (then deny_on_timeout applies). Default ~30000. */
+            timeout_ms?: number;
+        };
+        /** @description Response to PUT /v1/vms/{id}/policies. */
+        PutPoliciesResponse: {
+            /** @description The stored policy document — read its rules as `policy.policies`. */
+            policy: components["schemas"]["PolicyDoc"];
+            /** @description Domains the policy would escalate to MITM once the data-path ships. */
+            mitm_domains?: string[];
+            /** @description Non-fatal notes (e.g. L7/rewrite rules degraded until the MITM data-path ships). */
+            warnings?: string[];
+        };
         ForkRequest: {
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
@@ -403,68 +507,16 @@ export interface components {
             public?: boolean | null;
             /** @description Inbound reachability and SSH authorized keys for the new VM. */
             network?: components["schemas"]["NetworkInput"] | null;
-            /** @description Outbound egress policy for the new VM. Omit to inherit from the source VM, or default to open for image-created VMs with no source. */
+            /** @description Outbound egress policy for the new VM. Omit it to inherit the source VM's policy. */
             egress?: components["schemas"]["NetworkPolicyInput"] | null;
             disk?: boolean | null;
             durable?: boolean | null;
-            /** @description Resource shape for the new VM. */
-            resources?: components["schemas"]["VmResources"] | null;
+            /** @description Desired platform(s) when forking a golden, e.g. ["graviton3"] or a flexible set ["graviton2","graviton3"]. The fork is scheduled onto a host serving one of these, intersected with the platforms the golden is baked for. Optional: omit (null) or pass an empty list for no preference — the router picks from the golden's available platforms, weighted by host availability. Requesting a platform the golden isn't baked for returns 400. Ignored when forking an existing VM, which inherits its parent's platform. */
+            platforms?: string[] | null;
             /** @description ARK-125 outbound policy for the new VM. Omit (null) to inherit the source VM's policy, re-encrypted under the child's own key. Present (even an empty doc) replaces it: an empty doc clears to allow-all rather than inheriting. Distinct from `egress` (legacy NetworkPolicy) and `network` (inbound). */
             policies?: components["schemas"]["PolicyDoc"] | null;
-        };
-        /** @description A VM's egress policy document (ARK-125): an ordered, first-match-wins rule list. Empty `policies` means no policy (allow-all). The engine default when no rule matches is DENY (fail-closed); an explicit catch-all `{ "type": "network.outbound", "action": "allow" }` rule expresses default-allow. */
-        PolicyDoc: {
-            policies?: components["schemas"]["PolicyEntry"][];
-        };
-        /** @description One policy rule. `match` AND's its present fields (absent ⇒ catch-all). */
-        PolicyEntry: {
-            /**
-             * @description Event family. Only network.outbound is supported; an unknown value is rejected with 400.
-             * @enum {string}
-             */
-            type: "network.outbound";
-            match?: components["schemas"]["PolicyMatch"];
-            action: components["schemas"]["PolicyAction"];
-        };
-        /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `domains` are mutually exclusive. L4 fields = ports/ips/domains; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field needs the MITM proxy (not built yet); until it ships an L7 rule degrades to its domain/L4 projection — allow → domain-allow, deny/rewrite → fail-closed deny. */
-        PolicyMatch: {
-            /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. */
-            ports?: (number | number[])[];
-            /** @description IPs or CIDRs. */
-            ips?: string[];
-            /** @description Label-boundary suffix match: `github.com` matches `api.github.com`, not `evilgithub.com`. */
-            domains?: string[];
-            methods?: string[];
-            /** @description Full-segment path prefixes. */
-            paths?: string[];
-            /** @description Header name → any-of values (names AND'd, a name's values OR'd). */
-            headers?: {
-                [key: string]: string[];
-            };
-            body_contains?: string[];
-        };
-        /** @description allow / deny, or a rewrite object. `rewrite` needs the MITM data-path; until it ships a rewrite rule is inert (treated as deny). */
-        PolicyAction: ("allow" | "deny") | {
-            rewrite: components["schemas"]["Rewrite"];
-        };
-        /** @description Mutate-and-forward (the only mutating action). Static for now — request-time interpolation is future work. */
-        Rewrite: {
-            host?: string;
-            path?: string;
-            /** @description Merge-set these request headers (not replace-all). */
-            headers?: {
-                [key: string]: string;
-            };
-            remove_headers?: string[];
-        };
-        /** @description Response to PUT /v1/vms/{id}/policies. */
-        PutPoliciesResponse: {
-            /** @description The stored policy document — read its rules as `policy.policies`. */
-            policy: components["schemas"]["PolicyDoc"];
-            /** @description Domains the policy would escalate to MITM once the data-path ships. */
-            mitm_domains?: string[];
-            /** @description Non-fatal notes (e.g. L7/rewrite rules degraded until the MITM data-path ships). */
-            warnings?: string[];
+            /** @description Resource shape for the new VM. */
+            resources?: components["schemas"]["VmResources"] | null;
         };
         Session: {
             session_id: string;
@@ -508,8 +560,6 @@ export interface components {
             started_at?: string | null;
             /** @description Inbound reachability settings for this VM. */
             network: components["schemas"]["VmNetwork"];
-            /** @description Outbound egress policy for this VM. */
-            egress?: components["schemas"]["NetworkPolicy"] | null;
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
             max_vcpus?: number | null;
             /** @description Smallest vCPU count accepted for this VM. */
@@ -542,7 +592,10 @@ export interface components {
             command: string;
             /** @default false */
             background?: boolean;
+            /** @description Execution/kill bound in ms: max wall-clock time the command runs before the host kills it. Null (default) applies ARKER_DEFAULT_RUN_TIMEOUT_MS (3600000 = 1h). 0 = explicit unbounded (no kill). Separate from the HTTP sync window — see time_to_background. */
             timeout?: number | null;
+            /** @description Sync window in ms: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Null (default) = 30000. Does NOT bound command runtime — that is timeout. */
+            time_to_background?: number | null;
             /** @default auto */
             end_symbol?: string | null;
             vcpu_count?: number | null;
@@ -850,6 +903,10 @@ export interface components {
             vcpu?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
+            /** @description GPU slice size: number of streaming multiprocessors (SMs) the VM may use. Only valid when the VM targets a GPU platform (e.g. "x86_64-a40"). Requesting more SMs than the physical GPU has returns 400. Omit for the host's default slice size. */
+            gpu_sms?: number | null;
+            /** @description GPU slice size: VRAM cap in MiB. Only valid when the VM targets a GPU platform. Requesting more VRAM than the physical GPU has returns 400. Omit for the host's default slice size. */
+            gpu_vram_mib?: number | null;
         };
         NetworkInput: {
             /** @description Enable inbound reachability for this VM. Defaults to false. */
@@ -863,8 +920,10 @@ export interface components {
         };
         VmNetwork: {
             reachable: boolean;
-            /** @description Stable per-VM hostname, present when reachable is true. */
+            /** @description Stable per-VM hostname on the .app customer plane (<vm>.<region>.arker.app), present when reachable is true. Reach a guest desktop at https://<hostname>:6080/. Equals data_hostname. (The control plane — the API and SSH — stays on .ai.) */
             hostname?: string | null;
+            /** @description Customer inbound data-plane hostname (equals hostname). Insert -<port> before the region suffix to reach any HTTP port your guest listens on: <vm>-<port>.<region>.arker.app (bare form defaults to guest port 80). Present when reachable and the data-plane domain is configured. */
+            data_hostname?: string | null;
             /** @description Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty. */
             ssh_public_keys?: components["schemas"]["SshPublicKeyInfo"][];
         };
@@ -874,6 +933,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description The organization must complete billing setup or payment before starting new compute. */
+        PaymentRequired: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorResponse"];
+            };
+        };
         /** @description API error. */
         Error: {
             headers: {
@@ -910,6 +978,36 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Service is ready to accept public API traffic. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+            /** @description Service is live but not currently ready to accept public API traffic. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
     fork: {
         parameters: {
             query?: never;
@@ -932,6 +1030,7 @@ export interface operations {
                     "application/json": components["schemas"]["Vm"];
                 };
             };
+            402: components["responses"]["PaymentRequired"];
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
@@ -1032,56 +1131,6 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
-    getVmPolicies: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The VM's egress policy document (empty when none is set). */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PolicyDoc"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
-    putVmPolicies: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: components["parameters"]["VmId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PolicyDoc"];
-            };
-        };
-        responses: {
-            /** @description Stored policy, plus the domains it escalates to MITM and any degrade warnings. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PutPoliciesResponse"];
-                };
-            };
-            default: components["responses"]["Error"];
-        };
-    };
     getVm: {
         parameters: {
             query?: never;
@@ -1152,6 +1201,57 @@ export interface operations {
                     "application/json": components["schemas"]["Vm"];
                 };
             };
+            402: components["responses"]["PaymentRequired"];
+            default: components["responses"]["Error"];
+        };
+    };
+    getVmPolicies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The VM's egress policy document (empty when none is set). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicyDoc"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    putVmPolicies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicyDoc"];
+            };
+        };
+        responses: {
+            /** @description Stored policy, plus the domains it escalates to MITM and any degrade warnings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PutPoliciesResponse"];
+                };
+            };
             default: components["responses"]["Error"];
         };
     };
@@ -1211,6 +1311,7 @@ export interface operations {
                     "application/json": components["schemas"]["RunResponse"];
                 };
             };
+            402: components["responses"]["PaymentRequired"];
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
@@ -1319,6 +1420,7 @@ export interface operations {
                     "application/json": components["schemas"]["Session"];
                 };
             };
+            402: components["responses"]["PaymentRequired"];
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
@@ -1443,6 +1545,7 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Error"];
+            402: components["responses"]["PaymentRequired"];
             404: components["responses"]["Error"];
             429: components["responses"]["Error"];
             default: components["responses"]["Error"];
@@ -1474,6 +1577,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Error"];
+            402: components["responses"]["PaymentRequired"];
             404: components["responses"]["Error"];
             default: components["responses"]["Error"];
         };
@@ -1531,6 +1635,7 @@ export interface operations {
                     "application/json": components["schemas"]["Sync"];
                 };
             };
+            402: components["responses"]["PaymentRequired"];
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
@@ -1583,6 +1688,7 @@ export interface operations {
                     "application/json": components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"];
                 };
             };
+            402: components["responses"]["PaymentRequired"];
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };

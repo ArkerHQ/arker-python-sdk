@@ -701,6 +701,7 @@ class VM:
         session_idx: int | None = None,
         background: bool | None = None,
         timeout: int | None = None,
+        time_to_background: int | None = None,
         end_symbol: str | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
@@ -711,12 +712,27 @@ class VM:
         signal: str | None = None,
         idempotency_key: str | None = None,
     ) -> RunResult:
+        """Run ``command`` in this VM via ``POST /v1/vms/{id}/runs``.
+
+        ``timeout`` is the execution/kill bound in ms: the maximum wall-clock
+        time the command may run before the host kills it. ``None`` (default)
+        applies the server default (``ARKER_DEFAULT_RUN_TIMEOUT_MS``, ~1h);
+        ``0`` opts out of any kill (unbounded). It is NOT the HTTP wait window,
+        so ``background=True`` runs should leave it unset (or set a real kill
+        bound) — a small ``timeout`` would kill the run, not just background it.
+
+        ``time_to_background`` is the HTTP sync window in ms: how long the call
+        blocks inline before backgrounding the run and returning a pollable
+        ``run_id``. ``None`` (default) = 30000. It does not bound command
+        runtime — that is ``timeout``.
+        """
         body = {
             "command": command,
             "session_id": session_id,
             "session_idx": session_idx,
             "background": background,
             "timeout": timeout,
+            "time_to_background": time_to_background,
             "end_symbol": end_symbol,
             "vcpu_count": vcpu_count,
             "memory_mib": memory_mib,
