@@ -199,8 +199,15 @@ export interface CompletedRunResult {
   state: string;
   stdout: Uint8Array;
   stdoutEncoding: string;
+  /** Convenience UTF-8 decode of `stdout` for the common text case, so callers
+   * can read `result.stdoutText` instead of decoding `stdout` themselves.
+   * Invalid byte sequences are replaced with U+FFFD (never throws); for binary
+   * output use the raw `stdout` bytes. */
+  stdoutText: string;
   stderr: Uint8Array;
   stderrEncoding: string;
+  /** Convenience UTF-8 decode of `stderr` (see `stdoutText`). */
+  stderrText: string;
   exitCode: number;
   /** System failure explanation when `state` is "failed". Distinct from
    * `stderr` (the program's own error output); null otherwise. */
@@ -1311,6 +1318,14 @@ function withoutUndefined(value: unknown): unknown {
   return output;
 }
 
+// UTF-8 view of run output bytes for the common text case. Non-fatal decode:
+// invalid sequences become U+FFFD rather than throwing, so binary stdout never
+// crashes a caller that reads `stdoutText`; the raw `stdout` bytes stay lossless.
+const RUN_TEXT_DECODER = new TextDecoder("utf-8");
+function utf8Text(bytes: Uint8Array): string {
+  return RUN_TEXT_DECODER.decode(bytes);
+}
+
 function parseRunResponse(payload: unknown): RunResult {
   const body = objectPayload(payload, "run response");
   if (typeof body.stdout === "string") {
@@ -1318,14 +1333,18 @@ function parseRunResponse(payload: unknown): RunResult {
     const stdoutEncoding = stringField(body.stdout_encoding, "run response.stdout_encoding");
     const stderr = stringValue(body.stderr, "run response.stderr");
     const stderrEncoding = stringField(body.stderr_encoding, "run response.stderr_encoding");
+    const stdoutBytes = decodeBytes(stdout, stdoutEncoding);
+    const stderrBytes = decodeBytes(stderr, stderrEncoding);
     return {
       type: "completed",
       runId: typeof body.run_id === "string" ? body.run_id : undefined,
       state: typeof body.state === "string" ? body.state : "completed",
-      stdout: decodeBytes(stdout, stdoutEncoding),
+      stdout: stdoutBytes,
       stdoutEncoding,
-      stderr: decodeBytes(stderr, stderrEncoding),
+      stdoutText: utf8Text(stdoutBytes),
+      stderr: stderrBytes,
       stderrEncoding,
+      stderrText: utf8Text(stderrBytes),
       exitCode: numberField(body.exit_code, "run response.exit_code"),
       failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
       memoryRequestedMib: optionalNumberOrNull(body.memory_requested_mib),
