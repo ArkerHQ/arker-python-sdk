@@ -1693,15 +1693,24 @@
           "type": {
             "type": "string",
             "enum": [
-              "outbound"
+              "outbound",
+              "inbound"
             ],
-            "description": "Event family. Only outbound is supported; an unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input."
+            "description": "Event family: `outbound` (egress) or `inbound` (expose a guest port). An unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input for outbound."
           },
           "match": {
             "$ref": "#/components/schemas/PolicyMatch"
           },
           "action": {
             "$ref": "#/components/schemas/PolicyAction"
+          },
+          "auth": {
+            "type": "string",
+            "enum": [
+              "open",
+              "authenticated"
+            ],
+            "description": "Inbound `allow` only: the exposed tunnel's auth posture. `open` = public (no bearer); `authenticated` (the default when absent) requires the org bearer key. Invalid on a `deny` or any outbound rule (400). Inbound `match.ports` must be explicit single ports (ranges are rejected)."
           }
         }
       },

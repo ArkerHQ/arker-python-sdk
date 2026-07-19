@@ -423,12 +423,17 @@ export interface components {
         /** @description One policy rule. `match` AND's its present fields (absent ⇒ catch-all). */
         PolicyEntry: {
             /**
-             * @description Event family. Only outbound is supported; an unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input.
+             * @description Event family: `outbound` (egress) or `inbound` (expose a guest port). An unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input for outbound.
              * @enum {string}
              */
-            type: "outbound";
+            type: "outbound" | "inbound";
             match?: components["schemas"]["PolicyMatch"];
             action: components["schemas"]["PolicyAction"];
+            /**
+             * @description Inbound `allow` only: the exposed tunnel's auth posture. `open` = public (no bearer); `authenticated` (the default when absent) requires the org bearer key. Invalid on a `deny` or any outbound rule (400). Inbound `match.ports` must be explicit single ports (ranges are rejected).
+             * @enum {string}
+             */
+            auth?: "open" | "authenticated";
         };
         /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field needs the MITM proxy (not built yet); until it ships an L7 rule degrades to its host/L4 projection — allow → host-allow, deny/rewrite → fail-closed deny. */
         PolicyMatch: {
