@@ -3701,12 +3701,44 @@
             ],
             "description": "Customer inbound data-plane hostname (equals hostname). Insert -<port> before the region suffix to reach any HTTP port your guest listens on: <vm>-<port>.<region>.arker.app (bare form defaults to guest port 80). Present when reachable and the data-plane domain is configured."
           },
+          "ports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VmInboundPort"
+            },
+            "description": "Per-port inbound URLs the VM exposes on the .app data plane, derived from its inbound allow policy rules (the same source the data-plane gate enforces). Each carries the fully-formed https://<vm>-<port>.<region>.arker.app URL so clients never build it by hand. Empty when nothing is exposed inbound."
+          },
           "ssh_public_keys": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SshPublicKeyInfo"
             },
             "description": "Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty."
+          }
+        }
+      },
+      "VmInboundPort": {
+        "type": "object",
+        "required": [
+          "port",
+          "url",
+          "auth"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "port": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535,
+            "description": "Guest TCP port exposed by an inbound allow policy rule."
+          },
+          "url": {
+            "type": "string",
+            "description": "Fully-formed reachable URL: https://<vm>-<port>.<region>.arker.app"
+          },
+          "auth": {
+            "type": "string",
+            "description": "Auth posture required to reach it: 'open' (public, no bearer) or 'authenticated' (org bearer required)."
           }
         }
       },

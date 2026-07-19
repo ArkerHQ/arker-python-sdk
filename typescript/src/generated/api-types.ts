@@ -924,8 +924,18 @@ export interface components {
             hostname?: string | null;
             /** @description Customer inbound data-plane hostname (equals hostname). Insert -<port> before the region suffix to reach any HTTP port your guest listens on: <vm>-<port>.<region>.arker.app (bare form defaults to guest port 80). Present when reachable and the data-plane domain is configured. */
             data_hostname?: string | null;
+            /** @description Per-port inbound URLs the VM exposes on the .app data plane, derived from its inbound allow policy rules (the same source the data-plane gate enforces). Each carries the fully-formed https://<vm>-<port>.<region>.arker.app URL so clients never build it by hand. Empty when nothing is exposed inbound. */
+            ports?: components["schemas"]["VmInboundPort"][];
             /** @description Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty. */
             ssh_public_keys?: components["schemas"]["SshPublicKeyInfo"][];
+        };
+        VmInboundPort: {
+            /** @description Guest TCP port exposed by an inbound allow policy rule. */
+            port: number;
+            /** @description Fully-formed reachable URL: https://<vm>-<port>.<region>.arker.app */
+            url: string;
+            /** @description Auth posture required to reach it: 'open' (public, no bearer) or 'authenticated' (org bearer required). */
+            auth: string;
         };
         PatchVmRequest: {
             resources?: components["schemas"]["VmResources"] | null;

@@ -901,10 +901,10 @@ export class VM {
    *
    *     await vm.setPolicies({
    *       policies: [
-   *         { type: "network.outbound",
-   *           match: { domains: ["github.com"], ports: [443] },
+   *         { type: "outbound",
+   *           match: { hosts: ["github.com"], ports: [443] },
    *           action: "allow" },
-   *         { type: "network.outbound", action: "deny" },
+   *         { type: "outbound", action: "deny" },
    *       ],
    *     });
    */
