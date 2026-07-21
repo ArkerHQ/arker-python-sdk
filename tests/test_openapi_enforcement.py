@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import shutil
@@ -29,6 +30,20 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def source_metadata() -> dict[str, str]:
     return json.loads((REPO_ROOT / "contract/source.json").read_text())
+
+
+def annotations(source: str, class_name: str) -> dict[str, str]:
+    module = ast.parse(source)
+    class_node = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    return {
+        node.target.id: ast.unparse(node.annotation)
+        for node in class_node.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
 
 
 def test_source_metadata_matches_contract() -> None:
@@ -65,7 +80,51 @@ def test_generation_is_deterministic_for_both_languages() -> None:
         python = (Path(first) / MANAGED_PATHS[3]).read_text()
         assert "export interface operations" in typescript
         assert "class ForkRequest" in python
-        assert "class ListVmsParametersQuery" in python
+        assert "class ListVmsParameters" in python
+
+        operation_ids = {
+            operation["operationId"]
+            for path_item in json.loads(
+                (REPO_ROOT / "contract/openapi.json").read_text()
+            )["paths"].values()
+            for method, operation in path_item.items()
+            if method != "parameters"
+        }
+        operation_classes = {
+            node.name.removesuffix("Operation")
+            for node in ast.parse(python).body
+            if isinstance(node, ast.ClassDef) and node.name.endswith("Operation")
+        }
+        assert operation_classes == {
+            operation_id[0].upper() + operation_id[1:] for operation_id in operation_ids
+        }
+
+        assert annotations(python, "ForkOperation") == {
+            "operation_id": "Literal['fork']",
+            "method": "Literal['POST']",
+            "path": "Literal['/v1/fork']",
+            "parameters": "None",
+            "request": "ForkRequest",
+            "success": "Vm",
+            "errors": "ErrorResponse",
+        }
+        assert annotations(python, "PatchSessionOperation") == {
+            "operation_id": "Literal['patchSession']",
+            "method": "Literal['PATCH']",
+            "path": "Literal['/v1/vms/{id}/sessions/{sid}']",
+            "parameters": "PatchSessionParameters",
+            "request": "PatchSessionRequest",
+            "success": "PatchSessionResponse",
+            "errors": "ErrorResponse",
+        }
+        assert (
+            annotations(python, "SyncOperation")["request"]
+            == "SyncReadRequest | SyncWriteRequest"
+        )
+        assert (
+            annotations(python, "SyncOperation")["success"]
+            == "SyncReadResponse | SyncWriteResponse"
+        )
 
 
 def test_offline_check_detects_generated_drift() -> None:

@@ -40,6 +40,7 @@ version = "0.8.3"
 source = { editable = "." }
 dependencies = [
     { name = "httpx", extra = ["http2"] },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -59,6 +60,7 @@ dev = [
 requires-dist = [
     { name = "httpx", extras = ["http2"], specifier = ">=0.27" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
+    { name = "typing-extensions", specifier = ">=4.12" },
     { name = "websocket-client", marker = "extra == 'pty'", specifier = ">=1.7" },
 ]
 provides-extras = ["test", "pty"]

@@ -3,78 +3,64 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias, TypedDict
+
+from typing_extensions import NotRequired
 
 
-@dataclass
-class HealthResponse:
+class HealthResponse(TypedDict):
     status: str
     timestamp: str
 
 
-class ErrorCode(Enum):
-    unsupported_operation = 'unsupported_operation'
-    bad_request = 'bad_request'
-    unauthorized = 'unauthorized'
-    forbidden = 'forbidden'
-    payment_required = 'payment_required'
-    not_found = 'not_found'
-    conflict = 'conflict'
-    payload_too_large = 'payload_too_large'
-    not_implemented = 'not_implemented'
-    resource_pressure = 'resource_pressure'
-    internal = 'internal'
-    unavailable = 'unavailable'
-    network_error = 'network_error'
+ErrorCode: TypeAlias = Literal[
+    'unsupported_operation',
+    'bad_request',
+    'unauthorized',
+    'forbidden',
+    'payment_required',
+    'not_found',
+    'conflict',
+    'payload_too_large',
+    'not_implemented',
+    'resource_pressure',
+    'internal',
+    'unavailable',
+    'network_error',
+]
 
 
-@dataclass
-class ErrorResponse:
+class ErrorResponse(TypedDict):
     code: ErrorCode
     message: str
 
 
-class VmState(Enum):
-    idle = 'idle'
-    running = 'running'
+VmState: TypeAlias = Literal['idle', 'running']
 
 
 SessionState: TypeAlias = VmState
 
 
-class RunState(Enum):
-    running = 'running'
-    completed = 'completed'
-    failed = 'failed'
-    cancelled = 'cancelled'
+RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
 
 
-class ResourceKind(Enum):
-    cpu = 'cpu'
-    memory = 'memory'
-    disk = 'disk'
+ResourceKind: TypeAlias = Literal['cpu', 'memory', 'disk']
 
 
-@dataclass
-class NetworkPolicy1:
+class NetworkPolicy1(TypedDict):
     type: Literal['open']
 
 
-@dataclass
-class NetworkPolicy2:
+class NetworkPolicy2(TypedDict):
     type: Literal['blocked']
 
 
-@dataclass
-class NetworkPolicy3:
+class NetworkPolicy3(TypedDict):
     type: Literal['allow']
     allow: list[str]
 
 
-@dataclass
-class NetworkPolicy4:
+class NetworkPolicy4(TypedDict):
     type: Literal['block']
     block: list[str]
 
@@ -84,182 +70,138 @@ NetworkPolicy: TypeAlias = (
 )
 
 
-class NetworkPolicyInput1(Enum):
-    open = 'open'
-    blocked = 'blocked'
-    true = 'true'
-    false = 'false'
-    none = 'none'
-
-
-NetworkPolicyInput: TypeAlias = bool | NetworkPolicyInput1 | NetworkPolicy
-
-
-class Type(Enum):
-    outbound = 'outbound'
-    inbound = 'inbound'
-
-
-class Auth(Enum):
-    open = 'open'
-    authenticated = 'authenticated'
+NetworkPolicyInput: TypeAlias = (
+    bool | Literal['open', 'blocked', 'true', 'false', 'none'] | NetworkPolicy
+)
 
 
 Port: TypeAlias = int
 
 
-@dataclass
-class PolicyMatch:
-    ports: list[int | list[Port]] | None = None
-    ips: list[str] | None = None
-    hosts: list[str] | None = None
-    methods: list[str] | None = None
-    paths: list[str] | None = None
-    headers: dict[str, list[str]] | None = None
-    body_contains: list[str] | None = None
+class PolicyMatch(TypedDict):
+    ports: NotRequired[list[int | list[Port]]]
+    ips: NotRequired[list[str]]
+    hosts: NotRequired[list[str]]
+    methods: NotRequired[list[str]]
+    paths: NotRequired[list[str]]
+    headers: NotRequired[dict[str, list[str]]]
+    body_contains: NotRequired[list[str]]
 
 
-class PolicyAction1(Enum):
-    allow = 'allow'
-    deny = 'deny'
+class Rewrite(TypedDict):
+    host: NotRequired[str]
+    path: NotRequired[str]
+    headers: NotRequired[dict[str, str]]
+    remove_headers: NotRequired[list[str]]
+    body: NotRequired[str]
 
 
-@dataclass
-class Rewrite:
-    host: str | None = None
-    path: str | None = None
-    headers: dict[str, str] | None = None
-    remove_headers: list[str] | None = None
-    body: str | None = None
-
-
-@dataclass
-class Gate:
+class Gate(TypedDict):
     host: str
+    path: NotRequired[str]
+    method: NotRequired[str]
+    headers: NotRequired[dict[str, str]]
+    body: NotRequired[Any]
     allow_on_status: list[int]
-    path: str | None = None
-    method: str | None = None
-    headers: dict[str, str] | None = None
-    body: Any | None = None
-    deny_on_timeout: bool | None = None
-    timeout_ms: int | None = None
+    deny_on_timeout: NotRequired[bool]
+    timeout_ms: NotRequired[int]
 
 
-class Provider(Enum):
-    aws = 'aws'
-    NoneType_None = None
-
-
-@dataclass
-class Session:
+class Session(TypedDict):
     session_id: str
+    session_idx: NotRequired[int]
     state: SessionState
     cwd: str
-    session_idx: int | None = 0
-    env: dict[str, str] | None = None
-    started_at: str | None = None
-    vm_id: str | None = None
-    vm_name: str | None = None
-    source_org_id: str | None = None
-    region: str | None = None
-    provider: Provider | None = None
+    env: NotRequired[dict[str, str] | None]
+    started_at: NotRequired[str | None]
+    vm_id: NotRequired[str | None]
+    vm_name: NotRequired[str | None]
+    source_org_id: NotRequired[str | None]
+    region: NotRequired[str | None]
+    provider: NotRequired[Literal['aws']]
 
 
-@dataclass
-class ListSessionsResponse:
+class ListSessionsResponse(TypedDict):
     sessions: list[Session]
-    next_cursor: str | None = None
+    next_cursor: NotRequired[str | None]
 
 
-@dataclass
-class DeleteVmResponse:
+class DeleteVmResponse(TypedDict):
     deleted: bool
 
 
-@dataclass
-class DeleteSessionResponse:
+class DeleteSessionResponse(TypedDict):
     deleted: bool
 
 
-@dataclass
-class InboundPortRequest:
-    visibility: str | None = 'private'
-    protocol: str | None = 'http'
+class InboundPortRequest(TypedDict):
+    visibility: NotRequired[str]
+    protocol: NotRequired[str]
 
 
-@dataclass
-class CompletedRunResponse:
+class CompletedRunResponse(TypedDict):
+    run_id: NotRequired[str | None]
+    state: NotRequired[str]
     stdout: str
     stdout_encoding: str
     stderr: str
     stderr_encoding: str
     exit_code: int
-    run_id: str | None = None
-    state: str | None = None
-    dispatch: str | None = None
-    memory_requested_mib: int | None = None
-    memory_achieved_mib: int | None = None
-    memory_partial: bool | None = None
+    dispatch: NotRequired[str | None]
+    memory_requested_mib: NotRequired[int | None]
+    memory_achieved_mib: NotRequired[int | None]
+    memory_partial: NotRequired[bool]
 
 
-@dataclass
-class BackgroundRunResponse:
+class BackgroundRunResponse(TypedDict):
     run_id: str
-    state: str | None = None
+    state: NotRequired[str]
 
 
-@dataclass
-class Run:
+class Run(TypedDict):
     run_id: str
+    session_id: NotRequired[str | None]
+    command: NotRequired[str | None]
     state: RunState
     started_at: str
+    completed_at: NotRequired[str | None]
     exit_code: int | None
+    fail_reason: NotRequired[str | None]
     stdout: str
     stdout_encoding: str
     stderr: str
     stderr_encoding: str
-    session_id: str | None = None
-    command: str | None = None
-    completed_at: str | None = None
-    fail_reason: str | None = None
-    retry_count: int | None = 0
-    vm_id: str | None = None
-    vm_name: str | None = None
-    source_org_id: str | None = None
-    region: str | None = None
-    provider: Provider | None = None
+    retry_count: NotRequired[int]
+    vm_id: NotRequired[str | None]
+    vm_name: NotRequired[str | None]
+    source_org_id: NotRequired[str | None]
+    region: NotRequired[str | None]
+    provider: NotRequired[Literal['aws']]
 
 
-@dataclass
-class RunSummary:
+class RunSummary(TypedDict):
     run_id: str
+    session_id: NotRequired[str | None]
+    command: NotRequired[str | None]
     state: RunState
     started_at: str
+    completed_at: NotRequired[str | None]
     exit_code: int | None
-    session_id: str | None = None
-    command: str | None = None
-    completed_at: str | None = None
-    fail_reason: str | None = None
-    vm_id: str | None = None
-    vm_name: str | None = None
-    source_org_id: str | None = None
-    region: str | None = None
-    provider: Provider | None = None
+    fail_reason: NotRequired[str | None]
+    vm_id: NotRequired[str | None]
+    vm_name: NotRequired[str | None]
+    source_org_id: NotRequired[str | None]
+    region: NotRequired[str | None]
+    provider: NotRequired[Literal['aws']]
 
 
-@dataclass
-class ListRunsResponse:
+class ListRunsResponse(TypedDict):
     runs: list[RunSummary]
-    next_cursor: str | None = None
+    next_cursor: NotRequired[str | None]
 
 
-class Source(Enum):
-    arkerd = 'arkerd'
-
-
-@dataclass
-class OrgRunListRow:
-    source: Source
+class OrgRunListRow(TypedDict):
+    source: Literal['arkerd']
     t_ms: int
     request_id: str
     run_id: str
@@ -288,8 +230,7 @@ class OrgRunListRow:
     body_out: str
 
 
-@dataclass
-class ListOrgRunsResponse:
+class ListOrgRunsResponse(TypedDict):
     since: int
     until: int
     limit: int
@@ -298,95 +239,82 @@ class ListOrgRunsResponse:
     rows: list[OrgRunListRow]
 
 
-@dataclass
-class InboundPortStatus:
+class InboundPortStatus(TypedDict):
     requested: str
     observed: str
     effective: str
     protocol: str
-    url: str | None = None
+    url: NotRequired[str | None]
 
 
-@dataclass
-class CancelRunResponse:
+class CancelRunResponse(TypedDict):
     cancelled: bool
 
 
-@dataclass
-class CreateSessionRequest:
-    env: dict[str, str] | None = None
-    cwd: str | None = None
+class CreateSessionRequest(TypedDict):
+    env: NotRequired[dict[str, str] | None]
+    cwd: NotRequired[str | None]
 
 
-@dataclass
-class Sync:
+class Sync(TypedDict):
     sync_id: str
     vm_id: str
     filesystem_id: str
     path: str
-    region: str | None = None
+    region: NotRequired[str | None]
 
 
-@dataclass
-class ListSyncsResponse:
+class ListSyncsResponse(TypedDict):
     syncs: list[Sync]
-    next_cursor: str | None = None
+    next_cursor: NotRequired[str | None]
 
 
-@dataclass
-class DeleteSyncResponse:
+class DeleteSyncResponse(TypedDict):
     deleted: bool
 
 
-@dataclass
-class SyncCreateRequest:
+class SyncCreateRequest(TypedDict):
     filesystem_id: str
-    path: str | None = None
+    path: NotRequired[str]
 
 
-@dataclass
-class SyncReadRequest:
+class SyncReadRequest(TypedDict):
     path: str
 
 
-@dataclass
-class SyncChunkWrite:
+class SyncChunkWrite(TypedDict):
     path: str
     size: int
     upload_id: str
     content: str
     start: int
     end: int
-    sha256: str | None = None
-    is_secret: bool | None = False
+    sha256: NotRequired[str | None]
+    is_secret: NotRequired[bool]
 
 
-@dataclass
-class SyncPresignedWriteRequest:
+class SyncPresignedWriteRequest(TypedDict):
     path: str
     size: int
     presigned: bool
-    is_secret: bool | None = False
+    is_secret: NotRequired[bool]
 
 
-@dataclass
-class SyncPresignedWriteCommit:
+class SyncPresignedWriteCommit(TypedDict):
     path: str
     size: int
     upload_id: str
-    sha256: str | None = None
+    sha256: NotRequired[str | None]
 
 
-@dataclass
-class SyncReadInlineResponse:
+class SyncReadInlineResponse(TypedDict):
     path: str
     size: int
     content: str
     encoding: str
 
 
-@dataclass
-class SyncReadPresignedResponse:
+class SyncReadPresignedResponse(TypedDict):
     path: str
     size: int
     presigned_url: str
@@ -394,215 +322,252 @@ class SyncReadPresignedResponse:
     method: str
 
 
-@dataclass
-class SyncByteRange:
+class SyncByteRange(TypedDict):
     start: int
     end: int
 
 
-@dataclass
-class SyncEntryError:
+class SyncEntryError(TypedDict):
     code: str
     message: str
 
 
-@dataclass
-class Filesystem:
+class Filesystem(TypedDict):
     filesystem_id: str
     name: str
     owner_org_id: str
     created_at: str
-    size_bytes: int | None = None
-    region: str | None = 'us-west-2'
-    provider: Provider | None = Provider.aws
+    size_bytes: NotRequired[int | None]
+    region: NotRequired[str | None]
+    provider: NotRequired[Literal['aws']]
 
 
-@dataclass
-class ListFilesystemsResponse:
+class ListFilesystemsResponse(TypedDict):
     filesystems: list[Filesystem]
-    next_cursor: str | None = None
+    next_cursor: NotRequired[str | None]
 
 
-@dataclass
-class DeleteFilesystemResponse:
+class DeleteFilesystemResponse(TypedDict):
     deleted: bool
 
 
-@dataclass
-class FilesystemCreateRequest:
+class FilesystemCreateRequest(TypedDict):
     name: str
 
 
-@dataclass
-class VmResources:
-    vcpu: int | None = None
-    memory_mib: int | None = None
-    disk_mib: int | None = None
-    gpu_sms: int | None = None
-    gpu_vram_mib: int | None = None
+class VmResources(TypedDict):
+    vcpu: NotRequired[int | None]
+    memory_mib: NotRequired[int | None]
+    disk_mib: NotRequired[int | None]
+    gpu_sms: NotRequired[int | None]
+    gpu_vram_mib: NotRequired[int | None]
 
 
-@dataclass
-class NetworkInput:
-    reachable: bool | None = None
-    ssh_public_keys: list[str] | None = None
+class NetworkInput(TypedDict):
+    reachable: NotRequired[bool | None]
+    ssh_public_keys: NotRequired[list[str]]
 
 
-@dataclass
-class SshPublicKeyInfo:
+class SshPublicKeyInfo(TypedDict):
     public_key: str
     fingerprint: str
 
 
-@dataclass
-class VmInboundPort:
+class VmInboundPort(TypedDict):
     port: int
     url: str
     auth: str
 
 
-@dataclass
-class PatchVmRequest:
-    resources: VmResources | None = None
-    network: NetworkInput | None = None
+class PatchVmRequest(TypedDict):
+    resources: NotRequired[VmResources | None]
+    network: NotRequired[NetworkInput | None]
 
 
-class Provider5(Enum):
-    aws = 'aws'
+class ListVmsParameters(TypedDict):
+    cursor: NotRequired[str | None]
+    limit: NotRequired[int]
+    region: NotRequired[str]
+    provider: NotRequired[Literal['aws']]
+    state: NotRequired[VmState]
+    started_after: NotRequired[str]
+    started_before: NotRequired[str]
 
 
-@dataclass
-class ListVmsParametersQuery:
-    cursor: str | None = None
-    limit: int | None = None
-    region: str | None = None
-    provider: Provider5 | None = None
-    state: VmState | None = None
-    started_after: str | None = None
-    started_before: str | None = None
+class ListOrgRunsParameters(TypedDict):
+    since: NotRequired[int]
+    until: NotRequired[int]
+    vm: NotRequired[str]
+    vms: NotRequired[str]
+    region: NotRequired[str]
+    provider: NotRequired[Literal['aws']]
+    search: NotRequired[str]
+    limit: NotRequired[int]
+    offset: NotRequired[int]
+    lite: NotRequired[bool]
+    runtime: NotRequired[str]
+    endpoint: NotRequired[Literal['run', 'fork', 'sync']]
+    actions: NotRequired[str]
+    status: NotRequired[str]
+    status_min: NotRequired[int]
+    status_max: NotRequired[int]
+    sort: NotRequired[
+        Literal['when', 'status', 'path', 'total', 'queue', 'your_code', 'runtime']
+    ]
+    dir: NotRequired[Literal['asc', 'desc']]
 
 
-class Endpoint(Enum):
-    run = 'run'
-    fork = 'fork'
-    sync = 'sync'
+class GetVmParameters(TypedDict):
+    id: str
 
 
-class Sort(Enum):
-    when = 'when'
-    status = 'status'
-    path = 'path'
-    total = 'total'
-    queue = 'queue'
-    your_code = 'your_code'
-    runtime = 'runtime'
+class DeleteVmParameters(TypedDict):
+    id: str
 
 
-class Dir(Enum):
-    asc = 'asc'
-    desc = 'desc'
+class PatchVmParameters(TypedDict):
+    id: str
 
 
-@dataclass
-class ListOrgRunsParametersQuery:
-    since: int | None = None
-    until: int | None = None
-    vm: str | None = None
-    vms: str | None = None
-    region: str | None = None
-    provider: Provider5 | None = None
-    search: str | None = None
-    limit: int | None = None
-    offset: int | None = None
-    lite: bool | None = None
-    runtime: str | None = None
-    endpoint: Endpoint | None = None
-    actions: str | None = None
-    status: str | None = None
-    status_min: int | None = None
-    status_max: int | None = None
-    sort: Sort | None = None
-    dir: Dir | None = None
+class GetVmPoliciesParameters(TypedDict):
+    id: str
 
 
-@dataclass
-class ListRunsParametersQuery:
-    cursor: str | None = None
-    limit: int | None = None
-    state: RunState | None = None
-    started_after: str | None = None
-    started_before: str | None = None
-    completed_after: str | None = None
+class PutVmPoliciesParameters(TypedDict):
+    id: str
 
 
-@dataclass
-class ListSessionsParametersQuery:
-    cursor: str | None = None
-    limit: int | None = None
-    state: SessionState | None = None
+class CreateRunParameters(TypedDict):
+    id: str
 
 
-@dataclass
-class PatchSessionRequest:
-    cols: int | None = None
-    rows: int | None = None
-    timeout_secs: int | None = None
+class ListRunsParameters(TypedDict):
+    cursor: NotRequired[str | None]
+    limit: NotRequired[int]
+    state: NotRequired[RunState]
+    started_after: NotRequired[str]
+    started_before: NotRequired[str]
+    completed_after: NotRequired[str]
+    id: str
 
 
-@dataclass
-class PatchSessionResponse:
-    ok: bool | None = None
-    session_id: str | None = None
+class GetRunParameters(TypedDict):
+    id: str
+    run_id: str
 
 
-@dataclass
-class AttachSessionPtyParametersQuery:
-    cols: int | None = 80
-    rows: int | None = 24
-    command: str | None = None
-    persist: bool | None = True
-    ticket: str | None = None
+class CancelRunParameters(TypedDict):
+    id: str
+    run_id: str
 
 
-@dataclass
-class MintSessionPtyTicketResponse:
+class ListSessionsParameters(TypedDict):
+    cursor: NotRequired[str | None]
+    limit: NotRequired[int]
+    state: NotRequired[SessionState]
+    id: str
+
+
+class CreateSessionParameters(TypedDict):
+    id: str
+
+
+class GetSessionParameters(TypedDict):
+    id: str
+    sid: str
+
+
+class PatchSessionParameters(TypedDict):
+    id: str
+    sid: str
+
+
+class PatchSessionRequest(TypedDict):
+    cols: NotRequired[int]
+    rows: NotRequired[int]
+    timeout_secs: NotRequired[int]
+
+
+class PatchSessionResponse(TypedDict):
+    ok: NotRequired[bool]
+    session_id: NotRequired[str]
+
+
+class DeleteSessionParameters(TypedDict):
+    id: str
+    sid: str
+
+
+class AttachSessionPtyParameters(TypedDict):
+    id: str
+    sid: str
+    cols: NotRequired[int]
+    rows: NotRequired[int]
+    command: NotRequired[str]
+    persist: NotRequired[bool]
+    ticket: NotRequired[str]
+
+
+class MintSessionPtyTicketParameters(TypedDict):
+    id: str
+    sid: str
+
+
+class MintSessionPtyTicketResponse(TypedDict):
     ticket: str
     expires_in: int
 
 
-@dataclass
-class ListSyncsParametersQuery:
-    cursor: str | None = None
-    limit: int | None = None
-    filesystem_id: str | None = None
+class CreateSyncParameters(TypedDict):
+    id: str
 
 
-@dataclass
-class ListFilesystemsParametersQuery:
-    cursor: str | None = None
-    limit: int | None = None
-    name_prefix: str | None = None
+class ListSyncsParameters(TypedDict):
+    cursor: NotRequired[str | None]
+    limit: NotRequired[int]
+    filesystem_id: NotRequired[str]
+    id: str
 
 
-@dataclass
-class PolicyAction2:
-    rewrite: Rewrite | None = None
-    gate: Gate | None = None
+class DeleteSyncParameters(TypedDict):
+    id: str
+    sync_id: str
 
 
-PolicyAction: TypeAlias = PolicyAction1 | PolicyAction2
+class SyncParameters(TypedDict):
+    id: str
 
 
-@dataclass
-class InboundRequest:
-    ports: dict[str, InboundPortRequest] | None = field(default_factory=dict)
+class ListFilesystemsParameters(TypedDict):
+    cursor: NotRequired[str | None]
+    limit: NotRequired[int]
+    name_prefix: NotRequired[str]
+
+
+class GetFilesystemParameters(TypedDict):
+    filesystem_id: str
+
+
+class DeleteFilesystemParameters(TypedDict):
+    filesystem_id: str
+
+
+class PolicyAction1(TypedDict):
+    rewrite: NotRequired[Rewrite]
+    gate: NotRequired[Gate]
+
+
+PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1
+
+
+class InboundRequest(TypedDict):
+    ports: NotRequired[dict[str, InboundPortRequest]]
 
 
 RunResponse: TypeAlias = CompletedRunResponse | BackgroundRunResponse
 
 
-@dataclass
-class InboundStatus:
+class InboundStatus(TypedDict):
     ports: dict[str, InboundPortStatus]
 
 
@@ -614,19 +579,17 @@ SyncWriteEntry: TypeAlias = (
 SyncReadResponse: TypeAlias = SyncReadInlineResponse | SyncReadPresignedResponse
 
 
-@dataclass
-class SyncChunkWriteResult:
+class SyncChunkWriteResult(TypedDict):
     path: str
     size: int
     received_bytes: int
     ranges: list[SyncByteRange]
     complete: bool
     written: bool
-    error: SyncEntryError | None = None
+    error: NotRequired[SyncEntryError | None]
 
 
-@dataclass
-class SyncPresignedWriteRequestResult:
+class SyncPresignedWriteRequestResult(TypedDict):
     path: str
     size: int
     presigned_url: str
@@ -635,77 +598,69 @@ class SyncPresignedWriteRequestResult:
     method: str
     complete: bool
     written: bool
-    error: SyncEntryError | None = None
+    error: NotRequired[SyncEntryError | None]
 
 
-@dataclass
-class SyncCommitWriteResult:
+class SyncCommitWriteResult(TypedDict):
     path: str
     size: int
     complete: bool
     written: bool
-    error: SyncEntryError | None = None
+    error: NotRequired[SyncEntryError | None]
 
 
-@dataclass
-class VmNetwork:
+class VmNetwork(TypedDict):
     reachable: bool
-    hostname: str | None = None
-    data_hostname: str | None = None
-    ports: list[VmInboundPort] | None = None
-    ssh_public_keys: list[SshPublicKeyInfo] | None = None
+    hostname: NotRequired[str | None]
+    data_hostname: NotRequired[str | None]
+    ports: NotRequired[list[VmInboundPort]]
+    ssh_public_keys: NotRequired[list[SshPublicKeyInfo]]
 
 
-@dataclass
-class PolicyEntry:
-    type: Type
+class PolicyEntry(TypedDict):
+    type: Literal['outbound', 'inbound']
+    match: NotRequired[PolicyMatch]
     action: PolicyAction
-    match: PolicyMatch | None = None
-    auth: Auth | None = None
+    auth: NotRequired[Literal['open', 'authenticated']]
 
 
-@dataclass
-class Vm:
+class Vm(TypedDict):
     vm_id: str
     owner_org_id: str
     created_at: str
+    name: NotRequired[str | None]
     public: bool
+    root_source_vm_id: NotRequired[str | None]
+    root_source_vm_name: NotRequired[str | None]
     state: VmState
+    region: NotRequired[str | None]
+    provider: NotRequired[Literal['aws']]
+    started_at: NotRequired[str | None]
     network: VmNetwork
+    max_vcpus: NotRequired[int | None]
+    min_vcpus: NotRequired[int | None]
+    max_memory_mib: NotRequired[int | None]
+    min_memory_mib: NotRequired[int | None]
+    min_disk_mib: NotRequired[int | None]
+    max_disk_mib: NotRequired[int | None]
     sessions: list[Session]
     resources: VmResources
-    name: str | None = None
-    root_source_vm_id: str | None = None
-    root_source_vm_name: str | None = None
-    region: str | None = None
-    provider: Provider | None = None
-    started_at: str | None = None
-    max_vcpus: int | None = None
-    min_vcpus: int | None = None
-    max_memory_mib: int | None = None
-    min_memory_mib: int | None = None
-    min_disk_mib: int | None = None
-    max_disk_mib: int | None = None
 
 
-@dataclass
-class ListVmsResponse:
+class ListVmsResponse(TypedDict):
     vms: list[Vm]
-    next_cursor: str | None = None
+    next_cursor: NotRequired[str | None]
 
 
-@dataclass
-class NetworkRequest:
-    inbound: InboundRequest | None = None
+class NetworkRequest(TypedDict):
+    inbound: NotRequired[InboundRequest | None]
 
 
-@dataclass
-class NetworkStatus:
+class NetworkStatus(TypedDict):
     inbound: InboundStatus
 
 
-@dataclass
-class SyncWriteRequest:
+class SyncWriteRequest(TypedDict):
     writes: list[SyncWriteEntry]
 
 
@@ -717,55 +672,363 @@ SyncWriteResult: TypeAlias = (
 SyncRequest: TypeAlias = SyncReadRequest | SyncWriteRequest
 
 
-@dataclass
-class PolicyDoc:
-    policies: list[PolicyEntry] | None = None
+class PolicyDoc(TypedDict):
+    policies: NotRequired[list[PolicyEntry]]
 
 
-@dataclass
-class PutPoliciesResponse:
+class PutPoliciesResponse(TypedDict):
     policy: PolicyDoc
-    mitm_domains: list[str] | None = None
-    warnings: list[str] | None = None
+    mitm_domains: NotRequired[list[str]]
+    warnings: NotRequired[list[str]]
 
 
-@dataclass
-class ForkRequest:
-    source_vm_id: str | None = None
-    source_vm_name: str | None = None
-    source_org_id: str | None = None
-    name: str | None = None
-    public: bool | None = None
-    network: NetworkInput | None = None
-    egress: NetworkPolicyInput | None = None
-    disk: bool | None = None
-    durable: bool | None = None
-    platforms: list[str] | None = None
-    policies: PolicyDoc | None = None
-    resources: VmResources | None = None
+class ForkRequest(TypedDict):
+    source_vm_id: NotRequired[str | None]
+    source_vm_name: NotRequired[str | None]
+    source_org_id: NotRequired[str | None]
+    name: NotRequired[str | None]
+    public: NotRequired[bool | None]
+    network: NotRequired[NetworkInput | None]
+    egress: NotRequired[NetworkPolicyInput | None]
+    disk: NotRequired[bool | None]
+    durable: NotRequired[bool | None]
+    platforms: NotRequired[list[str]]
+    policies: NotRequired[PolicyDoc | None]
+    resources: NotRequired[VmResources | None]
 
 
-@dataclass
-class RunRequest:
+class RunRequest(TypedDict):
+    session_id: NotRequired[str | None]
+    session_idx: NotRequired[int | None]
     command: str
-    session_id: str | None = None
-    session_idx: int | None = None
-    background: bool | None = False
-    timeout: int | None = None
-    time_to_background: int | None = None
-    end_symbol: str | None = 'auto'
-    vcpu_count: int | None = None
-    memory_mib: int | None = None
-    disk_mib: int | None = None
-    network: NetworkRequest | None = None
-    acquire: str | None = None
-    release: str | None = None
-    signal: str | None = None
+    background: NotRequired[bool]
+    timeout: NotRequired[int | None]
+    time_to_background: NotRequired[int | None]
+    end_symbol: NotRequired[str | None]
+    vcpu_count: NotRequired[int | None]
+    memory_mib: NotRequired[int | None]
+    disk_mib: NotRequired[int | None]
+    network: NotRequired[NetworkRequest | None]
+    acquire: NotRequired[str | None]
+    release: NotRequired[str | None]
+    signal: NotRequired[str | None]
 
 
-@dataclass
-class SyncWriteResponse:
+class SyncWriteResponse(TypedDict):
     results: list[SyncWriteResult]
 
 
 SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse
+
+# OpenAPI operation types
+
+class ListFilesystemsOperation(TypedDict):
+    operation_id: Literal['listFilesystems']
+    method: Literal['GET']
+    path: Literal['/v1/filesystems']
+    parameters: ListFilesystemsParameters
+    request: None
+    success: ListFilesystemsResponse
+    errors: ErrorResponse
+
+
+class CreateFilesystemOperation(TypedDict):
+    operation_id: Literal['createFilesystem']
+    method: Literal['POST']
+    path: Literal['/v1/filesystems']
+    parameters: None
+    request: FilesystemCreateRequest
+    success: Filesystem
+    errors: ErrorResponse
+
+
+class GetFilesystemOperation(TypedDict):
+    operation_id: Literal['getFilesystem']
+    method: Literal['GET']
+    path: Literal['/v1/filesystems/{filesystem_id}']
+    parameters: GetFilesystemParameters
+    request: None
+    success: Filesystem
+    errors: ErrorResponse
+
+
+class DeleteFilesystemOperation(TypedDict):
+    operation_id: Literal['deleteFilesystem']
+    method: Literal['DELETE']
+    path: Literal['/v1/filesystems/{filesystem_id}']
+    parameters: DeleteFilesystemParameters
+    request: None
+    success: DeleteFilesystemResponse
+    errors: ErrorResponse
+
+
+class ForkOperation(TypedDict):
+    operation_id: Literal['fork']
+    method: Literal['POST']
+    path: Literal['/v1/fork']
+    parameters: None
+    request: ForkRequest
+    success: Vm
+    errors: ErrorResponse
+
+
+class HealthOperation(TypedDict):
+    operation_id: Literal['health']
+    method: Literal['GET']
+    path: Literal['/v1/health']
+    parameters: None
+    request: None
+    success: HealthResponse
+    errors: HealthResponse | ErrorResponse
+
+
+class ListOrgRunsOperation(TypedDict):
+    operation_id: Literal['listOrgRuns']
+    method: Literal['GET']
+    path: Literal['/v1/runs']
+    parameters: ListOrgRunsParameters
+    request: None
+    success: ListOrgRunsResponse
+    errors: ErrorResponse
+
+
+class ListVmsOperation(TypedDict):
+    operation_id: Literal['listVms']
+    method: Literal['GET']
+    path: Literal['/v1/vms']
+    parameters: ListVmsParameters
+    request: None
+    success: ListVmsResponse
+    errors: ErrorResponse
+
+
+class GetVmOperation(TypedDict):
+    operation_id: Literal['getVm']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}']
+    parameters: GetVmParameters
+    request: None
+    success: Vm
+    errors: ErrorResponse
+
+
+class PatchVmOperation(TypedDict):
+    operation_id: Literal['patchVm']
+    method: Literal['PATCH']
+    path: Literal['/v1/vms/{id}']
+    parameters: PatchVmParameters
+    request: PatchVmRequest
+    success: Vm
+    errors: ErrorResponse
+
+
+class DeleteVmOperation(TypedDict):
+    operation_id: Literal['deleteVm']
+    method: Literal['DELETE']
+    path: Literal['/v1/vms/{id}']
+    parameters: DeleteVmParameters
+    request: None
+    success: DeleteVmResponse
+    errors: ErrorResponse
+
+
+class GetVmPoliciesOperation(TypedDict):
+    operation_id: Literal['getVmPolicies']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}/policies']
+    parameters: GetVmPoliciesParameters
+    request: None
+    success: PolicyDoc
+    errors: ErrorResponse
+
+
+class PutVmPoliciesOperation(TypedDict):
+    operation_id: Literal['putVmPolicies']
+    method: Literal['PUT']
+    path: Literal['/v1/vms/{id}/policies']
+    parameters: PutVmPoliciesParameters
+    request: PolicyDoc
+    success: PutPoliciesResponse
+    errors: ErrorResponse
+
+
+class ListRunsOperation(TypedDict):
+    operation_id: Literal['listRuns']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}/runs']
+    parameters: ListRunsParameters
+    request: None
+    success: ListRunsResponse
+    errors: ErrorResponse
+
+
+class CreateRunOperation(TypedDict):
+    operation_id: Literal['createRun']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/runs']
+    parameters: CreateRunParameters
+    request: RunRequest
+    success: RunResponse
+    errors: ErrorResponse
+
+
+class GetRunOperation(TypedDict):
+    operation_id: Literal['getRun']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}/runs/{run_id}']
+    parameters: GetRunParameters
+    request: None
+    success: Run
+    errors: ErrorResponse
+
+
+class CancelRunOperation(TypedDict):
+    operation_id: Literal['cancelRun']
+    method: Literal['DELETE']
+    path: Literal['/v1/vms/{id}/runs/{run_id}']
+    parameters: CancelRunParameters
+    request: None
+    success: CancelRunResponse
+    errors: ErrorResponse
+
+
+class ListSessionsOperation(TypedDict):
+    operation_id: Literal['listSessions']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}/sessions']
+    parameters: ListSessionsParameters
+    request: None
+    success: ListSessionsResponse
+    errors: ErrorResponse
+
+
+class CreateSessionOperation(TypedDict):
+    operation_id: Literal['createSession']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/sessions']
+    parameters: CreateSessionParameters
+    request: CreateSessionRequest
+    success: Session
+    errors: ErrorResponse
+
+
+class GetSessionOperation(TypedDict):
+    operation_id: Literal['getSession']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}/sessions/{sid}']
+    parameters: GetSessionParameters
+    request: None
+    success: Session
+    errors: ErrorResponse
+
+
+class PatchSessionOperation(TypedDict):
+    operation_id: Literal['patchSession']
+    method: Literal['PATCH']
+    path: Literal['/v1/vms/{id}/sessions/{sid}']
+    parameters: PatchSessionParameters
+    request: PatchSessionRequest
+    success: PatchSessionResponse
+    errors: ErrorResponse
+
+
+class DeleteSessionOperation(TypedDict):
+    operation_id: Literal['deleteSession']
+    method: Literal['DELETE']
+    path: Literal['/v1/vms/{id}/sessions/{sid}']
+    parameters: DeleteSessionParameters
+    request: None
+    success: DeleteSessionResponse
+    errors: ErrorResponse
+
+
+class AttachSessionPtyOperation(TypedDict):
+    operation_id: Literal['attachSessionPty']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}/sessions/{sid}/pty']
+    parameters: AttachSessionPtyParameters
+    request: None
+    success: None
+    errors: ErrorResponse
+
+
+class MintSessionPtyTicketOperation(TypedDict):
+    operation_id: Literal['mintSessionPtyTicket']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/sessions/{sid}/pty-ticket']
+    parameters: MintSessionPtyTicketParameters
+    request: None
+    success: MintSessionPtyTicketResponse
+    errors: ErrorResponse
+
+
+class SyncOperation(TypedDict):
+    operation_id: Literal['sync']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/sync']
+    parameters: SyncParameters
+    request: SyncReadRequest | SyncWriteRequest
+    success: SyncReadResponse | SyncWriteResponse
+    errors: ErrorResponse
+
+
+class ListSyncsOperation(TypedDict):
+    operation_id: Literal['listSyncs']
+    method: Literal['GET']
+    path: Literal['/v1/vms/{id}/syncs']
+    parameters: ListSyncsParameters
+    request: None
+    success: ListSyncsResponse
+    errors: ErrorResponse
+
+
+class CreateSyncOperation(TypedDict):
+    operation_id: Literal['createSync']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/syncs']
+    parameters: CreateSyncParameters
+    request: SyncCreateRequest
+    success: Sync
+    errors: ErrorResponse
+
+
+class DeleteSyncOperation(TypedDict):
+    operation_id: Literal['deleteSync']
+    method: Literal['DELETE']
+    path: Literal['/v1/vms/{id}/syncs/{sync_id}']
+    parameters: DeleteSyncParameters
+    request: None
+    success: DeleteSyncResponse
+    errors: ErrorResponse
+
+
+ApiOperation: TypeAlias = (
+    ListFilesystemsOperation |
+    CreateFilesystemOperation |
+    GetFilesystemOperation |
+    DeleteFilesystemOperation |
+    ForkOperation |
+    HealthOperation |
+    ListOrgRunsOperation |
+    ListVmsOperation |
+    GetVmOperation |
+    PatchVmOperation |
+    DeleteVmOperation |
+    GetVmPoliciesOperation |
+    PutVmPoliciesOperation |
+    ListRunsOperation |
+    CreateRunOperation |
+    GetRunOperation |
+    CancelRunOperation |
+    ListSessionsOperation |
+    CreateSessionOperation |
+    GetSessionOperation |
+    PatchSessionOperation |
+    DeleteSessionOperation |
+    AttachSessionPtyOperation |
+    MintSessionPtyTicketOperation |
+    SyncOperation |
+    ListSyncsOperation |
+    CreateSyncOperation |
+    DeleteSyncOperation
+)

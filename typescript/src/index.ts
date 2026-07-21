@@ -8,6 +8,10 @@
 import type { components } from "./generated/api-types.js";
 
 type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
+type LegacyProvider = "aws" | "aws-burst";
+type WithLegacyProvider<Schema extends { provider?: unknown }> = Omit<Schema, "provider"> & {
+  provider?: LegacyProvider | null;
+};
 
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
@@ -116,16 +120,24 @@ export type ForkOptions = ForkRequest;
 export type VmResources = ApiSchema<"VmResources">;
 export type VmNetwork = ApiSchema<"VmNetwork">;
 export type NetworkInput = ApiSchema<"NetworkInput">;
-export type Session = ApiSchema<"Session">;
-export type Vm = ApiSchema<"Vm">;
-export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
-export type ListSessionsResponse = ApiSchema<"ListSessionsResponse">;
+export type Session = WithLegacyProvider<ApiSchema<"Session">>;
+export type Vm = Omit<WithLegacyProvider<ApiSchema<"Vm">>, "sessions"> & {
+  sessions: Session[];
+};
+export type ListVmsResponse = Omit<ApiSchema<"ListVmsResponse">, "vms"> & {
+  vms: Vm[];
+};
+export type ListSessionsResponse = Omit<ApiSchema<"ListSessionsResponse">, "sessions"> & {
+  sessions: Session[];
+};
 export type DeleteVmResponse = ApiSchema<"DeleteVmResponse">;
 export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
 
 // ── Filesystems ────────────────────────────────────────────────────
-export type Filesystem = ApiSchema<"Filesystem">;
-export type ListFilesystemsResponse = ApiSchema<"ListFilesystemsResponse">;
+export type Filesystem = WithLegacyProvider<ApiSchema<"Filesystem">>;
+export type ListFilesystemsResponse = Omit<ApiSchema<"ListFilesystemsResponse">, "filesystems"> & {
+  filesystems: Filesystem[];
+};
 export type DeleteFilesystemResponse = ApiSchema<"DeleteFilesystemResponse">;
 export type FilesystemCreateRequest = ApiSchema<"FilesystemCreateRequest">;
 
@@ -161,11 +173,21 @@ export type NetworkStatus = ApiSchema<"NetworkStatus">;
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
-export type Run = ApiSchema<"Run">;
-export type RunSummary = ApiSchema<"RunSummary">;
-export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
-export type OrgRunListRow = ApiSchema<"OrgRunListRow">;
-export type ListOrgRunsResponse = ApiSchema<"ListOrgRunsResponse">;
+export type Run = WithLegacyProvider<ApiSchema<"Run">>;
+export type RunSummary = WithLegacyProvider<ApiSchema<"RunSummary">>;
+export type ListRunsResponse = Omit<ApiSchema<"ListRunsResponse">, "runs"> & {
+  runs: RunSummary[];
+};
+export type OrgRunListRow = Omit<ApiSchema<"OrgRunListRow">, "source"> & {
+  source: "cf" | "arkerd";
+  lambda_call_ms: number;
+  lambda_duration_ms: number;
+  lambda_cpu_ms: number;
+  lambda_mem_mb: number;
+};
+export type ListOrgRunsResponse = Omit<ApiSchema<"ListOrgRunsResponse">, "rows"> & {
+  rows: OrgRunListRow[];
+};
 export type RunListRow = OrgRunListRow;
 export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
