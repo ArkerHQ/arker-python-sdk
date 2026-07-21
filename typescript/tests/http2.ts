@@ -8,6 +8,7 @@ import http2 from "node:http2";
 import type { AddressInfo } from "node:net";
 
 import { Arker, type CompletedRunResult } from "../src/index.js";
+import { Http2Connection } from "../src/http2-connection.js";
 
 // A completed-run body shaped like the real API response.
 const RUN_BODY = JSON.stringify({
@@ -127,9 +128,92 @@ async function testAbortedRequestSettlesWithoutHanging(): Promise<void> {
   await shutdown(server, sessions);
 }
 
+async function testStalledRequestTimesOut(): Promise<void> {
+  const server = http2.createServer();
+  const sessions = trackSessions(server);
+  server.on("stream", (stream: http2.ServerHttp2Stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/json" });
+  });
+  const port = await listen(server);
+
+  try {
+    const connection = new Http2Connection(http2, `http://127.0.0.1:${port}`, 100);
+    const outcome = await Promise.race([
+      connection.request("GET", "/", {}).then(
+        () => "resolved",
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+      ),
+      sleep(1000).then(() => "HUNG"),
+    ]);
+    assert.match(outcome, /HTTP\/2 request timed out/, `stalled request did not time out: ${outcome}`);
+  } finally {
+    await shutdown(server, sessions);
+  }
+}
+
+async function testActiveResponseOutlivesInactivityTimeout(): Promise<void> {
+  const server = http2.createServer();
+  const sessions = trackSessions(server);
+  server.on("stream", async (stream: http2.ServerHttp2Stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/json" });
+    const chunkSize = Math.ceil(RUN_BODY.length / 8);
+    for (let offset = 0; offset < RUN_BODY.length; offset += chunkSize) {
+      await sleep(20);
+      stream.write(RUN_BODY.slice(offset, offset + chunkSize));
+    }
+    stream.end();
+  });
+  const port = await listen(server);
+
+  try {
+    const connection = new Http2Connection(http2, `http://127.0.0.1:${port}`, 100);
+    const result = await connection.request("GET", "/", {});
+    assert.equal(result.status, 200);
+    assert.equal(result.text, RUN_BODY);
+  } finally {
+    await shutdown(server, sessions);
+  }
+}
+
+async function testSequentialRequestsDoNotLeakTimeoutListeners(): Promise<void> {
+  const server = http2.createServer();
+  const sessions = trackSessions(server);
+  server.on("stream", (stream: http2.ServerHttp2Stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/json" });
+    stream.end(RUN_BODY);
+  });
+  const port = await listen(server);
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => {
+    if (warning.name === "MaxListenersExceededWarning") warnings.push(warning);
+  };
+  process.on("warning", onWarning);
+
+  try {
+    const arker = h2client(port);
+    for (let i = 0; i < 20; i++) {
+      await arker.vm("vm_1").run("printf hi");
+    }
+    await sleep(0);
+
+    assert.deepEqual(
+      warnings,
+      [],
+      `sequential requests leaked timeout listeners: ${warnings.map((warning) => warning.message).join("; ")}`,
+    );
+    assert.equal(sessions.size, 1, `expected one reused session, got ${sessions.size}`);
+  } finally {
+    process.off("warning", onWarning);
+    await shutdown(server, sessions);
+  }
+}
+
 await testHttp2HappyPath();
 await testHttp2MultiplexesConcurrentRequests();
 await testAbortedRequestSettlesWithoutHanging();
+await testStalledRequestTimesOut();
+await testActiveResponseOutlivesInactivityTimeout();
+await testSequentialRequestsDoNotLeakTimeoutListeners();
 
 console.log("PASS http2");
 // Real sockets (server sessions) can keep the event loop alive; everything is

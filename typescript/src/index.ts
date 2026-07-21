@@ -6,6 +6,7 @@
  */
 
 import type { components } from "./generated/api-types.js";
+import { Http2Connection, type Http2TransportResponse } from "./http2-connection.js";
 
 type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
 
@@ -1464,14 +1465,9 @@ function bufferConstructor(): BufferConstructorLike | undefined {
 
 // ── Transport ───────────────────────────────────────────────────────
 
-interface TransportResponse {
-  status: number;
-  ok: boolean;
-  text: string;
-}
+type TransportResponse = Http2TransportResponse;
 
 type Http2Module = typeof import("node:http2");
-type Http2Session = ReturnType<Http2Module["connect"]>;
 
 let http2Module: Promise<Http2Module | null> | undefined;
 function loadHttp2(): Promise<Http2Module | null> {
@@ -1484,53 +1480,6 @@ function loadHttp2(): Promise<Http2Module | null> {
       return null;
     }
   })());
-}
-
-// Matches the 120s ceiling the Python client and the fetch paths use.
-const HTTP2_REQUEST_TIMEOUT_MS = 120_000;
-
-// One HTTP/2 session per origin; concurrent requests multiplex over it as streams.
-// `confirmed` flips on the first response so the caller can fall back to fetch if the
-// origin turns out not to speak HTTP/2.
-class Http2Connection {
-  confirmed = false;
-  private streams = 0;
-  private readonly session: Http2Session;
-
-  constructor(http2: Http2Module, origin: string) {
-    this.session = http2.connect(origin);
-    this.session.on("error", () => {});
-  }
-
-  get closed(): boolean {
-    return this.session.closed || this.session.destroyed;
-  }
-
-  request(method: string, path: string, headers: Record<string, string>, body?: string): Promise<TransportResponse> {
-    // Ref the socket only while requests are in flight, so a pending request keeps
-    // the process alive but an idle connection still lets it exit.
-    if (this.streams === 0) this.session.ref();
-    this.streams++;
-    return new Promise<TransportResponse>((resolve, reject) => {
-      const stream = this.session.request({ ...headers, ":method": method, ":path": path });
-      let status = 0;
-      let text = "";
-      stream.setEncoding("utf8");
-      // Bound the request so a stalled stream — e.g. a half-open session reused after
-      // an idle timeout — rejects instead of hanging the caller indefinitely.
-      stream.setTimeout(HTTP2_REQUEST_TIMEOUT_MS, () => stream.destroy(new Error("HTTP/2 request timed out")));
-      stream.on("response", (responseHeaders) => {
-        this.confirmed = true;
-        status = Number(responseHeaders[":status"]) || 0;
-      });
-      stream.on("data", (chunk: string) => { text += chunk; });
-      stream.on("end", () => resolve({ status, ok: status >= 200 && status < 300, text }));
-      stream.on("error", reject);
-      stream.end(body);
-    }).finally(() => {
-      if (--this.streams === 0) this.session.unref();
-    });
-  }
 }
 
 const http2Connections = new Map<string, Http2Connection | null>();
