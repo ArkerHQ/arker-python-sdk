@@ -22,7 +22,7 @@
  * Region: `ARKER_REGION` or the `--region` flag.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, fstatSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -321,6 +321,9 @@ function parseOption(
     }
     flags[name] = value;
   } else {
+    if (!/^[+-]?\d+$/.test(value)) {
+      die(`parameter "${name}" must be an integer`);
+    }
     const parsed = Number(value);
     const range = spec.min === 0 ? "a non-negative integer" : `an integer >= ${spec.min}`;
     if (!Number.isSafeInteger(parsed) || parsed < spec.min || (spec.max !== undefined && parsed > spec.max)) {
@@ -751,7 +754,7 @@ async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
     out(`wrote ${Buffer.byteLength(inline)} bytes to ${path}`);
     return;
   }
-  if (!process.stdin.isTTY) {
+  if (stdinHasDataSource()) {
     const buf = await readAllStdin();
     await client.vm(vm).sync(path, buf);
     out(`wrote ${buf.length} bytes to ${path}`);
@@ -907,6 +910,16 @@ async function readAllStdin(): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   for await (const chunk of input) chunks.push(chunk as Buffer);
   return new Uint8Array(Buffer.concat(chunks));
+}
+
+function stdinHasDataSource(): boolean {
+  if (input.isTTY) return false;
+  try {
+    const stat = fstatSync(0);
+    return stat.isFIFO() || stat.isFile() || stat.isSocket();
+  } catch {
+    return false;
+  }
 }
 
 function usage(_command?: string): void {

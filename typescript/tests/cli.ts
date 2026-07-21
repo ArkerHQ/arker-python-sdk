@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
 
 type CliResult = {
   code: number | null;
@@ -23,12 +25,13 @@ type CapturedRequest = {
 };
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
+const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 const cliEntry = "dist/cli.js";
 const cliRuntime = "node";
 
 async function withServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
-  fn: (baseUrl: string) => Promise<void>,
+  fn: (baseUrl: string, server: Server) => Promise<void>,
 ): Promise<void> {
   const server = createServer(handler);
   server.listen(0, "127.0.0.1");
@@ -36,7 +39,7 @@ async function withServer(
   const address = server.address();
   assert.ok(address && typeof address === "object");
   try {
-    await fn(`http://127.0.0.1:${address.port}/api`);
+    await fn(`http://127.0.0.1:${address.port}/api`, server);
   } finally {
     server.close();
     await once(server, "close");
@@ -219,6 +222,8 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
     { args: ["fork", "--vcpu", "256", "ubuntu-full"], flag: "vcpu" },
     { args: ["update", "--memory-mib", "Infinity", "vm_1"], flag: "memory-mib" },
     { args: ["shell", "--rows", "0", "vm_1"], flag: "rows" },
+    { args: ["run", "--timeout=", "vm_1", "echo", "ok"], flag: "timeout" },
+    { args: ["run", "--timeout= ", "vm_1", "echo", "ok"], flag: "timeout" },
   ]) {
     await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
       const result = await runCli(baseUrl, args);
@@ -248,7 +253,7 @@ async function testHelpAndVersionAreLocalSuccesses(): Promise<void> {
   for (const args of [["--version"], ["-v"]]) {
     const result = await runCli(undefined, args, { authenticated: false });
     assert.equal(result.code, 0, `${args.join(" ")} should succeed`);
-    assert.match(stdoutText(result), /^arker 0\.8\.3\n$/);
+    assert.equal(stdoutText(result), `arker ${packageVersion}\n`);
     assert.equal(result.stderr, "");
   }
 }
@@ -387,6 +392,46 @@ async function testEmptyPipedInputWritesZeroBytes(): Promise<void> {
       }],
     });
   });
+}
+
+async function testNoPipeReadsFileBytes(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {
+    content: "/wD+",
+    encoding: "base64",
+  }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/example.bin"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(result.stdout, Buffer.from([0xff, 0x00, 0xfe]));
+    assert.deepEqual(requests, [{
+      method: "POST",
+      url: "/api/v1/vms/vm_1/sync",
+      body: { op: "read", path: "/tmp/example.bin" },
+    }]);
+  });
+}
+
+async function testShellSetupUsesPackagedCli(): Promise<void> {
+  const requests: CapturedRequest[] = [];
+  const wss = new WebSocketServer({ noServer: true });
+  let upgradeUrl: string | undefined;
+  let upgradeAuthorization: string | undefined;
+  await withServer(async (req, res) => {
+    requests.push({ method: req.method, url: req.url, body: await readJson(req) });
+    res.setHeader("content-type", "application/json");
+    jsonResponse(res, { vm_id: "vm_1", state: "idle" });
+  }, async (baseUrl, server) => {
+    server.on("upgrade", (req, socket, head) => {
+      upgradeUrl = req.url;
+      upgradeAuthorization = req.headers.authorization;
+      wss.handleUpgrade(req, socket, head, () => {});
+    });
+    const result = await runCli(baseUrl, ["shell", "--session-id", "session_1", "vm_1"]);
+    assert.equal(result.code, 0, result.stderr);
+  });
+  assert.deepEqual(requests, [{ method: "GET", url: "/api/v1/vms/vm_1", body: undefined }]);
+  assert.match(upgradeUrl ?? "", /^\/api\/v1\/vms\/vm_1\/sessions\/session_1\/pty\?/);
+  assert.equal(upgradeAuthorization, "Bearer ark_live_test");
+  wss.close();
 }
 
 async function testStructuredErrorsDoNotRepeatCode(): Promise<void> {
@@ -563,6 +608,8 @@ await testRunFailureReasonIsVisible();
 await testRunsGetUsesRunFormatter();
 await testRunHumanWarnsOnPartialMemory();
 await testEmptyPipedInputWritesZeroBytes();
+await testNoPipeReadsFileBytes();
+await testShellSetupUsesPackagedCli();
 await testStructuredErrorsDoNotRepeatCode();
 await testFalseMutationResultsExitNonzero();
 await testRemainingHttpCommandSurface();

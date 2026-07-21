@@ -72,7 +72,7 @@ export function bridgePty(
       resolve(code);
     };
     const onInput = (chunk: Buffer) => { pty.send(chunk); };
-    const onInputEnd = () => { pty.close(); };
+    const onInputEnd = () => { pty.close(1000, "stdin closed"); };
     const onResize = () => {
       pty.resize(output.columns ?? options.fallbackCols, output.rows ?? options.fallbackRows);
     };
@@ -81,12 +81,12 @@ export function bridgePty(
     const onSighup = () => { pty.close(); finish(129); };
     const offData = pty.onData((data) => { output.write(data); });
     const offClose = pty.onClose((event) => {
-      if (event.code === undefined || event.code === 1000) {
+      if (event.code === 1000) {
         finish(0);
         return;
       }
       const reason = event.reason ? `: ${event.reason}` : "";
-      runtime.reportError(`pty closed abnormally (${event.code})${reason}`);
+      runtime.reportError(`pty closed abnormally (${event.code ?? "unknown"})${reason}`);
       finish(1);
     });
     const offError = pty.onError((error) => {
@@ -113,6 +113,7 @@ export function bridgePty(
         if (options.autoResize) onResize();
       })
       .catch((error) => {
+        if (settled) return;
         const message = error instanceof Error ? error.message : String(error);
         runtime.reportError(`pty failed to open: ${message}`);
         finish(1);
