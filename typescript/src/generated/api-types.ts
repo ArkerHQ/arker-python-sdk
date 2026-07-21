@@ -597,9 +597,9 @@ export interface components {
             command: string;
             /** @default false */
             background?: boolean;
-            /** @description Execution/kill bound in ms: max wall-clock time the command runs before the host kills it. Null (default) applies ARKER_DEFAULT_RUN_TIMEOUT_MS (3600000 = 1h). 0 = explicit unbounded (no kill). Separate from the HTTP sync window — see time_to_background. */
+            /** @description Execution/kill bound in seconds: max wall-clock time the command runs before the host kills it. Null (default) applies ARKER_DEFAULT_RUN_TIMEOUT_SECS (3600 = 1h). 0 = explicit unbounded (no kill). Separate from the HTTP sync window — see time_to_background. */
             timeout?: number | null;
-            /** @description Sync window in ms: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Null (default) = 30000. Does NOT bound command runtime — that is timeout. */
+            /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Null (default) = 30. Does NOT bound command runtime — that is timeout. */
             time_to_background?: number | null;
             /** @default auto */
             end_symbol?: string | null;

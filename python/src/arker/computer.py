@@ -714,17 +714,17 @@ class VM:
     ) -> RunResult:
         """Run ``command`` in this VM via ``POST /v1/vms/{id}/runs``.
 
-        ``timeout`` is the execution/kill bound in ms: the maximum wall-clock
+        ``timeout`` is the execution/kill bound in SECONDS: the maximum wall-clock
         time the command may run before the host kills it. ``None`` (default)
-        applies the server default (``ARKER_DEFAULT_RUN_TIMEOUT_MS``, ~1h);
+        applies the server default (``ARKER_DEFAULT_RUN_TIMEOUT_SECS``, 3600 = 1h);
         ``0`` opts out of any kill (unbounded). It is NOT the HTTP wait window,
         so ``background=True`` runs should leave it unset (or set a real kill
         bound) — a small ``timeout`` would kill the run, not just background it.
 
-        ``time_to_background`` is the HTTP sync window in ms: how long the call
-        blocks inline before backgrounding the run and returning a pollable
-        ``run_id``. ``None`` (default) = 30000. It does not bound command
-        runtime — that is ``timeout``.
+        ``time_to_background`` is the HTTP sync window in SECONDS: how long the
+        call blocks inline before backgrounding the run and returning a pollable
+        ``run_id``. ``None`` (default) = 30. It does not bound command runtime —
+        that is ``timeout``.
         """
         body = {
             "command": command,
