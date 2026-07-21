@@ -243,12 +243,11 @@
             "in": "query",
             "name": "provider",
             "required": false,
-            "description": "Narrow to a single backend provider. `aws` returns only arkerd-managed (host-backed) VMs; `aws-burst` returns only Lambda-managed VMs. When omitted, both are returned merged.",
+            "description": "Narrow results to a cloud provider.",
             "schema": {
               "type": "string",
               "enum": [
-                "aws",
-                "aws-burst"
+                "aws"
               ]
             }
           },
@@ -350,25 +349,11 @@
             "in": "query",
             "name": "provider",
             "required": false,
-            "description": "Provider filter. `aws` maps to host-backed runs; `aws-burst` maps to Lambda-backed runs.",
+            "description": "Cloud provider filter.",
             "schema": {
               "type": "string",
               "enum": [
-                "aws",
-                "aws-burst"
-              ]
-            }
-          },
-          {
-            "in": "query",
-            "name": "source",
-            "required": false,
-            "description": "Raw run metrics source filter.",
-            "schema": {
-              "type": "string",
-              "enum": [
-                "cf",
-                "arkerd"
+                "aws"
               ]
             }
           },
@@ -1717,7 +1702,7 @@
       "PolicyMatch": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field needs the MITM proxy (not built yet); until it ships an L7 rule degrades to its host/L4 projection \u2014 allow \u2192 host-allow, deny/rewrite \u2192 fail-closed deny.",
+        "description": "Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field is enforced at the request layer by the managed MITM proxy; where the proxy is not active for a VM the rule degrades to its host/L4 projection \u2014 allow \u2192 host-allow, deny/rewrite \u2192 fail-closed deny.",
         "properties": {
           "ports": {
             "type": "array",
@@ -1908,14 +1893,14 @@
             "items": {
               "type": "string"
             },
-            "description": "Domains the policy would escalate to MITM once the data-path ships."
+            "description": "Domains the policy escalates to the MITM proxy."
           },
           "warnings": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Non-fatal notes (e.g. L7/rewrite rules degraded until the MITM data-path ships)."
+            "description": "Non-fatal notes (e.g. rules degraded where the MITM data path is not active)."
           }
         }
       },
@@ -1935,7 +1920,7 @@
               "string",
               "null"
             ],
-            "description": "VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org (for the public goldens `arkuntu` / `ubuntu`) or one with a `public: true` VM by that name."
+            "description": "VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org (for public goldens such as `ubuntu`) or one with a `public: true` VM by that name."
           },
           "source_org_id": {
             "type": [
@@ -2100,7 +2085,6 @@
             ],
             "enum": [
               "aws",
-              "aws-burst",
               null
             ]
           }
@@ -2192,7 +2176,6 @@
             ],
             "enum": [
               "aws",
-              "aws-burst",
               null
             ]
           },
@@ -2652,7 +2635,6 @@
             ],
             "enum": [
               "aws",
-              "aws-burst",
               null
             ]
           }
@@ -2739,7 +2721,6 @@
             ],
             "enum": [
               "aws",
-              "aws-burst",
               null
             ]
           }
@@ -2779,14 +2760,10 @@
           "status",
           "total_ms",
           "queue_ms",
-          "lambda_call_ms",
-          "lambda_duration_ms",
           "executor_duration_ms",
           "executor_kind",
           "executor_cpu_ms",
           "executor_mem_mb",
-          "lambda_cpu_ms",
-          "lambda_mem_mb",
           "vm_vcpus",
           "vm_memory_mib",
           "path",
@@ -2806,7 +2783,6 @@
           "source": {
             "type": "string",
             "enum": [
-              "cf",
               "arkerd"
             ]
           },
@@ -2837,12 +2813,6 @@
           "queue_ms": {
             "type": "number"
           },
-          "lambda_call_ms": {
-            "type": "number"
-          },
-          "lambda_duration_ms": {
-            "type": "integer"
-          },
           "executor_duration_ms": {
             "type": "integer"
           },
@@ -2853,12 +2823,6 @@
             "type": "integer"
           },
           "executor_mem_mb": {
-            "type": "integer"
-          },
-          "lambda_cpu_ms": {
-            "type": "integer"
-          },
-          "lambda_mem_mb": {
             "type": "integer"
           },
           "vm_vcpus": {
@@ -3554,7 +3518,6 @@
             ],
             "enum": [
               "aws",
-              "aws-burst",
               null
             ],
             "default": "aws"

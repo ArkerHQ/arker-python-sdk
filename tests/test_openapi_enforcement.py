@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MANAGED_PATHS = (
+    Path("contract/openapi.json"),
+    Path("contract/source.json"),
+    Path("typescript/src/generated/api-types.ts"),
+    Path("python/src/arker/generated/api_models.py"),
+)
+
+
+def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        cwd=REPO_ROOT,
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def source_metadata() -> dict[str, str]:
+    return json.loads((REPO_ROOT / "contract/source.json").read_text())
+
+
+def test_source_metadata_matches_contract() -> None:
+    metadata = source_metadata()
+    contract = (REPO_ROOT / "contract/openapi.json").read_bytes()
+
+    assert metadata == {
+        "repository": "ArkerHQ/arker-app",
+        "ref": "main",
+        "commit": metadata["commit"],
+        "sha256": hashlib.sha256(contract).hexdigest(),
+    }
+    assert len(metadata["commit"]) == 40
+    assert all(character in "0123456789abcdef" for character in metadata["commit"])
+
+
+def test_generation_is_deterministic_for_both_languages() -> None:
+    with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+        for output in (first, second):
+            run(
+                "./scripts/generate-openapi",
+                "--contract",
+                "contract/openapi.json",
+                "--output-root",
+                output,
+            )
+
+        for relative_path in MANAGED_PATHS[2:]:
+            first_bytes = (Path(first) / relative_path).read_bytes()
+            second_bytes = (Path(second) / relative_path).read_bytes()
+            assert first_bytes == second_bytes
+
+        typescript = (Path(first) / MANAGED_PATHS[2]).read_text()
+        python = (Path(first) / MANAGED_PATHS[3]).read_text()
+        assert "export interface operations" in typescript
+        assert "class ForkRequest" in python
+        assert "class ListVmsParametersQuery" in python
+
+
+def test_offline_check_detects_generated_drift() -> None:
+    metadata = source_metadata()
+    with tempfile.TemporaryDirectory() as candidate_directory:
+        candidate = Path(candidate_directory)
+        for relative_path in MANAGED_PATHS:
+            destination = candidate / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / relative_path, destination)
+
+        run(
+            "./scripts/check-openapi",
+            "--offline",
+            "--candidate-root",
+            str(candidate),
+        )
+
+        generated_python = candidate / MANAGED_PATHS[3]
+        generated_python.write_text(generated_python.read_text() + "# drift\n")
+        result = run(
+            "./scripts/check-openapi",
+            "--offline",
+            "--candidate-root",
+            str(candidate),
+            check=False,
+        )
+        assert result.returncode == 1
+        assert str(MANAGED_PATHS[3]) in result.stderr
+        assert metadata["commit"] in (candidate / MANAGED_PATHS[1]).read_text()
+
+
+def test_pull_request_ci_checks_all_generated_surfaces() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+
+    assert "./scripts/check-openapi --offline" in workflow
+    assert "python tests/test_openapi_enforcement.py" in workflow
+    assert "npm run check:api-types" in workflow
+    assert "python -m pytest" in workflow
+    assert "npm run test" in workflow
+
+
+def test_privileged_workflow_never_executes_pull_request_code() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/openapi-contract.yml").read_text()
+
+    assert "pull_request_target:" in workflow
+    assert "actions/create-github-app-token@" in workflow
+    assert "vars.ARKER_CONTRACT_APP_ID" in workflow
+    assert "secrets.ARKER_CONTRACT_APP_PRIVATE_KEY" in workflow
+    assert "permission-contents: read" in workflow
+    assert "repositories: arker-app" in workflow
+    assert "--candidate-repository" in workflow
+    assert "--candidate-ref" in workflow
+    assert "ref: ${{ github.event.pull_request.head.sha }}" not in workflow
+    assert (
+        "repository: ${{ github.event.pull_request.head.repo.full_name }}"
+        not in workflow
+    )
+
+
+if __name__ == "__main__":
+    tests = (
+        test_source_metadata_matches_contract,
+        test_generation_is_deterministic_for_both_languages,
+        test_offline_check_detects_generated_drift,
+        test_pull_request_ci_checks_all_generated_surfaces,
+        test_privileged_workflow_never_executes_pull_request_code,
+    )
+    for test in tests:
+        test()
+    print("PASS openapi enforcement")

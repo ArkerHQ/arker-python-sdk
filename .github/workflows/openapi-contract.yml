@@ -1,0 +1,61 @@
+name: OpenAPI contract
+
+# This privileged workflow runs only trusted code from the base branch. It reads
+# the pull request's managed contract files through raw.githubusercontent.com
+# and compares their bytes; it never checks out or executes pull request code.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  current:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v7
+
+      # Install only dependencies pinned by the trusted base branch, before the
+      # installation token exists in the job.
+      - name: Install TypeScript generator
+        working-directory: typescript
+        run: npm ci
+
+      - name: Install Python generator
+        run: uv sync --project python --locked --group dev
+
+      - name: Create read-only arker-app token
+        id: contract-app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.ARKER_CONTRACT_APP_ID }}
+          private-key: ${{ secrets.ARKER_CONTRACT_APP_PRIVATE_KEY }}
+          owner: ArkerHQ
+          repositories: arker-app
+          permission-contents: read
+
+      - name: Verify pull request contract artifacts
+        env:
+          GH_TOKEN: ${{ steps.contract-app-token.outputs.token }}
+          CANDIDATE_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          CANDIDATE_REF: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          ./scripts/check-openapi
+          --candidate-repository "$CANDIDATE_REPOSITORY"
+          --candidate-ref "$CANDIDATE_REF"

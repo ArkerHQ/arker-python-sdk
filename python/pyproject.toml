@@ -45,3 +45,8 @@ testpaths = ["tests"]
 # `test_e2e.py` and `test_presigned.py` hit a live deployment; skip
 # unless ARKER_API_KEY is set in the environment.
 addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "datamodel-code-generator==0.45.0",
+]
