@@ -11,9 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 REPOSITORY = "ArkerHQ/arker-app"
@@ -23,9 +20,7 @@ METADATA_PATH = Path("contract/source.json")
 TYPESCRIPT_PATH = Path("typescript/src/generated/api-types.ts")
 PYTHON_PATH = Path("python/src/arker/generated/api_models.py")
 MANAGED_PATHS = (CONTRACT_PATH, METADATA_PATH, TYPESCRIPT_PATH, PYTHON_PATH)
-MAX_CANDIDATE_BYTES = 5 * 1024 * 1024
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head", "trace")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -320,7 +315,7 @@ def generate(contract: Path, output_root: Path) -> None:
     typescript_generator = REPO_ROOT / "typescript/node_modules/.bin/openapi-typescript"
     if not typescript_generator.is_file():
         raise ContractError(
-            "TypeScript dependencies are missing; run `npm ci` in typescript/"
+            "TypeScript dependencies are missing; run `bun ci` in typescript/"
         )
 
     run(
@@ -385,46 +380,15 @@ def copy_managed_files(source_root: Path, output_root: Path) -> None:
         os.replace(temporary, destination)
 
 
-def load_offline_source() -> tuple[str, bytes]:
+def load_vendored_source() -> tuple[str, bytes]:
     try:
         metadata = json.loads((REPO_ROOT / METADATA_PATH).read_text())
         commit = validate_commit(metadata["commit"])
         contract = (REPO_ROOT / CONTRACT_PATH).read_bytes()
     except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError) as error:
-        raise ContractError("offline source metadata is missing or invalid") from error
+        raise ContractError("vendored source metadata is missing or invalid") from error
     validate_contract(contract)
     return commit, contract
-
-
-def remote_candidate(repository: str, ref: str) -> dict[Path, bytes]:
-    if not REPOSITORY_PATTERN.fullmatch(repository):
-        raise ContractError(f"invalid candidate repository: {repository!r}")
-    commit = validate_commit(ref)
-    candidate: dict[Path, bytes] = {}
-    for relative_path in MANAGED_PATHS:
-        path = urllib.parse.quote(str(relative_path), safe="/")
-        url = f"https://raw.githubusercontent.com/{repository}/{commit}/{path}"
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "arker-openapi-check"}
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                content = response.read(MAX_CANDIDATE_BYTES + 1)
-                if len(content) > MAX_CANDIDATE_BYTES:
-                    raise ContractError(f"candidate {relative_path} exceeds 5 MiB")
-                candidate[relative_path] = content
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                candidate[relative_path] = b""
-                continue
-            raise ContractError(
-                f"failed to fetch candidate {relative_path}: HTTP {error.code}"
-            ) from error
-        except urllib.error.URLError as error:
-            raise ContractError(
-                f"failed to fetch candidate {relative_path}: {error.reason}"
-            ) from error
-    return candidate
 
 
 def local_candidate(root: Path) -> dict[Path, bytes]:
@@ -481,29 +445,14 @@ def command_sync(args: argparse.Namespace) -> int:
 
 
 def command_check(args: argparse.Namespace) -> int:
-    if args.offline:
-        commit, contract = load_offline_source()
-    else:
-        commit, contract = fetch_source()
-
-    if bool(args.candidate_repository) != bool(args.candidate_ref):
-        raise ContractError(
-            "--candidate-repository and --candidate-ref must be provided together"
-        )
-    if args.candidate_root and args.candidate_repository:
-        raise ContractError(
-            "--candidate-root cannot be combined with a remote candidate"
-        )
+    commit, contract = load_vendored_source()
 
     with tempfile.TemporaryDirectory(prefix="arker-openapi-check-") as directory:
         expected_root = Path(directory)
         stage_contract(expected_root, commit, contract)
         expected = {path: (expected_root / path).read_bytes() for path in MANAGED_PATHS}
 
-    if args.candidate_repository:
-        actual = remote_candidate(args.candidate_repository, args.candidate_ref)
-    else:
-        actual = local_candidate(Path(args.candidate_root or REPO_ROOT).resolve())
+    actual = local_candidate(Path(args.candidate_root or REPO_ROOT).resolve())
 
     drift = False
     for relative_path in MANAGED_PATHS:
@@ -513,7 +462,10 @@ def command_check(args: argparse.Namespace) -> int:
     if drift:
         return 1
 
-    print(f"OpenAPI contract is current at {REPOSITORY}@{commit}")
+    print(
+        "generated artifacts match contract/openapi.json "
+        f"(synchronized from {REPOSITORY}@{commit})"
+    )
     return 0
 
 
@@ -535,10 +487,7 @@ def parser() -> argparse.ArgumentParser:
     sync_parser.set_defaults(handler=command_sync)
 
     check_parser = subcommands.add_parser("check")
-    check_parser.add_argument("--offline", action="store_true")
     check_parser.add_argument("--candidate-root")
-    check_parser.add_argument("--candidate-repository")
-    check_parser.add_argument("--candidate-ref")
     check_parser.set_defaults(handler=command_check)
     return root
 

@@ -131,7 +131,25 @@ def test_generation_is_deterministic_for_both_languages() -> None:
         )
 
 
-def test_offline_check_detects_generated_drift() -> None:
+def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
+    with tempfile.TemporaryDirectory() as output_directory:
+        run(
+            "./scripts/sync-openapi",
+            "--source-file",
+            "contract/openapi.json",
+            "--source-commit",
+            source_metadata()["commit"],
+            "--output-root",
+            output_directory,
+        )
+
+        for relative_path in MANAGED_PATHS:
+            assert (Path(output_directory) / relative_path).read_bytes() == (
+                REPO_ROOT / relative_path
+            ).read_bytes()
+
+
+def test_check_detects_generated_drift() -> None:
     metadata = source_metadata()
     with tempfile.TemporaryDirectory() as candidate_directory:
         candidate = Path(candidate_directory)
@@ -142,7 +160,6 @@ def test_offline_check_detects_generated_drift() -> None:
 
         run(
             "./scripts/check-openapi",
-            "--offline",
             "--candidate-root",
             str(candidate),
         )
@@ -151,7 +168,6 @@ def test_offline_check_detects_generated_drift() -> None:
         generated_python.write_text(generated_python.read_text() + "# drift\n")
         result = run(
             "./scripts/check-openapi",
-            "--offline",
             "--candidate-root",
             str(candidate),
             check=False,
@@ -164,38 +180,33 @@ def test_offline_check_detects_generated_drift() -> None:
 def test_pull_request_ci_checks_all_generated_surfaces() -> None:
     workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
 
-    assert "./scripts/check-openapi --offline" in workflow
+    assert "pull_request:" in workflow
+    assert "pull_request_target:" not in workflow
+    assert "run: ./scripts/check-openapi" in workflow
     assert "python tests/test_openapi_enforcement.py" in workflow
-    assert "npm run check:api-types" in workflow
+    assert "bun run check:api-types" in workflow
     assert "python -m pytest" in workflow
-    assert "npm run test" in workflow
+    assert "bun run test" in workflow
 
 
-def test_privileged_workflow_never_executes_pull_request_code() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/openapi-contract.yml").read_text()
-
-    assert "pull_request_target:" in workflow
-    assert "actions/create-github-app-token@" in workflow
-    assert "vars.ARKER_CONTRACT_APP_ID" in workflow
-    assert "secrets.ARKER_CONTRACT_APP_PRIVATE_KEY" in workflow
-    assert "permission-contents: read" in workflow
-    assert "repositories: arker-app" in workflow
-    assert "--candidate-repository" in workflow
-    assert "--candidate-ref" in workflow
-    assert "ref: ${{ github.event.pull_request.head.sha }}" not in workflow
-    assert (
-        "repository: ${{ github.event.pull_request.head.repo.full_name }}"
-        not in workflow
+def test_contract_ci_requires_no_cross_repository_credentials() -> None:
+    workflows = "\n".join(
+        path.read_text() for path in (REPO_ROOT / ".github/workflows").glob("*.yml")
     )
+
+    assert not (REPO_ROOT / ".github/workflows/openapi-contract.yml").exists()
+    assert "ARKER_CONTRACT_APP_ID" not in workflows
+    assert "ARKER_CONTRACT_APP_PRIVATE_KEY" not in workflows
 
 
 if __name__ == "__main__":
     tests = (
         test_source_metadata_matches_contract,
         test_generation_is_deterministic_for_both_languages,
-        test_offline_check_detects_generated_drift,
+        test_sync_from_local_contract_regenerates_all_managed_files,
+        test_check_detects_generated_drift,
         test_pull_request_ci_checks_all_generated_surfaces,
-        test_privileged_workflow_never_executes_pull_request_code,
+        test_contract_ci_requires_no_cross_repository_credentials,
     )
     for test in tests:
         test()
