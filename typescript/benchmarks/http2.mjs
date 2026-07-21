@@ -210,5 +210,3 @@ if (QUIET) {
 } else {
   console.log(JSON.stringify(report, null, 2));
 }
-
-process.exit(0);

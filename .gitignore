@@ -25,6 +25,7 @@ typescript/ios-qa-artifacts/
 # OS
 .DS_Store
 typescript/dist-types/
+typescript/.test-dist/
 
 # Example run outputs
 *-screenshot.png

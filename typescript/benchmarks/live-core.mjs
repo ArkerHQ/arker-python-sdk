@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 
+import { withBenchmarkVmCleanup } from "./live-helpers.mjs";
+
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
   return index === -1 ? fallback : process.argv[index + 1];
@@ -54,7 +56,7 @@ const runs = [];
 const syncWrites = [];
 const syncReads = [];
 
-try {
+await withBenchmarkVmCleanup(vms, async () => {
   for (let index = 0; index < forkSamples; index++) {
     await measure(forks, async () => {
       const vm = await arker.fork(sourceVm, { name: `sdk-perf-${stamp}-${index}` });
@@ -76,15 +78,7 @@ try {
       assert.equal(new TextDecoder().decode(value), body);
     });
   }
-} finally {
-  const cleanup = await Promise.allSettled(vms.map((vm) => vm.delete()));
-  const cleanupErrors = cleanup
-    .filter((result) => result.status === "rejected")
-    .map((result) => result.reason);
-  if (cleanupErrors.length > 0) {
-    throw new AggregateError(cleanupErrors, `failed to delete ${cleanupErrors.length} benchmark VM(s)`);
-  }
-}
+});
 
 console.log(JSON.stringify({
   generatedAt: new Date().toISOString(),
