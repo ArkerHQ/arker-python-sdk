@@ -7,7 +7,7 @@
 # process in the VM can't escape it. The CLI has no policy verb, so we PUT the
 # document to the API.
 #
-# Prereqs: the Arker CLI (`npm install -g @arker-ai/sdk`), `jq`, and `curl`.
+# Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`), `jq`, and `curl`.
 
 set -euo pipefail
 

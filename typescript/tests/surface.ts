@@ -3,7 +3,7 @@
  * Calls every public method on Arker / Computer / Runs / Sessions /
  * Tunnels / Syncs / Filesystems and reports PASS / FAIL / STUB.
  *
- *   ARKER_API_KEY=... ARKER_BASE_URL=http://host:8080/api tsx tests/surface.ts
+ *   ARKER_API_KEY=... ARKER_BASE_URL=http://host:8080/api bun tests/surface.ts
  */
 export {};
 

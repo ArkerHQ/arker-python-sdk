@@ -44,7 +44,7 @@ print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
 ### TypeScript Client
 
 ```bash
-npm install @arker-ai/sdk
+bun add @arker-ai/sdk
 ```
 
 ```ts
@@ -59,7 +59,7 @@ if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
 ### CLI
 
 ```bash
-npm install -g @arker-ai/sdk
+bun add --global @arker-ai/sdk
 ```
 
 ```bash

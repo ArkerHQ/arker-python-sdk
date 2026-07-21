@@ -6,7 +6,7 @@
 # seeds a Cortex-M3 firmware, has the agent add a feature, then forks a checkpoint
 # and has it add another — building on the first.
 #
-# Prereqs: the Arker CLI (`npm install -g @arker-ai/sdk`) and `jq`.
+# Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`) and `jq`.
 #   ARKER_API_KEY=...  CURSOR_API_KEY=...  ./quick-start-firmware.sh
 
 set -uo pipefail
