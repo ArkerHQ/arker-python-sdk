@@ -3,17 +3,7 @@ name: Publish TypeScript SDK
 # Triggers on `typescript-v*` tags (e.g. `typescript-v0.1.0`). Tag prefix
 # distinguishes TS releases from Python ones in this monorepo.
 #
-# Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN secret needed.
-# One-time setup on npmjs.com:
-#   1. Create the `arker` org (https://www.npmjs.com/org/create) and
-#      claim the `@arker-ai/sdk` package by publishing once manually OR by
-#      pre-registering it via the org's Packages page.
-#   2. On the package's "Settings → Trusted publishers" page add:
-#        Provider:        GitHub Actions
-#        Owner:           ArkerHQ
-#        Repository:      arker-sdk
-#        Workflow:        .github/workflows/publish-typescript.yml
-#        Environment:     npm
+# Publishes to the npm registry with Bun and the NPM_ACCESS_TOKEN repo secret.
 
 on:
   push:
@@ -30,41 +20,39 @@ jobs:
       name: npm
       url: https://www.npmjs.com/package/@arker-ai/sdk
     permissions:
-      id-token: write   # required for npm Trusted Publishing OIDC
       contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+          bun-version: 1.3.8
 
       - name: Install deps
-        run: npm ci
+        run: bun ci
 
       - name: Verify package version matches tag
         run: |
           tag="${GITHUB_REF#refs/tags/typescript-v}"
-          pkg=$(node -p "require('./package.json').version")
+          pkg=$(bun -e "console.log(require('./package.json').version)")
           if [ "$tag" != "$pkg" ]; then
             echo "Tag typescript-v$tag does not match package.json version $pkg"
             exit 1
           fi
 
       - name: Check generated API types
-        run: npm run check:api-types
+        run: bun run check:api-types
 
       - name: Typecheck
-        run: npm run typecheck
+        run: bun run typecheck
 
       - name: Test
-        run: npm run test
+        run: bun run test
 
       - name: Build
-        run: npm run build
+        run: bun run build
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: bun publish --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}   # repo secret. Once Trusted Publishing is configured on npm, swap in OIDC.
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}

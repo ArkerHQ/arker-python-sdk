@@ -6,7 +6,7 @@
 
 Drops your local terminal into a live shell inside the VM. If `claude` isn't
 already installed in the image, install it from the shell first, e.g.
-    npm i -g @anthropic-ai/claude-code   # then run: claude
+    bun add --global @anthropic-ai/claude-code   # then run: claude
 
 Exit by leaving the shell (`exit` / Ctrl-D).
 """

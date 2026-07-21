@@ -5,7 +5,7 @@ A small, typed wrapper around the Arker VM API: fork a machine, run commands, sy
 ## Install
 
 ```bash
-npm install @arker-ai/sdk
+bun add @arker-ai/sdk
 ```
 
 Node 18+. The client reads your key from `ARKER_API_KEY` — get one in the [console](https://arker.ai/console).
@@ -63,7 +63,7 @@ await ar.listVms({ state? });
 ar.vm(vmId);                                  // bare handle
 await ar.vm(vmId).run(command, options?);
 await ar.vm(vmId).connectPty({ sessionId?, cols?, rows?, command?, persist? });
-await ar.vm(vmId).resize({ vcpu_count, memory_mib });
+await ar.vm(vmId).update({ resources: { vcpu, memory_mib, disk_mib } });
 await ar.vm(vmId).delete();
 
 // Files inside a VM
@@ -82,42 +82,6 @@ await vm.deleteSync(syncId);
 ```
 
 `apiKey` falls back to `ARKER_API_KEY`; `region` to `ARKER_REGION`. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
-
-## Interactive terminal (PTY)
-
-Open a real pseudo-terminal in a VM and drive it interactively — stream raw
-terminal bytes out, send keystrokes in (incl. control chars like Ctrl-C),
-resize, and kill. `isatty()` is true inside, so an interactive shell, `vim`,
-`htop`, a language REPL, and `claude` all work. Transport is a TLS WebSocket;
-a key can only attach to its own org's VMs.
-
-```ts
-const vm = await ar.fork("ubuntu-full");
-
-const pty = await vm.createPty({
-  cols: 80,
-  rows: 24,
-  // command defaults to the login shell. It is a single executable path —
-  // the guest does not shell-split, so launch a shell and `sendInput` it.
-  onData: (bytes) => process.stdout.write(bytes), // raw output (ANSI/colors)
-});
-
-await pty.sendInput(new TextEncoder().encode("ls -la\n"));
-await pty.resize({ cols: 120, rows: 40 });        // a full-screen app reflows
-await pty.kill();                                  // tears down the shell
-```
-
-Wire it into `xterm.js` in a browser (`term.onData → pty.sendInput`,
-`pty onData → term.write`, `term.onResize → pty.resize`), or pipe it to a local
-TTY in a script. Node needs the optional `ws` package (installed by default).
-
-The CLI exposes the same thing — `arker pty <vm>` (and `arker shell` on a TTY)
-drop you into a live terminal you can run `claude` in:
-
-```bash
-arker pty <vm_id>                 # login shell in a fresh/!existing VM
-arker pty --command /usr/bin/htop # launch a program directly
-```
 
 ## Durability
 
@@ -221,9 +185,9 @@ Unsupported provider-specific methods and options throw explicit errors instead 
 Compatibility test commands:
 
 ```bash
-npm run test:compat
-ARKER_API_KEY=... npm run test:compat-live
-ARKER_API_KEY=... DAYTONA_API_KEY=... E2B_API_KEY=... MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... npm run test:compat-fallback-live
+bun run test:compat
+ARKER_API_KEY=... bun run test:compat-live
+ARKER_API_KEY=... DAYTONA_API_KEY=... E2B_API_KEY=... MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... bun run test:compat-fallback-live
 ```
 
 ## License

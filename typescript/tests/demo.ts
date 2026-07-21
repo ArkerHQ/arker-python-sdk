@@ -5,7 +5,7 @@
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_REGION=aws-us-west-2 \
  *   ARKER_SOURCE_VM=ubuntu \
- *   npm run demo
+ *   bun run demo
  */
 
 import { Arker, ArkerError, VM, type CompletedRunResult } from "../src/index.js";

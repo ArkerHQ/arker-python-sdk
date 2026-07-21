@@ -2,13 +2,13 @@
  * iOS QA example for the macos-full golden.
  *
  * Smoke only:
- *   ARKER_API_KEY=ark_live_... IOS_QA_SMOKE_ONLY=1 npm run example:ios-qa
+ *   ARKER_API_KEY=ark_live_... IOS_QA_SMOKE_ONLY=1 bun run example:ios-qa
  *
  * Smoke with a simulator screenshot:
- *   ARKER_API_KEY=ark_live_... IOS_QA_SMOKE_ONLY=1 IOS_QA_SCREENSHOT=1 npm run example:ios-qa
+ *   ARKER_API_KEY=ark_live_... IOS_QA_SMOKE_ONLY=1 IOS_QA_SCREENSHOT=1 bun run example:ios-qa
  *
  * XCTest:
- *   ARKER_API_KEY=ark_live_... IOS_QA_WORKDIR=/Users/arker/app IOS_QA_SCHEME=MyApp npm run example:ios-qa
+ *   ARKER_API_KEY=ark_live_... IOS_QA_WORKDIR=/Users/arker/app IOS_QA_SCHEME=MyApp bun run example:ios-qa
  */
 
 import { Buffer } from "node:buffer";

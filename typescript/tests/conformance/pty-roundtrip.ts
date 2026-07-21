@@ -1,15 +1,15 @@
 /**
- * PTY round-trip e2e — the interactive-terminal path that `arker shell` /
- * `arker pty` drive under the hood (SDK `vm.connectPty`). Complements the
+ * PTY round-trip e2e — the interactive-terminal path that `arker shell`
+ * drives under the hood (SDK `vm.connectPty`). Complements the
  * unit tests (which fake the socket) by exercising a REAL PTY-over-WebSocket
  * against a live backend: open → receive output → send keystrokes → resize →
  * reconnect-same-shell (persist) → kill→fresh.
  *
- *   npm run build   # produces dist/ (connectPty needs the optional `ws` dep)
+ *   bun run build   # produces dist/ (connectPty needs the optional `ws` dep)
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_BASE_URL=http://<worker>:8080/api  (or ARKER_REGION=us-west-2) \
  *   GOLDEN=ubuntu  ARKER_SOURCE_ORG_ID=ArkerHQ \
- *   npx tsx tests/conformance/pty-roundtrip.ts
+ *   bun tests/conformance/pty-roundtrip.ts
  *
  * Exits non-zero on any failure. Self-cleans the VM it forks.
  */

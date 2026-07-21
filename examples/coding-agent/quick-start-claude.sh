@@ -5,7 +5,7 @@
 # Forks ubuntu-full and runs the Claude Code CLI inside it. A background coding
 # agent is just a VM + a CLI agent.
 #
-# Prereqs: the Arker CLI (`npm install -g @arker-ai/sdk`) and `jq`.
+# Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`) and `jq`.
 
 set -euo pipefail
 

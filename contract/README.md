@@ -8,7 +8,7 @@ TypeScript SDK types after updating it:
 
 ```sh
 cd typescript
-npm run generate:api-types
+bun run generate:api-types
 ```
 
 The SDK client code should stay handwritten; generated files should only define

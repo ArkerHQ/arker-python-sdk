@@ -13,9 +13,9 @@
  *   - exec-before-PTY corner case (#42): run() on a session, then attach a PTY
  *   - cold reconnect after idle-TTL suspend (restore path) keeps the same shell
  *
- *   npm run build
+ *   bun run build
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://<worker>:8080/api \
- *   GOLDEN=ubuntu ARKER_SOURCE_ORG_ID=ArkerHQ npx tsx tests/conformance/pty-scenarios.ts
+ *   GOLDEN=ubuntu ARKER_SOURCE_ORG_ID=ArkerHQ bun tests/conformance/pty-scenarios.ts
  *
  * Exits non-zero on any failure. Self-cleans the VM it forks.
  */

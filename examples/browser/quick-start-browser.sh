@@ -6,7 +6,7 @@
 # checkpoints it mid-session. Here we open two Wikipedia pages and fork at each,
 # leaving two live checkpoints you can reopen over VNC.
 #
-# Prereqs: the Arker CLI (`npm install -g @arker-ai/sdk`), `jq`, and `curl`.
+# Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`), `jq`, and `curl`.
 
 set -euo pipefail
 
