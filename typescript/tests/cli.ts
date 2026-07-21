@@ -389,6 +389,7 @@ async function testEmptyPipedInputWritesZeroBytes(): Promise<void> {
         content: "",
         start: 0,
         end: 0,
+        is_secret: false,
       }],
     });
   });

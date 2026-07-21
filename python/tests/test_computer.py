@@ -216,9 +216,9 @@ def test_list_uses_configured_base_url() -> None:
             "public": False,
             "state": "running",
             "sessions": [session()],
-            "tunnels": [],
             "name": "demo",
-            "network": {"type": "open"},
+            "network": {"reachable": False},
+            "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
             "max_vcpus": 8,
             "max_memory_mib": 32768,
             "min_memory_mib": 512,
@@ -228,7 +228,7 @@ def test_list_uses_configured_base_url() -> None:
     with use_transport(t):
         result = client().list_vms()
 
-    assert isinstance(result, sdk.ListVmsResponse)
+    assert isinstance(result, sdk.VmList)
     assert len(result) == 1
     assert result.vms[0].id == "vm_1"
     assert result.vms[0].vm_id == "vm_1"
@@ -236,13 +236,17 @@ def test_list_uses_configured_base_url() -> None:
     assert result.vms[0].max_vcpus == 8
     assert result.vms[0].max_memory_mib == 32768
     assert result.vms[0].min_memory_mib == 512
-    assert result.vms[0].network == {"type": "open"}
+    assert result.vms[0].network is not None
+    assert result.vms[0].network.reachable is False
+    assert result.vms[0].resources == sdk.VmResources(
+        vcpu=2, memory_mib=1024, disk_mib=4096
+    )
 
 
 def test_list_runs_uses_control_plane_and_filters() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&source=arkerd&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
         200,
         {
             "since": 10,
@@ -300,7 +304,6 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
             vm_ids=["vm_2", "vm_3"],
             region="us-west-2",
             provider="aws",
-            source="arkerd",
             search="pytest",
             limit=25,
             offset=5,
@@ -532,7 +535,12 @@ def test_large_write_uses_presigned_bypass() -> None:
 
     assert [call["method"] for call in t.calls] == ["POST", "PUT", "POST"]
     first_entry = json.loads(t.calls[0]["body"])["writes"][0]
-    assert first_entry == {"path": "/home/user/big", "size": len(payload), "presigned": True}
+    assert first_entry == {
+        "path": "/home/user/big",
+        "size": len(payload),
+        "presigned": True,
+        "is_secret": False,
+    }
 
 
 def test_fork_sends_durable_flag() -> None:

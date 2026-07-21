@@ -1221,10 +1221,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "$ref": "#/components/schemas/SyncReadRequest"
+                    "$ref": "#/components/schemas/SyncReadOperationRequest"
                   },
                   {
-                    "$ref": "#/components/schemas/SyncWriteRequest"
+                    "$ref": "#/components/schemas/SyncWriteOperationRequest"
                   }
                 ]
               }
@@ -2324,7 +2324,7 @@
             "default": false
           },
           "timeout": {
-            "description": "Execution/kill bound in ms: max wall-clock time the command runs before the host kills it. Null (default) applies ARKER_DEFAULT_RUN_TIMEOUT_MS (3600000 = 1h). 0 = explicit unbounded (no kill). Separate from the HTTP sync window — see time_to_background.",
+            "description": "Execution/kill bound in seconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background.",
             "type": [
               "integer",
               "null"
@@ -2332,7 +2332,7 @@
             "minimum": 0
           },
           "time_to_background": {
-            "description": "Sync window in ms: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Null (default) = 30000. Does NOT bound command runtime — that is timeout.",
+            "description": "Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout.",
             "type": [
               "integer",
               "null"
@@ -2480,13 +2480,16 @@
           },
           "stdout_encoding": {
             "type": "string",
-            "description": "TODO(encoding-normalize): goal is to always emit utf-8 from\nevery source so this field becomes unnecessary. Until then\nthe SDK uses it to decode.\n"
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
             "type": "string"
           },
           "stderr_encoding": {
-            "type": "string"
+            "type": "string",
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "exit_code": {
             "type": "integer"
@@ -2591,13 +2594,17 @@
             "type": "string"
           },
           "stdout_encoding": {
-            "type": "string"
+            "type": "string",
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
             "type": "string"
           },
           "stderr_encoding": {
-            "type": "string"
+            "type": "string",
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "retry_count": {
             "type": "integer",
@@ -3104,6 +3111,43 @@
           }
         }
       },
+      "SyncReadOperationRequest": {
+        "type": "object",
+        "required": [
+          "op",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncWriteOperationRequest": {
+        "type": "object",
+        "required": [
+          "op",
+          "writes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "write"
+          },
+          "writes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncWriteEntry"
+            }
+          }
+        }
+      },
       "SyncWriteEntry": {
         "oneOf": [
           {
@@ -3227,6 +3271,8 @@
       "SyncReadInlineResponse": {
         "type": "object",
         "required": [
+          "ok",
+          "op",
           "path",
           "size",
           "content",
@@ -3234,6 +3280,13 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
           "path": {
             "type": "string"
           },
@@ -3252,6 +3305,8 @@
       "SyncReadPresignedResponse": {
         "type": "object",
         "required": [
+          "ok",
+          "op",
           "path",
           "size",
           "presigned_url",
@@ -3260,6 +3315,13 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
           "path": {
             "type": "string"
           },
@@ -3282,10 +3344,19 @@
       "SyncWriteResponse": {
         "type": "object",
         "required": [
+          "ok",
+          "op",
           "results"
         ],
         "additionalProperties": false,
         "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string",
+            "const": "write"
+          },
           "results": {
             "type": "array",
             "items": {
