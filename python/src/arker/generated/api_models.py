@@ -907,7 +907,7 @@ class CreateSessionOperation(TypedDict):
     method: Literal['POST']
     path: Literal['/v1/vms/{id}/sessions']
     parameters: CreateSessionParameters
-    request: CreateSessionRequest
+    request: CreateSessionRequest | None
     success: Session
     errors: ErrorResponse
 
@@ -927,7 +927,7 @@ class PatchSessionOperation(TypedDict):
     method: Literal['PATCH']
     path: Literal['/v1/vms/{id}/sessions/{sid}']
     parameters: PatchSessionParameters
-    request: PatchSessionRequest
+    request: PatchSessionRequest | None
     success: PatchSessionResponse
     errors: ErrorResponse
 

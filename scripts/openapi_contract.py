@@ -260,6 +260,12 @@ def append_operation_types(contract: Path, output: Path) -> None:
                 if isinstance(request_media, dict)
                 else "None"
             )
+            if (
+                request_type != "None"
+                and isinstance(request_body, dict)
+                and request_body.get("required") is not True
+            ):
+                request_type = union([request_type, "None"])
 
             responses = operation.get("responses")
             if not isinstance(responses, dict):

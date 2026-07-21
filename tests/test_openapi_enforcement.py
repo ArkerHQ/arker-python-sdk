@@ -113,10 +113,14 @@ def test_generation_is_deterministic_for_both_languages() -> None:
             "method": "Literal['PATCH']",
             "path": "Literal['/v1/vms/{id}/sessions/{sid}']",
             "parameters": "PatchSessionParameters",
-            "request": "PatchSessionRequest",
+            "request": "PatchSessionRequest | None",
             "success": "PatchSessionResponse",
             "errors": "ErrorResponse",
         }
+        assert (
+            annotations(python, "CreateSessionOperation")["request"]
+            == "CreateSessionRequest | None"
+        )
         assert (
             annotations(python, "SyncOperation")["request"]
             == "SyncReadRequest | SyncWriteRequest"
