@@ -368,16 +368,45 @@ export interface components {
              * @description Server time when the health response was generated.
              */
             timestamp: string;
+            /**
+             * @description Present when the public health response is served by a regional router.
+             * @enum {string}
+             */
+            role?: "router";
+            /** @description Whether the router can currently select an active worker. Present on router responses. */
+            worker_available?: boolean;
+            /** @description Deployed release identifier, when configured. Present on router responses. */
+            release_id?: string | null;
+            /** @description Router package version. Present on router responses. */
+            version?: string;
         };
         /**
          * @description Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature. `payment_required` means billing setup or payment is required before new compute can start.
          * @enum {string}
          */
-        ErrorCode: "unsupported_operation" | "bad_request" | "unauthorized" | "forbidden" | "payment_required" | "not_found" | "conflict" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "network_error";
-        ErrorResponse: {
+        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "backend_unavailable" | "api_worker_unavailable" | "bad_gateway" | "network_error" | "stale_route" | "unrecoverable";
+        ErrorBody: {
             code: components["schemas"]["ErrorCode"];
             /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic; server logs retain the underlying cause. */
             message: string;
+            /**
+             * Format: date-time
+             * @description Server time when the error response was generated.
+             */
+            timestamp: string;
+            /** @description Suggested retry delay in seconds. Present on retryable responses and mirrored by the Retry-After header. */
+            retry_after?: number;
+            /** @description Operation that failed, when the backend can identify it safely. */
+            operation?: string;
+            /** @description Runtime involved in the failure, when safe to expose. */
+            runtime?: string;
+            /** @description Infrastructure provider involved in the failure, when safe to expose. */
+            provider?: string;
+            /** @description Whether clients should retry the operation. */
+            retryable?: boolean;
+        };
+        ErrorResponse: {
+            error: components["schemas"]["ErrorBody"];
         };
         /**
          * @description Unified lifecycle state for a VM or a Session. `idle` means no command is currently executing; `running` means a command is in flight.
@@ -539,7 +568,7 @@ export interface components {
             source_org_id?: string | null;
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | null;
+            provider?: "aws" | "gcp" | "azure" | null;
         };
         ListSessionsResponse: {
             sessions: components["schemas"]["Session"][];
@@ -561,10 +590,22 @@ export interface components {
             state: components["schemas"]["VmState"];
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | null;
+            provider?: "aws" | "gcp" | "azure" | null;
             started_at?: string | null;
             /** @description Inbound reachability settings for this VM. */
             network: components["schemas"]["VmNetwork"];
+            /** @description Outbound egress policy stored on the VM. */
+            egress?: components["schemas"]["NetworkPolicy"];
+            /**
+             * @deprecated
+             * @description Deprecated compatibility alias for `root_source_vm_name`.
+             */
+            readonly base_image?: string;
+            /**
+             * @deprecated
+             * @description Deprecated compatibility alias for `root_source_vm_name`.
+             */
+            readonly source_golden?: string;
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
             max_vcpus?: number | null;
             /** @description Smallest vCPU count accepted for this VM. */
@@ -591,13 +632,25 @@ export interface components {
         DeleteSessionResponse: {
             deleted: boolean;
         };
+        PatchSessionRequest: {
+            /** @description New terminal width in columns. Provide together with rows. */
+            cols?: number;
+            /** @description New terminal height in rows. Provide together with cols. */
+            rows?: number;
+            /** @description Idle auto-cancel window for the PTY; applies on the next attach. */
+            timeout_secs?: number;
+        };
+        PatchSessionResponse: {
+            ok: boolean;
+            session_id: string;
+        };
         RunRequest: {
             session_id?: string | null;
             session_idx?: number | null;
             command: string;
             /** @default false */
             background?: boolean;
-            /** @description Execution/kill bound in seconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background. */
+            /** @description Execution/kill bound in milliseconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600000 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background. */
             timeout?: number | null;
             /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout. */
             time_to_background?: number | null;
@@ -699,7 +752,7 @@ export interface components {
             source_org_id?: string | null;
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | null;
+            provider?: "aws" | "gcp" | "azure" | null;
         };
         RunSummary: {
             run_id: string;
@@ -716,7 +769,7 @@ export interface components {
             source_org_id?: string | null;
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | null;
+            provider?: "aws" | "gcp" | "azure" | null;
         };
         ListRunsResponse: {
             runs: components["schemas"]["RunSummary"][];
@@ -783,6 +836,19 @@ export interface components {
                 [key: string]: string;
             } | null;
             cwd?: string | null;
+            /** @description Mark this session for an interactive PTY. The PTY stream is attached separately through the session WebSocket endpoint. */
+            pty?: boolean | null;
+            /** @description Advisory initial terminal width in columns. The WebSocket attach query may override it. */
+            cols?: number | null;
+            /** @description Advisory initial terminal height in rows. The WebSocket attach query may override it. */
+            rows?: number | null;
+            /** @description Advisory command for an interactive PTY session. */
+            command?: string | null;
+        };
+        PtyTicketResponse: {
+            ticket: string;
+            /** @description Seconds until expiry. */
+            expires_in: number;
         };
         Sync: {
             sync_id: string;
@@ -819,6 +885,8 @@ export interface components {
             op: "write";
             writes: components["schemas"]["SyncWriteEntry"][];
         };
+        SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"];
+        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"];
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
             path: string;
@@ -918,7 +986,7 @@ export interface components {
              * @default aws
              * @enum {string|null}
              */
-            provider?: "aws" | null;
+            provider?: "aws" | "gcp" | "azure" | null;
         };
         ListFilesystemsResponse: {
             filesystems: components["schemas"]["Filesystem"][];
@@ -1086,13 +1154,13 @@ export interface operations {
                 /** @description Narrow to a single backend region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region. */
                 region?: string;
                 /** @description Narrow results to a cloud provider. */
-                provider?: "aws";
+                provider?: "aws" | "gcp" | "azure";
+                /** @description List public VMs owned by this org. Currently only `ArkerHQ` is supported, together with `public=true`, for the public template catalog. */
+                org_id?: string;
+                /** @description Filter by public visibility. Use with `org_id=ArkerHQ` to list the public template catalog. */
+                public?: boolean;
                 /** @description Filter by VM lifecycle state. */
                 state?: components["schemas"]["VmState"];
-                /** @description ISO 8601 timestamp; include only VMs that most recently started at or after this time. */
-                started_after?: string;
-                /** @description ISO 8601 timestamp; include only VMs that most recently started at or before this time. */
-                started_before?: string;
             };
             header?: never;
             path?: never;
@@ -1126,7 +1194,7 @@ export interface operations {
                 /** @description Backend region filter. */
                 region?: string;
                 /** @description Cloud provider filter. */
-                provider?: "aws";
+                provider?: "aws" | "gcp" | "azure";
                 /** @description Free-text search across run metadata. */
                 search?: string;
                 /** @description Maximum number of rows to return. */
@@ -1444,7 +1512,7 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateSessionRequest"];
             };
@@ -1526,14 +1594,7 @@ export interface operations {
         };
         requestBody?: {
             content: {
-                "application/json": {
-                    /** @description New terminal width in columns (1-1000). Provide together with rows. */
-                    cols?: number;
-                    /** @description New terminal height in rows (1-1000). Provide together with cols. */
-                    rows?: number;
-                    /** @description Idle auto-cancel window for the PTY; applies on the next attach. */
-                    timeout_secs?: number;
-                };
+                "application/json": components["schemas"]["PatchSessionRequest"];
             };
         };
         responses: {
@@ -1543,10 +1604,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        ok?: boolean;
-                        session_id?: string;
-                    };
+                    "application/json": components["schemas"]["PatchSessionResponse"];
                 };
             };
             422: components["responses"]["UnsupportedOperation"];
@@ -1608,11 +1666,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        ticket: string;
-                        /** @description Seconds until expiry. */
-                        expires_in: number;
-                    };
+                    "application/json": components["schemas"]["PtyTicketResponse"];
                 };
             };
             401: components["responses"]["Error"];
@@ -1714,7 +1768,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"];
+                "application/json": components["schemas"]["SyncRequest"];
             };
         };
         responses: {
@@ -1724,7 +1778,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"];
+                    "application/json": components["schemas"]["SyncResponse"];
                 };
             };
             402: components["responses"]["PaymentRequired"];
