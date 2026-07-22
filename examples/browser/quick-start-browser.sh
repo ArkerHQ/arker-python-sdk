@@ -19,7 +19,7 @@ BASE="https://aws-${REGION}.arker.ai/api"
 VM=$(arker fork ubuntu-desktop-vnc | jq -r .vm_id)
 echo "forked $VM"
 trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
-arker run --timeout 480 "$VM" "export DEBIAN_FRONTEND=noninteractive; apt-get install -y -qq software-properties-common && add-apt-repository -y ppa:xtradeb/apps && apt-get update -qq && apt-get install -y -qq chromium" >/dev/null 2>&1 || true
+arker run --timeout 480000 "$VM" "export DEBIAN_FRONTEND=noninteractive; apt-get install -y -qq software-properties-common && add-apt-repository -y ppa:xtradeb/apps && apt-get update -qq && apt-get install -y -qq chromium" >/dev/null 2>&1 || true
 until arker run "$VM" "command -v chromium" >/dev/null 2>&1; do sleep 5; done
 
 # open <url> fullscreen on the VNC desktop (display :99)

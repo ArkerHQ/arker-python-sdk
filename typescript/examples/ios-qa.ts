@@ -95,7 +95,7 @@ async function waitForBackgroundRun(vm: VM, runId: string, timeout: number, labe
 }
 
 async function runAndWait(vm: VM, command: string, timeout: number, label: string): Promise<CompletedRunResult> {
-  const result: RunResult = await vm.run(command, { timeout });
+  const result: RunResult = await vm.run(command, { timeout: timeout * 1000 });
   return result.type === "completed" ? result : waitForBackgroundRun(vm, result.runId, timeout, label);
 }
 
