@@ -89,7 +89,8 @@ def test_fork_posts_directly_to_source_vm() -> None:
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "tunnels": [],
+            "network": {"reachable": False},
+            "resources": {},
         },
     )
 
@@ -127,7 +128,7 @@ def test_fork_infers_arker_org_for_macos_full_golden() -> None:
     assert body == {"source_vm_name": "macos-full", "source_org_id": "ArkerHQ", "disk": True}
 
 
-def test_fork_accepts_legacy_id_response() -> None:
+def test_fork_rejects_legacy_id_response() -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
@@ -135,10 +136,8 @@ def test_fork_accepts_legacy_id_response() -> None:
         {"id": "vm_child"},
     )
 
-    with use_transport(t):
-        vm = client().vm("ubuntu").fork()
-
-    assert vm.id == "vm_child"
+    with use_transport(t), pytest.raises(TypeError, match="outside openapi.json"):
+        client().vm("ubuntu").fork()
 
 
 def test_region_routes_goldens_to_main_endpoint() -> None:
@@ -153,7 +152,8 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "tunnels": [],
+            "network": {"reachable": False},
+            "resources": {},
         },
     )
 
@@ -171,13 +171,22 @@ def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
     t.add_json(
         lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/fork",
         200,
-        {"id": "legacy_child_without_suffix"},
+        {
+            "vm_id": "vmh-burst-child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {"reachable": False},
+            "resources": {},
+        },
     )
 
     with use_transport(t):
         vm = region_client().vm("arkuntu").fork()
 
-    assert vm.id == "legacy_child_without_suffix"
+    assert vm.id == "vmh-burst-child"
     assert vm.base_url == "https://aws-burst-us-west-2.arker.ai/api"
 
 
@@ -207,14 +216,14 @@ def test_list_uses_configured_base_url() -> None:
     # `Arker.list()` is an admin call — routed through the control
     # plane, not the compute URL.
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms",
+        lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=True&state=idle",
         200,
         {"vms": [{
             "vm_id": "vm_1",
-            "owner_org_id": "owner",
+            "owner_org_id": "ArkerHQ",
             "created_at": "now",
-            "public": False,
-            "state": "running",
+            "public": True,
+            "state": "idle",
             "sessions": [session()],
             "name": "demo",
             "network": {"reachable": False},
@@ -226,13 +235,19 @@ def test_list_uses_configured_base_url() -> None:
     )
 
     with use_transport(t):
-        result = client().list_vms()
+        result = client().list_vms(
+            region="us-west-2",
+            provider="aws",
+            org_id="ArkerHQ",
+            public=True,
+            state="idle",
+        )
 
     assert isinstance(result, sdk.VmList)
     assert len(result) == 1
     assert result.vms[0].id == "vm_1"
     assert result.vms[0].vm_id == "vm_1"
-    assert result.vms[0].owner_org_id == "owner"
+    assert result.vms[0].owner_org_id == "ArkerHQ"
     assert result.vms[0].max_vcpus == 8
     assert result.vms[0].max_memory_mib == 32768
     assert result.vms[0].min_memory_mib == 512
@@ -265,14 +280,10 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
                 "status": 200,
                 "total_ms": 12.5,
                 "queue_ms": 1.5,
-                "lambda_call_ms": 0,
-                "lambda_duration_ms": 0,
                 "executor_duration_ms": 10,
                 "executor_kind": "firecracker",
                 "executor_cpu_ms": 8,
                 "executor_mem_mb": 64,
-                "lambda_cpu_ms": 0,
-                "lambda_mem_mb": 0,
                 "vm_vcpus": 2,
                 "vm_memory_mib": 4096,
                 "path": "/v1/vms/vm_1/runs",
@@ -368,6 +379,7 @@ def test_resize_patches_vm_resources() -> None:
             "state": "idle",
             "sessions": [],
             "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
+            "network": {"reachable": False},
         },
     )
 
@@ -388,7 +400,6 @@ def test_background_run_response() -> None:
         {
             "run_id": "run_1",
             "state": "running",
-            "tunnels": [{"vm_id": "vm_1", "port": 8080, "visibility": "public", "protocol": "http", "state": "open"}],
         },
     )
 
@@ -398,35 +409,44 @@ def test_background_run_response() -> None:
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_1"
     assert result.state == "running"
-    assert not hasattr(result, "tunnels")
     assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "background": True}
 
 
-def test_flat_error_response_becomes_arker_error() -> None:
+def test_flat_error_response_is_rejected_as_malformed() -> None:
     t = FakeTransport()
     t.add_json(lambda _method, _url: True, 404, {"code": "not_found", "message": "missing"})
 
     with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
         client().vm("missing").delete()
 
-    assert caught.value.code == "not_found"
+    assert caught.value.code == "internal"
     assert caught.value.status == 404
 
 
-def test_legacy_nested_error_response_still_parses() -> None:
+def test_error_response_with_legacy_top_level_field_is_rejected() -> None:
     t = FakeTransport()
     t.add_json(lambda _method, _url: True, 404, {"ok": False, "error": {"code": "not_found", "message": "missing"}})
 
     with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
         client().vm("missing").delete()
 
-    assert caught.value.code == "not_found"
+    assert caught.value.code == "internal"
     assert caught.value.status == 404
 
 
-def test_nested_error_response_without_ok_still_parses() -> None:
+def test_canonical_error_response_parses() -> None:
     t = FakeTransport()
-    t.add_json(lambda _method, _url: True, 503, {"error": {"code": "unavailable", "message": "try later"}})
+    t.add_json(
+        lambda _method, _url: True,
+        503,
+        {
+            "error": {
+                "code": "unavailable",
+                "message": "try later",
+                "timestamp": "2026-07-21T00:00:00Z",
+            }
+        },
+    )
 
     with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
         client().vm("missing").delete()
@@ -555,7 +575,8 @@ def test_fork_sends_durable_flag() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "tunnels": [],
+            "network": {"reachable": False},
+            "resources": {},
         },
     )
 
@@ -604,7 +625,6 @@ def test_run_status_parses_retry_count() -> None:
             "exit_code": 0,
             "state": "completed",
             "started_at": "now",
-            "tunnels": [],
             "retry_count": 2,
         },
     )
@@ -629,7 +649,6 @@ def test_run_status_defaults_retry_count_when_missing() -> None:
             "exit_code": 0,
             "state": "completed",
             "started_at": "now",
-            "tunnels": [],
         },
     )
 

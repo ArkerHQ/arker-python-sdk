@@ -11,29 +11,55 @@ from typing import Any, Literal, TypeAlias
 class HealthResponse:
     status: str
     timestamp: str
+    role: Literal['router'] | None = None
+    worker_available: bool | None = None
+    release_id: str | None = None
+    version: str | None = None
 
 
 ErrorCode: TypeAlias = Literal[
     'unsupported_operation',
     'bad_request',
+    'validation_error',
     'unauthorized',
+    'invalid_api_key',
+    'api_key_required',
+    'csrf_rejected',
     'forbidden',
+    'legal_acceptance_required',
     'payment_required',
     'not_found',
     'conflict',
+    'method_not_allowed',
     'payload_too_large',
     'not_implemented',
     'resource_pressure',
     'internal',
     'unavailable',
+    'backend_unavailable',
+    'api_worker_unavailable',
+    'bad_gateway',
     'network_error',
+    'stale_route',
+    'unrecoverable',
 ]
 
 
 @dataclass(frozen=True)
-class ErrorResponse:
+class ErrorBody:
     code: ErrorCode
     message: str
+    timestamp: str
+    retry_after: int | None = None
+    operation: str | None = None
+    runtime: str | None = None
+    provider: str | None = None
+    retryable: bool | None = None
+
+
+@dataclass(frozen=True)
+class ErrorResponse:
+    error: ErrorBody
 
 
 VmState: TypeAlias = Literal['idle', 'running']
@@ -95,6 +121,11 @@ class PolicyMatch:
 
 
 @dataclass(frozen=True)
+class ScalingAction:
+    suspend: bool | None = False
+
+
+@dataclass(frozen=True)
 class Rewrite:
     host: str | None = None
     path: str | None = None
@@ -127,7 +158,7 @@ class Session:
     vm_name: str | None = None
     source_org_id: str | None = None
     region: str | None = None
-    provider: Literal['aws'] | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +175,19 @@ class DeleteVmResponse:
 @dataclass(frozen=True)
 class DeleteSessionResponse:
     deleted: bool
+
+
+@dataclass(frozen=True)
+class PatchSessionRequest:
+    cols: int | None = None
+    rows: int | None = None
+    timeout_secs: int | None = None
+
+
+@dataclass(frozen=True)
+class PatchSessionResponse:
+    ok: bool
+    session_id: str
 
 
 @dataclass(frozen=True)
@@ -192,7 +236,7 @@ class Run:
     vm_name: str | None = None
     source_org_id: str | None = None
     region: str | None = None
-    provider: Literal['aws'] | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
 
 
 @dataclass(frozen=True)
@@ -209,7 +253,7 @@ class RunSummary:
     vm_name: str | None = None
     source_org_id: str | None = None
     region: str | None = None
-    provider: Literal['aws'] | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
 
 
 @dataclass(frozen=True)
@@ -277,6 +321,16 @@ class CancelRunResponse:
 class CreateSessionRequest:
     env: dict[str, str] | None = None
     cwd: str | None = None
+    pty: bool | None = None
+    cols: int | None = None
+    rows: int | None = None
+    command: str | None = None
+
+
+@dataclass(frozen=True)
+class PtyTicketResponse:
+    ticket: str
+    expires_in: int
 
 
 @dataclass(frozen=True)
@@ -385,7 +439,7 @@ class Filesystem:
     created_at: str
     size_bytes: int | None = None
     region: str | None = 'us-west-2'
-    provider: Literal['aws'] | None = 'aws'
+    provider: Literal['aws', 'gcp', 'azure'] | None = 'aws'
 
 
 @dataclass(frozen=True)
@@ -443,10 +497,10 @@ class ListVmsParameters:
     cursor: str | None = None
     limit: int | None = None
     region: str | None = None
-    provider: Literal['aws'] | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    org_id: str | None = None
+    public: bool | None = None
     state: VmState | None = None
-    started_after: str | None = None
-    started_before: str | None = None
 
 
 @dataclass(frozen=True)
@@ -456,7 +510,7 @@ class ListOrgRunsParameters:
     vm: str | None = None
     vms: str | None = None
     region: str | None = None
-    provider: Literal['aws'] | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
     search: str | None = None
     limit: int | None = None
     offset: int | None = None
@@ -553,19 +607,6 @@ class PatchSessionParameters:
 
 
 @dataclass(frozen=True)
-class PatchSessionRequest:
-    cols: int | None = None
-    rows: int | None = None
-    timeout_secs: int | None = None
-
-
-@dataclass(frozen=True)
-class PatchSessionResponse:
-    ok: bool | None = None
-    session_id: str | None = None
-
-
-@dataclass(frozen=True)
 class DeleteSessionParameters:
     id: str
     sid: str
@@ -586,12 +627,6 @@ class AttachSessionPtyParameters:
 class MintSessionPtyTicketParameters:
     id: str
     sid: str
-
-
-@dataclass(frozen=True)
-class MintSessionPtyTicketResponse:
-    ticket: str
-    expires_in: int
 
 
 @dataclass(frozen=True)
@@ -641,7 +676,12 @@ class PolicyAction1:
     gate: Gate | None = None
 
 
-PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1
+@dataclass(frozen=True)
+class PolicyAction2:
+    scaling: ScalingAction
+
+
+PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1 | PolicyAction2
 
 
 @dataclass(frozen=True)
@@ -729,8 +769,14 @@ class Vm:
     root_source_vm_id: str | None = None
     root_source_vm_name: str | None = None
     region: str | None = None
-    provider: Literal['aws'] | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
     started_at: str | None = None
+    vcpu_count: int | None = None
+    memory_mib: int | None = None
+    disk_mib: int | None = None
+    egress: NetworkPolicy | None = None
+    base_image: str | None = None
+    source_golden: str | None = None
     max_vcpus: int | None = None
     min_vcpus: int | None = None
     max_memory_mib: int | None = None
@@ -766,12 +812,12 @@ class SyncWriteOperationRequest:
     writes: list[SyncWriteEntry]
 
 
+SyncRequest: TypeAlias = SyncReadOperationRequest | SyncWriteOperationRequest
+
+
 SyncWriteResult: TypeAlias = (
     SyncChunkWriteResult | SyncPresignedWriteRequestResult | SyncCommitWriteResult
 )
-
-
-SyncRequest: TypeAlias = SyncReadOperationRequest | SyncWriteOperationRequest
 
 
 @dataclass(frozen=True)
@@ -1018,7 +1064,7 @@ class CreateSessionOperation(TypedDict):
     method: Literal['POST']
     path: Literal['/v1/vms/{id}/sessions']
     parameters: CreateSessionParameters
-    request: CreateSessionRequest | None
+    request: CreateSessionRequest
     success: Session
     errors: ErrorResponse
 
@@ -1069,7 +1115,7 @@ class MintSessionPtyTicketOperation(TypedDict):
     path: Literal['/v1/vms/{id}/sessions/{sid}/pty-ticket']
     parameters: MintSessionPtyTicketParameters
     request: None
-    success: MintSessionPtyTicketResponse
+    success: PtyTicketResponse
     errors: ErrorResponse
 
 
@@ -1078,8 +1124,8 @@ class SyncOperation(TypedDict):
     method: Literal['POST']
     path: Literal['/v1/vms/{id}/sync']
     parameters: SyncParameters
-    request: SyncReadOperationRequest | SyncWriteOperationRequest
-    success: SyncReadResponse | SyncWriteResponse
+    request: SyncRequest
+    success: SyncResponse
     errors: ErrorResponse
 
 

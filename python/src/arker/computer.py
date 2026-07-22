@@ -30,6 +30,7 @@ from .generated.api_models import (
     DeleteSessionResponse,
     DeleteSyncResponse,
     DeleteVmResponse,
+    ErrorResponse,
     Filesystem,
     FilesystemCreateRequest,
     ForkRequest,
@@ -45,7 +46,6 @@ from .generated.api_models import (
     ListSyncsParameters,
     ListVmsResponse,
     ListVmsParameters,
-    MintSessionPtyTicketResponse,
     NetworkInput,
     NetworkPolicyInput,
     NetworkRequest,
@@ -54,6 +54,7 @@ from .generated.api_models import (
     PatchSessionResponse,
     PatchVmRequest,
     PolicyDoc,
+    PtyTicketResponse,
     PutPoliciesResponse,
     Run,
     RunRequest,
@@ -96,7 +97,14 @@ DEFAULT_RETRY_MAX_DELAY_S = 2.0
 DEFAULT_RETRY_JITTER_S = 0.05
 PRESIGNED_PUT_TIMEOUT_S = 600
 RETRYABLE_HTTP = {429, 502, 503, 504}
-RETRYABLE_CODES = {"routing_unavailable", "unavailable", "temporarily_unavailable"}
+RETRYABLE_CODES = {
+    "unavailable",
+    "backend_unavailable",
+    "api_worker_unavailable",
+    "bad_gateway",
+    "network_error",
+    "stale_route",
+}
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_REGION_ENV = "ARKER_REGION"
@@ -367,9 +375,9 @@ class Arker:
         limit: int | None = None,
         region: str | None = None,
         provider: str | None = None,
+        org_id: str | None = None,
+        public: bool | None = None,
         state: str | None = None,
-        started_after: str | None = None,
-        started_before: str | None = None,
     ) -> VmList:
         """Admin call — goes through the control plane so it can
         aggregate across providers and regions.
@@ -379,9 +387,9 @@ class Arker:
             limit=limit,
             region=region,
             provider=provider,
+            org_id=org_id,
+            public=public,
             state=state,
-            started_after=started_after,
-            started_before=started_before,
         )
         path = _build_query("/v1/vms", parameters)
         payload = self._request("GET", path, base_url=self._control_base_url)
@@ -945,7 +953,7 @@ class VM:
                 {},
                 base_url=self.base_url,
             )
-            response = _decode_model(MintSessionPtyTicketResponse, payload)
+            response = _decode_model(PtyTicketResponse, payload)
             ticket = response.ticket
         else:
             # Header auth (server-side use): Bearer key on the WS upgrade.
@@ -1281,10 +1289,17 @@ def _drop_none(value: Any) -> Any:
 
 
 def _decode_model(model: type[Model], payload: dict[str, Any]) -> Model:
+    fields = dataclasses.fields(model)
+    field_names = {field.name for field in fields}
+    unknown = sorted(set(payload) - field_names)
+    if unknown:
+        raise TypeError(
+            f"{model.__name__} contains fields outside openapi.json: {', '.join(unknown)}"
+        )
     hints = get_type_hints(model)
     values = {
         field.name: _decode_value(hints[field.name], payload[field.name])
-        for field in dataclasses.fields(model)
+        for field in fields
         if field.name in payload
     }
     return model(**values)
@@ -1342,18 +1357,11 @@ def _parse_json(text: str) -> Any:
 def _extract_error(payload: Any) -> dict[str, str] | None:
     if not isinstance(payload, dict):
         return None
-
-    if isinstance(payload.get("code"), str) and isinstance(payload.get("message"), str):
-        return {"code": payload["code"], "message": payload["message"]}
-
-    nested = payload.get("error")
-    if isinstance(nested, dict):
-        return {
-            "code": str(nested.get("code", "internal")),
-            "message": str(nested.get("message", "")),
-        }
-
-    return None
+    try:
+        response = _decode_model(ErrorResponse, payload)
+    except (KeyError, TypeError):
+        return None
+    return {"code": response.error.code, "message": response.error.message}
 
 
 def _is_retryable(status: int, error: dict[str, str] | None) -> bool:
@@ -1402,23 +1410,7 @@ def _sync(payload: dict[str, Any]) -> Sync:
 
 
 def _vm_info(payload: dict[str, Any]) -> Vm:
-    normalized = dict(payload)
-    normalized["vm_id"] = payload.get("vm_id") or payload.get("id") or ""
-    normalized.setdefault("owner_org_id", "")
-    normalized.setdefault("created_at", "")
-    normalized.setdefault("public", False)
-    normalized.setdefault("state", "idle")
-    normalized.setdefault("sessions", [])
-    normalized.setdefault("network", {"reachable": False})
-    normalized.setdefault(
-        "resources",
-        {
-            "vcpu": payload.get("vcpu_count"),
-            "memory_mib": payload.get("memory_mib"),
-            "disk_mib": payload.get("disk_mib"),
-        },
-    )
-    return _decode_model(Vm, normalized)
+    return _decode_model(Vm, payload)
 
 
 def _run_response(payload: dict[str, Any]) -> RunResult:
