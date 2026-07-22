@@ -121,15 +121,15 @@ def test_generation_is_deterministic_for_both_languages() -> None:
         }
         assert (
             annotations(python, "CreateSessionOperation")["request"]
-            == "CreateSessionRequest | None"
+            == "CreateSessionRequest"
         )
         assert (
             annotations(python, "SyncOperation")["request"]
-            == "SyncReadOperationRequest | SyncWriteOperationRequest"
+            == "SyncRequest"
         )
         assert (
             annotations(python, "SyncOperation")["success"]
-            == "SyncReadResponse | SyncWriteResponse"
+            == "SyncResponse"
         )
 
 

@@ -158,12 +158,18 @@ async function testNestedErrorWithoutOkStillParses(): Promise<void> {
   fetch.addJson(
     (method, url) => method === "DELETE" && url === "https://test.invalid/api/v1/vms/missing",
     503,
-    { error: { code: "routing_unavailable", message: "try later" } },
+    {
+      error: {
+        code: "unavailable",
+        message: "try later",
+        timestamp: "2026-07-21T00:00:00Z",
+      },
+    },
   );
 
   await assert.rejects(
     client(fetch).vm("missing").delete(),
-    (error) => error instanceof ArkerError && error.code === "routing_unavailable" && error.status === 503,
+    (error) => error instanceof ArkerError && error.code === "unavailable" && error.status === 503,
   );
 }
 
@@ -355,15 +361,15 @@ async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
 async function testListVmsPreservesForkLimitFields(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws",
+    (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=true&state=idle",
     200,
     {
       vms: [{
         vm_id: "vm_1",
-        owner_org_id: "owner",
+        owner_org_id: "ArkerHQ",
         created_at: "now",
-        public: false,
-        state: "running",
+        public: true,
+        state: "idle",
         sessions: [],
         tunnels: [],
         network: { type: "open" },
@@ -374,7 +380,13 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
     },
   );
 
-  const result = await client(fetch).listVms({ region: "us-west-2", provider: "aws" });
+  const result = await client(fetch).listVms({
+    region: "us-west-2",
+    provider: "aws",
+    org_id: "ArkerHQ",
+    public: true,
+    state: "idle",
+  });
 
   assert.equal(result.vms[0]!.max_vcpus, 8);
   assert.equal(result.vms[0]!.max_memory_mib, 32768);

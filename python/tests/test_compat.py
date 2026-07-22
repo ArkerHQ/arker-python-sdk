@@ -58,7 +58,8 @@ def vm_payload(vm_id: str) -> dict[str, Any]:
         "public": False,
         "state": "idle",
         "sessions": [],
-        "tunnels": [],
+        "network": {"reachable": False},
+        "resources": {},
     }
 
 
@@ -82,7 +83,13 @@ def add_arker_not_found(t: FakeTransport, vm_id: str) -> None:
     t.add_json(
         lambda method, url: method == "GET" and url == f"https://test.invalid/api/v1/vms/{vm_id}",
         404,
-        {"code": "not_found", "message": "not found"},
+        {
+            "error": {
+                "code": "not_found",
+                "message": "not found",
+                "timestamp": "2026-07-21T00:00:00Z",
+            }
+        },
     )
 
 

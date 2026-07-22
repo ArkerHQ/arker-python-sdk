@@ -41,7 +41,14 @@ const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
 const DEFAULT_RETRY_JITTER_MS = 50;
 const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
-const RETRYABLE_CODES = new Set(["routing_unavailable", "unavailable", "temporarily_unavailable"]);
+const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
+  "unavailable",
+  "backend_unavailable",
+  "api_worker_unavailable",
+  "bad_gateway",
+  "network_error",
+  "stale_route",
+]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
@@ -154,6 +161,7 @@ export type SyncChunkWriteResult = ApiSchema<"SyncChunkWriteResult">;
 export type SyncPresignedWriteRequestResult = ApiSchema<"SyncPresignedWriteRequestResult">;
 export type SyncCommitWriteResult = ApiSchema<"SyncCommitWriteResult">;
 export type SyncByteRange = ApiSchema<"SyncByteRange">;
+export type SyncEntryError = ApiSchema<"SyncEntryError">;
 
 // ── Runs ───────────────────────────────────────────────────────────
 export type RunRequest = ApiSchema<"RunRequest">;
@@ -180,13 +188,11 @@ export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
 // ── Sessions ───────────────────────────────────────────────────────
 export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
-export type PatchSessionRequest = NonNullable<
-  operations["patchSession"]["requestBody"]
->["content"]["application/json"];
-export type PatchSessionResponse =
-  operations["patchSession"]["responses"][200]["content"]["application/json"];
-export type MintSessionPtyTicketResponse =
-  operations["mintSessionPtyTicket"]["responses"][200]["content"]["application/json"];
+export type PatchSessionRequest = ApiSchema<"PatchSessionRequest">;
+export type PatchSessionResponse = ApiSchema<"PatchSessionResponse">;
+export type PtyTicketResponse = ApiSchema<"PtyTicketResponse">;
+/** @deprecated Use `PtyTicketResponse`. */
+export type MintSessionPtyTicketResponse = PtyTicketResponse;
 
 // ── Operation query parameters ─────────────────────────────────────
 export type ListVmsParameters = ApiQuery<"listVms">;
@@ -257,13 +263,7 @@ export type ListOrgRunsOptions = Omit<
   statusMax?: ListOrgRunsParameters["status_max"];
 };
 
-export type ListVmsOptions = Omit<
-  ListVmsParameters,
-  "started_after" | "started_before"
-> & {
-  startedAfter?: ListVmsParameters["started_after"];
-  startedBefore?: ListVmsParameters["started_before"];
-};
+export type ListVmsOptions = ListVmsParameters;
 
 export type ListFilesystemsOptions = Omit<ListFilesystemsParameters, "name_prefix"> & {
   namePrefix?: ListFilesystemsParameters["name_prefix"];
@@ -527,7 +527,7 @@ export class Arker {
       isBurstRef(src.sourceVmName);
     const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
-    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
     return new VM(this, vmId, baseUrl, vm);
   }
@@ -539,18 +539,10 @@ export class Arker {
    * `?region=` to narrow.
    */
   async listVms(opts: ListVmsOptions = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
-    const query: ListVmsParameters = {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      region: opts.region,
-      provider: opts.provider,
-      state: opts.state,
-      started_after: opts.startedAfter,
-      started_before: opts.startedBefore,
-    };
+    const query: ListVmsParameters = opts;
     const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", query), undefined, this.controlBaseUrl);
     const vms = (resp.vms ?? []).map((v) => {
-      const id = v.vm_id ?? (v as { id?: string }).id ?? "";
+      const id = v.vm_id;
       return new VM(this, id, this._baseUrlFor(id), v);
     });
     return { vms, nextCursor: resp.next_cursor ?? null };
@@ -768,7 +760,7 @@ export class VM {
       disk: request.disk ?? true,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
-    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    const vmId = vm.vm_id;
     // The child is forked on the same compute host as the source, so it lives
     // on the same base URL (this.baseUrl) — not whatever the id alone implies.
     return new VM(this._client, vmId, this.baseUrl, vm);
@@ -874,7 +866,7 @@ export class VM {
   }
 
   private async sendOneWrite(entry: SyncWriteEntry): Promise<SyncWriteResult> {
-    let lastError: ErrorResponse | undefined;
+    let lastError: SyncEntryError | undefined;
     const attempts = this._client._retryAttempts();
     for (let attempt = 0; attempt < attempts; attempt++) {
       const request: SyncWriteOperationRequest = {
@@ -886,8 +878,8 @@ export class VM {
       if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
       const error = result.error ?? undefined;
       if (!error) return result;
-      lastError = error as ErrorResponse;
-      if (!isRetryable(200, { code: error.code as string, message: error.message }) || attempt === attempts - 1) break;
+      lastError = error;
+      if (!isRetryable(200, error) || attempt === attempts - 1) break;
       await sleep(this._client._retryDelay(attempt));
     }
     throw new ArkerError(lastError?.code ?? "internal", lastError?.message ?? "write failed", 200);
@@ -1101,9 +1093,7 @@ function buildPtyWebSocketUrl(
 }
 
 function sessionIdFrom(session: Session): string {
-  const id = session.session_id ?? (session as { id?: string }).id;
-  if (!id) throw new ArkerError("internal", "createSession response missing session_id", 200);
-  return id;
+  return session.session_id;
 }
 
 function isNodeRuntime(): boolean {
@@ -1408,14 +1398,15 @@ function parseJson(text: string): unknown {
 
 function extractError(payload: unknown): ParsedError | undefined {
   if (!isObject(payload)) return undefined;
-  if (typeof payload.code === "string" && typeof payload.message === "string") {
-    return { code: payload.code, message: payload.message };
-  }
-  if (isObject(payload.error)) {
-    return {
-      code: typeof payload.error.code === "string" ? payload.error.code : "internal",
-      message: typeof payload.error.message === "string" ? payload.error.message : "",
-    };
+  if (Object.keys(payload).length === 1 && isObject(payload.error)) {
+    const error: Partial<ErrorResponse["error"]> = payload.error;
+    if (
+      typeof error.code === "string" &&
+      typeof error.message === "string" &&
+      typeof error.timestamp === "string"
+    ) {
+      return { code: error.code, message: error.message };
+    }
   }
   return undefined;
 }
@@ -1423,7 +1414,7 @@ function extractError(payload: unknown): ParsedError | undefined {
 function isRetryable(status: number, error?: ParsedError): boolean {
   if (RETRYABLE_HTTP.has(status)) return true;
   if (!error) return false;
-  if (RETRYABLE_CODES.has(error.code)) return true;
+  if (RETRYABLE_CODES.has(error.code as ErrorCode)) return true;
   if (error.code !== "internal") return false;
   return TRANSIENT_HINTS.some((hint) => error.message.includes(hint));
 }
