@@ -1824,9 +1824,33 @@
                 "$ref": "#/components/schemas/Gate"
               }
             }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scaling"
+            ],
+            "properties": {
+              "scaling": {
+                "$ref": "#/components/schemas/ScalingAction"
+              }
+            }
           }
         ],
-        "description": "allow / deny, or a mutating object `{ rewrite?, gate? }`. A mutating action needs the MITM data-path (terminate TLS to rewrite headers / read the body / gate the request)."
+        "description": "allow / deny, a mutating object `{ rewrite?, gate? }`, or `{ scaling: { suspend? } }`. Mutating and scaling actions need the MITM data-path."
+      },
+      "ScalingAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Auto-scaling behavior for matched outbound traffic. The object is extensible with future scaling controls.",
+        "properties": {
+          "suspend": {
+            "type": "boolean",
+            "default": false,
+            "description": "Suspend the VM while a matched upstream request is blocked, then resume it when the response arrives."
+          }
+        }
       },
       "Rewrite": {
         "type": "object",

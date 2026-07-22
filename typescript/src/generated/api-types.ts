@@ -481,10 +481,20 @@ export interface components {
             };
             body_contains?: string[];
         };
-        /** @description allow / deny, or a mutating object `{ rewrite?, gate? }`. A mutating action needs the MITM data-path (terminate TLS to rewrite headers / read the body / gate the request). */
+        /** @description allow / deny, a mutating object `{ rewrite?, gate? }`, or `{ scaling: { suspend? } }`. Mutating and scaling actions need the MITM data-path. */
         PolicyAction: ("allow" | "deny") | {
             rewrite?: components["schemas"]["Rewrite"];
             gate?: components["schemas"]["Gate"];
+        } | {
+            scaling: components["schemas"]["ScalingAction"];
+        };
+        /** @description Auto-scaling behavior for matched outbound traffic. The object is extensible with future scaling controls. */
+        ScalingAction: {
+            /**
+             * @description Suspend the VM while a matched upstream request is blocked, then resume it when the response arrives.
+             * @default false
+             */
+            suspend?: boolean;
         };
         /** @description Mutate-and-forward. Host/path/header/body values support request-time `$`-token interpolation: `$domain`, `$path`, `$method`, `$vm_id`, `$body` (the request body as received, also `${…}`-braced), and `$$` for a literal `$`. Unknown/unresolved tokens pass through unchanged. */
         Rewrite: {

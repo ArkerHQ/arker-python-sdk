@@ -121,6 +121,11 @@ class PolicyMatch:
 
 
 @dataclass(frozen=True)
+class ScalingAction:
+    suspend: bool | None = False
+
+
+@dataclass(frozen=True)
 class Rewrite:
     host: str | None = None
     path: str | None = None
@@ -671,7 +676,12 @@ class PolicyAction1:
     gate: Gate | None = None
 
 
-PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1
+@dataclass(frozen=True)
+class PolicyAction2:
+    scaling: ScalingAction
+
+
+PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1 | PolicyAction2
 
 
 @dataclass(frozen=True)
