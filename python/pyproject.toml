@@ -24,7 +24,10 @@ classifiers = [
 ]
 # httpx is the HTTP backend; the http2 extra pulls in `h2` so requests negotiate
 # HTTP/2 (falling back to HTTP/1.1 per host via ALPN).
-dependencies = ["httpx[http2]>=0.27"]
+dependencies = [
+    "httpx[http2]>=0.27",
+    "typing-extensions>=4.12",
+]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
@@ -45,3 +48,8 @@ testpaths = ["tests"]
 # `test_e2e.py` and `test_presigned.py` hit a live deployment; skip
 # unless ARKER_API_KEY is set in the environment.
 addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "datamodel-code-generator==0.45.0",
+]

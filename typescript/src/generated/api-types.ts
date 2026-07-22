@@ -435,7 +435,7 @@ export interface components {
              */
             auth?: "open" | "authenticated";
         };
-        /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field needs the MITM proxy (not built yet); until it ships an L7 rule degrades to its host/L4 projection — allow → host-allow, deny/rewrite → fail-closed deny. */
+        /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field is enforced at the request layer by the managed MITM proxy; where the proxy is not active for a VM the rule degrades to its host/L4 projection — allow → host-allow, deny/rewrite → fail-closed deny. */
         PolicyMatch: {
             /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. */
             ports?: (number | number[])[];
@@ -494,15 +494,15 @@ export interface components {
         PutPoliciesResponse: {
             /** @description The stored policy document — read its rules as `policy.policies`. */
             policy: components["schemas"]["PolicyDoc"];
-            /** @description Domains the policy would escalate to MITM once the data-path ships. */
+            /** @description Domains the policy escalates to the MITM proxy. */
             mitm_domains?: string[];
-            /** @description Non-fatal notes (e.g. L7/rewrite rules degraded until the MITM data-path ships). */
+            /** @description Non-fatal notes (e.g. rules degraded where the MITM data path is not active). */
             warnings?: string[];
         };
         ForkRequest: {
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
-            /** @description VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org (for the public goldens `arkuntu` / `ubuntu`) or one with a `public: true` VM by that name. */
+            /** @description VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org (for public goldens such as `ubuntu`) or one with a `public: true` VM by that name. */
             source_vm_name?: string | null;
             /** @description Optional explicit org context for `source_vm_name`. SDK auto-fills the Arker org when forking the public goldens. */
             source_org_id?: string | null;
@@ -539,7 +539,7 @@ export interface components {
             source_org_id?: string | null;
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | "aws-burst" | null;
+            provider?: "aws" | null;
         };
         ListSessionsResponse: {
             sessions: components["schemas"]["Session"][];
@@ -561,7 +561,7 @@ export interface components {
             state: components["schemas"]["VmState"];
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | "aws-burst" | null;
+            provider?: "aws" | null;
             started_at?: string | null;
             /** @description Inbound reachability settings for this VM. */
             network: components["schemas"]["VmNetwork"];
@@ -688,7 +688,7 @@ export interface components {
             source_org_id?: string | null;
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | "aws-burst" | null;
+            provider?: "aws" | null;
         };
         RunSummary: {
             run_id: string;
@@ -705,7 +705,7 @@ export interface components {
             source_org_id?: string | null;
             region?: string | null;
             /** @enum {string|null} */
-            provider?: "aws" | "aws-burst" | null;
+            provider?: "aws" | null;
         };
         ListRunsResponse: {
             runs: components["schemas"]["RunSummary"][];
@@ -713,7 +713,7 @@ export interface components {
         };
         OrgRunListRow: {
             /** @enum {string} */
-            source: "cf" | "arkerd";
+            source: "arkerd";
             t_ms: number;
             request_id: string;
             run_id: string;
@@ -723,14 +723,10 @@ export interface components {
             status: number;
             total_ms: number;
             queue_ms: number;
-            lambda_call_ms: number;
-            lambda_duration_ms: number;
             executor_duration_ms: number;
             executor_kind: string;
             executor_cpu_ms: number;
             executor_mem_mb: number;
-            lambda_cpu_ms: number;
-            lambda_mem_mb: number;
             vm_vcpus: number;
             vm_memory_mib: number;
             path: string;
@@ -892,7 +888,7 @@ export interface components {
              * @default aws
              * @enum {string|null}
              */
-            provider?: "aws" | "aws-burst" | null;
+            provider?: "aws" | null;
         };
         ListFilesystemsResponse: {
             filesystems: components["schemas"]["Filesystem"][];
@@ -1059,8 +1055,8 @@ export interface operations {
                 limit?: components["parameters"]["Limit"];
                 /** @description Narrow to a single backend region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region. */
                 region?: string;
-                /** @description Narrow to a single backend provider. `aws` returns only arkerd-managed (host-backed) VMs; `aws-burst` returns only Lambda-managed VMs. When omitted, both are returned merged. */
-                provider?: "aws" | "aws-burst";
+                /** @description Narrow results to a cloud provider. */
+                provider?: "aws";
                 /** @description Filter by VM lifecycle state. */
                 state?: components["schemas"]["VmState"];
                 /** @description ISO 8601 timestamp; include only VMs that most recently started at or after this time. */
@@ -1099,10 +1095,8 @@ export interface operations {
                 vms?: string;
                 /** @description Backend region filter. */
                 region?: string;
-                /** @description Provider filter. `aws` maps to host-backed runs; `aws-burst` maps to Lambda-backed runs. */
-                provider?: "aws" | "aws-burst";
-                /** @description Raw run metrics source filter. */
-                source?: "cf" | "arkerd";
+                /** @description Cloud provider filter. */
+                provider?: "aws";
                 /** @description Free-text search across run metadata. */
                 search?: string;
                 /** @description Maximum number of rows to return. */

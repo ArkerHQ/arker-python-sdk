@@ -1,0 +1,213 @@
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MANAGED_PATHS = (
+    Path("contract/openapi.json"),
+    Path("contract/source.json"),
+    Path("typescript/src/generated/api-types.ts"),
+    Path("python/src/arker/generated/api_models.py"),
+)
+
+
+def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        cwd=REPO_ROOT,
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def source_metadata() -> dict[str, str]:
+    return json.loads((REPO_ROOT / "contract/source.json").read_text())
+
+
+def annotations(source: str, class_name: str) -> dict[str, str]:
+    module = ast.parse(source)
+    class_node = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    return {
+        node.target.id: ast.unparse(node.annotation)
+        for node in class_node.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+
+
+def test_source_metadata_matches_contract() -> None:
+    metadata = source_metadata()
+    contract = (REPO_ROOT / "contract/openapi.json").read_bytes()
+
+    assert metadata == {
+        "repository": "ArkerHQ/arker-app",
+        "ref": "main",
+        "commit": metadata["commit"],
+        "sha256": hashlib.sha256(contract).hexdigest(),
+    }
+    assert len(metadata["commit"]) == 40
+    assert all(character in "0123456789abcdef" for character in metadata["commit"])
+
+
+def test_generation_is_deterministic_for_both_languages() -> None:
+    with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+        for output in (first, second):
+            run(
+                "./scripts/generate-openapi",
+                "--contract",
+                "contract/openapi.json",
+                "--output-root",
+                output,
+            )
+
+        for relative_path in MANAGED_PATHS[2:]:
+            first_bytes = (Path(first) / relative_path).read_bytes()
+            second_bytes = (Path(second) / relative_path).read_bytes()
+            assert first_bytes == second_bytes
+
+        typescript = (Path(first) / MANAGED_PATHS[2]).read_text()
+        python = (Path(first) / MANAGED_PATHS[3]).read_text()
+        assert "export interface operations" in typescript
+        assert "class ForkRequest" in python
+        assert "class ListVmsParameters" in python
+
+        operation_ids = {
+            operation["operationId"]
+            for path_item in json.loads(
+                (REPO_ROOT / "contract/openapi.json").read_text()
+            )["paths"].values()
+            for method, operation in path_item.items()
+            if method != "parameters"
+        }
+        operation_classes = {
+            node.name.removesuffix("Operation")
+            for node in ast.parse(python).body
+            if isinstance(node, ast.ClassDef) and node.name.endswith("Operation")
+        }
+        assert operation_classes == {
+            operation_id[0].upper() + operation_id[1:] for operation_id in operation_ids
+        }
+
+        assert annotations(python, "ForkOperation") == {
+            "operation_id": "Literal['fork']",
+            "method": "Literal['POST']",
+            "path": "Literal['/v1/fork']",
+            "parameters": "None",
+            "request": "ForkRequest",
+            "success": "Vm",
+            "errors": "ErrorResponse",
+        }
+        assert annotations(python, "PatchSessionOperation") == {
+            "operation_id": "Literal['patchSession']",
+            "method": "Literal['PATCH']",
+            "path": "Literal['/v1/vms/{id}/sessions/{sid}']",
+            "parameters": "PatchSessionParameters",
+            "request": "PatchSessionRequest | None",
+            "success": "PatchSessionResponse",
+            "errors": "ErrorResponse",
+        }
+        assert (
+            annotations(python, "CreateSessionOperation")["request"]
+            == "CreateSessionRequest | None"
+        )
+        assert (
+            annotations(python, "SyncOperation")["request"]
+            == "SyncReadRequest | SyncWriteRequest"
+        )
+        assert (
+            annotations(python, "SyncOperation")["success"]
+            == "SyncReadResponse | SyncWriteResponse"
+        )
+
+
+def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
+    with tempfile.TemporaryDirectory() as output_directory:
+        run(
+            "./scripts/sync-openapi",
+            "--source-file",
+            "contract/openapi.json",
+            "--source-commit",
+            source_metadata()["commit"],
+            "--output-root",
+            output_directory,
+        )
+
+        for relative_path in MANAGED_PATHS:
+            assert (Path(output_directory) / relative_path).read_bytes() == (
+                REPO_ROOT / relative_path
+            ).read_bytes()
+
+
+def test_check_detects_generated_drift() -> None:
+    metadata = source_metadata()
+    with tempfile.TemporaryDirectory() as candidate_directory:
+        candidate = Path(candidate_directory)
+        for relative_path in MANAGED_PATHS:
+            destination = candidate / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO_ROOT / relative_path, destination)
+
+        run(
+            "./scripts/check-openapi",
+            "--candidate-root",
+            str(candidate),
+        )
+
+        generated_python = candidate / MANAGED_PATHS[3]
+        generated_python.write_text(generated_python.read_text() + "# drift\n")
+        result = run(
+            "./scripts/check-openapi",
+            "--candidate-root",
+            str(candidate),
+            check=False,
+        )
+        assert result.returncode == 1
+        assert str(MANAGED_PATHS[3]) in result.stderr
+        assert metadata["commit"] in (candidate / MANAGED_PATHS[1]).read_text()
+
+
+def test_pull_request_ci_checks_all_generated_surfaces() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+
+    assert "pull_request:" in workflow
+    assert "pull_request_target:" not in workflow
+    assert "run: ./scripts/check-openapi" in workflow
+    assert "python tests/test_openapi_enforcement.py" in workflow
+    assert "bun run check:api-types" in workflow
+    assert "python -m pytest" in workflow
+    assert "bun run test" in workflow
+
+
+def test_contract_ci_requires_no_cross_repository_credentials() -> None:
+    workflows = "\n".join(
+        path.read_text() for path in (REPO_ROOT / ".github/workflows").glob("*.yml")
+    )
+
+    assert not (REPO_ROOT / ".github/workflows/openapi-contract.yml").exists()
+    assert "ARKER_CONTRACT_APP_ID" not in workflows
+    assert "ARKER_CONTRACT_APP_PRIVATE_KEY" not in workflows
+
+
+if __name__ == "__main__":
+    tests = (
+        test_source_metadata_matches_contract,
+        test_generation_is_deterministic_for_both_languages,
+        test_sync_from_local_contract_regenerates_all_managed_files,
+        test_check_detects_generated_drift,
+        test_pull_request_ci_checks_all_generated_surfaces,
+        test_contract_ci_requires_no_cross_repository_credentials,
+    )
+    for test in tests:
+        test()
+    print("PASS openapi enforcement")
