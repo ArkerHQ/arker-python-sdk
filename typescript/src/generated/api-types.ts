@@ -597,9 +597,9 @@ export interface components {
             command: string;
             /** @default false */
             background?: boolean;
-            /** @description Execution/kill bound in ms: max wall-clock time the command runs before the host kills it. Null (default) applies ARKER_DEFAULT_RUN_TIMEOUT_MS (3600000 = 1h). 0 = explicit unbounded (no kill). Separate from the HTTP sync window — see time_to_background. */
+            /** @description Execution/kill bound in seconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background. */
             timeout?: number | null;
-            /** @description Sync window in ms: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Null (default) = 30000. Does NOT bound command runtime — that is timeout. */
+            /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout. */
             time_to_background?: number | null;
             /** @default auto */
             end_symbol?: string | null;
@@ -646,13 +646,16 @@ export interface components {
             state?: string;
             stdout: string;
             /**
-             * @description TODO(encoding-normalize): goal is to always emit utf-8 from
-             *     every source so this field becomes unnecessary. Until then
-             *     the SDK uses it to decode.
+             * @description Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
+             * @enum {string}
              */
-            stdout_encoding: string;
+            stdout_encoding: "utf-8" | "base64";
             stderr: string;
-            stderr_encoding: string;
+            /**
+             * @description Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
+             * @enum {string}
+             */
+            stderr_encoding: "utf-8" | "base64";
             exit_code: number;
             dispatch?: string | null;
             /** @description ARK-107: requested total memory (MiB) when this run carried an explicit memory override. Absent when the run had no memory override. */
@@ -678,9 +681,17 @@ export interface components {
             /** @description System failure explanation when `state` is `failed` (e.g. "host died:&nbsp;<id>", "evicted mid-run"). Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion. */
             fail_reason?: string | null;
             stdout: string;
-            stdout_encoding: string;
+            /**
+             * @description Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
+             * @enum {string}
+             */
+            stdout_encoding: "utf-8" | "base64";
             stderr: string;
-            stderr_encoding: string;
+            /**
+             * @description Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
+             * @enum {string}
+             */
+            stderr_encoding: "utf-8" | "base64";
             /** @default 0 */
             retry_count?: number;
             vm_id?: string | null;
@@ -798,6 +809,16 @@ export interface components {
         SyncWriteRequest: {
             writes: components["schemas"]["SyncWriteEntry"][];
         };
+        SyncReadOperationRequest: {
+            /** @constant */
+            op: "read";
+            path: string;
+        };
+        SyncWriteOperationRequest: {
+            /** @constant */
+            op: "write";
+            writes: components["schemas"]["SyncWriteEntry"][];
+        };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
             path: string;
@@ -825,12 +846,18 @@ export interface components {
         };
         SyncReadResponse: components["schemas"]["SyncReadInlineResponse"] | components["schemas"]["SyncReadPresignedResponse"];
         SyncReadInlineResponse: {
+            ok: boolean;
+            /** @constant */
+            op: "read";
             path: string;
             size: number;
             content: string;
             encoding: string;
         };
         SyncReadPresignedResponse: {
+            ok: boolean;
+            /** @constant */
+            op: "read";
             path: string;
             size: number;
             presigned_url: string;
@@ -838,6 +865,9 @@ export interface components {
             method: string;
         };
         SyncWriteResponse: {
+            ok: boolean;
+            /** @constant */
+            op: "write";
             results: components["schemas"]["SyncWriteResult"][];
         };
         SyncWriteResult: components["schemas"]["SyncChunkWriteResult"] | components["schemas"]["SyncPresignedWriteRequestResult"] | components["schemas"]["SyncCommitWriteResult"];
@@ -1684,7 +1714,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["SyncReadRequest"] | components["schemas"]["SyncWriteRequest"];
+                "application/json": components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"];
             };
         };
         responses: {
