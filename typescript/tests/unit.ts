@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { Arker, ArkerError, type CompletedRunResult, type PtyWebSocketFactory } from "../src/index.js";
+import { isExpectedSurfaceStub } from "./helpers/surface-errors.js";
 
 type FetchCall = {
   url: string;
@@ -622,9 +623,18 @@ async function testConnectPtyDeliversDataAndCloseEvents(): Promise<void> {
   assert.deepEqual(closed, { code: 1000, reason: "bye" });
 }
 
+function testSurfaceStubClassificationUsesStructuredErrorCodes(): void {
+  assert.equal(isExpectedSurfaceStub("not_found", "no live sync sync_does_not_exist"), true);
+  assert.equal(isExpectedSurfaceStub("not_implemented", "operation unavailable"), true);
+  assert.equal(isExpectedSurfaceStub("unsupported_operation", "optional feature disabled"), true);
+  assert.equal(isExpectedSurfaceStub("", "request failed with HTTP 404"), true);
+  assert.equal(isExpectedSurfaceStub("internal", "request failed"), false);
+}
+
 await testConnectPtyCreatesSessionAndUsesBearerHeader();
 await testConnectPtyUsesTicketForBrowserWebSocket();
 await testConnectPtyPassesCancelTtlSecs();
 await testConnectPtyDeliversDataAndCloseEvents();
+testSurfaceStubClassificationUsesStructuredErrorCodes();
 
 console.log("PASS unit");

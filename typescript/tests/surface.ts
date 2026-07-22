@@ -8,6 +8,7 @@
 export {};
 
 import { Arker, ARKER_ORG_ID } from "../src/index.js";
+import { isExpectedSurfaceStub } from "./helpers/surface-errors.js";
 
 const apiKey = process.env.ARKER_API_KEY;
 const baseUrl = process.env.ARKER_BASE_URL;
@@ -29,7 +30,7 @@ async function call(name: string, fn: () => Promise<unknown>, opts: { stubOk?: b
   } catch (e: any) {
     const msg = e?.message ?? String(e);
     const code = e?.code ?? "";
-    if (opts.stubOk && /not.?implemented|unsupported|not found|404|501/i.test(`${code} ${msg}`)) {
+    if (opts.stubOk && isExpectedSurfaceStub(code, msg)) {
       rec("STUB", name, `${code} ${msg}`.slice(0, 80));
     } else {
       rec("FAIL", name, `${code} ${msg}`.slice(0, 120));
