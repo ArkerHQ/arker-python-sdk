@@ -297,7 +297,8 @@ def append_operation_types(contract: Path, output: Path) -> None:
     definitions.append(")")
     output.write_text(
         output.read_text()
-        + "\n# OpenAPI operation types\n\n"
+        + "\nfrom typing import TypedDict\n\n"
+        + "# OpenAPI operation types\n\n"
         + "\n".join(definitions)
         + "\n"
     )
@@ -343,7 +344,7 @@ def generate(contract: Path, output_root: Path) -> None:
             "--output",
             str(python_output),
             "--output-model-type",
-            "typing.TypedDict",
+            "dataclasses.dataclass",
             "--target-python-version",
             "3.10",
             "--openapi-scopes",
@@ -353,6 +354,9 @@ def generate(contract: Path, output_root: Path) -> None:
             "--use-operation-id-as-name",
             "--use-standard-collections",
             "--use-union-operator",
+            "--enum-field-as-literal",
+            "all",
+            "--frozen-dataclasses",
             "--disable-timestamp",
             "--include-path-parameters",
         ],

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -79,6 +80,7 @@ def test_generation_is_deterministic_for_both_languages() -> None:
         typescript = (Path(first) / MANAGED_PATHS[2]).read_text()
         python = (Path(first) / MANAGED_PATHS[3]).read_text()
         assert "export interface operations" in typescript
+        assert "@dataclass(frozen=True)\nclass ForkRequest" in python
         assert "class ForkRequest" in python
         assert "class ListVmsParameters" in python
 
@@ -119,16 +121,75 @@ def test_generation_is_deterministic_for_both_languages() -> None:
         }
         assert (
             annotations(python, "CreateSessionOperation")["request"]
-            == "CreateSessionRequest | None"
+            == "CreateSessionRequest"
         )
         assert (
             annotations(python, "SyncOperation")["request"]
-            == "SyncReadRequest | SyncWriteRequest"
+            == "SyncRequest"
         )
         assert (
             annotations(python, "SyncOperation")["success"]
-            == "SyncReadResponse | SyncWriteResponse"
+            == "SyncResponse"
         )
+
+
+def test_public_wire_types_are_generated() -> None:
+    schemas = set(
+        json.loads((REPO_ROOT / "contract/openapi.json").read_text())["components"][
+            "schemas"
+        ]
+    )
+
+    typescript = (REPO_ROOT / "typescript/src/index.ts").read_text()
+    declarations = dict(
+        re.findall(r"^export type (\w+) = ([^;]+);", typescript, re.MULTILINE)
+    )
+    for name in schemas & declarations.keys():
+        assert declarations[name].strip() == f'ApiSchema<"{name}">', name
+
+    python_module = ast.parse((REPO_ROOT / "python/src/arker/computer.py").read_text())
+    handwritten_classes = {
+        node.name for node in python_module.body if isinstance(node, ast.ClassDef)
+    }
+    assert schemas.isdisjoint(handwritten_classes), sorted(
+        schemas & handwritten_classes
+    )
+    assert any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "generated.api_models"
+        for node in python_module.body
+    )
+
+    handwritten_typescript_wire_interfaces = set(
+        re.findall(
+            r"^(?:export )?interface (\w+(?:Request|Response|Parameters))\b",
+            typescript,
+            re.MULTILINE,
+        )
+    )
+    assert handwritten_typescript_wire_interfaces == {"TransportResponse"}
+    assert 'import type { components, operations }' in typescript
+
+    called_python_models = {
+        node.func.id
+        for node in ast.walk(python_module)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {
+        "ForkRequest",
+        "ListFilesystemsParameters",
+        "ListOrgRunsParameters",
+        "ListRunsParameters",
+        "ListSessionsParameters",
+        "ListSyncsParameters",
+        "ListVmsParameters",
+        "PatchSessionRequest",
+        "PatchVmRequest",
+        "RunRequest",
+        "SyncCreateRequest",
+        "SyncReadOperationRequest",
+        "SyncWriteOperationRequest",
+    }.issubset(called_python_models)
 
 
 def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
@@ -203,6 +264,7 @@ if __name__ == "__main__":
     tests = (
         test_source_metadata_matches_contract,
         test_generation_is_deterministic_for_both_languages,
+        test_public_wire_types_are_generated,
         test_sync_from_local_contract_regenerates_all_managed_files,
         test_check_detects_generated_drift,
         test_pull_request_ci_checks_all_generated_surfaces,

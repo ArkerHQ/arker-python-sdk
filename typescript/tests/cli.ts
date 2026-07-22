@@ -389,6 +389,7 @@ async function testEmptyPipedInputWritesZeroBytes(): Promise<void> {
         content: "",
         start: 0,
         end: 0,
+        is_secret: false,
       }],
     });
   });
@@ -436,8 +437,11 @@ async function testShellSetupUsesPackagedCli(): Promise<void> {
 
 async function testStructuredErrorsDoNotRepeatCode(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, {
-    code: "not_found",
-    message: "VM missing",
+    error: {
+      code: "not_found",
+      message: "VM missing",
+      timestamp: "2026-07-21T00:00:00Z",
+    },
   }, 404), async (baseUrl) => {
     const result = await runCli(baseUrl, ["run", "vm_missing", "true"]);
     assert.equal(result.code, 1);

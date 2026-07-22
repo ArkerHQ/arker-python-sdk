@@ -247,8 +247,28 @@
             "schema": {
               "type": "string",
               "enum": [
-                "aws"
+                "aws",
+                "gcp",
+                "azure"
               ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "org_id",
+            "required": false,
+            "description": "List public VMs owned by this org. Currently only `ArkerHQ` is supported, together with `public=true`, for the public template catalog.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "public",
+            "required": false,
+            "description": "Filter by public visibility. Use with `org_id=ArkerHQ` to list the public template catalog.",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -258,24 +278,6 @@
             "description": "Filter by VM lifecycle state.",
             "schema": {
               "$ref": "#/components/schemas/VmState"
-            }
-          },
-          {
-            "in": "query",
-            "name": "started_after",
-            "required": false,
-            "description": "ISO 8601 timestamp; include only VMs that most recently started at or after this time.",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "started_before",
-            "required": false,
-            "description": "ISO 8601 timestamp; include only VMs that most recently started at or before this time.",
-            "schema": {
-              "type": "string"
             }
           }
         ],
@@ -353,7 +355,9 @@
             "schema": {
               "type": "string",
               "enum": [
-                "aws"
+                "aws",
+                "gcp",
+                "azure"
               ]
             }
           },
@@ -829,7 +833,7 @@
       "post": {
         "operationId": "createSession",
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
@@ -899,21 +903,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "cols": {
-                    "type": "integer",
-                    "description": "New terminal width in columns (1-1000). Provide together with rows."
-                  },
-                  "rows": {
-                    "type": "integer",
-                    "description": "New terminal height in rows (1-1000). Provide together with cols."
-                  },
-                  "timeout_secs": {
-                    "type": "integer",
-                    "description": "Idle auto-cancel window for the PTY; applies on the next attach."
-                  }
-                }
+                "$ref": "#/components/schemas/PatchSessionRequest"
               }
             }
           }
@@ -924,15 +914,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": {
-                      "type": "boolean"
-                    },
-                    "session_id": {
-                      "type": "string"
-                    }
-                  }
+                  "$ref": "#/components/schemas/PatchSessionResponse"
                 }
               }
             }
@@ -1069,20 +1051,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "ticket",
-                    "expires_in"
-                  ],
-                  "properties": {
-                    "ticket": {
-                      "type": "string"
-                    },
-                    "expires_in": {
-                      "type": "integer",
-                      "description": "Seconds until expiry."
-                    }
-                  }
+                  "$ref": "#/components/schemas/PtyTicketResponse"
                 }
               }
             }
@@ -1219,14 +1188,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/SyncReadRequest"
-                  },
-                  {
-                    "$ref": "#/components/schemas/SyncWriteRequest"
-                  }
-                ]
+                "$ref": "#/components/schemas/SyncRequest"
               }
             }
           }
@@ -1237,14 +1199,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
-                    {
-                      "$ref": "#/components/schemas/SyncReadResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/SyncWriteResponse"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/SyncResponse"
                 }
               }
             }
@@ -1471,8 +1426,11 @@
               "unsupportedOperation": {
                 "summary": "Unsupported backend feature",
                 "value": {
-                  "code": "unsupported_operation",
-                  "message": "background runs are not supported on this backend"
+                  "error": {
+                    "code": "unsupported_operation",
+                    "message": "background runs are not supported on this backend",
+                    "timestamp": "2026-07-21T00:00:00Z"
+                  }
                 }
               }
             }
@@ -1497,6 +1455,28 @@
             "type": "string",
             "format": "date-time",
             "description": "Server time when the health response was generated."
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "router"
+            ],
+            "description": "Present when the public health response is served by a regional router."
+          },
+          "worker_available": {
+            "type": "boolean",
+            "description": "Whether the router can currently select an active worker. Present on router responses."
+          },
+          "release_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Deployed release identifier, when configured. Present on router responses."
+          },
+          "version": {
+            "type": "string",
+            "description": "Router package version. Present on router responses."
           }
         }
       },
@@ -1505,25 +1485,37 @@
         "enum": [
           "unsupported_operation",
           "bad_request",
+          "validation_error",
           "unauthorized",
+          "invalid_api_key",
+          "api_key_required",
+          "csrf_rejected",
           "forbidden",
+          "legal_acceptance_required",
           "payment_required",
           "not_found",
           "conflict",
+          "method_not_allowed",
           "payload_too_large",
           "not_implemented",
           "resource_pressure",
           "internal",
           "unavailable",
-          "network_error"
+          "backend_unavailable",
+          "api_worker_unavailable",
+          "bad_gateway",
+          "network_error",
+          "stale_route",
+          "unrecoverable"
         ],
         "description": "Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature. `payment_required` means billing setup or payment is required before new compute can start."
       },
-      "ErrorResponse": {
+      "ErrorBody": {
         "type": "object",
         "required": [
           "code",
-          "message"
+          "message",
+          "timestamp"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1533,6 +1525,44 @@
           "message": {
             "type": "string",
             "description": "Human-readable, client-safe error message. For `code: \"internal\"`, this is intentionally generic; server logs retain the underlying cause."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Server time when the error response was generated."
+          },
+          "retry_after": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Suggested retry delay in seconds. Present on retryable responses and mirrored by the Retry-After header."
+          },
+          "operation": {
+            "type": "string",
+            "description": "Operation that failed, when the backend can identify it safely."
+          },
+          "runtime": {
+            "type": "string",
+            "description": "Runtime involved in the failure, when safe to expose."
+          },
+          "provider": {
+            "type": "string",
+            "description": "Infrastructure provider involved in the failure, when safe to expose."
+          },
+          "retryable": {
+            "type": "boolean",
+            "description": "Whether clients should retry the operation."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
           }
         }
       },
@@ -1794,9 +1824,33 @@
                 "$ref": "#/components/schemas/Gate"
               }
             }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scaling"
+            ],
+            "properties": {
+              "scaling": {
+                "$ref": "#/components/schemas/ScalingAction"
+              }
+            }
           }
         ],
-        "description": "allow / deny, or a mutating object `{ rewrite?, gate? }`. A mutating action needs the MITM data-path (terminate TLS to rewrite headers / read the body / gate the request)."
+        "description": "allow / deny, a mutating object `{ rewrite?, gate? }`, or `{ scaling: { suspend? } }`. Mutating and scaling actions need the MITM data-path."
+      },
+      "ScalingAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Auto-scaling behavior for matched outbound traffic. The object is extensible with future scaling controls.",
+        "properties": {
+          "suspend": {
+            "type": "boolean",
+            "default": false,
+            "description": "Suspend the VM while a matched upstream request is blocked, then resume it when the response arrives."
+          }
+        }
       },
       "Rewrite": {
         "type": "object",
@@ -2085,6 +2139,8 @@
             ],
             "enum": [
               "aws",
+              "gcp",
+              "azure",
               null
             ]
           }
@@ -2176,6 +2232,8 @@
             ],
             "enum": [
               "aws",
+              "gcp",
+              "azure",
               null
             ]
           },
@@ -2185,9 +2243,56 @@
               "null"
             ]
           },
+          "vcpu_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 255,
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility projection of `resources.vcpu`."
+          },
+          "memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility projection of `resources.memory_mib`."
+          },
+          "disk_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility projection of `resources.disk_mib`."
+          },
           "network": {
             "$ref": "#/components/schemas/VmNetwork",
             "description": "Inbound reachability settings for this VM."
+          },
+          "egress": {
+            "$ref": "#/components/schemas/NetworkPolicy",
+            "description": "Outbound egress policy stored on the VM."
+          },
+          "base_image": {
+            "type": "string",
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility alias for `root_source_vm_name`."
+          },
+          "source_golden": {
+            "type": "string",
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility alias for `root_source_vm_name`."
           },
           "max_vcpus": {
             "type": [
@@ -2296,6 +2401,45 @@
           }
         }
       },
+      "PatchSessionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "cols": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "New terminal width in columns. Provide together with rows."
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "New terminal height in rows. Provide together with cols."
+          },
+          "timeout_secs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Idle auto-cancel window for the PTY; applies on the next attach."
+          }
+        }
+      },
+      "PatchSessionResponse": {
+        "type": "object",
+        "required": [
+          "ok",
+          "session_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
       "RunRequest": {
         "type": "object",
         "required": [
@@ -2324,7 +2468,7 @@
             "default": false
           },
           "timeout": {
-            "description": "Execution/kill bound in ms: max wall-clock time the command runs before the host kills it. Null (default) applies ARKER_DEFAULT_RUN_TIMEOUT_MS (3600000 = 1h). 0 = explicit unbounded (no kill). Separate from the HTTP sync window — see time_to_background.",
+            "description": "Execution/kill bound in milliseconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600000 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background.",
             "type": [
               "integer",
               "null"
@@ -2332,7 +2476,7 @@
             "minimum": 0
           },
           "time_to_background": {
-            "description": "Sync window in ms: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Null (default) = 30000. Does NOT bound command runtime — that is timeout.",
+            "description": "Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout.",
             "type": [
               "integer",
               "null"
@@ -2480,13 +2624,16 @@
           },
           "stdout_encoding": {
             "type": "string",
-            "description": "TODO(encoding-normalize): goal is to always emit utf-8 from\nevery source so this field becomes unnecessary. Until then\nthe SDK uses it to decode.\n"
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
             "type": "string"
           },
           "stderr_encoding": {
-            "type": "string"
+            "type": "string",
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "exit_code": {
             "type": "integer"
@@ -2591,13 +2738,17 @@
             "type": "string"
           },
           "stdout_encoding": {
-            "type": "string"
+            "type": "string",
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
             "type": "string"
           },
           "stderr_encoding": {
-            "type": "string"
+            "type": "string",
+            "enum": ["utf-8", "base64"],
+            "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "retry_count": {
             "type": "integer",
@@ -2635,6 +2786,8 @@
             ],
             "enum": [
               "aws",
+              "gcp",
+              "azure",
               null
             ]
           }
@@ -2721,6 +2874,8 @@
             ],
             "enum": [
               "aws",
+              "gcp",
+              "azure",
               null
             ]
           }
@@ -2995,6 +3150,56 @@
               "string",
               "null"
             ]
+          },
+          "pty": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Mark this session for an interactive PTY. The PTY stream is attached separately through the session WebSocket endpoint."
+          },
+          "cols": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Advisory initial terminal width in columns. The WebSocket attach query may override it."
+          },
+          "rows": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Advisory initial terminal height in rows. The WebSocket attach query may override it."
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Advisory command for an interactive PTY session."
+          }
+        }
+      },
+      "PtyTicketResponse": {
+        "type": "object",
+        "required": [
+          "ticket",
+          "expires_in"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ticket": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds until expiry."
           }
         }
       },
@@ -3103,6 +3308,63 @@
             }
           }
         }
+      },
+      "SyncReadOperationRequest": {
+        "type": "object",
+        "required": [
+          "op",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "SyncWriteOperationRequest": {
+        "type": "object",
+        "required": [
+          "op",
+          "writes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "type": "string",
+            "const": "write"
+          },
+          "writes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SyncWriteEntry"
+            }
+          }
+        }
+      },
+      "SyncRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncReadOperationRequest"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWriteOperationRequest"
+          }
+        ]
+      },
+      "SyncResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/SyncReadResponse"
+          },
+          {
+            "$ref": "#/components/schemas/SyncWriteResponse"
+          }
+        ]
       },
       "SyncWriteEntry": {
         "oneOf": [
@@ -3227,6 +3489,8 @@
       "SyncReadInlineResponse": {
         "type": "object",
         "required": [
+          "ok",
+          "op",
           "path",
           "size",
           "content",
@@ -3234,6 +3498,13 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
           "path": {
             "type": "string"
           },
@@ -3252,6 +3523,8 @@
       "SyncReadPresignedResponse": {
         "type": "object",
         "required": [
+          "ok",
+          "op",
           "path",
           "size",
           "presigned_url",
@@ -3260,6 +3533,13 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string",
+            "const": "read"
+          },
           "path": {
             "type": "string"
           },
@@ -3282,10 +3562,19 @@
       "SyncWriteResponse": {
         "type": "object",
         "required": [
+          "ok",
+          "op",
           "results"
         ],
         "additionalProperties": false,
         "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string",
+            "const": "write"
+          },
           "results": {
             "type": "array",
             "items": {
@@ -3518,6 +3807,8 @@
             ],
             "enum": [
               "aws",
+              "gcp",
+              "azure",
               null
             ],
             "default": "aws"

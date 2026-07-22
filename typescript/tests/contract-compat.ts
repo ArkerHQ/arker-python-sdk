@@ -1,3 +1,4 @@
+import type { components } from "../src/generated/api-types.js";
 import type {
   Filesystem,
   ListFilesystemsResponse,
@@ -9,61 +10,36 @@ import type {
   Run,
   RunSummary,
   Session,
+  SyncReadOperationRequest,
+  SyncWriteOperationRequest,
+  SyncWriteEntry,
   Vm,
 } from "../src/index.js";
 
-declare const sessionFields: Omit<Session, "provider">;
-const burstSession: Session = { ...sessionFields, provider: "aws-burst" };
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2)
+    ? true
+    : false;
+type Expect<Value extends true> = Value;
+type Schema<Name extends keyof components["schemas"]> = components["schemas"][Name];
 
-declare const vmFields: Omit<Vm, "provider" | "sessions">;
-const burstVm: Vm = {
-  ...vmFields,
-  provider: "aws-burst",
-  sessions: [burstSession],
-};
+type ContractTypes = [
+  Expect<Equal<Session, Schema<"Session">>>,
+  Expect<Equal<Vm, Schema<"Vm">>>,
+  Expect<Equal<ListVmsResponse, Schema<"ListVmsResponse">>>,
+  Expect<Equal<ListSessionsResponse, Schema<"ListSessionsResponse">>>,
+  Expect<Equal<Run, Schema<"Run">>>,
+  Expect<Equal<RunSummary, Schema<"RunSummary">>>,
+  Expect<Equal<ListRunsResponse, Schema<"ListRunsResponse">>>,
+  Expect<Equal<Filesystem, Schema<"Filesystem">>>,
+  Expect<Equal<ListFilesystemsResponse, Schema<"ListFilesystemsResponse">>>,
+  Expect<Equal<OrgRunListRow, Schema<"OrgRunListRow">>>,
+  Expect<Equal<ListOrgRunsResponse, Schema<"ListOrgRunsResponse">>>,
+  Expect<Equal<SyncReadOperationRequest, Schema<"SyncReadOperationRequest">>>,
+  Expect<Equal<SyncWriteOperationRequest, Schema<"SyncWriteOperationRequest">>>,
+  Expect<Equal<SyncWriteEntry, Schema<"SyncWriteEntry">>>,
+];
 
-declare const runFields: Omit<Run, "provider">;
-const burstRun: Run = { ...runFields, provider: "aws-burst" };
-
-declare const runSummaryFields: Omit<RunSummary, "provider">;
-const burstRunSummary: RunSummary = {
-  ...runSummaryFields,
-  provider: "aws-burst",
-};
-
-declare const filesystemFields: Omit<Filesystem, "provider">;
-const burstFilesystem: Filesystem = {
-  ...filesystemFields,
-  provider: "aws-burst",
-};
-
-declare const orgRunFields: Omit<
-  OrgRunListRow,
-  | "source"
-  | "lambda_call_ms"
-  | "lambda_duration_ms"
-  | "lambda_cpu_ms"
-  | "lambda_mem_mb"
->;
-const lambdaRun: OrgRunListRow = {
-  ...orgRunFields,
-  source: "cf",
-  lambda_call_ms: 1,
-  lambda_duration_ms: 2,
-  lambda_cpu_ms: 3,
-  lambda_mem_mb: 4,
-};
-
-const vmList: ListVmsResponse = { vms: [burstVm] };
-const sessionList: ListSessionsResponse = { sessions: [burstSession] };
-const runList: ListRunsResponse = { runs: [burstRunSummary] };
-const filesystemList: ListFilesystemsResponse = {
-  filesystems: [burstFilesystem],
-};
-declare const orgRunListFields: Omit<ListOrgRunsResponse, "rows">;
-const orgRunList: ListOrgRunsResponse = {
-  ...orgRunListFields,
-  rows: [lambdaRun],
-};
-
-void [vmList, sessionList, runList, filesystemList, orgRunList, burstRun];
+declare const contractTypes: ContractTypes;
+void contractTypes;

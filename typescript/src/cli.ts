@@ -34,6 +34,7 @@ import type {
   VM,
   RunResult,
   Vm,
+  ListVmsParameters,
 } from "./index.js";
 
 // Version string for `--version` and the help header. Read from the
@@ -426,7 +427,7 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
     case "ls":
     case "list": {
       const res = await client.listVms({
-        provider: args.flags.provider as "aws" | "aws-burst" | undefined,
+        provider: args.flags.provider as ListVmsParameters["provider"],
         region: args.flags.region as string | undefined,
         state: args.flags.state as "idle" | "running" | undefined,
         cursor: args.flags.cursor as string | undefined,
@@ -968,8 +969,8 @@ function usage(_command?: string): void {
       "  --session-id <ulid>        run in a specific existing session",
       "  --session-idx <n>          run in the session at this index (default 0)",
       "  --background               return a run id instead of blocking",
-      "  --timeout <ms>             exec/kill bound: max ms the command runs before it is killed (0 = unbounded; server default ~1h)",
-      "  --time-to-background <ms>  sync window: ms the call blocks before returning a run id (default 30000)",
+      "  --timeout <seconds>             exec/kill bound in seconds (0 = unbounded; server default 3600)",
+      "  --time-to-background <seconds>  sync window before returning a run id (default 30)",
       "  --acquire <list>           warm resources before the run (cpu,memory,disk)",
       "  --release <list>           release resources after the run (cpu,memory,disk)",
       "",

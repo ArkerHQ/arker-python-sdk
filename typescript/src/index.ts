@@ -5,13 +5,12 @@
  * Arker endpoints, or pass baseUrl directly for internal/dev targets.
  */
 
-import type { components } from "./generated/api-types.js";
+import type { components, operations } from "./generated/api-types.js";
 
 type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
-type LegacyProvider = "aws" | "aws-burst";
-type WithLegacyProvider<Schema extends { provider?: unknown }> = Omit<Schema, "provider"> & {
-  provider?: LegacyProvider | null;
-};
+type ApiQuery<Name extends keyof operations> = NonNullable<
+  operations[Name]["parameters"]["query"]
+>;
 
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
@@ -42,7 +41,14 @@ const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
 const DEFAULT_RETRY_JITTER_MS = 50;
 const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
-const RETRYABLE_CODES = new Set(["routing_unavailable", "unavailable", "temporarily_unavailable"]);
+const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
+  "unavailable",
+  "backend_unavailable",
+  "api_worker_unavailable",
+  "bad_gateway",
+  "network_error",
+  "stale_route",
+]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
@@ -120,24 +126,16 @@ export type ForkOptions = ForkRequest;
 export type VmResources = ApiSchema<"VmResources">;
 export type VmNetwork = ApiSchema<"VmNetwork">;
 export type NetworkInput = ApiSchema<"NetworkInput">;
-export type Session = WithLegacyProvider<ApiSchema<"Session">>;
-export type Vm = Omit<WithLegacyProvider<ApiSchema<"Vm">>, "sessions"> & {
-  sessions: Session[];
-};
-export type ListVmsResponse = Omit<ApiSchema<"ListVmsResponse">, "vms"> & {
-  vms: Vm[];
-};
-export type ListSessionsResponse = Omit<ApiSchema<"ListSessionsResponse">, "sessions"> & {
-  sessions: Session[];
-};
+export type Session = ApiSchema<"Session">;
+export type Vm = ApiSchema<"Vm">;
+export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
+export type ListSessionsResponse = ApiSchema<"ListSessionsResponse">;
 export type DeleteVmResponse = ApiSchema<"DeleteVmResponse">;
 export type DeleteSessionResponse = ApiSchema<"DeleteSessionResponse">;
 
 // ── Filesystems ────────────────────────────────────────────────────
-export type Filesystem = WithLegacyProvider<ApiSchema<"Filesystem">>;
-export type ListFilesystemsResponse = Omit<ApiSchema<"ListFilesystemsResponse">, "filesystems"> & {
-  filesystems: Filesystem[];
-};
+export type Filesystem = ApiSchema<"Filesystem">;
+export type ListFilesystemsResponse = ApiSchema<"ListFilesystemsResponse">;
 export type DeleteFilesystemResponse = ApiSchema<"DeleteFilesystemResponse">;
 export type FilesystemCreateRequest = ApiSchema<"FilesystemCreateRequest">;
 
@@ -148,6 +146,12 @@ export type DeleteSyncResponse = ApiSchema<"DeleteSyncResponse">;
 export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
 export type SyncReadRequest = ApiSchema<"SyncReadRequest">;
 export type SyncWriteRequest = ApiSchema<"SyncWriteRequest">;
+export type SyncReadOperationRequest = ApiSchema<"SyncReadOperationRequest">;
+export type SyncWriteOperationRequest = ApiSchema<"SyncWriteOperationRequest">;
+export type SyncWriteEntry = ApiSchema<"SyncWriteEntry">;
+export type SyncChunkWrite = ApiSchema<"SyncChunkWrite">;
+export type SyncPresignedWriteRequest = ApiSchema<"SyncPresignedWriteRequest">;
+export type SyncPresignedWriteCommit = ApiSchema<"SyncPresignedWriteCommit">;
 export type SyncReadResponse = ApiSchema<"SyncReadResponse">;
 export type SyncReadInlineResponse = ApiSchema<"SyncReadInlineResponse">;
 export type SyncReadPresignedResponse = ApiSchema<"SyncReadPresignedResponse">;
@@ -157,6 +161,7 @@ export type SyncChunkWriteResult = ApiSchema<"SyncChunkWriteResult">;
 export type SyncPresignedWriteRequestResult = ApiSchema<"SyncPresignedWriteRequestResult">;
 export type SyncCommitWriteResult = ApiSchema<"SyncCommitWriteResult">;
 export type SyncByteRange = ApiSchema<"SyncByteRange">;
+export type SyncEntryError = ApiSchema<"SyncEntryError">;
 
 // ── Runs ───────────────────────────────────────────────────────────
 export type RunRequest = ApiSchema<"RunRequest">;
@@ -173,26 +178,29 @@ export type NetworkStatus = ApiSchema<"NetworkStatus">;
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
-export type Run = WithLegacyProvider<ApiSchema<"Run">>;
-export type RunSummary = WithLegacyProvider<ApiSchema<"RunSummary">>;
-export type ListRunsResponse = Omit<ApiSchema<"ListRunsResponse">, "runs"> & {
-  runs: RunSummary[];
-};
-export type OrgRunListRow = Omit<ApiSchema<"OrgRunListRow">, "source"> & {
-  source: "cf" | "arkerd";
-  lambda_call_ms: number;
-  lambda_duration_ms: number;
-  lambda_cpu_ms: number;
-  lambda_mem_mb: number;
-};
-export type ListOrgRunsResponse = Omit<ApiSchema<"ListOrgRunsResponse">, "rows"> & {
-  rows: OrgRunListRow[];
-};
+export type Run = ApiSchema<"Run">;
+export type RunSummary = ApiSchema<"RunSummary">;
+export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
+export type OrgRunListRow = ApiSchema<"OrgRunListRow">;
+export type ListOrgRunsResponse = ApiSchema<"ListOrgRunsResponse">;
 export type RunListRow = OrgRunListRow;
 export type CancelRunResponse = ApiSchema<"CancelRunResponse">;
 
 // ── Sessions ───────────────────────────────────────────────────────
 export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
+export type PatchSessionRequest = ApiSchema<"PatchSessionRequest">;
+export type PatchSessionResponse = ApiSchema<"PatchSessionResponse">;
+export type PtyTicketResponse = ApiSchema<"PtyTicketResponse">;
+/** @deprecated Use `PtyTicketResponse`. */
+export type MintSessionPtyTicketResponse = PtyTicketResponse;
+
+// ── Operation query parameters ─────────────────────────────────────
+export type ListVmsParameters = ApiQuery<"listVms">;
+export type ListOrgRunsParameters = ApiQuery<"listOrgRuns">;
+export type ListFilesystemsParameters = ApiQuery<"listFilesystems">;
+export type ListSyncsParameters = ApiQuery<"listSyncs">;
+export type ListRunsParameters = ApiQuery<"listRuns">;
+export type ListSessionsParameters = ApiQuery<"listSessions">;
 
 // ── VM resize (PATCH /v1/vms/{id}) ─────────────────────────────────
 export type PatchVmRequest = ApiSchema<"PatchVmRequest">;
@@ -244,27 +252,37 @@ export interface BackgroundRunResult {
 
 export type RunResult = CompletedRunResult | BackgroundRunResult;
 
-export interface ListOrgRunsOptions {
-  since?: number;
-  until?: number;
-  vm?: string;
+export type ListOrgRunsOptions = Omit<
+  ListOrgRunsParameters,
+  "vms" | "actions" | "status" | "status_min" | "status_max"
+> & {
   vmIds?: string[];
-  region?: string;
-  provider?: "aws" | "aws-burst";
-  source?: "cf" | "arkerd";
-  search?: string;
-  limit?: number;
-  offset?: number;
-  lite?: boolean;
-  runtime?: string;
-  endpoint?: "run" | "fork" | "sync";
   actions?: string[];
   status?: string[];
-  statusMin?: number;
-  statusMax?: number;
-  sort?: "when" | "status" | "path" | "total" | "queue" | "your_code" | "runtime";
-  dir?: "asc" | "desc";
-}
+  statusMin?: ListOrgRunsParameters["status_min"];
+  statusMax?: ListOrgRunsParameters["status_max"];
+};
+
+export type ListVmsOptions = ListVmsParameters;
+
+export type ListFilesystemsOptions = Omit<ListFilesystemsParameters, "name_prefix"> & {
+  namePrefix?: ListFilesystemsParameters["name_prefix"];
+};
+
+export type ListSyncsOptions = Omit<ListSyncsParameters, "filesystem_id"> & {
+  filesystemId?: ListSyncsParameters["filesystem_id"];
+};
+
+export type ListRunsOptions = Omit<
+  ListRunsParameters,
+  "started_after" | "started_before" | "completed_after"
+> & {
+  startedAfter?: ListRunsParameters["started_after"];
+  startedBefore?: ListRunsParameters["started_before"];
+  completedAfter?: ListRunsParameters["completed_after"];
+};
+
+export type ListSessionsOptions = ListSessionsParameters;
 
 export type PtyInput = string | Uint8Array | ArrayBuffer;
 
@@ -326,11 +344,6 @@ interface PtyWebSocketLike {
   off?: (type: string, listener: (...args: unknown[]) => void) => void;
 }
 
-interface PtyTicketResponse {
-  ticket: string;
-  expires_in: number;
-}
-
 interface RetryConfig {
   attempts: number;
   baseDelayMs: number;
@@ -363,9 +376,9 @@ export class ArkerError extends Error {
  *
  * Distinct from the new VM's `name`, which is the *destination* name. */
 export interface ForkSource {
-  sourceVmId?: string;
-  sourceVmName?: string;
-  sourceOrgId?: string;
+  sourceVmId?: ForkRequest["source_vm_id"];
+  sourceVmName?: ForkRequest["source_vm_name"];
+  sourceOrgId?: ForkRequest["source_org_id"];
 }
 
 export class Arker {
@@ -470,7 +483,7 @@ export class Arker {
     // defaults (server-side) to the caller's own org. Explicit wins.
     const sourceOrgId =
       src.sourceOrgId ??
-      (src.sourceVmName !== undefined && GOLDEN_NAMES.has(src.sourceVmName)
+      (src.sourceVmName != null && GOLDEN_NAMES.has(src.sourceVmName)
         ? ARKER_ORG_ID
         : undefined);
     // Back-compat: callers used to pass flat resource fields
@@ -500,6 +513,7 @@ export class Arker {
       egress: src.egress ?? null,
       disk: src.disk ?? true,
       durable: src.durable ?? null,
+      platforms: src.platforms,
       resources,
       // ARK-125: omit to inherit the source's policy; pass a doc to override
       // (an empty `{ policies: [] }` clears to allow-all, NOT inherit).
@@ -509,11 +523,11 @@ export class Arker {
     // burst backend (ps-lambda); everything else to arkerd.
     const useBurst =
       sourceOrgId === ARKER_ORG_ID &&
-      src.sourceVmName !== undefined &&
+      src.sourceVmName != null &&
       isBurstRef(src.sourceVmName);
     const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
-    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
     return new VM(this, vmId, baseUrl, vm);
   }
@@ -524,19 +538,11 @@ export class Arker {
    * aggregate across providers and regions. Pass `?provider=` /
    * `?region=` to narrow.
    */
-  async listVms(opts: ListOpts & { region?: string; provider?: "aws" | "aws-burst"; state?: VmState; sourceOrgId?: string; startedAfter?: string; startedBefore?: string } = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
-    const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", {
-      cursor: opts.cursor,
-      limit: opts.limit,
-      region: opts.region,
-      provider: opts.provider,
-      state: opts.state,
-      source_org_id: opts.sourceOrgId,
-      started_after: opts.startedAfter,
-      started_before: opts.startedBefore,
-    }), undefined, this.controlBaseUrl);
+  async listVms(opts: ListVmsOptions = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
+    const query: ListVmsParameters = opts;
+    const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", query), undefined, this.controlBaseUrl);
     const vms = (resp.vms ?? []).map((v) => {
-      const id = v.vm_id ?? (v as { id?: string }).id ?? "";
+      const id = v.vm_id;
       return new VM(this, id, this._baseUrlFor(id), v);
     });
     return { vms, nextCursor: resp.next_cursor ?? null };
@@ -547,14 +553,13 @@ export class Arker {
    * providers, and regions. Admin call — routed through the control plane.
    */
   async listRuns(opts: ListOrgRunsOptions = {}): Promise<ListOrgRunsResponse> {
-    return this._request("GET", buildQuery("/v1/runs", {
+    const query: ListOrgRunsParameters = {
       since: opts.since,
       until: opts.until,
       vm: opts.vm,
       vms: opts.vmIds && opts.vmIds.length > 0 ? opts.vmIds.join(",") : undefined,
       region: opts.region,
       provider: opts.provider,
-      source: opts.source,
       search: opts.search,
       limit: opts.limit,
       offset: opts.offset,
@@ -567,7 +572,8 @@ export class Arker {
       status_max: opts.statusMax,
       sort: opts.sort,
       dir: opts.dir,
-    }), undefined, this.controlBaseUrl);
+    };
+    return this._request("GET", buildQuery("/v1/runs", query), undefined, this.controlBaseUrl);
   }
 
   /** Compute call — goes direct to the backend hosting this VM (no
@@ -581,14 +587,15 @@ export class Arker {
   // Route to the regional endpoint (baseUrl), not the control plane: the
   // control-plane path (arker.ai → api_proxy_bash) does not route
   // /v1/filesystems, while the regional NLB → arkerd serves the full CRUD.
-  async listFilesystems(opts: ListOpts & { namePrefix?: string } = {}): Promise<ListFilesystemsResponse> {
-    return this._request("GET", buildQuery("/v1/filesystems", {
+  async listFilesystems(opts: ListFilesystemsOptions = {}): Promise<ListFilesystemsResponse> {
+    const query: ListFilesystemsParameters = {
       cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
-    }), undefined, this.baseUrl);
+    };
+    return this._request("GET", buildQuery("/v1/filesystems", query), undefined, this.baseUrl);
   }
 
-  async createFilesystem(request: { name: string }): Promise<Filesystem> {
-    return this._request("POST", "/v1/filesystems", { name: request.name }, this.baseUrl);
+  async createFilesystem(request: FilesystemCreateRequest): Promise<Filesystem> {
+    return this._request("POST", "/v1/filesystems", request, this.baseUrl);
   }
 
   async getFilesystem(filesystemId: string): Promise<Filesystem> {
@@ -690,8 +697,8 @@ export class Arker {
 }
 
 export interface ListOpts {
-  cursor?: string;
-  limit?: number;
+  cursor?: ListVmsParameters["cursor"];
+  limit?: ListVmsParameters["limit"];
 }
 
 export class VM {
@@ -703,26 +710,27 @@ export class VM {
   // Populated from fork/get/list/refresh; `undefined` on a bare handle
   // from `arker.vm(id)` until you call `refresh()`. Names mirror the
   // contract (`Vm`).
-  readonly vm_id?: string;
-  readonly name?: string | null;
-  readonly state?: VmState;
-  readonly owner_org_id?: string;
-  readonly created_at?: string;
-  readonly public?: boolean;
-  readonly region?: string | null;
-  readonly provider?: string | null;
+  readonly vm_id?: Vm["vm_id"];
+  readonly name?: Vm["name"];
+  readonly state?: Vm["state"];
+  readonly owner_org_id?: Vm["owner_org_id"];
+  readonly created_at?: Vm["created_at"];
+  readonly public?: Vm["public"];
+  readonly region?: Vm["region"];
+  readonly provider?: Vm["provider"];
   readonly vcpu_count?: number | null;
   readonly memory_mib?: number | null;
   readonly disk_mib?: number | null;
-  readonly network?: VmNetwork;
-  readonly max_vcpus?: number | null;
-  readonly max_memory_mib?: number | null;
-  readonly min_memory_mib?: number | null;
-  readonly started_at?: string | null;
-  readonly root_source_vm_id?: string | null;
-  readonly root_source_vm_name?: string | null;
+  readonly network?: Vm["network"];
+  readonly resources?: Vm["resources"];
+  readonly max_vcpus?: Vm["max_vcpus"];
+  readonly max_memory_mib?: Vm["max_memory_mib"];
+  readonly min_memory_mib?: Vm["min_memory_mib"];
+  readonly started_at?: Vm["started_at"];
+  readonly root_source_vm_id?: Vm["root_source_vm_id"];
+  readonly root_source_vm_name?: Vm["root_source_vm_name"];
   readonly worker_id?: string | null;
-  readonly sessions?: Session[];
+  readonly sessions?: Vm["sessions"];
 
   constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), data?: Vm) {
     this._client = client;
@@ -752,7 +760,7 @@ export class VM {
       disk: request.disk ?? true,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
-    const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+    const vmId = vm.vm_id;
     // The child is forked on the same compute host as the source, so it lives
     // on the same base URL (this.baseUrl) — not whatever the id alone implies.
     return new VM(this._client, vmId, this.baseUrl, vm);
@@ -761,10 +769,11 @@ export class VM {
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
     const { idempotencyKey, ...body } = options;
     const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
+    const request: RunRequest = { ...body, command };
     const response = await this._client._request<unknown>(
       "POST",
       `${vmPath(this.id)}/runs`,
-      { ...body, command },
+      request,
       this.baseUrl,
       headers,
     );
@@ -792,10 +801,11 @@ export class VM {
   }
 
   private async syncRead(path: string): Promise<Uint8Array> {
+    const request: SyncReadOperationRequest = { op: "read", path };
     const response = await this._client._request<SyncReadInlineResponse | SyncReadPresignedResponse>(
       "POST",
       `${vmPath(this.id)}/sync`,
-      { op: "read", path },
+      request,
       this.baseUrl,
     );
     if ("content" in response) return decodeBytes(response.content, response.encoding);
@@ -812,12 +822,13 @@ export class VM {
       content: bytesToBase64(data),
       start: 0,
       end: data.length,
+      is_secret: false,
     });
     assertWriteComplete(result, "inline write");
   }
 
   private async syncWritePresigned(path: string, data: Uint8Array): Promise<void> {
-    const request = await this.sendOneWrite({ path, size: data.length, presigned: true });
+    const request = await this.sendOneWrite({ path, size: data.length, presigned: true, is_secret: false });
     if (!("presigned_url" in request) || !request.presigned_url || !request.upload_id) {
       throw new ArkerError("internal", "write response missing presigned upload fields", 200);
     }
@@ -854,20 +865,21 @@ export class VM {
     }
   }
 
-  private async sendOneWrite(entry: JsonObject): Promise<SyncWriteResult> {
-    let lastError: ErrorResponse | undefined;
+  private async sendOneWrite(entry: SyncWriteEntry): Promise<SyncWriteResult> {
+    let lastError: SyncEntryError | undefined;
     const attempts = this._client._retryAttempts();
     for (let attempt = 0; attempt < attempts; attempt++) {
-      const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, {
+      const request: SyncWriteOperationRequest = {
         op: "write",
         writes: [entry],
-      }, this.baseUrl);
+      };
+      const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, request, this.baseUrl);
       const result = response.results[0];
       if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
       const error = result.error ?? undefined;
       if (!error) return result;
-      lastError = error as ErrorResponse;
-      if (!isRetryable(200, { code: error.code as string, message: error.message }) || attempt === attempts - 1) break;
+      lastError = error;
+      if (!isRetryable(200, error) || attempt === attempts - 1) break;
       await sleep(this._client._retryDelay(attempt));
     }
     throw new ArkerError(lastError?.code ?? "internal", lastError?.message ?? "write failed", 200);
@@ -935,17 +947,22 @@ export class VM {
   }
 
   // ── Syncs: bindings of a filesystem into this VM at a path ────────
-  async listSyncs(opts: ListOpts & { filesystemId?: string } = {}): Promise<ListSyncsResponse> {
-    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/syncs`, {
+  async listSyncs(opts: ListSyncsOptions = {}): Promise<ListSyncsResponse> {
+    const query: ListSyncsParameters = {
       cursor: opts.cursor, limit: opts.limit, filesystem_id: opts.filesystemId,
-    }), undefined, this.baseUrl);
+    };
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/syncs`, query), undefined, this.baseUrl);
   }
 
-  async createSync(request: { filesystemId: string; path?: string }): Promise<Sync> {
-    return this._client._request<Sync>("POST", `${vmPath(this.id)}/syncs`, {
+  async createSync(request: {
+    filesystemId: SyncCreateRequest["filesystem_id"];
+    path?: SyncCreateRequest["path"];
+  }): Promise<Sync> {
+    const body: SyncCreateRequest = {
       filesystem_id: request.filesystemId,
       path: request.path,
-    }, this.baseUrl);
+    };
+    return this._client._request<Sync>("POST", `${vmPath(this.id)}/syncs`, body, this.baseUrl);
   }
 
   async deleteSync(syncId: string): Promise<DeleteSyncResponse> {
@@ -953,11 +970,12 @@ export class VM {
   }
 
   // ── Runs ──────────────────────────────────────────────────────────
-  async listRuns(opts: ListOpts & { state?: RunState; startedAfter?: string; startedBefore?: string; completedAfter?: string } = {}): Promise<ListRunsResponse> {
-    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/runs`, {
+  async listRuns(opts: ListRunsOptions = {}): Promise<ListRunsResponse> {
+    const query: ListRunsParameters = {
       cursor: opts.cursor, limit: opts.limit, state: opts.state,
       started_after: opts.startedAfter, started_before: opts.startedBefore, completed_after: opts.completedAfter,
-    }), undefined, this.baseUrl);
+    };
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/runs`, query), undefined, this.baseUrl);
   }
 
   async getRun(runId: string): Promise<Run> {
@@ -969,10 +987,11 @@ export class VM {
   }
 
   // ── Sessions ──────────────────────────────────────────────────────
-  async listSessions(opts: ListOpts & { state?: SessionState } = {}): Promise<ListSessionsResponse> {
-    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/sessions`, {
+  async listSessions(opts: ListSessionsOptions = {}): Promise<ListSessionsResponse> {
+    const query: ListSessionsParameters = {
       cursor: opts.cursor, limit: opts.limit, state: opts.state,
-    }), undefined, this.baseUrl);
+    };
+    return this._client._request("GET", buildQuery(`${vmPath(this.id)}/sessions`, query), undefined, this.baseUrl);
   }
 
   async createSession(request: CreateSessionRequest = {}): Promise<Session> {
@@ -995,12 +1014,21 @@ export class VM {
    */
   async updateSession(
     sessionId: string,
-    update: { cols?: number; rows?: number; timeoutSecs?: number },
-  ): Promise<{ ok: boolean; session_id: string }> {
-    return this._client._request(
+    update: {
+      cols?: PatchSessionRequest["cols"];
+      rows?: PatchSessionRequest["rows"];
+      timeoutSecs?: PatchSessionRequest["timeout_secs"];
+    },
+  ): Promise<PatchSessionResponse> {
+    const request: PatchSessionRequest = {
+      cols: update.cols,
+      rows: update.rows,
+      timeout_secs: update.timeoutSecs,
+    };
+    return this._client._request<PatchSessionResponse>(
       "PATCH",
       `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}`,
-      { cols: update.cols, rows: update.rows, timeout_secs: update.timeoutSecs },
+      request,
       this.baseUrl,
     );
   }
@@ -1020,7 +1048,7 @@ export class VM {
     };
     let ticket: string | undefined;
     if (useTicket) {
-      const response = await this._client._request<PtyTicketResponse>(
+      const response = await this._client._request<MintSessionPtyTicketResponse>(
         "POST",
         `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty-ticket`,
         {},
@@ -1065,9 +1093,7 @@ function buildPtyWebSocketUrl(
 }
 
 function sessionIdFrom(session: Session): string {
-  const id = session.session_id ?? (session as { id?: string }).id;
-  if (!id) throw new ArkerError("internal", "createSession response missing session_id", 200);
-  return id;
+  return session.session_id;
 }
 
 function isNodeRuntime(): boolean {
@@ -1372,14 +1398,15 @@ function parseJson(text: string): unknown {
 
 function extractError(payload: unknown): ParsedError | undefined {
   if (!isObject(payload)) return undefined;
-  if (typeof payload.code === "string" && typeof payload.message === "string") {
-    return { code: payload.code, message: payload.message };
-  }
-  if (isObject(payload.error)) {
-    return {
-      code: typeof payload.error.code === "string" ? payload.error.code : "internal",
-      message: typeof payload.error.message === "string" ? payload.error.message : "",
-    };
+  if (Object.keys(payload).length === 1 && isObject(payload.error)) {
+    const error: Partial<ErrorResponse["error"]> = payload.error;
+    if (
+      typeof error.code === "string" &&
+      typeof error.message === "string" &&
+      typeof error.timestamp === "string"
+    ) {
+      return { code: error.code, message: error.message };
+    }
   }
   return undefined;
 }
@@ -1387,7 +1414,7 @@ function extractError(payload: unknown): ParsedError | undefined {
 function isRetryable(status: number, error?: ParsedError): boolean {
   if (RETRYABLE_HTTP.has(status)) return true;
   if (!error) return false;
-  if (RETRYABLE_CODES.has(error.code)) return true;
+  if (RETRYABLE_CODES.has(error.code as ErrorCode)) return true;
   if (error.code !== "internal") return false;
   return TRANSIENT_HINTS.some((hint) => error.message.includes(hint));
 }
