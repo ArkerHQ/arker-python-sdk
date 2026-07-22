@@ -2219,6 +2219,37 @@
               "null"
             ]
           },
+          "vcpu_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 255,
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility projection of `resources.vcpu`."
+          },
+          "memory_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility projection of `resources.memory_mib`."
+          },
+          "disk_mib": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "deprecated": true,
+            "readOnly": true,
+            "description": "Deprecated compatibility projection of `resources.disk_mib`."
+          },
           "network": {
             "$ref": "#/components/schemas/VmNetwork",
             "description": "Inbound reachability settings for this VM."

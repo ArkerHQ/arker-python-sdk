@@ -592,6 +592,21 @@ export interface components {
             /** @enum {string|null} */
             provider?: "aws" | "gcp" | "azure" | null;
             started_at?: string | null;
+            /**
+             * @deprecated
+             * @description Deprecated compatibility projection of `resources.vcpu`.
+             */
+            readonly vcpu_count?: number | null;
+            /**
+             * @deprecated
+             * @description Deprecated compatibility projection of `resources.memory_mib`.
+             */
+            readonly memory_mib?: number | null;
+            /**
+             * @deprecated
+             * @description Deprecated compatibility projection of `resources.disk_mib`.
+             */
+            readonly disk_mib?: number | null;
             /** @description Inbound reachability settings for this VM. */
             network: components["schemas"]["VmNetwork"];
             /** @description Outbound egress policy stored on the VM. */

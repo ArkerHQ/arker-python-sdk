@@ -761,6 +761,9 @@ class Vm:
     region: str | None = None
     provider: Literal['aws', 'gcp', 'azure'] | None = None
     started_at: str | None = None
+    vcpu_count: int | None = None
+    memory_mib: int | None = None
+    disk_mib: int | None = None
     egress: NetworkPolicy | None = None
     base_image: str | None = None
     source_golden: str | None = None
