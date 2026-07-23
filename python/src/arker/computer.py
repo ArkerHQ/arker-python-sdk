@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -20,6 +21,13 @@ import urllib.request
 from typing import Any, Callable
 
 CHUNK_SIZE = 4 * 1024 * 1024
+
+# Target byte budget per batched sync_dir write request. Small changed files are
+# accumulated up to this size and uploaded in one writes[] request, so a tree of
+# many small files becomes a handful of round-trips instead of one-per-file.
+# Kept well under the server's ~100 MiB request cap to leave room for base64
+# expansion (~1.33x) and JSON overhead.
+SYNC_DIR_BATCH_BYTES = 5 * 1024 * 1024
 
 # Org id for the "Arker" org — the org that owns the public golden VMs
 # (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
@@ -837,6 +845,117 @@ class VM:
             200,
         )
 
+    # ── Directory sync (rsync-style, manifest diff) ──────────────────
+    def sync_dir(
+        self,
+        local_dir: str,
+        remote_dir: str,
+        *,
+        cache: dict[str, tuple[int, int, str]] | None = None,
+    ) -> "SyncDirResult":
+        """Recursively sync a local directory INTO this VM at ``remote_dir``,
+        rsync-style: fetch the VM's file *manifest* (per-file sha256) in one
+        request, diff it against the local tree, and upload ONLY the files that
+        are new or changed — batched into few requests instead of one-per-file.
+
+        The remote manifest is authoritative. ``cache`` (an optional dict you own
+        and reuse across calls) is a pure accelerator: it skips re-hashing local
+        files whose (size, mtime) are unchanged. It never decides remote state,
+        so it can never cause a stale or missing upload — worst case it hashes a
+        file it didn't need to.
+
+        Returns a :class:`SyncDirResult` (sent / skipped / bytes).
+        """
+        local_root = os.path.abspath(local_dir)
+        remote_root = "/" + remote_dir.strip("/")
+
+        # 1. Authoritative remote manifest: rel_path -> sha256. A directory that
+        #    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
+        remote = self._remote_manifest(remote_root)
+
+        # 2. Enumerate local regular files (skip symlinks — the manifest lists
+        #    regular files only, so a symlink would always look "missing").
+        local_files: dict[str, tuple[str, int, int]] = {}
+        for root, _dirs, files in os.walk(local_root):
+            for name in files:
+                abs_path = os.path.join(root, name)
+                if os.path.islink(abs_path) or not os.path.isfile(abs_path):
+                    continue
+                rel = os.path.relpath(abs_path, local_root).replace(os.sep, "/")
+                st = os.stat(abs_path)
+                local_files[rel] = (abs_path, st.st_size, st.st_mtime_ns)
+
+        # 3. Diff + upload only changed/new files, batching small ones.
+        result = SyncDirResult()
+        batch: list[tuple[str, bytes]] = []
+        batch_bytes = 0
+        for rel, (abs_path, size, mtime_ns) in sorted(local_files.items()):
+            local_hash = _file_hash_cached(abs_path, size, mtime_ns, cache)
+            if remote.get(rel) == local_hash:
+                result.skipped += 1
+                continue
+            remote_path = f"{remote_root.rstrip('/')}/{rel}"
+            if size > CHUNK_SIZE:
+                # Large file: presigned single-file upload. Flush any pending
+                # inline batch first to preserve ordering isn't required, but it
+                # keeps request sizes bounded.
+                if batch:
+                    self._flush_write_batch(batch)
+                    batch, batch_bytes = [], 0
+                with open(abs_path, "rb") as fh:
+                    self._sync_write_presigned(remote_path, fh.read())
+            else:
+                with open(abs_path, "rb") as fh:
+                    batch.append((remote_path, fh.read()))
+                batch_bytes += size
+                if batch_bytes >= SYNC_DIR_BATCH_BYTES:
+                    self._flush_write_batch(batch)
+                    batch, batch_bytes = [], 0
+            result.sent += 1
+            result.bytes_sent += size
+        if batch:
+            self._flush_write_batch(batch)
+        return result
+
+    def _remote_manifest(self, path: str) -> dict[str, str]:
+        """Fetch the VM's file manifest under ``path`` → {rel_path: sha256}."""
+        payload = self._client._request(
+            "POST", f"{_vm_path(self.id)}/sync",
+            {"op": "manifest", "path": path}, base_url=self.base_url,
+        )
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            return {}
+        out: dict[str, str] = {}
+        for entry in entries:
+            if isinstance(entry, dict) and "path" in entry and "hash" in entry:
+                out[str(entry["path"])] = str(entry["hash"])
+        return out
+
+    def _flush_write_batch(self, items: list[tuple[str, bytes]]) -> None:
+        """Upload a batch of small files in ONE write request (writes[])."""
+        if not items:
+            return
+        entries = [
+            {
+                "path": path, "size": len(data), "upload_id": _ulid(),
+                "content": base64.b64encode(data).decode("ascii"),
+                "start": 0, "end": len(data),
+            }
+            for path, data in items
+        ]
+        payload = self._client._request(
+            "POST", f"{_vm_path(self.id)}/sync",
+            {"op": "write", "writes": entries}, base_url=self.base_url,
+        )
+        results = payload.get("results")
+        if not isinstance(results, list) or len(results) != len(entries):
+            raise ArkerError("internal", "batch write results count mismatch", 200)
+        for result, (path, _data) in zip(results, items):
+            if not isinstance(result, dict):
+                raise ArkerError("internal", "batch write result must be an object", 200)
+            _assert_write_complete(result, f"batch write {path}")
+
     # ── Syncs: bindings of a filesystem into this VM at a path ────────
     def list_syncs(self, *, cursor: str | None = None, limit: int | None = None, filesystem_id: str | None = None) -> ListSyncsResponse:
         path = _build_query(f"{_vm_path(self.id)}/syncs", {"cursor": cursor, "limit": limit, "filesystem_id": filesystem_id})
@@ -1320,6 +1439,41 @@ def _assert_write_complete(result: dict[str, Any], context: str) -> None:
     if result.get("complete") and result.get("written"):
         return
     raise ArkerError("internal", f"{context} did not complete", 200)
+
+
+@dataclasses.dataclass
+class SyncDirResult:
+    """Outcome of :meth:`VM.sync_dir`."""
+
+    sent: int = 0
+    """Files uploaded (new or changed)."""
+    skipped: int = 0
+    """Files whose remote hash already matched (nothing sent)."""
+    bytes_sent: int = 0
+    """Total bytes of the uploaded files."""
+
+
+def _file_hash_cached(
+    abs_path: str,
+    size: int,
+    mtime_ns: int,
+    cache: dict[str, tuple[int, int, str]] | None,
+) -> str:
+    """Lowercase-hex sha256 of a file, reusing ``cache`` when (size, mtime) are
+    unchanged. The cache is a pure accelerator: on any mismatch (or no cache) the
+    file is re-hashed, so a stale cache entry can never cause a wrong upload."""
+    if cache is not None:
+        cached = cache.get(abs_path)
+        if cached is not None and cached[0] == size and cached[1] == mtime_ns:
+            return cached[2]
+    hasher = hashlib.sha256()
+    with open(abs_path, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(block)
+    digest = hasher.hexdigest()
+    if cache is not None:
+        cache[abs_path] = (size, mtime_ns, digest)
+    return digest
 
 
 def _session_info(payload: dict[str, Any]) -> Session:
