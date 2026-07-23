@@ -89,7 +89,7 @@ def test_fork_posts_directly_to_source_vm() -> None:
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
@@ -115,7 +115,7 @@ def test_fork_infers_arker_org_for_macos_full_golden() -> None:
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {"vcpu": 4, "memory_mib": 8192, "disk_mib": 10240},
         },
     )
@@ -152,7 +152,7 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
@@ -178,7 +178,7 @@ def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
@@ -226,7 +226,7 @@ def test_list_uses_configured_base_url() -> None:
             "state": "idle",
             "sessions": [session()],
             "name": "demo",
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
             "max_vcpus": 8,
             "max_memory_mib": 32768,
@@ -252,7 +252,7 @@ def test_list_uses_configured_base_url() -> None:
     assert result.vms[0].max_memory_mib == 32768
     assert result.vms[0].min_memory_mib == 512
     assert result.vms[0].network is not None
-    assert result.vms[0].network.reachable is False
+    assert result.vms[0].network.ssh_public_keys == []
     assert result.vms[0].resources == sdk.VmResources(
         vcpu=2, memory_mib=1024, disk_mib=4096
     )
@@ -379,7 +379,7 @@ def test_resize_patches_vm_resources() -> None:
             "state": "idle",
             "sessions": [],
             "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
         },
     )
 
@@ -455,17 +455,90 @@ def test_canonical_error_response_parses() -> None:
     assert caught.value.status == 503
 
 
-def test_retry_on_503_then_success(monkeypatch) -> None:
+def test_retry_on_prework_503_then_success(monkeypatch) -> None:
+    # Task C: a non-idempotent POST is retried only on a clear pre-work
+    # rejection. A 503 carrying a routing/admission code ("unavailable")
+    # qualifies as "not processed — try again".
     monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/sync")
-    t.add_raw(predicate, 503, b"service unavailable")
+    t.add_json(predicate, 503, {"error": {"code": "unavailable", "message": "try later", "timestamp": "2026-07-21T00:00:00Z"}})
     t.add_json(predicate, 200, {"ok": True, "op": "read", "path": "/home/user/x", "size": 2, "content": "ok", "encoding": "utf-8"})
 
     with use_transport(t):
         assert sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x") == b"ok"
 
     assert len(t.calls) == 2
+
+
+def test_post_not_retried_on_bare_503(monkeypatch) -> None:
+    # Task C idempotency care: a POST that fails with a 503 carrying NO
+    # actionable pre-work code must NOT be auto-retried (could double-execute).
+    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/sync")
+    t.add_raw(predicate, 503, b"service unavailable")
+    t.add_json(predicate, 200, {"ok": True, "op": "read", "path": "/home/user/x", "size": 2, "content": "ok", "encoding": "utf-8"})
+
+    with use_transport(t), pytest.raises(sdk.ArkerError):
+        sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 3}).vm("vm").sync("/home/user/x")
+
+    assert len(t.calls) == 1  # not retried
+
+
+def test_get_retried_on_bare_503(monkeypatch) -> None:
+    # Idempotent GETs retry freely on a transient 503 (used by run-status
+    # polling), even without an actionable error code.
+    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
+    t = FakeTransport()
+    predicate = lambda method, url: method == "GET" and url.endswith("/runs/run_1")
+    t.add_raw(predicate, 503, b"service unavailable")
+    t.add_json(predicate, 200, {
+        "run_id": "run_1", "stdout": "", "stdout_encoding": "utf-8",
+        "stderr": "", "stderr_encoding": "utf-8", "exit_code": 0,
+        "state": "completed", "started_at": "now",
+    })
+
+    with use_transport(t):
+        status = sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 3}).vm("vm_1").get_run("run_1")
+
+    assert status.state == "completed"
+    assert len(t.calls) == 2
+
+
+def test_retry_after_header_is_honored(monkeypatch) -> None:
+    # Task C: a Retry-After header sets the backoff. GET is idempotent so it
+    # retries; we assert the slept delay came from the header (5s).
+    slept: list[float] = []
+    monkeypatch.setattr(sdk.time, "sleep", lambda s: slept.append(s))
+    t = FakeTransport()
+    predicate = lambda method, url: method == "GET" and url.endswith("/runs/run_1")
+    t.script.append((predicate, 503, b""))  # placeholder replaced below
+
+    # Custom handler that attaches a Retry-After header on the first 503.
+    def handler(request: httpx.Request) -> httpx.Response:
+        t.calls.append({"method": request.method, "url": str(request.url), "body": None, "headers": request.headers})
+        if len([c for c in t.calls if c["url"].endswith("/runs/run_1")]) == 1:
+            return httpx.Response(503, headers={"Retry-After": "5"}, content=b"")
+        return httpx.Response(200, content=json.dumps({
+            "run_id": "run_1", "stdout": "", "stdout_encoding": "utf-8",
+            "stderr": "", "stderr_encoding": "utf-8", "exit_code": 0,
+            "state": "completed", "started_at": "now",
+        }).encode())
+
+    previous = sdk._http_client
+    sdk._http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        status = sdk.Arker(
+            api_key="k", base_url="https://test.invalid/api",
+            retry={"attempts": 3, "max_elapsed_s": 30},
+        ).vm("vm_1").get_run("run_1")
+    finally:
+        sdk._http_client.close()
+        sdk._http_client = previous
+
+    assert status.state == "completed"
+    assert slept == [5.0]
 
 
 def test_read_inline_base64() -> None:
@@ -575,7 +648,7 @@ def test_fork_sends_durable_flag() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
@@ -656,6 +729,77 @@ def test_run_status_defaults_retry_count_when_missing() -> None:
         status = client().vm("vm_1").get_run("run_1")
 
     assert status.retry_count == 0
+
+
+def test_fork_emits_ssh_keys_resources_policies_not_legacy() -> None:
+    # Task A: fork emits top-level ssh_public_keys + resources + policies and
+    # never the retired network/egress fork inputs.
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child", "owner_org_id": "o", "created_at": "now",
+            "public": False, "state": "idle", "sessions": [],
+            "network": {"ssh_public_keys": []}, "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().vm("ubuntu").fork(
+            ssh_public_keys=["ssh-ed25519 AAAA me@host"],
+            vcpu_count=2,
+            memory_mib=2048,
+            gpu_sms=10,
+            policies={"policies": [{"type": "outbound", "action": "deny"}]},
+        )
+
+    body = json.loads(t.calls[0]["body"])
+    assert body["ssh_public_keys"] == ["ssh-ed25519 AAAA me@host"]
+    assert body["resources"] == {"vcpu": 2, "memory_mib": 2048, "gpu_sms": 10}
+    assert body["policies"] == {"policies": [{"type": "outbound", "action": "deny"}]}
+    assert "network" not in body
+    assert "egress" not in body
+
+
+def test_run_polls_backgrounded_run_to_completion(monkeypatch) -> None:
+    # Task B: a synchronous run (background unset) that the server backgrounds
+    # past its sync window is transparently polled to completion and returned
+    # as a CompletedRunResult — the sync window is invisible to the caller.
+    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
+    t = FakeTransport()
+    t.add_json(lambda m, u: m == "POST" and u.endswith("/runs"), 200, {"run_id": "run_9", "state": "running"})
+    t.add_json(lambda m, u: m == "GET" and u.endswith("/runs/run_9"), 200, {
+        "run_id": "run_9", "state": "running", "started_at": "now",
+        "stdout": "", "stdout_encoding": "utf-8", "stderr": "", "stderr_encoding": "utf-8", "exit_code": None,
+    })
+    t.add_json(lambda m, u: m == "GET" and u.endswith("/runs/run_9"), 200, {
+        "run_id": "run_9", "state": "completed", "started_at": "now", "completed_at": "later",
+        "stdout": "done\n", "stdout_encoding": "utf-8", "stderr": "", "stderr_encoding": "utf-8", "exit_code": 0,
+    })
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("sleep 300")
+
+    assert isinstance(result, sdk.CompletedRunResult)
+    assert result.run_id == "run_9"
+    assert result.state == "completed"
+    assert result.stdout == b"done\n"
+    assert result.exit_code == 0
+    assert [c["method"] for c in t.calls] == ["POST", "GET", "GET"]
+
+
+def test_run_background_true_returns_immediately_without_polling() -> None:
+    # Explicit background=True opts out of the synchronous polling path.
+    t = FakeTransport()
+    t.add_json(lambda m, u: m == "POST" and u.endswith("/runs"), 200, {"run_id": "run_bg", "state": "running"})
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("sleep 300", background=True)
+
+    assert isinstance(result, sdk.BackgroundRunResult)
+    assert result.run_id == "run_bg"
+    assert [c["method"] for c in t.calls] == ["POST"]  # no status GET
 
 
 def test_per_entry_internal_error_retries(monkeypatch) -> None:

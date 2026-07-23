@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
 
@@ -84,26 +84,7 @@ class NetworkPolicy2:
     type: Literal['blocked']
 
 
-@dataclass(frozen=True)
-class NetworkPolicy3:
-    type: Literal['allow']
-    allow: list[str]
-
-
-@dataclass(frozen=True)
-class NetworkPolicy4:
-    type: Literal['block']
-    block: list[str]
-
-
-NetworkPolicy: TypeAlias = (
-    NetworkPolicy1 | NetworkPolicy2 | NetworkPolicy3 | NetworkPolicy4
-)
-
-
-NetworkPolicyInput: TypeAlias = (
-    bool | Literal['open', 'blocked', 'true', 'false', 'none'] | NetworkPolicy
-)
+NetworkPolicy: TypeAlias = NetworkPolicy1 | NetworkPolicy2
 
 
 Port: TypeAlias = int
@@ -188,12 +169,6 @@ class PatchSessionRequest:
 class PatchSessionResponse:
     ok: bool
     session_id: str
-
-
-@dataclass(frozen=True)
-class InboundPortRequest:
-    visibility: str | None = 'private'
-    protocol: str | None = 'http'
 
 
 @dataclass(frozen=True)
@@ -469,7 +444,6 @@ class VmResources:
 
 @dataclass(frozen=True)
 class NetworkInput:
-    reachable: bool | None = None
     ssh_public_keys: list[str] | None = None
 
 
@@ -480,16 +454,8 @@ class SshPublicKeyInfo:
 
 
 @dataclass(frozen=True)
-class VmInboundPort:
-    port: int
-    url: str
-    auth: str
-
-
-@dataclass(frozen=True)
-class PatchVmRequest:
-    resources: VmResources | None = None
-    network: NetworkInput | None = None
+class VmNetwork:
+    ssh_public_keys: list[SshPublicKeyInfo] | None = None
 
 
 @dataclass(frozen=True)
@@ -685,8 +651,39 @@ PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1 | PolicyActio
 
 
 @dataclass(frozen=True)
-class InboundRequest:
-    ports: dict[str, InboundPortRequest] | None = field(default_factory=dict)
+class Vm:
+    vm_id: str
+    owner_org_id: str
+    created_at: str
+    public: bool
+    state: VmState
+    network: VmNetwork
+    sessions: list[Session]
+    resources: VmResources
+    name: str | None = None
+    root_source_vm_id: str | None = None
+    root_source_vm_name: str | None = None
+    region: str | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    started_at: str | None = None
+    vcpu_count: int | None = None
+    memory_mib: int | None = None
+    disk_mib: int | None = None
+    egress: NetworkPolicy | None = None
+    base_image: str | None = None
+    source_golden: str | None = None
+    max_vcpus: int | None = None
+    min_vcpus: int | None = None
+    max_memory_mib: int | None = None
+    min_memory_mib: int | None = None
+    min_disk_mib: int | None = None
+    max_disk_mib: int | None = None
+
+
+@dataclass(frozen=True)
+class ListVmsResponse:
+    vms: list[Vm]
+    next_cursor: str | None = None
 
 
 RunResponse: TypeAlias = CompletedRunResponse | BackgroundRunResponse
@@ -739,61 +736,11 @@ class SyncCommitWriteResult:
 
 
 @dataclass(frozen=True)
-class VmNetwork:
-    reachable: bool
-    hostname: str | None = None
-    data_hostname: str | None = None
-    ports: list[VmInboundPort] | None = None
-    ssh_public_keys: list[SshPublicKeyInfo] | None = None
-
-
-@dataclass(frozen=True)
 class PolicyEntry:
     type: Literal['outbound', 'inbound']
     action: PolicyAction
     match: PolicyMatch | None = None
-    auth: Literal['open', 'authenticated'] | None = None
-
-
-@dataclass(frozen=True)
-class Vm:
-    vm_id: str
-    owner_org_id: str
-    created_at: str
-    public: bool
-    state: VmState
-    network: VmNetwork
-    sessions: list[Session]
-    resources: VmResources
-    name: str | None = None
-    root_source_vm_id: str | None = None
-    root_source_vm_name: str | None = None
-    region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
-    started_at: str | None = None
-    vcpu_count: int | None = None
-    memory_mib: int | None = None
-    disk_mib: int | None = None
-    egress: NetworkPolicy | None = None
-    base_image: str | None = None
-    source_golden: str | None = None
-    max_vcpus: int | None = None
-    min_vcpus: int | None = None
-    max_memory_mib: int | None = None
-    min_memory_mib: int | None = None
-    min_disk_mib: int | None = None
-    max_disk_mib: int | None = None
-
-
-@dataclass(frozen=True)
-class ListVmsResponse:
-    vms: list[Vm]
-    next_cursor: str | None = None
-
-
-@dataclass(frozen=True)
-class NetworkRequest:
-    inbound: InboundRequest | None = None
+    auth: Literal['open', 'arker'] | None = None
 
 
 @dataclass(frozen=True)
@@ -823,11 +770,8 @@ SyncWriteResult: TypeAlias = (
 @dataclass(frozen=True)
 class PolicyDoc:
     policies: list[PolicyEntry] | None = None
-
-
-@dataclass(frozen=True)
-class PutPoliciesResponse:
-    policy: PolicyDoc
+    secrets: dict[str, str] | None = None
+    hostname: str | None = None
     mitm_domains: list[str] | None = None
     warnings: list[str] | None = None
 
@@ -839,8 +783,7 @@ class ForkRequest:
     source_org_id: str | None = None
     name: str | None = None
     public: bool | None = None
-    network: NetworkInput | None = None
-    egress: NetworkPolicyInput | None = None
+    ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
     platforms: list[str] | None = None
@@ -860,10 +803,10 @@ class RunRequest:
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
-    network: NetworkRequest | None = None
     acquire: str | None = None
     release: str | None = None
     signal: str | None = None
+    policies: PolicyDoc | None = None
 
 
 @dataclass(frozen=True)
@@ -871,6 +814,13 @@ class SyncWriteResponse:
     ok: bool
     op: Literal['write']
     results: list[SyncWriteResult]
+
+
+@dataclass(frozen=True)
+class PatchVmRequest:
+    resources: VmResources | None = None
+    network: NetworkInput | None = None
+    policies: PolicyDoc | None = None
 
 
 SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse
@@ -1005,7 +955,7 @@ class PutVmPoliciesOperation(TypedDict):
     path: Literal['/v1/vms/{id}/policies']
     parameters: PutVmPoliciesParameters
     request: PolicyDoc
-    success: PutPoliciesResponse
+    success: PolicyDoc
     errors: ErrorResponse
 
 

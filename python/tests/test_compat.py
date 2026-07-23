@@ -58,7 +58,7 @@ def vm_payload(vm_id: str) -> dict[str, Any]:
         "public": False,
         "state": "idle",
         "sessions": [],
-        "network": {"reachable": False},
+        "network": {"ssh_public_keys": []},
         "resources": {},
     }
 

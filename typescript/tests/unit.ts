@@ -139,7 +139,7 @@ async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      network: { reachable: false },
+      network: { ssh_public_keys: [] },
       resources: { vcpu: 4, memory_mib: 8192, disk_mib: 10240 },
     },
   );
@@ -372,8 +372,7 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
         public: true,
         state: "idle",
         sessions: [],
-        tunnels: [],
-        network: { type: "open" },
+        network: { ssh_public_keys: [] },
         max_vcpus: 8,
         max_memory_mib: 32768,
         min_memory_mib: 512,
@@ -392,7 +391,7 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
   assert.equal(result.vms[0]!.max_vcpus, 8);
   assert.equal(result.vms[0]!.max_memory_mib, 32768);
   assert.equal(result.vms[0]!.min_memory_mib, 512);
-  assert.deepEqual(result.vms[0]!.network, { type: "open" });
+  assert.deepEqual(result.vms[0]!.network, { ssh_public_keys: [] });
 }
 
 async function testForkSendsDurableFlag(): Promise<void> {
@@ -461,6 +460,120 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
 
   const status = await client(fetch).vm("vm_1").getRun("run_1");
   assert.equal(status.retry_count, 2);
+}
+
+// A client whose retries fire instantly (no real backoff) for retry tests.
+function retryClient(fetch: FakeFetch, attempts = 3): Arker {
+  return new Arker({
+    apiKey: "ark_live_test",
+    baseUrl: "https://test.invalid/api/",
+    fetch: fetch.fetch,
+    retry: { attempts, baseDelayMs: 0, maxDelayMs: 0, jitterMs: 0, maxElapsedMs: 30_000 },
+  });
+}
+
+async function testForkEmitsSshKeysResourcesPoliciesNotLegacy(): Promise<void> {
+  // Task A: fork emits top-level ssh_public_keys + resources + policies and
+  // never the retired network / egress fork inputs.
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    {
+      vm_id: "vm_child", owner_org_id: "o", created_at: "now",
+      public: false, state: "idle", sessions: [], network: { ssh_public_keys: [] }, resources: {},
+    },
+  );
+
+  await client(fetch).fork("ubuntu", {
+    ssh_public_keys: ["ssh-ed25519 AAAA me@host"],
+    resources: { vcpu: 2, memory_mib: 2048, gpu_sms: 10 },
+    policies: { policies: [{ type: "outbound", action: "deny" }] },
+  });
+
+  const body = JSON.parse(fetch.calls[0]!.body!);
+  assert.deepEqual(body.ssh_public_keys, ["ssh-ed25519 AAAA me@host"]);
+  assert.deepEqual(body.resources, { vcpu: 2, memory_mib: 2048, gpu_sms: 10 });
+  assert.deepEqual(body.policies, { policies: [{ type: "outbound", action: "deny" }] });
+  assert.equal(body.network, undefined);
+  assert.equal(body.egress, undefined);
+}
+
+async function testRunPollsBackgroundedRunToCompletion(): Promise<void> {
+  // Task B: a synchronous run the server backgrounds past its sync window is
+  // transparently polled to completion and resolved as a CompletedRunResult.
+  const fetch = new FakeFetch();
+  fetch.addJson((m, u) => m === "POST" && u.endsWith("/v1/vms/vm_1/runs"), 200, { run_id: "run_9", state: "running" });
+  fetch.addJson((m, u) => m === "GET" && u.endsWith("/runs/run_9"), 200, {
+    run_id: "run_9", state: "running", started_at: "now",
+    stdout: "", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8", exit_code: null,
+  });
+  fetch.addJson((m, u) => m === "GET" && u.endsWith("/runs/run_9"), 200, {
+    run_id: "run_9", state: "completed", started_at: "now", completed_at: "later",
+    stdout: "done\n", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8", exit_code: 0,
+  });
+
+  const result = await client(fetch).vm("vm_1").run("sleep 300", { pollIntervalMs: 1 });
+
+  assert.equal(result.type, "completed");
+  const completed = result as CompletedRunResult;
+  assert.equal(completed.runId, "run_9");
+  assert.equal(completed.state, "completed");
+  assert.equal(decode(completed.stdout), "done\n");
+  assert.equal(completed.exitCode, 0);
+  assert.deepEqual(fetch.calls.map((c) => c.method), ["POST", "GET", "GET"]);
+}
+
+async function testRunBackgroundTrueReturnsImmediately(): Promise<void> {
+  // Explicit background:true opts out of the synchronous polling path.
+  const fetch = new FakeFetch();
+  fetch.addJson((m, u) => m === "POST" && u.endsWith("/v1/vms/vm_1/runs"), 200, { run_id: "run_bg", state: "running" });
+
+  const result = await client(fetch).vm("vm_1").run("sleep 300", { background: true });
+
+  assert.equal(result.type, "background");
+  assert.deepEqual(fetch.calls.map((c) => c.method), ["POST"]);
+}
+
+async function testPostNotRetriedOnBare503(): Promise<void> {
+  // Task C: a POST failing with a 503 carrying NO actionable pre-work code
+  // must NOT be auto-retried (could double-execute).
+  const fetch = new FakeFetch();
+  const predicate = (m: string, u: string) => m === "POST" && u.endsWith("/sync");
+  fetch.addJson(predicate, 503, {});
+  fetch.addJson(predicate, 200, { ok: true, op: "read", path: "/home/user/x", size: 2, content: "ok", encoding: "utf-8" });
+
+  await assert.rejects(retryClient(fetch).vm("vm").sync("/home/user/x"));
+  assert.equal(fetch.calls.length, 1); // not retried
+}
+
+async function testGetRetriedOnBare503(): Promise<void> {
+  // Idempotent GETs (used by run-status polling) retry freely on a transient
+  // 503 even without an actionable error code.
+  const fetch = new FakeFetch();
+  const predicate = (m: string, u: string) => m === "GET" && u.endsWith("/runs/run_1");
+  fetch.addJson(predicate, 503, {});
+  fetch.addJson(predicate, 200, {
+    run_id: "run_1", state: "completed", started_at: "now",
+    stdout: "", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8", exit_code: 0,
+  });
+
+  const status = await retryClient(fetch).vm("vm_1").getRun("run_1");
+  assert.equal(status.state, "completed");
+  assert.equal(fetch.calls.length, 2);
+}
+
+async function testPostRetriedOnPreworkRejection(): Promise<void> {
+  // Task C: a POST IS retried when the 503 names a pre-work admission/routing
+  // rejection ("unavailable" — not processed, try again).
+  const fetch = new FakeFetch();
+  const predicate = (m: string, u: string) => m === "POST" && u.endsWith("/sync");
+  fetch.addJson(predicate, 503, { error: { code: "unavailable", message: "try later", timestamp: "2026-07-21T00:00:00Z" } });
+  fetch.addJson(predicate, 200, { ok: true, op: "read", path: "/home/user/x", size: 2, content: "ok", encoding: "utf-8" });
+
+  const bytes = await retryClient(fetch).vm("vm").sync("/home/user/x");
+  assert.equal(decode(bytes), "ok");
+  assert.equal(fetch.calls.length, 2);
 }
 
 async function testConnectPtyCreatesSessionAndUsesBearerHeader(): Promise<void> {
@@ -636,5 +749,11 @@ await testConnectPtyUsesTicketForBrowserWebSocket();
 await testConnectPtyPassesCancelTtlSecs();
 await testConnectPtyDeliversDataAndCloseEvents();
 testSurfaceStubClassificationUsesStructuredErrorCodes();
+await testForkEmitsSshKeysResourcesPoliciesNotLegacy();
+await testRunPollsBackgroundedRunToCompletion();
+await testRunBackgroundTrueReturnsImmediately();
+await testPostNotRetriedOnBare503();
+await testGetRetriedOnBare503();
+await testPostRetriedOnPreworkRejection();
 
 console.log("PASS unit");

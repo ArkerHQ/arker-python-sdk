@@ -504,6 +504,7 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       body: {
         resources: { vcpu: null, memory_mib: 1024, disk_mib: null },
         network: null,
+        policies: null,
       },
     },
     {

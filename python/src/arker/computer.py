@@ -9,6 +9,7 @@ from __future__ import annotations
 import atexit
 import base64
 import dataclasses
+import email.utils
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import threading
 import time
 import types
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Callable, TypeVar, get_args, get_origin, get_type_hints
 
 import httpx
@@ -47,15 +49,12 @@ from .generated.api_models import (
     ListVmsResponse,
     ListVmsParameters,
     NetworkInput,
-    NetworkPolicyInput,
-    NetworkRequest,
     OrgRunListRow,
     PatchSessionRequest,
     PatchSessionResponse,
     PatchVmRequest,
     PolicyDoc,
     PtyTicketResponse,
-    PutPoliciesResponse,
     Run,
     RunRequest,
     RunResponse,
@@ -95,7 +94,12 @@ DEFAULT_RETRY_ATTEMPTS = 4
 DEFAULT_RETRY_BASE_DELAY_S = 0.2
 DEFAULT_RETRY_MAX_DELAY_S = 2.0
 DEFAULT_RETRY_JITTER_S = 0.05
+# Overall wall-clock budget for one logical request's retry sequence. Bounds the
+# total time spent backing off so a request never retries forever.
+DEFAULT_RETRY_MAX_ELAPSED_S = 30.0
 PRESIGNED_PUT_TIMEOUT_S = 600
+# Status codes worth retrying (Task C). 429/503 are the primary transient
+# signals; 502/504 are gateway-level. `Retry-After` is honored when present.
 RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {
     "unavailable",
@@ -104,6 +108,22 @@ RETRYABLE_CODES = {
     "bad_gateway",
     "network_error",
     "stale_route",
+    "resource_pressure",
+}
+# HTTP methods safe to retry unconditionally (no observable side effect on the
+# server beyond the first successful application). A POST is NOT here — it is
+# retried only under the narrow pre-work-rejection / not-sent conditions below.
+IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+# Error codes that mean the server rejected the request BEFORE doing any work
+# (admission / routing failures — "not processed, try a different host"). Safe
+# to retry even a non-idempotent POST, because the mutation never started.
+PREWORK_REJECTION_CODES = {
+    "unavailable",
+    "backend_unavailable",
+    "api_worker_unavailable",
+    "bad_gateway",
+    "stale_route",
+    "resource_pressure",
 }
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -111,6 +131,15 @@ DEFAULT_REGION_ENV = "ARKER_REGION"
 DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
 DEFAULT_PROVIDER = "aws"
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
+
+# Synchronous run polling (Task B): a backgrounded run that the caller wanted
+# synchronous is polled to completion with exponential backoff bounded by an
+# overall deadline.
+SYNC_POLL_INITIAL_S = 1.0
+SYNC_POLL_MAX_S = 5.0
+SYNC_POLL_GRACE_S = 60.0
+DEFAULT_SYNC_POLL_TIMEOUT_S = 3600.0
+
 BURST_SOURCE_REFS = {"arkuntu"}
 BURST_VM_ID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$")
 
@@ -133,6 +162,8 @@ class RetryOptions:
     base_delay_s: float = DEFAULT_RETRY_BASE_DELAY_S
     max_delay_s: float = DEFAULT_RETRY_MAX_DELAY_S
     jitter_s: float = DEFAULT_RETRY_JITTER_S
+    # Overall wall-clock cap across all retries of one request.
+    max_elapsed_s: float = DEFAULT_RETRY_MAX_ELAPSED_S
 
 
 # ── Resources ───────────────────────────────────────────────────────
@@ -284,15 +315,16 @@ class Arker:
         source_org_id: str | None = None,
         name: str | None = None,
         public: bool | None = None,
-        network: NetworkInput | dict[str, Any] | None = None,
-        egress: NetworkPolicyInput | dict[str, Any] | None = None,
+        ssh_public_keys: list[str] | None = None,
         disk: bool | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        gpu_sms: int | None = None,
+        gpu_vram_mib: int | None = None,
         durable: bool | None = None,
         platforms: list[str] | None = None,
-        policies: dict[str, Any] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -311,12 +343,19 @@ class Arker:
         always wins, and it's irrelevant when forking by id. ``name``
         (optional) is the *new* VM's name in your org.
 
-        ``policies`` (ARK-125) is the child's outbound egress policy document.
-        Omit it (``None``) to inherit the source VM's policy, re-encrypted under
-        the child's own key. Pass a doc to override it — even an empty
-        ``{"policies": []}``, which clears to allow-all rather than inheriting.
-        Distinct from ``egress`` (the legacy coarse policy) and ``network``
-        (inbound reachability).
+        ``ssh_public_keys`` authorizes raw SSH key strings
+        (``"ssh-ed25519 AAAA… you@host"``) on the new VM's ``authorized_keys``
+        (successor to the retired ``network.ssh_public_keys`` fork input); omit
+        or pass an empty list to fork with no keys and add them later via
+        ``VM.update``. Inbound reachability is NOT a fork input — it is derived
+        from the VM's policy.
+
+        ``policies`` (ARK-125) is the child's network policy document — the SOLE
+        control of its network (both outbound egress and inbound ingress). Omit
+        it (``None``) to inherit the source VM's policy, re-encrypted under the
+        child's own key. Pass a doc to override it — even an empty
+        ``{"policies": []}``, which clears to the default posture (allow-all
+        outbound, reachable-with-bearer inbound) rather than inheriting.
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -337,23 +376,16 @@ class Arker:
         # irrelevant when forking by id.
         if source_vm_name and source_org_id is None and source_vm_name in GOLDEN_NAMES:
             source_org_id = ARKER_ORG_ID
-        # The contract folds vcpu/memory/disk into a single `resources` object.
-        resources: VmResources | None = None
-        if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
-            resources = VmResources(
-                vcpu=vcpu_count,
-                memory_mib=memory_mib,
-                disk_mib=disk_mib,
-            )
-        policy_doc = _decode_model(PolicyDoc, policies) if policies is not None else None
+        # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
+        resources = _vm_resources(vcpu_count, memory_mib, disk_mib, gpu_sms, gpu_vram_mib)
+        policy_doc = _as_policy_doc(policies)
         body = ForkRequest(
             source_vm_id=source_vm_id,
             source_vm_name=source_vm_name,
             source_org_id=source_org_id,
             name=name,
             public=public,
-            network=network,
-            egress=egress,
+            ssh_public_keys=ssh_public_keys,
             disk=disk if disk is not None else True,
             durable=durable,
             platforms=platforms,
@@ -495,16 +527,27 @@ class Arker:
             headers["content-type"] = "application/json"
             data = json.dumps(_drop_none(body)).encode("utf-8")
 
+        # Task C — idempotency-aware retry. Safe/idempotent methods (and any
+        # request carrying an Idempotency-Key, which the server dedupes) may be
+        # retried freely. A non-idempotent POST (fork / run / create) is retried
+        # only when the server clearly never applied it: a connection-level
+        # failure (request not sent), or a retryable status whose flat
+        # {code,message} names a pre-work admission/routing rejection.
+        idempotent = _is_idempotent_method(method) or _has_idempotency_key(headers)
+
+        deadline = time.monotonic() + self._retry.max_elapsed_s
         last_status = 0
         last_text = ""
         last_error: dict[str, str] | None = None
 
         for attempt in range(self._retry.attempts):
+            more_attempts = attempt < self._retry.attempts - 1
             try:
-                status, raw = _http(method, url, headers, data)
+                status, raw, retry_after = _http(method, url, headers, data)
             except httpx.RequestError as error:
-                if attempt < self._retry.attempts - 1:
-                    time.sleep(self._retry_delay(attempt))
+                can_retry = idempotent or _transport_error_safe(error)
+                if can_retry and more_attempts and time.monotonic() < deadline:
+                    time.sleep(self._retry_delay(attempt, None, deadline))
                     continue
                 raise ArkerError("network_error", str(error), 0) from error
 
@@ -515,8 +558,12 @@ class Arker:
             last_text = text
             last_error = parsed_error
 
-            if _is_retryable(status, parsed_error) and attempt < self._retry.attempts - 1:
-                time.sleep(self._retry_delay(attempt))
+            retryable = _is_retryable(status, parsed_error)
+            if retryable and not idempotent:
+                # Non-idempotent POST: only retry a clear pre-work rejection.
+                retryable = _is_prework_rejection(status, parsed_error)
+            if retryable and more_attempts and time.monotonic() < deadline:
+                time.sleep(self._retry_delay(attempt, retry_after, deadline))
                 continue
 
             if parsed_error:
@@ -531,9 +578,23 @@ class Arker:
             raise ArkerError(last_error["code"], last_error["message"], last_status)
         raise ArkerError("internal", last_text[:300] or f"HTTP {last_status}", last_status)
 
-    def _retry_delay(self, attempt: int) -> float:
-        base = min(self._retry.max_delay_s, self._retry.base_delay_s * (2 ** attempt))
-        return base + secrets.randbelow(max(1, int(self._retry.jitter_s * 1000) + 1)) / 1000.0
+    def _retry_delay(
+        self,
+        attempt: int,
+        retry_after: float | None = None,
+        deadline: float | None = None,
+    ) -> float:
+        """Backoff before the next attempt. Honors a server ``Retry-After``
+        when present; otherwise exponential backoff with jitter. Always bounded
+        by whatever remains of the overall retry ``deadline``."""
+        if retry_after is not None and retry_after >= 0:
+            delay = retry_after
+        else:
+            base = min(self._retry.max_delay_s, self._retry.base_delay_s * (2 ** attempt))
+            delay = base + secrets.randbelow(max(1, int(self._retry.jitter_s * 1000) + 1)) / 1000.0
+        if deadline is not None:
+            delay = min(delay, max(0.0, deadline - time.monotonic()))
+        return max(0.0, delay)
 
     def _base_url_for(self, ref: str) -> str:
         if _is_burst_ref(ref) and self._burst_base_url:
@@ -600,11 +661,13 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
-        network: NetworkRequest | dict[str, Any] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
         acquire: str | list[str] | None = None,
         release: str | list[str] | None = None,
         signal: str | None = None,
         idempotency_key: str | None = None,
+        poll_interval: float | None = None,
+        poll_timeout: float | None = None,
     ) -> RunResult:
         """Run ``command`` in this VM via ``POST /v1/vms/{id}/runs``.
 
@@ -615,10 +678,30 @@ class VM:
         so ``background=True`` runs should leave it unset (or set a real kill
         bound) — a small ``timeout`` would kill the run, not just background it.
 
-        ``time_to_background`` is the HTTP sync window in seconds: how long the call
-        blocks inline before backgrounding the run and returning a pollable
-        ``run_id``. ``None`` (default) = 30. It does not bound command
-        runtime — that is ``timeout``.
+        ``time_to_background`` is the HTTP sync window in seconds: how long the
+        server blocks inline before backgrounding the run and returning a
+        pollable ``run_id``. It does not bound command runtime — that is
+        ``timeout``.
+
+        **Synchronous by default.** Unless you pass ``background=True``, ``run``
+        gives you fully synchronous semantics regardless of duration: if the
+        command outlives the server's sync window and the run is backgrounded,
+        the SDK transparently polls the run's status to completion and returns
+        the final :class:`CompletedRunResult` (stdout / stderr / exit_code) — so
+        the ``time_to_background`` window is invisible to you. The status polls
+        reuse the client retry policy, so a transient 503 mid-poll doesn't abort
+        the run. Pass ``background=True`` to opt out and get the pollable
+        :class:`BackgroundRunResult` back immediately.
+
+        ``poll_interval`` (seconds, default ~1s with exponential backoff to ~5s)
+        and ``poll_timeout`` (overall seconds the synchronous wait may take;
+        defaults to the run's ``timeout`` + grace, else ~1h) bound that polling;
+        exceeding ``poll_timeout`` raises with the ``run_id`` so you can keep
+        polling with :meth:`get_run`.
+
+        ``policies`` (ARK-125) applies a network policy to the VM for (and
+        persisting past) this run — same shape/semantics as
+        ``Arker.fork(policies=…)``.
         """
         body = RunRequest(
             command=command,
@@ -631,19 +714,59 @@ class VM:
             vcpu_count=vcpu_count,
             memory_mib=memory_mib,
             disk_mib=disk_mib,
-            network=network,
             acquire=",".join(acquire) if isinstance(acquire, list) else acquire,
             release=",".join(release) if isinstance(release, list) else release,
             signal=signal,
+            policies=_as_policy_doc(policies),
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        return _run_response(self._client._request(
+        result = _run_response(self._client._request(
             "POST",
             f"{_vm_path(self.id)}/runs",
             body,
             base_url=self.base_url,
             extra_headers=headers,
         ))
+        # Task B: transparent synchronous semantics. When the caller did not
+        # explicitly opt into background execution but the run exceeded the
+        # server's sync window (returned backgrounded), poll it to completion so
+        # the call looks fully synchronous.
+        if isinstance(result, BackgroundRunResult) and not background:
+            return self._await_run(
+                result.run_id,
+                timeout=timeout,
+                poll_interval=poll_interval,
+                poll_timeout=poll_timeout,
+            )
+        return result
+
+    def _await_run(
+        self,
+        run_id: str,
+        *,
+        timeout: int | None,
+        poll_interval: float | None,
+        poll_timeout: float | None,
+    ) -> CompletedRunResult:
+        """Poll ``GET /runs/{run_id}`` until the run reaches a terminal state,
+        then return it as a :class:`CompletedRunResult`. Bounded by
+        ``poll_timeout`` (overall) with exponential backoff between polls."""
+        interval = poll_interval if poll_interval and poll_interval > 0 else SYNC_POLL_INITIAL_S
+        deadline = time.monotonic() + _resolve_poll_timeout(timeout, poll_timeout)
+        while True:
+            run = self.get_run(run_id)
+            if run.state != "running":
+                return _completed_from_run(run)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ArkerError(
+                    "deadline_exceeded",
+                    f"run {run_id} still running after the synchronous poll deadline; "
+                    f"poll it with get_run({run_id!r})",
+                    0,
+                )
+            time.sleep(min(interval, remaining))
+            interval = min(SYNC_POLL_MAX_S, interval * 2)
 
     def update(
         self,
@@ -651,19 +774,32 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        gpu_sms: int | None = None,
+        gpu_vram_mib: int | None = None,
         network: NetworkInput | dict[str, Any] | None = None,
+        ssh_public_keys: list[str] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
     ) -> Vm:
-        """Update this VM's resource allocation and/or inbound reachability
-        (``network`` carries ``reachable`` and ``ssh_public_keys``) via
-        ``PATCH /v1/vms/{id}``. Returns the updated :class:`Vm`."""
-        resources: VmResources | None = None
-        if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
-            resources = VmResources(
-                vcpu=vcpu_count,
-                memory_mib=memory_mib,
-                disk_mib=disk_mib,
-            )
-        body = PatchVmRequest(resources=resources, network=network)
+        """Update this VM via ``PATCH /v1/vms/{id}``. Returns the updated
+        :class:`Vm`.
+
+        - ``vcpu_count`` / ``memory_mib`` / ``disk_mib`` / ``gpu_sms`` /
+          ``gpu_vram_mib`` fold into the ``resources`` object.
+        - ``network`` carries SSH keys only (``{"ssh_public_keys": [...]}``);
+          ``ssh_public_keys`` is a convenience for the same. Inbound
+          reachability is NOT set here — it is derived from ``policies``.
+        - ``policies`` (ARK-125) replaces the VM's network policy — same shape /
+          semantics as :meth:`set_policies` and ``Arker.fork(policies=…)``.
+        """
+        resources = _vm_resources(vcpu_count, memory_mib, disk_mib, gpu_sms, gpu_vram_mib)
+        net = network
+        if net is None and ssh_public_keys is not None:
+            net = NetworkInput(ssh_public_keys=ssh_public_keys)
+        body = PatchVmRequest(
+            resources=resources,
+            network=net,
+            policies=_as_policy_doc(policies),
+        )
         payload = self._client._request("PATCH", _vm_path(self.id), body, base_url=self.base_url)
         return _vm_info(payload)
 
@@ -672,19 +808,23 @@ class VM:
         return _decode_model(DeleteVmResponse, payload)
 
     def get_policies(self) -> PolicyDoc:
-        """Read this VM's outbound egress policy document (ARK-125) via
+        """Read this VM's network policy document (ARK-125) via
         ``GET /v1/vms/{id}/policies``. Returns an empty doc (``{}``) when no
-        policy is set; read its rules as ``doc.policies``."""
+        policy is set; read its rules as ``doc.policies``. The response also
+        carries the derived read-only ``hostname`` (inbound reachability),
+        ``mitm_domains``, and ``warnings``."""
         payload = self._client._request("GET", f"{_vm_path(self.id)}/policies", base_url=self.base_url)
         return _decode_model(PolicyDoc, payload)
 
-    def set_policies(self, doc: PolicyDoc | dict[str, Any]) -> PutPoliciesResponse:
-        """Replace this VM's outbound egress policy with ``doc`` — an ordered,
-        first-match-wins rule list — via ``PUT /v1/vms/{id}/policies``. An empty
-        doc (``{}`` or ``{"policies": []}``) clears the policy to allow-all.
+    def set_policies(self, doc: PolicyDoc | dict[str, Any]) -> PolicyDoc:
+        """Replace this VM's network policy (outbound egress + inbound ingress)
+        with ``doc`` — an ordered, first-match-wins rule list — via
+        ``PUT /v1/vms/{id}/policies``. An empty doc (``{}`` or
+        ``{"policies": []}``) clears the policy to the default posture.
 
-        Returns the ``PutPoliciesResponse``: the stored ``policy`` plus the
-        ``mitm_domains`` it escalates to MITM and any degrade ``warnings``::
+        Returns the stored :class:`PolicyDoc`: the persisted ``policies`` plus
+        the derived read-only ``hostname``, the ``mitm_domains`` it escalates to
+        MITM, and any degrade ``warnings``::
 
             vm.set_policies({
                 "policies": [
@@ -697,7 +837,7 @@ class VM:
         """
         request = doc if isinstance(doc, PolicyDoc) else _decode_model(PolicyDoc, doc)
         payload = self._client._request("PUT", f"{_vm_path(self.id)}/policies", request, base_url=self.base_url)
-        return _decode_model(PutPoliciesResponse, payload)
+        return _decode_model(PolicyDoc, payload)
 
     def sync(self, path: str, data: bytes | str | None = None) -> bytes | None:
         """Read or write a file in this VM over ``POST /v1/vms/{id}/sync``.
@@ -1142,9 +1282,58 @@ _http_client = httpx.Client(http2=True)
 atexit.register(_http_client.close)
 
 
-def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) -> tuple[int, bytes]:
+def _http(
+    method: str, url: str, headers: dict[str, str], data: bytes | None
+) -> tuple[int, bytes, float | None]:
     response = _http_client.request(method, url, headers=headers, content=data, timeout=120)
-    return response.status_code, response.content
+    return (
+        response.status_code,
+        response.content,
+        _parse_retry_after(response.headers.get("retry-after")),
+    )
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a ``Retry-After`` header (delta-seconds or HTTP-date) into seconds
+    from now, or ``None`` when absent/unparseable."""
+    if not value:
+        return None
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if trimmed.isdigit():
+        return float(trimmed)
+    try:
+        when = email.utils.parsedate_to_datetime(trimmed)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+
+def _is_idempotent_method(method: str) -> bool:
+    return method.upper() in IDEMPOTENT_METHODS
+
+
+def _has_idempotency_key(headers: dict[str, str]) -> bool:
+    return any(key.lower() == "idempotency-key" for key in headers)
+
+
+def _transport_error_safe(error: httpx.RequestError) -> bool:
+    """True when the transport failure proves the request was never delivered
+    (connection never established / never acquired) — so even a POST can be
+    retried without risk of double-execution."""
+    return isinstance(error, (httpx.ConnectError, httpx.PoolTimeout))
+
+
+def _is_prework_rejection(status: int, error: dict[str, str] | None) -> bool:
+    """True when a retryable status carries a flat error code marking a
+    pre-work admission/routing rejection (the mutation never started), so it is
+    safe to retry even a non-idempotent POST."""
+    return bool(error) and error["code"] in PREWORK_REJECTION_CODES
 
 
 def _build_query(
@@ -1226,7 +1415,7 @@ def _is_burst_ref(ref: str) -> bool:
 
 def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> RetryOptions:
     if retry is False:
-        return RetryOptions(attempts=1, base_delay_s=0, max_delay_s=0, jitter_s=0)
+        return RetryOptions(attempts=1, base_delay_s=0, max_delay_s=0, jitter_s=0, max_elapsed_s=0)
     if isinstance(retry, RetryOptions):
         return retry
     if isinstance(retry, dict):
@@ -1235,6 +1424,7 @@ def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> Retr
             base_delay_s=max(0.0, float(retry.get("base_delay_s", DEFAULT_RETRY_BASE_DELAY_S))),
             max_delay_s=max(0.0, float(retry.get("max_delay_s", DEFAULT_RETRY_MAX_DELAY_S))),
             jitter_s=max(0.0, float(retry.get("jitter_s", DEFAULT_RETRY_JITTER_S))),
+            max_elapsed_s=max(0.0, float(retry.get("max_elapsed_s", DEFAULT_RETRY_MAX_ELAPSED_S))),
         )
     return RetryOptions()
 
@@ -1441,6 +1631,60 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
 
 def _run_status_response(payload: dict[str, Any]) -> Run:
     return _decode_model(Run, payload)
+
+
+def _vm_resources(
+    vcpu: int | None,
+    memory_mib: int | None,
+    disk_mib: int | None,
+    gpu_sms: int | None = None,
+    gpu_vram_mib: int | None = None,
+) -> VmResources | None:
+    """Fold flat resource knobs into a ``VmResources`` object, or ``None`` when
+    none were supplied (so the request omits ``resources`` entirely)."""
+    if all(v is None for v in (vcpu, memory_mib, disk_mib, gpu_sms, gpu_vram_mib)):
+        return None
+    return VmResources(
+        vcpu=vcpu,
+        memory_mib=memory_mib,
+        disk_mib=disk_mib,
+        gpu_sms=gpu_sms,
+        gpu_vram_mib=gpu_vram_mib,
+    )
+
+
+def _as_policy_doc(doc: PolicyDoc | dict[str, Any] | None) -> PolicyDoc | None:
+    if doc is None:
+        return None
+    if isinstance(doc, PolicyDoc):
+        return doc
+    return _decode_model(PolicyDoc, doc)
+
+
+def _resolve_poll_timeout(timeout: int | None, poll_timeout: float | None) -> float:
+    """Overall wall-clock budget for the synchronous-run poll loop. An explicit
+    ``poll_timeout`` wins; otherwise follow the run's kill bound (``timeout``)
+    plus grace, falling back to ~1h for unbounded runs."""
+    if poll_timeout is not None:
+        return max(0.0, float(poll_timeout))
+    if timeout is not None and timeout > 0:
+        return float(timeout) + SYNC_POLL_GRACE_S
+    return DEFAULT_SYNC_POLL_TIMEOUT_S
+
+
+def _completed_from_run(run: Run) -> CompletedRunResult:
+    """Project a terminal :class:`Run` status onto the ``CompletedRunResult``
+    shape returned by the synchronous ``run()`` path."""
+    return CompletedRunResult(
+        stdout=_decode_bytes(run.stdout, run.stdout_encoding),
+        stdout_encoding=run.stdout_encoding,
+        stderr=_decode_bytes(run.stderr, run.stderr_encoding),
+        stderr_encoding=run.stderr_encoding,
+        exit_code=run.exit_code if run.exit_code is not None else -1,
+        run_id=run.run_id,
+        state=run.state,
+        fail_reason=run.fail_reason,
+    )
 
 
 def _org_runs_response(payload: dict[str, Any]) -> ListOrgRunsResponse:

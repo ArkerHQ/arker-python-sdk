@@ -592,7 +592,7 @@
         "operationId": "getVmPolicies",
         "responses": {
           "200": {
-            "description": "The VM's egress policy document (empty when none is set).",
+            "description": "The VM's policy document (empty when none is set), plus its derived inbound exposure (reachability + per-port tunnels).",
             "content": {
               "application/json": {
                 "schema": {
@@ -624,7 +624,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PutPoliciesResponse"
+                  "$ref": "#/components/schemas/PolicyDoc"
                 }
               }
             }
@@ -1620,79 +1620,51 @@
                 "const": "blocked"
               }
             }
-          },
-          {
-            "type": "object",
-            "required": [
-              "type",
-              "allow"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "const": "allow"
-              },
-              "allow": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "type",
-              "block"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "const": "block"
-              },
-              "block": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            }
           }
         ],
-        "description": "Outbound egress policy stored on the VM."
-      },
-      "NetworkPolicyInput": {
-        "anyOf": [
-          {
-            "type": "boolean"
-          },
-          {
-            "type": "string",
-            "enum": [
-              "open",
-              "blocked",
-              "true",
-              "false",
-              "none"
-            ]
-          },
-          {
-            "$ref": "#/components/schemas/NetworkPolicy"
-          }
-        ],
-        "description": "Outbound egress policy input. `true`/`open` means unrestricted; `false`/`blocked`/`none` means deny all."
+        "description": "VM network TOPOLOGY (output): `open` = a guest NIC with allow-all baseline egress, `blocked` = no NIC / no connectivity. Egress FILTERING is expressed exclusively by the ARK-125 policy document, not here."
       },
       "PolicyDoc": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A VM's egress policy document (ARK-125): an ordered, first-match-wins rule list. Empty `policies` means no policy (allow-all). The engine default when no rule matches is DENY (fail-closed); an explicit catch-all `{ \"type\": \"outbound\", \"action\": \"allow\" }` rule expresses default-allow.",
+        "description": "A VM's network policy document (ARK-125): an ordered, first-match-wins rule list covering BOTH directions (`outbound` egress and `inbound` ingress). Empty `policies` means no policy (allow-all outbound; reachable-with-bearer inbound). Per direction, when no rule matches the engine default is DENY (fail-closed); an explicit catch-all `{ \"type\": \"outbound\", \"action\": \"allow\" }` rule expresses default-allow. This document is the SOLE control of a VM's network; the legacy `egress`/`network` fork fields no longer filter traffic.",
         "properties": {
           "policies": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PolicyEntry"
             }
+          },
+          "secrets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Named secrets referenced by `${secret:NAME}` in a `rewrite` action's host/path/header/body values. Encrypted at rest with the rest of the document and REDACTED (masked with `***`) whenever the doc is echoed back on GET — so a GET response is NOT round-trippable back into a PUT without re-supplying real secret values."
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "readOnly": true,
+            "description": "Read-only (response-only). The single per-VM base hostname on the .app customer plane (<vm>.<region>.arker.app), present when the data-plane domain is configured — its presence is what signals the VM is reachable inbound. Reach a guest desktop at https://<hostname>:6080/. (The control plane — the API and SSH — stays on .ai.) Ignored on write."
+          },
+          "mitm_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "readOnly": true,
+            "description": "Read-only (response-only). Domains the policy escalates to the MITM proxy. Ignored on write."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "readOnly": true,
+            "description": "Read-only (response-only). Non-fatal notes (e.g. rules degraded where the MITM data path is not active). Ignored on write."
           }
         }
       },
@@ -1723,9 +1695,9 @@
             "type": "string",
             "enum": [
               "open",
-              "authenticated"
+              "arker"
             ],
-            "description": "Inbound `allow` only: the exposed tunnel's auth posture. `open` = public (no bearer); `authenticated` (the default when absent) requires the org bearer key. Invalid on a `deny` or any outbound rule (400). Inbound `match.ports` must be explicit single ports (ranges are rejected)."
+            "description": "Inbound `allow` only: the exposed tunnel's auth posture. `open` = public passthrough (no Arker check); `arker` (the default when absent) has Arker check the caller's org bearer / API key before forwarding to the guest. Invalid on a `deny` or any outbound rule (400). Inbound `match.ports` must be explicit single ports (ranges are rejected). The legacy value `authenticated` is accepted on read as an alias for `arker`."
           }
         }
       },
@@ -1930,34 +1902,6 @@
           }
         }
       },
-      "PutPoliciesResponse": {
-        "type": "object",
-        "required": [
-          "policy"
-        ],
-        "additionalProperties": false,
-        "description": "Response to PUT /v1/vms/{id}/policies.",
-        "properties": {
-          "policy": {
-            "$ref": "#/components/schemas/PolicyDoc",
-            "description": "The stored policy document \u2014 read its rules as `policy.policies`."
-          },
-          "mitm_domains": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Domains the policy escalates to the MITM proxy."
-          },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Non-fatal notes (e.g. rules degraded where the MITM data path is not active)."
-          }
-        }
-      },
       "ForkRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -1997,27 +1941,12 @@
             ],
             "description": "Make the new VM publicly forkable from other orgs."
           },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkInput"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Inbound reachability and SSH authorized keys for the new VM."
-          },
-          "egress": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkPolicyInput"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Outbound egress policy for the new VM. Omit it to inherit the source VM's policy."
+          "ssh_public_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SSH public keys to authorize on the new VM (authorized_keys), as raw key strings ('ssh-ed25519 AAAA... you@host'). Successor to the retired network.ssh_public_keys fork input, applied the same way: it becomes the fork's authorized-keys set (omit or pass an empty list to create the fork with no keys; add them later via PATCH /v1/vms/{id}). Inbound reachability is NOT set here — it is derived from the VM's policy."
           },
           "disk": {
             "type": [
@@ -2042,7 +1971,7 @@
             }
           },
           "policies": {
-            "description": "ARK-125 outbound policy for the new VM. Omit (null) to inherit the source VM's policy, re-encrypted under the child's own key. Present (even an empty doc) replaces it: an empty doc clears to allow-all rather than inheriting. Distinct from `egress` (legacy NetworkPolicy) and `network` (inbound).",
+            "description": "ARK-125 network policy for the new VM (the SOLE control of its outbound egress + inbound ingress). Omit (null) to inherit the source VM's policy, re-encrypted under the child's own key. Present (even an empty doc) replaces it: an empty doc clears to the default posture (allow-all outbound, reachable-with-bearer inbound) rather than inheriting. Network topology (NIC-or-not) is not a fork input (it inherits from the source); SSH keys are set via the top-level ssh_public_keys field.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PolicyDoc"
@@ -2276,7 +2205,7 @@
           },
           "network": {
             "$ref": "#/components/schemas/VmNetwork",
-            "description": "Inbound reachability settings for this VM."
+            "description": "The VM's network object — SSH keys only. Inbound reachability and per-port tunnels are derived from `policies` and surface on the policies GET/PUT response, not here."
           },
           "egress": {
             "$ref": "#/components/schemas/NetworkPolicy",
@@ -2512,16 +2441,6 @@
             ],
             "minimum": 0
           },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkRequest"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "acquire": {
             "type": [
               "string",
@@ -2541,49 +2460,17 @@
               "string",
               "null"
             ]
-          }
-        }
-      },
-      "NetworkRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "inbound": {
+          },
+          "policies": {
+            "description": "ARK-125 network policy applied to the VM for (and persisting past) this run — the SOLE control of its network (outbound egress + inbound ingress). Same treatment as `ForkRequest.policies`: present non-empty replaces the VM's persisted policy and reapplies it live; an empty doc clears to the default posture (allow-all outbound, reachable-with-bearer inbound); omit (null) to run under the VM's current policy (no change). Written and reconciled fail-closed BEFORE the command runs: if it cannot be persisted/applied the run is refused (5xx on a durability failure), so a command never executes under a half-applied posture. Last-writer-wins-persist: a later plain run then runs under this policy.",
             "anyOf": [
               {
-                "$ref": "#/components/schemas/InboundRequest"
+                "$ref": "#/components/schemas/PolicyDoc"
               },
               {
                 "type": "null"
               }
             ]
-          }
-        }
-      },
-      "InboundRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "ports": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/InboundPortRequest"
-            },
-            "default": {}
-          }
-        }
-      },
-      "InboundPortRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "visibility": {
-            "type": "string",
-            "default": "private"
-          },
-          "protocol": {
-            "type": "string",
-            "default": "http"
           }
         }
       },
@@ -3907,14 +3794,8 @@
       "NetworkInput": {
         "type": "object",
         "additionalProperties": false,
+        "description": "SSH-key network input for a fork/patch. Reachability is NOT an input: it is derived from inbound policy exposure and surfaced only on the policies GET/PUT response. A stray legacy `reachable` key is ignored server-side, not rejected.",
         "properties": {
-          "reachable": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Enable inbound reachability for this VM. Defaults to false."
-          },
           "ssh_public_keys": {
             "type": "array",
             "items": {
@@ -3942,66 +3823,15 @@
       },
       "VmNetwork": {
         "type": "object",
-        "required": [
-          "reachable"
-        ],
         "additionalProperties": false,
+        "description": "A VM's network object: SSH keys ONLY. Inbound reachability, the .app hostname, and per-port tunnels are DERIVED from the VM's policy doc and surface on the policies GET/PUT response (the PolicyDoc's read-only fields), not here.",
         "properties": {
-          "reachable": {
-            "type": "boolean"
-          },
-          "hostname": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Stable per-VM hostname on the .app customer plane (<vm>.<region>.arker.app), present when reachable is true. Reach a guest desktop at https://<hostname>:6080/. Equals data_hostname. (The control plane — the API and SSH — stays on .ai.)"
-          },
-          "data_hostname": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Customer inbound data-plane hostname (equals hostname). Insert -<port> before the region suffix to reach any HTTP port your guest listens on: <vm>-<port>.<region>.arker.app (bare form defaults to guest port 80). Present when reachable and the data-plane domain is configured."
-          },
-          "ports": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VmInboundPort"
-            },
-            "description": "Per-port inbound URLs the VM exposes on the .app data plane, derived from its inbound allow policy rules (the same source the data-plane gate enforces). Each carries the fully-formed https://<vm>-<port>.<region>.arker.app URL so clients never build it by hand. Empty when nothing is exposed inbound."
-          },
           "ssh_public_keys": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SshPublicKeyInfo"
             },
             "description": "Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty."
-          }
-        }
-      },
-      "VmInboundPort": {
-        "type": "object",
-        "required": [
-          "port",
-          "url",
-          "auth"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "port": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535,
-            "description": "Guest TCP port exposed by an inbound allow policy rule."
-          },
-          "url": {
-            "type": "string",
-            "description": "Fully-formed reachable URL: https://<vm>-<port>.<region>.arker.app"
-          },
-          "auth": {
-            "type": "string",
-            "description": "Auth posture required to reach it: 'open' (public, no bearer) or 'authenticated' (org bearer required)."
           }
         }
       },
@@ -4023,6 +3853,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/NetworkInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policies": {
+            "description": "ARK-125 network policy for the VM — the SOLE control of its network (outbound egress + inbound ingress). Same treatment as `ForkRequest.policies`: present non-empty replaces the persisted policy and reapplies it live; an empty doc clears to the default posture (allow-all outbound, reachable-with-bearer inbound); omit (null) for no change. Persisted and reconciled fail-closed exactly as `PUT /v1/vms/{id}/policies` does — a durability failure returns 5xx, never a silent success.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyDoc"
               },
               {
                 "type": "null"

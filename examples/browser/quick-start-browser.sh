@@ -33,14 +33,18 @@ sleep 3; wid=$(xdotool search --class chromium | tail -1); xdotool windowactivat
 SH
 arker run "$VM" "chmod +x /usr/local/bin/open-url" >/dev/null
 
-# open a page, fork a checkpoint, make it reachable, print its noVNC URL
+# open a page, fork a checkpoint, expose it inbound, print its noVNC URL.
+# Reachability is derived from the VM's policy: an inbound `allow` rule for the
+# noVNC port (6080) exposes it over a bearer-gated tunnel, and the policies
+# response returns the VM's `.app` hostname.
 checkpoint() {
   arker run "$VM" "open-url '$1'" >/dev/null
   sleep 4
   local ck host
   ck=$(arker fork --source-vm-id "$VM" | jq -r .vm_id)
-  host=$(curl -fsS -X PATCH "$BASE/v1/vms/$ck" -H "authorization: Bearer $ARKER_API_KEY" \
-    -H 'content-type: application/json' -d '{"network":{"reachable":true}}' | jq -r .network.hostname)
+  host=$(curl -fsS -X PUT "$BASE/v1/vms/$ck/policies" -H "authorization: Bearer $ARKER_API_KEY" \
+    -H 'content-type: application/json' \
+    -d '{"policies":[{"type":"inbound","match":{"ports":[6080]},"action":"allow"}]}' | jq -r .hostname)
   echo "$2: https://$host:6080/vnc.html"
 }
 checkpoint "https://en.wikipedia.org/wiki/Virtual_machine" "checkpoint A"

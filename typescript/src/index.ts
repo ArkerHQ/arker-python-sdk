@@ -40,6 +40,11 @@ const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
 const DEFAULT_RETRY_JITTER_MS = 50;
 const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
+// Overall wall-clock budget for one logical request's retry sequence — bounds
+// total backoff so a request never retries forever (Task C).
+const DEFAULT_RETRY_MAX_ELAPSED_MS = 30_000;
+// Status codes worth retrying (Task C). 429/503 are the primary transient
+// signals; 502/504 are gateway-level. `Retry-After` is honored when present.
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
   "unavailable",
@@ -48,8 +53,37 @@ const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
   "bad_gateway",
   "network_error",
   "stale_route",
+  "resource_pressure",
+]);
+// HTTP methods safe to retry unconditionally. POST is NOT here — it is retried
+// only under the narrow pre-work-rejection / not-sent conditions below.
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+// Error codes that mean the server rejected the request BEFORE doing any work
+// (admission / routing failures — "not processed, try a different host"). Safe
+// to retry even a non-idempotent POST, because the mutation never started.
+const PREWORK_REJECTION_CODES: ReadonlySet<string> = new Set([
+  "unavailable",
+  "backend_unavailable",
+  "api_worker_unavailable",
+  "bad_gateway",
+  "stale_route",
+  "resource_pressure",
+]);
+// Node transport error codes that prove the request was never delivered
+// (connection never established) — safe to retry even a POST.
+const NOT_SENT_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ERR_SOCKET_CONNECTION_TIMEOUT",
 ]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
+// Synchronous run polling (Task B).
+const SYNC_POLL_INITIAL_MS = 1_000;
+const SYNC_POLL_MAX_MS = 5_000;
+const SYNC_POLL_GRACE_MS = 60_000;
+const DEFAULT_SYNC_POLL_TIMEOUT_MS = 3_600_000;
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
 const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
@@ -75,6 +109,8 @@ export interface RetryOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
   jitterMs?: number;
+  /** Overall wall-clock cap (ms) across all retries of one request. */
+  maxElapsedMs?: number;
 }
 
 export interface ArkerOptions {
@@ -110,14 +146,12 @@ export type ErrorCode = ApiSchema<"ErrorCode">;
 
 // ── Core resources ─────────────────────────────────────────────────
 export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
-export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
-// ── ARK-125 egress policy (fine-grained outbound rules) ────────────
+// ── ARK-125 network policy (inbound + outbound rules) ──────────────
 export type PolicyDoc = ApiSchema<"PolicyDoc">;
 export type PolicyEntry = ApiSchema<"PolicyEntry">;
 export type PolicyMatch = ApiSchema<"PolicyMatch">;
 export type PolicyAction = ApiSchema<"PolicyAction">;
 export type Rewrite = ApiSchema<"Rewrite">;
-export type PutPoliciesResponse = ApiSchema<"PutPoliciesResponse">;
 /** A `ports` element: a single port (`80`) or an inclusive `[start, end]`
  * range (`[1000, 2000]`). A `ports` list may mix the two. */
 export type PortSpec = NonNullable<PolicyMatch["ports"]>[number];
@@ -171,9 +205,19 @@ export type RunOptions = Partial<Omit<RunRequest, "command">> & {
    * `Idempotency-Key` HTTP header.
    */
   idempotencyKey?: string;
+  /**
+   * Poll interval (ms) for the synchronous wait when a run outlives the
+   * server's sync window and is backgrounded. Default ~1000ms with
+   * exponential backoff to ~5000ms.
+   */
+  pollIntervalMs?: number;
+  /**
+   * Overall budget (ms) for the synchronous wait. Defaults to the run's
+   * `timeout` (kill bound) + grace, else ~1h. Exceeding it throws with the
+   * `runId` so you can keep polling with `getRun`.
+   */
+  pollTimeoutMs?: number;
 };
-export type InboundPortRequest = ApiSchema<"InboundPortRequest">;
-export type NetworkRequest = ApiSchema<"NetworkRequest">;
 export type NetworkStatus = ApiSchema<"NetworkStatus">;
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
@@ -213,12 +257,8 @@ export type ErrorResponse = ApiSchema<"ErrorResponse">;
 export type SessionInfo = Session;
 /** @deprecated Use `Run`. */
 export type RunStatusResponse = Run;
-/** @deprecated Use `NetworkRequest`. */
-export type RunNetworkRequest = NetworkRequest;
 /** @deprecated Use `NetworkStatus`. */
 export type RunNetworkStatus = NetworkStatus;
-/** @deprecated Use `InboundPortRequest`. */
-export type RunInboundPortRequest = InboundPortRequest;
 
 // ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
@@ -349,6 +389,7 @@ interface RetryConfig {
   baseDelayMs: number;
   maxDelayMs: number;
   jitterMs: number;
+  maxElapsedMs: number;
 }
 
 interface ParsedError {
@@ -509,14 +550,15 @@ export class Arker {
       source_org_id: sourceOrgId ?? null,
       name: src.name ?? null,
       public: src.public ?? null,
-      network: src.network ?? null,
-      egress: src.egress ?? null,
+      // Successor to the retired `network.ssh_public_keys` fork input; inbound
+      // reachability is derived from `policies`, never set here.
+      ssh_public_keys: src.ssh_public_keys,
       disk: src.disk ?? true,
       durable: src.durable ?? null,
       platforms: src.platforms,
       resources,
       // ARK-125: omit to inherit the source's policy; pass a doc to override
-      // (an empty `{ policies: [] }` clears to allow-all, NOT inherit).
+      // (an empty `{ policies: [] }` clears to the default posture, NOT inherit).
       policies: src.policies ?? null,
     };
     // Forks that target a burst-pool name in the Arker org go to the
@@ -629,13 +671,23 @@ export class Arker {
       requestBody = JSON.stringify(withoutUndefined(body));
     }
 
+    // Task C — idempotency-aware retry. Safe/idempotent methods (and any
+    // request carrying an Idempotency-Key, which the server dedupes) may be
+    // retried freely. A non-idempotent POST (fork / run / create) is retried
+    // only when the server clearly never applied it: a connection-level failure
+    // (request not sent), or a retryable status whose flat {code,message} names
+    // a pre-work admission/routing rejection.
+    const idempotent = IDEMPOTENT_METHODS.has(method) || hasIdempotencyKey(headers);
+    const deadline = Date.now() + this.retry.maxElapsedMs;
+
     let lastStatus = 0;
     let lastText = "";
     let lastError: ParsedError | undefined;
 
     for (let attempt = 0; attempt < this.retry.attempts; attempt++) {
+      const moreAttempts = attempt < this.retry.attempts - 1;
       try {
-        const { status, ok, text } = await sendRequest(url, { method, headers, body: requestBody }, this.fetchImpl, this.http2);
+        const { status, ok, text, retryAfter } = await sendRequest(url, { method, headers, body: requestBody }, this.fetchImpl, this.http2);
         const payload = parseJson(text);
         const parsedError = extractError(payload);
 
@@ -643,8 +695,13 @@ export class Arker {
         lastText = text;
         lastError = parsedError;
 
-        if (isRetryable(status, parsedError) && attempt < this.retry.attempts - 1) {
-          await sleep(retryDelay(this.retry, attempt));
+        let retryable = isRetryable(status, parsedError);
+        if (retryable && !idempotent) {
+          // Non-idempotent POST: only retry a clear pre-work rejection.
+          retryable = isPreworkRejection(parsedError);
+        }
+        if (retryable && moreAttempts && Date.now() < deadline) {
+          await sleep(retryDelay(this.retry, attempt, retryAfter, deadline));
           continue;
         }
 
@@ -656,8 +713,11 @@ export class Arker {
         return payload as T;
       } catch (error) {
         if (error instanceof ArkerError) throw error;
-        if (attempt < this.retry.attempts - 1) {
-          await sleep(retryDelay(this.retry, attempt));
+        // Transport failure. Retry idempotent requests freely; retry a POST
+        // only when the failure proves the request was never delivered.
+        const canRetry = idempotent || transportErrorSafe(error);
+        if (canRetry && moreAttempts && Date.now() < deadline) {
+          await sleep(retryDelay(this.retry, attempt, undefined, deadline));
           continue;
         }
         const message = error instanceof Error ? error.message : String(error);
@@ -766,8 +826,22 @@ export class VM {
     return new VM(this._client, vmId, this.baseUrl, vm);
   }
 
+  /**
+   * Run `command` in this VM via `POST /v1/vms/{id}/runs`.
+   *
+   * **Synchronous by default.** Unless you pass `background: true`, `run`
+   * resolves to a `CompletedRunResult` regardless of duration: if the command
+   * outlives the server's sync window and the run is backgrounded, the SDK
+   * transparently polls the run's status to completion and returns the final
+   * stdout / stderr / exitCode — so `time_to_background` is invisible to you.
+   * The status polls reuse the client retry policy, so a transient 503 mid-poll
+   * doesn't abort the run. Pass `background: true` to opt out and get the
+   * pollable `BackgroundRunResult` back immediately.
+   *
+   * `pollIntervalMs` / `pollTimeoutMs` bound that polling.
+   */
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
-    const { idempotencyKey, ...body } = options;
+    const { idempotencyKey, pollIntervalMs, pollTimeoutMs, ...body } = options;
     const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
     const request: RunRequest = { ...body, command };
     const response = await this._client._request<unknown>(
@@ -777,7 +851,42 @@ export class VM {
       this.baseUrl,
       headers,
     );
-    return parseRunResponse(response);
+    const result = parseRunResponse(response);
+    // Task B: transparent synchronous semantics. When the caller did not opt
+    // into background execution but the run exceeded the server's sync window
+    // (returned backgrounded), poll it to completion so the call looks fully
+    // synchronous.
+    if (result.type === "background" && !body.background) {
+      return this._awaitRun(result.runId, body.timeout ?? null, pollIntervalMs, pollTimeoutMs);
+    }
+    return result;
+  }
+
+  /** Poll `GET /runs/{runId}` until the run reaches a terminal state, then
+   * return it as a `CompletedRunResult`. Bounded by `pollTimeoutMs` (overall)
+   * with exponential backoff between polls. */
+  private async _awaitRun(
+    runId: string,
+    timeout: number | null,
+    pollIntervalMs?: number,
+    pollTimeoutMs?: number,
+  ): Promise<CompletedRunResult> {
+    let interval = pollIntervalMs && pollIntervalMs > 0 ? pollIntervalMs : SYNC_POLL_INITIAL_MS;
+    const deadline = Date.now() + resolvePollTimeout(timeout, pollTimeoutMs);
+    for (;;) {
+      const run = await this.getRun(runId);
+      if (run.state !== "running") return completedFromRun(run);
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new ArkerError(
+          "deadline_exceeded",
+          `run ${runId} still running after the synchronous poll deadline; poll it with getRun(${JSON.stringify(runId)})`,
+          0,
+        );
+      }
+      await sleep(Math.min(interval, remaining));
+      interval = Math.min(SYNC_POLL_MAX_MS, interval * 2);
+    }
   }
 
   /**
@@ -886,30 +995,38 @@ export class VM {
   }
 
   /**
-   * Update this VM's resource allocation and/or network settings via
-   * `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
+   * Update this VM via `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
    *
-   * Accepts either a `PatchVmRequest` (`{ resources, network }`) or, for
-   * convenience, flat resource fields (`{ vcpu, memory_mib, disk_mib }`)
-   * which are folded into `resources`.
+   * Accepts either a `PatchVmRequest` (`{ resources, network, policies }`) or,
+   * for convenience, flat resource fields (`{ vcpu, memory_mib, disk_mib, ... }`)
+   * which are folded into `resources`. `network` carries SSH keys only
+   * (`{ ssh_public_keys }`) — inbound reachability is derived from `policies`.
    */
   async update(
     request:
       | PatchVmRequest
-      | (VmResources & Pick<PatchVmRequest, "network">),
+      | (VmResources & Pick<PatchVmRequest, "network" | "policies">),
   ): Promise<Vm> {
     const r = request as PatchVmRequest &
       VmResources & { resources?: VmResources | null };
     const body: PatchVmRequest =
-      r.resources !== undefined || (r.vcpu === undefined && r.memory_mib === undefined && r.disk_mib === undefined)
-        ? { resources: r.resources ?? null, network: r.network ?? null }
+      r.resources !== undefined ||
+      (r.vcpu === undefined &&
+        r.memory_mib === undefined &&
+        r.disk_mib === undefined &&
+        r.gpu_sms === undefined &&
+        r.gpu_vram_mib === undefined)
+        ? { resources: r.resources ?? null, network: r.network ?? null, policies: r.policies ?? null }
         : {
             resources: {
               vcpu: r.vcpu ?? null,
               memory_mib: r.memory_mib ?? null,
               disk_mib: r.disk_mib ?? null,
+              gpu_sms: r.gpu_sms ?? null,
+              gpu_vram_mib: r.gpu_vram_mib ?? null,
             },
             network: r.network ?? null,
+            policies: r.policies ?? null,
           };
     return this._client._request("PATCH", vmPath(this.id), body, this.baseUrl);
   }
@@ -918,20 +1035,24 @@ export class VM {
     return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
   }
 
-  // ── ARK-125 egress policy ────────────────────────────────────────
+  // ── ARK-125 network policy (inbound + outbound) ──────────────────
   /**
-   * Read this VM's outbound egress policy document (ARK-125). Returns an
-   * empty doc (`{}`) when no policy is set.
+   * Read this VM's network policy document (ARK-125). Returns an empty doc
+   * (`{}`) when no policy is set. The response also carries the derived
+   * read-only `hostname` (inbound reachability), `mitm_domains`, and
+   * `warnings`.
    */
   async getPolicies(): Promise<PolicyDoc> {
     return this._client._request<PolicyDoc>("GET", `${vmPath(this.id)}/policies`, undefined, this.baseUrl);
   }
 
   /**
-   * Replace this VM's outbound egress policy with `doc` — an ordered,
-   * first-match-wins rule list. An empty doc (`{}` or `{ policies: [] }`)
-   * clears the policy to allow-all. Returns the stored policy plus the
-   * domains it escalates to MITM and any degrade warnings.
+   * Replace this VM's network policy (outbound egress + inbound ingress) with
+   * `doc` — an ordered, first-match-wins rule list. An empty doc (`{}` or
+   * `{ policies: [] }`) clears the policy to the default posture. Returns the
+   * stored `PolicyDoc`: the persisted `policies` plus the derived read-only
+   * `hostname`, the `mitm_domains` it escalates to MITM, and any degrade
+   * `warnings`.
    *
    *     await vm.setPolicies({
    *       policies: [
@@ -942,8 +1063,8 @@ export class VM {
    *       ],
    *     });
    */
-  async setPolicies(doc: PolicyDoc): Promise<PutPoliciesResponse> {
-    return this._client._request<PutPoliciesResponse>("PUT", `${vmPath(this.id)}/policies`, doc, this.baseUrl);
+  async setPolicies(doc: PolicyDoc): Promise<PolicyDoc> {
+    return this._client._request<PolicyDoc>("PUT", `${vmPath(this.id)}/policies`, doc, this.baseUrl);
   }
 
   // ── Syncs: bindings of a filesystem into this VM at a path ────────
@@ -1325,13 +1446,14 @@ function isBurstRef(ref: string): boolean {
 
 function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {
   if (retry === false) {
-    return { attempts: 1, baseDelayMs: 0, maxDelayMs: 0, jitterMs: 0 };
+    return { attempts: 1, baseDelayMs: 0, maxDelayMs: 0, jitterMs: 0, maxElapsedMs: 0 };
   }
   return {
     attempts: Math.max(1, Math.floor(retry?.attempts ?? DEFAULT_RETRY_ATTEMPTS)),
     baseDelayMs: Math.max(0, retry?.baseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS),
     maxDelayMs: Math.max(0, retry?.maxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS),
     jitterMs: Math.max(0, retry?.jitterMs ?? DEFAULT_RETRY_JITTER_MS),
+    maxElapsedMs: Math.max(0, retry?.maxElapsedMs ?? DEFAULT_RETRY_MAX_ELAPSED_MS),
   };
 }
 
@@ -1391,6 +1513,31 @@ function parseRunResponse(payload: unknown): RunResult {
   throw new ArkerError("internal", "unrecognized run response shape", 200);
 }
 
+/** Project a terminal `Run` status onto the `CompletedRunResult` shape the
+ * synchronous `run()` path returns (Task B). */
+function completedFromRun(run: Run): CompletedRunResult {
+  return {
+    type: "completed",
+    runId: run.run_id,
+    state: run.state,
+    stdout: decodeBytes(run.stdout, run.stdout_encoding),
+    stdoutEncoding: run.stdout_encoding,
+    stderr: decodeBytes(run.stderr, run.stderr_encoding),
+    stderrEncoding: run.stderr_encoding,
+    exitCode: run.exit_code ?? -1,
+    failReason: run.fail_reason ?? null,
+  };
+}
+
+/** Overall budget (ms) for the synchronous-run poll loop. An explicit
+ * `pollTimeoutMs` wins; otherwise follow the run's kill bound (`timeout`,
+ * seconds) plus grace, falling back to ~1h for unbounded runs. */
+function resolvePollTimeout(timeout: number | null, pollTimeoutMs?: number): number {
+  if (pollTimeoutMs !== undefined) return Math.max(0, pollTimeoutMs);
+  if (timeout != null && timeout > 0) return timeout * 1000 + SYNC_POLL_GRACE_MS;
+  return DEFAULT_SYNC_POLL_TIMEOUT_MS;
+}
+
 function parseJson(text: string): unknown {
   if (!text) return {};
   try { return JSON.parse(text) as unknown; } catch { return undefined; }
@@ -1419,9 +1566,45 @@ function isRetryable(status: number, error?: ParsedError): boolean {
   return TRANSIENT_HINTS.some((hint) => error.message.includes(hint));
 }
 
-function retryDelay(retry: RetryConfig, attempt: number): number {
-  const base = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** attempt);
-  return base + jitter(retry.jitterMs);
+/** A retryable status whose flat error code marks a pre-work admission/routing
+ * rejection (the mutation never started) — safe to retry a non-idempotent POST. */
+function isPreworkRejection(error?: ParsedError): boolean {
+  return !!error && PREWORK_REJECTION_CODES.has(error.code);
+}
+
+function hasIdempotencyKey(headers: Record<string, string>): boolean {
+  return Object.keys(headers).some((key) => key.toLowerCase() === "idempotency-key");
+}
+
+/** True when a transport failure proves the request was never delivered
+ * (connection never established), so even a POST can be retried safely. */
+function transportErrorSafe(error: unknown): boolean {
+  const code =
+    (error as { cause?: { code?: unknown } })?.cause?.code ??
+    (error as { code?: unknown })?.code;
+  return typeof code === "string" && NOT_SENT_ERROR_CODES.has(code);
+}
+
+/** Parse a `Retry-After` header (delta-seconds or HTTP-date) into ms from now. */
+function parseRetryAfter(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const when = Date.parse(trimmed);
+  if (Number.isNaN(when)) return undefined;
+  return Math.max(0, when - Date.now());
+}
+
+function retryDelay(retry: RetryConfig, attempt: number, retryAfterMs?: number, deadline?: number): number {
+  let delay: number;
+  if (retryAfterMs !== undefined && retryAfterMs >= 0) {
+    delay = retryAfterMs;
+  } else {
+    const base = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** attempt);
+    delay = base + jitter(retry.jitterMs);
+  }
+  if (deadline !== undefined) delay = Math.min(delay, Math.max(0, deadline - Date.now()));
+  return Math.max(0, delay);
 }
 
 function jitter(maxMs: number): number { return Math.floor(Math.random() * (maxMs + 1)); }
@@ -1517,6 +1700,8 @@ interface TransportResponse {
   status: number;
   ok: boolean;
   text: string;
+  /** `Retry-After` (ms from now), when the response carried the header. */
+  retryAfter?: number;
 }
 
 type Http2Module = typeof import("node:http2");
@@ -1568,12 +1753,15 @@ class Http2Connection {
       // Bound the request so a stalled stream — e.g. a half-open session reused after
       // an idle timeout — rejects instead of hanging the caller indefinitely.
       stream.setTimeout(HTTP2_REQUEST_TIMEOUT_MS, () => stream.destroy(new Error("HTTP/2 request timed out")));
+      let retryAfter: number | undefined;
       stream.on("response", (responseHeaders) => {
         this.confirmed = true;
         status = Number(responseHeaders[":status"]) || 0;
+        const header = responseHeaders["retry-after"];
+        retryAfter = parseRetryAfter(Array.isArray(header) ? header[0] : header);
       });
       stream.on("data", (chunk: string) => { text += chunk; });
-      stream.on("end", () => resolve({ status, ok: status >= 200 && status < 300, text }));
+      stream.on("end", () => resolve({ status, ok: status >= 200 && status < 300, text, retryAfter }));
       stream.on("error", reject);
       stream.end(body);
     }).finally(() => {
@@ -1612,5 +1800,10 @@ async function sendRequest(
     }
   }
   const response = await fetchImpl(url, init as RequestInit);
-  return { status: response.status, ok: response.ok, text: await response.text() };
+  return {
+    status: response.status,
+    ok: response.ok,
+    text: await response.text(),
+    retryAfter: parseRetryAfter(response.headers.get("retry-after")),
+  };
 }
