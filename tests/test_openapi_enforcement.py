@@ -176,7 +176,8 @@ def test_public_wire_types_are_generated() -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert {
-        "ForkRequest",
+        "ForkRequest1",
+        "ForkRequest2",
         "ListFilesystemsParameters",
         "ListOrgRunsParameters",
         "ListRunsParameters",
