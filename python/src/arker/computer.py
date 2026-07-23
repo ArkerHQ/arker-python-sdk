@@ -11,6 +11,9 @@ import dataclasses
 import hashlib
 import json
 import os
+import shlex
+import tarfile
+import tempfile
 import re
 import secrets
 import threading
@@ -885,37 +888,73 @@ class VM:
                 st = os.stat(abs_path)
                 local_files[rel] = (abs_path, st.st_size, st.st_mtime_ns)
 
-        # 3. Diff + upload only changed/new files, batching small ones.
+        # 3. Diff → the set of new/changed files (relative paths).
         result = SyncDirResult()
-        batch: list[tuple[str, bytes]] = []
-        batch_bytes = 0
+        changed: list[tuple[str, str]] = []  # (rel, abs_path)
         for rel, (abs_path, size, mtime_ns) in sorted(local_files.items()):
             local_hash = _file_hash_cached(abs_path, size, mtime_ns, cache)
             if remote.get(rel) == local_hash:
                 result.skipped += 1
                 continue
-            remote_path = f"{remote_root.rstrip('/')}/{rel}"
-            if size > CHUNK_SIZE:
-                # Large file: presigned single-file upload. Flush any pending
-                # inline batch first to preserve ordering isn't required, but it
-                # keeps request sizes bounded.
-                if batch:
-                    self._flush_write_batch(batch)
-                    batch, batch_bytes = [], 0
-                with open(abs_path, "rb") as fh:
-                    self._sync_write_presigned(remote_path, fh.read())
-            else:
-                with open(abs_path, "rb") as fh:
-                    batch.append((remote_path, fh.read()))
-                batch_bytes += size
-                if batch_bytes >= SYNC_DIR_BATCH_BYTES:
-                    self._flush_write_batch(batch)
-                    batch, batch_bytes = [], 0
+            changed.append((rel, abs_path))
             result.sent += 1
             result.bytes_sent += size
-        if batch:
-            self._flush_write_batch(batch)
+
+        # 4. Ship the changed files as ONE tarball and extract it in the guest.
+        #    The GUEST does the file writes (via `tar -x`), so they are always
+        #    consistent with its own filesystem — no host-side XFS races — and a
+        #    single stream + one extract is far faster than one write per file.
+        #    The extract's exit code is checked, so a failure is surfaced, never
+        #    a silent partial (the manifest also fails safe: any omitted file is
+        #    re-sent next call).
+        if changed:
+            self._upload_and_extract_tarball(changed, remote_root)
         return result
+
+    def _upload_and_extract_tarball(
+        self, changed: list[tuple[str, str]], remote_root: str
+    ) -> None:
+        """Tar the changed files (paths relative to ``remote_root``), upload the
+        tarball in one write, and extract it in the guest with `tar -x`."""
+        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tf:
+            tar_local = tf.name
+        try:
+            with tarfile.open(tar_local, "w") as tar:
+                for rel, abs_path in changed:
+                    tar.add(abs_path, arcname=rel, recursive=False)
+            with open(tar_local, "rb") as fh:
+                data = fh.read()
+        finally:
+            try:
+                os.unlink(tar_local)
+            except OSError:
+                pass
+
+        remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar"
+        if len(data) > CHUNK_SIZE:
+            self._sync_write_presigned(remote_tar, data)
+        else:
+            self._sync_write_inline(remote_tar, data)
+
+        q = shlex.quote
+        # `set -e` + explicit rm: any extract failure exits non-zero; the tarball
+        # is removed on success. Missing parent dirs are created by tar -x.
+        cmd = (
+            f"set -e; mkdir -p {q(remote_root)}; "
+            f"tar -xf {q(remote_tar)} -C {q(remote_root)}; rm -f {q(remote_tar)}"
+        )
+        res = self.run(cmd)
+        code = getattr(res, "exit_code", None)
+        state = getattr(res, "state", None)
+        if code not in (0, None) or state == "failed":
+            stderr = getattr(res, "stderr", b"")
+            if isinstance(stderr, (bytes, bytearray)):
+                stderr = stderr.decode("utf-8", "replace")
+            raise ArkerError(
+                "internal",
+                f"sync_dir tar extract failed (exit={code}, state={state}): {stderr[:300]}",
+                200,
+            )
 
     def _remote_manifest(self, path: str) -> dict[str, str]:
         """Fetch the VM's file manifest under ``path`` → {rel_path: sha256}."""
