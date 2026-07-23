@@ -3,158 +3,63 @@
   "info": {
     "title": "Arker Public VM API",
     "version": "0.3.0",
-    "description": "Public VM and control-plane API contract. Backend VM endpoints expose the same wire\nshapes; backend-specific feature limitations are returned as\n`ErrorResponse` with `code: \"unsupported_operation\"`.\n"
+    "description": "Public VM and control-plane API contract. Every supported deployment exposes the same wire shapes. Features that are unavailable in a selected region or provider return an `ErrorResponse` with `code: \"unsupported_operation\"`.\n"
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
     {
-      "url": "https://aws-us-west-2.arker.ai"
+      "url": "https://aws-us-west-2.arker.ai/api"
+    }
+  ],
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Service",
+      "description": "Service readiness and availability."
+    },
+    {
+      "name": "VMs",
+      "description": "Create and manage virtual machines."
+    },
+    {
+      "name": "Policies",
+      "description": "Control inbound and outbound VM network access."
+    },
+    {
+      "name": "Runs",
+      "description": "Execute commands and inspect their results."
+    },
+    {
+      "name": "Sessions",
+      "description": "Manage persistent command sessions."
+    },
+    {
+      "name": "PTY",
+      "description": "Attach interactive terminals to sessions."
+    },
+    {
+      "name": "Sync",
+      "description": "Read and write files in a VM."
+    },
+    {
+      "name": "Filesystems",
+      "description": "Create shared filesystems and mount them into VMs."
     }
   ],
   "x-arker-source": "arker-app/shared/arker-api-contract",
-  "x-arker-route-aliases": [
-    {
-      "operationId": "createRun",
-      "method": "POST",
-      "path": "/v1/vms/{id}/run"
-    }
-  ],
-  "x-arker-runtime-routes": [
-    {
-      "operationId": "benchmark",
-      "method": "POST",
-      "path": "/v1/benchmark"
-    },
-    {
-      "operationId": "createVmLegacy",
-      "method": "POST",
-      "path": "/v1/vms"
-    },
-    {
-      "operationId": "listVmsLegacy",
-      "method": "GET",
-      "path": "/v1/vms/list"
-    },
-    {
-      "operationId": "listVmSourcesLegacy",
-      "method": "GET",
-      "path": "/v1/vms/sources"
-    },
-    {
-      "operationId": "forkVmByRefLegacy",
-      "method": "POST",
-      "path": "/v1/vms/fork"
-    },
-    {
-      "operationId": "forkVmLegacy",
-      "method": "POST",
-      "path": "/v1/vms/{id}/fork"
-    },
-    {
-      "operationId": "resizeVmLegacy",
-      "method": "POST",
-      "path": "/v1/vms/{id}/resize"
-    },
-    {
-      "operationId": "debugExecVm",
-      "method": "POST",
-      "path": "/v1/vms/{id}/debug_exec"
-    },
-    {
-      "operationId": "resizeSessionLegacy",
-      "method": "POST",
-      "path": "/v1/vms/{id}/sessions/{sid}/resize"
-    },
-    {
-      "operationId": "getSyncLegacy",
-      "method": "GET",
-      "path": "/v1/vms/{id}/syncs/{sync_id}"
-    },
-    {
-      "operationId": "syncReadLegacy",
-      "method": "POST",
-      "path": "/v1/vms/{id}/syncs/read"
-    },
-    {
-      "operationId": "syncWriteLegacy",
-      "method": "POST",
-      "path": "/v1/vms/{id}/syncs/write"
-    },
-    {
-      "operationId": "syncUpload",
-      "method": "POST",
-      "path": "/v1/vms/{id}/sync/upload"
-    },
-    {
-      "operationId": "listVmMounts",
-      "method": "GET",
-      "path": "/v1/vms/{id}/sync/mount"
-    },
-    {
-      "operationId": "createVmMount",
-      "method": "POST",
-      "path": "/v1/vms/{id}/sync/mount"
-    },
-    {
-      "operationId": "getVmMountLegacy",
-      "method": "GET",
-      "path": "/v1/vms/{id}/sync/mount/{sync_id}"
-    },
-    {
-      "operationId": "deleteVmMount",
-      "method": "DELETE",
-      "path": "/v1/vms/{id}/sync/mount/{dir_id}"
-    },
-    {
-      "operationId": "listTunnelsLegacy",
-      "method": "GET",
-      "path": "/v1/vms/{id}/tunnels"
-    },
-    {
-      "operationId": "getTunnelLegacy",
-      "method": "GET",
-      "path": "/v1/vms/{id}/tunnels/{port}"
-    },
-    {
-      "operationId": "deleteTunnelLegacy",
-      "method": "DELETE",
-      "path": "/v1/vms/{id}/tunnels/{port}"
-    },
-    {
-      "operationId": "listSharedDirs",
-      "method": "GET",
-      "path": "/v1/dirs"
-    },
-    {
-      "operationId": "createSharedDir",
-      "method": "POST",
-      "path": "/v1/dirs"
-    },
-    {
-      "operationId": "getSharedDirByName",
-      "method": "GET",
-      "path": "/v1/dirs/by-name/{name}"
-    },
-    {
-      "operationId": "getSharedDir",
-      "method": "GET",
-      "path": "/v1/dirs/{dir_id}"
-    },
-    {
-      "operationId": "deleteSharedDir",
-      "method": "DELETE",
-      "path": "/v1/dirs/{dir_id}"
-    },
-    {
-      "operationId": "syncSharedDir",
-      "method": "POST",
-      "path": "/v1/dirs/{dir_id}/sync"
-    }
-  ],
   "paths": {
     "/v1/health": {
       "get": {
         "operationId": "health",
+        "tags": [
+          "Service"
+        ],
+        "summary": "Check service readiness",
+        "security": [],
         "responses": {
           "200": {
             "description": "Service is ready to accept public API traffic.",
@@ -186,6 +91,10 @@
     "/v1/fork": {
       "post": {
         "operationId": "fork",
+        "tags": [
+          "VMs"
+        ],
+        "summary": "Fork a VM",
         "requestBody": {
           "required": true,
           "content": {
@@ -217,12 +126,17 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Create a new VM by forking from an image, an existing VM ID, or\na VM name within an org. Exactly one of `source_image`,\n`source_vm_id`, or `source_vm_name` must be set. Forking a VM\nowned by another org requires that VM to be `public: true`.\n"
+        "description": "Create a new VM by forking from an existing VM ID or a VM name within an organization. Exactly one of `source_vm_id` or `source_vm_name` must be set. Forking a VM owned by another organization requires that VM to be public."
       }
     },
     "/v1/vms": {
       "get": {
         "operationId": "listVms",
+        "tags": [
+          "VMs"
+        ],
+        "summary": "List VMs",
+        "description": "List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, or lifecycle state.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Cursor"
@@ -301,6 +215,10 @@
     "/v1/runs": {
       "get": {
         "operationId": "listOrgRuns",
+        "tags": [
+          "Runs"
+        ],
+        "summary": "List organization runs",
         "parameters": [
           {
             "in": "query",
@@ -516,6 +434,11 @@
       ],
       "get": {
         "operationId": "getVm",
+        "tags": [
+          "VMs"
+        ],
+        "summary": "Get a VM",
+        "description": "Return one VM visible to the authenticated caller.",
         "responses": {
           "200": {
             "description": "VM details.",
@@ -534,6 +457,11 @@
       },
       "delete": {
         "operationId": "deleteVm",
+        "tags": [
+          "VMs"
+        ],
+        "summary": "Delete a VM",
+        "description": "Delete a VM owned by the authenticated caller.",
         "responses": {
           "200": {
             "description": "Delete result.",
@@ -552,6 +480,11 @@
       },
       "patch": {
         "operationId": "patchVm",
+        "tags": [
+          "VMs"
+        ],
+        "summary": "Update a VM",
+        "description": "Update a VM's resources, SSH keys, or network policy.",
         "requestBody": {
           "required": true,
           "content": {
@@ -590,9 +523,14 @@
       ],
       "get": {
         "operationId": "getVmPolicies",
+        "tags": [
+          "Policies"
+        ],
+        "summary": "Get a VM network policy",
+        "description": "Return the VM's network policy together with its derived inbound exposure and enforcement metadata.",
         "responses": {
           "200": {
-            "description": "The VM's egress policy document (empty when none is set).",
+            "description": "The VM's policy document (empty when none is set), plus its derived inbound exposure (reachability + per-port tunnels).",
             "content": {
               "application/json": {
                 "schema": {
@@ -608,6 +546,11 @@
       },
       "put": {
         "operationId": "putVmPolicies",
+        "tags": [
+          "Policies"
+        ],
+        "summary": "Replace a VM network policy",
+        "description": "Replace the VM's complete network policy and apply it to the running VM.",
         "requestBody": {
           "required": true,
           "content": {
@@ -624,7 +567,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PutPoliciesResponse"
+                  "$ref": "#/components/schemas/PolicyDoc"
                 }
               }
             }
@@ -643,6 +586,15 @@
       ],
       "post": {
         "operationId": "createRun",
+        "tags": [
+          "Runs"
+        ],
+        "summary": "Run a command",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -674,10 +626,15 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Run a command. Foreground execution is the portable baseline.\nOptional `background`, `session_id`, `network`, `signal`,\n`acquire`/`release`, and per-run resource overrides may return\n`unsupported_operation` on backends that don't support them.\n"
+        "description": "Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` on backends that do not support them."
       },
       "get": {
         "operationId": "listRuns",
+        "tags": [
+          "Runs"
+        ],
+        "summary": "List VM runs",
+        "description": "List recorded runs for one VM, with optional lifecycle and time filters.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Cursor"
@@ -746,6 +703,11 @@
       ],
       "get": {
         "operationId": "getRun",
+        "tags": [
+          "Runs"
+        ],
+        "summary": "Get a run",
+        "description": "Return one recorded run, including its current state and available output.",
         "responses": {
           "200": {
             "description": "Run status.",
@@ -767,6 +729,11 @@
       },
       "delete": {
         "operationId": "cancelRun",
+        "tags": [
+          "Runs"
+        ],
+        "summary": "Cancel a run",
+        "description": "Request cancellation of an in-flight run.",
         "responses": {
           "200": {
             "description": "Cancel result.",
@@ -795,6 +762,11 @@
       ],
       "get": {
         "operationId": "listSessions",
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "List VM sessions",
+        "description": "List persistent command sessions for one VM.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Cursor"
@@ -832,6 +804,11 @@
       },
       "post": {
         "operationId": "createSession",
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Create a session",
+        "description": "Create a persistent command session in a VM.",
         "requestBody": {
           "required": true,
           "content": {
@@ -876,6 +853,11 @@
       ],
       "get": {
         "operationId": "getSession",
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Get a session",
+        "description": "Return one persistent VM session.",
         "responses": {
           "200": {
             "description": "Session details.",
@@ -897,6 +879,9 @@
       },
       "patch": {
         "operationId": "patchSession",
+        "tags": [
+          "Sessions"
+        ],
         "summary": "Update a session (resize PTY / set timeout)",
         "description": "Resize the session's PTY (cols/rows) and/or update its idle timeout. Resize is delivered to a LIVE attached PTY in-band; if the PTY is detached, it is applied directly to the session's runtime; if no PTY has ever attached, the call is accepted as a no-op. REST equivalent of the WebSocket {\"type\":\"resize\"} control frame \u2014 usable from any client, attached or not.",
         "requestBody": {
@@ -929,6 +914,11 @@
       },
       "delete": {
         "operationId": "deleteSession",
+        "tags": [
+          "Sessions"
+        ],
+        "summary": "Delete a session",
+        "description": "Close and remove a persistent VM session.",
         "responses": {
           "200": {
             "description": "Delete result.",
@@ -994,7 +984,17 @@
             "type": "boolean",
             "default": true
           },
-          "description": "E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {\"type\":\"kill\"} or the server idle TTL destroy a persistent shell."
+          "description": "When true (default), disconnecting keeps the shell running so the same session_id can reconnect to it and receive recent scrollback. When false, the shell is terminated on disconnect. A kill control message or the configured idle TTL terminates a persistent shell."
+        },
+        {
+          "name": "cancel_ttl_secs",
+          "in": "query",
+          "required": false,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "description": "Destroy the PTY after this many seconds without terminal input or output. Omit or set to zero to disable this PTY-specific idle limit."
         },
         {
           "name": "ticket",
@@ -1008,8 +1008,19 @@
       ],
       "get": {
         "operationId": "attachSessionPty",
+        "tags": [
+          "PTY"
+        ],
         "summary": "Open an interactive PTY (WebSocket upgrade)",
-        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Auth on the upgrade is a Bearer key (a key may only attach to its own org's VMs) OR a ?ticket= for browsers. Reopening with the same session_id RECONNECTS to the same running shell when persist=true (scrollback replayed). Wire format: server\u2192client Binary frames are raw terminal output (ANSI escapes/colors intact); client\u2192server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client\u2192server Text frames are JSON control: {\"type\":\"resize\",\"cols\":N,\"rows\":M}, {\"type\":\"kill\"}, {\"type\":\"ping\"}. A plain socket close DETACHES (persist) or tears down; {\"type\":\"kill\"} always destroys. Caps: one live attachment per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.",
+        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.",
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "PtyTicket": []
+          }
+        ],
         "responses": {
           "101": {
             "description": "Switching Protocols \u2014 the WebSocket PTY stream is established."
@@ -1043,8 +1054,11 @@
       ],
       "post": {
         "operationId": "mintSessionPtyTicket",
+        "tags": [
+          "PTY"
+        ],
         "summary": "Mint a browser PTY ticket",
-        "description": "Returns a short-lived (5 min, multi-use) ticket for opening the PTY WebSocket from a browser, which cannot send an Authorization header. Bearer-authed; the caller must own the VM. Open wss://.../pty?ticket=<ticket> with it. The ticket is a stateless HMAC bound to (org, vm, session), so it validates on any node.",
+        "description": "Returns a short-lived, multi-use credential for opening the PTY WebSocket from a browser, which cannot set an Authorization header. The bearer-authenticated caller must own the VM. Pass the returned credential as the `ticket` query parameter on the PTY WebSocket URL.",
         "responses": {
           "200": {
             "description": "Ticket minted.",
@@ -1079,6 +1093,10 @@
       ],
       "post": {
         "operationId": "createSync",
+        "tags": [
+          "Filesystems"
+        ],
+        "summary": "Mount a filesystem",
         "requestBody": {
           "required": true,
           "content": {
@@ -1114,6 +1132,11 @@
       },
       "get": {
         "operationId": "listSyncs",
+        "tags": [
+          "Filesystems"
+        ],
+        "summary": "List filesystem mounts",
+        "description": "List persistent filesystem mounts for one VM, optionally filtered by filesystem.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Cursor"
@@ -1158,6 +1181,11 @@
       ],
       "delete": {
         "operationId": "deleteSync",
+        "tags": [
+          "Filesystems"
+        ],
+        "summary": "Unmount a filesystem",
+        "description": "Remove a persistent filesystem mount from a VM.",
         "responses": {
           "200": {
             "description": "Delete result.",
@@ -1183,6 +1211,10 @@
       ],
       "post": {
         "operationId": "sync",
+        "tags": [
+          "Sync"
+        ],
+        "summary": "Read or write VM files",
         "requestBody": {
           "required": true,
           "content": {
@@ -1220,6 +1252,11 @@
     "/v1/filesystems": {
       "get": {
         "operationId": "listFilesystems",
+        "tags": [
+          "Filesystems"
+        ],
+        "summary": "List filesystems",
+        "description": "List shared filesystems visible to the authenticated caller.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Cursor"
@@ -1254,6 +1291,11 @@
       },
       "post": {
         "operationId": "createFilesystem",
+        "tags": [
+          "Filesystems"
+        ],
+        "summary": "Create a filesystem",
+        "description": "Create a shared filesystem owned by the authenticated caller's organization.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1292,6 +1334,11 @@
       ],
       "get": {
         "operationId": "getFilesystem",
+        "tags": [
+          "Filesystems"
+        ],
+        "summary": "Get a filesystem",
+        "description": "Return one shared filesystem visible to the authenticated caller.",
         "responses": {
           "200": {
             "description": "Filesystem details.",
@@ -1310,6 +1357,11 @@
       },
       "delete": {
         "operationId": "deleteFilesystem",
+        "tags": [
+          "Filesystems"
+        ],
+        "summary": "Delete a filesystem",
+        "description": "Delete a shared filesystem after all VM mounts have been removed.",
         "responses": {
           "200": {
             "description": "Delete result. The filesystem must not be mounted by any VM (no remaining `Sync` referencing it).",
@@ -1329,7 +1381,32 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "Arker API key"
+      },
+      "PtyTicket": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "ticket",
+        "description": "Short-lived browser credential created by the PTY ticket endpoint."
+      }
+    },
     "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict.",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[ -~]+$"
+        }
+      },
       "VmId": {
         "name": "id",
         "in": "path",
@@ -1394,6 +1471,15 @@
         }
       }
     },
+    "headers": {
+      "RetryAfter": {
+        "description": "Delay in seconds before retrying a transiently unavailable request.",
+        "schema": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "responses": {
       "PaymentRequired": {
         "description": "The organization must complete billing setup or payment before starting new compute.",
@@ -1407,6 +1493,11 @@
       },
       "Error": {
         "description": "API error.",
+        "headers": {
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
         "content": {
           "application/json": {
             "schema": {
@@ -1455,28 +1546,6 @@
             "type": "string",
             "format": "date-time",
             "description": "Server time when the health response was generated."
-          },
-          "role": {
-            "type": "string",
-            "enum": [
-              "router"
-            ],
-            "description": "Present when the public health response is served by a regional router."
-          },
-          "worker_available": {
-            "type": "boolean",
-            "description": "Whether the router can currently select an active worker. Present on router responses."
-          },
-          "release_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Deployed release identifier, when configured. Present on router responses."
-          },
-          "version": {
-            "type": "string",
-            "description": "Router package version. Present on router responses."
           }
         }
       },
@@ -1524,7 +1593,7 @@
           },
           "message": {
             "type": "string",
-            "description": "Human-readable, client-safe error message. For `code: \"internal\"`, this is intentionally generic; server logs retain the underlying cause."
+            "description": "Human-readable, client-safe error message. For `code: \"internal\"`, this is intentionally generic."
           },
           "timestamp": {
             "type": "string",
@@ -1587,112 +1656,47 @@
         ],
         "description": "Lifecycle state for a Run. `running` = command in flight.\n`completed` = the command ran to completion; `exit_code` conveys\nsuccess (0) or a non-zero program exit (a non-zero exit is still\n`completed`). `failed` = the platform could not run or finish the\ncommand (host died, evicted mid-run, exec error); `fail_reason`\nexplains why, distinct from the program's `stderr`. `cancelled` =\ncancelled by the client.\n"
       },
-      "ResourceKind": {
-        "type": "string",
-        "enum": [
-          "cpu",
-          "memory",
-          "disk"
-        ]
-      },
-      "NetworkPolicy": {
-        "oneOf": [
-          {
-            "type": "object",
-            "required": [
-              "type"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "const": "open"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "type"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "const": "blocked"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "type",
-              "allow"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "const": "allow"
-              },
-              "allow": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          {
-            "type": "object",
-            "required": [
-              "type",
-              "block"
-            ],
-            "additionalProperties": false,
-            "properties": {
-              "type": {
-                "const": "block"
-              },
-              "block": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            }
-          }
-        ],
-        "description": "Outbound egress policy stored on the VM."
-      },
-      "NetworkPolicyInput": {
-        "anyOf": [
-          {
-            "type": "boolean"
-          },
-          {
-            "type": "string",
-            "enum": [
-              "open",
-              "blocked",
-              "true",
-              "false",
-              "none"
-            ]
-          },
-          {
-            "$ref": "#/components/schemas/NetworkPolicy"
-          }
-        ],
-        "description": "Outbound egress policy input. `true`/`open` means unrestricted; `false`/`blocked`/`none` means deny all."
-      },
       "PolicyDoc": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A VM's egress policy document (ARK-125): an ordered, first-match-wins rule list. Empty `policies` means no policy (allow-all). The engine default when no rule matches is DENY (fail-closed); an explicit catch-all `{ \"type\": \"outbound\", \"action\": \"allow\" }` rule expresses default-allow.",
+        "description": "A VM's network policy document: an ordered, first-match-wins rule list for outbound and inbound traffic. An empty `policies` list uses the default posture: allow outbound traffic and require Arker authentication for inbound traffic. When a non-empty policy has no matching rule for a direction, traffic in that direction is denied. Use an explicit catch-all allow rule to express default-allow behavior.",
         "properties": {
           "policies": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PolicyEntry"
             }
+          },
+          "secrets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Named secrets referenced by `${secret:NAME}` in a `rewrite` action's host/path/header/body values. Encrypted at rest with the rest of the document and REDACTED (masked with `***`) whenever the doc is echoed back on GET — so a GET response is NOT round-trippable back into a PUT without re-supplying real secret values."
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "readOnly": true,
+            "description": "Read-only (response-only). The single per-VM base hostname on the .app customer plane (<vm>.<region>.arker.app), present when the data-plane domain is configured — its presence is what signals the VM is reachable inbound. Reach a guest desktop at https://<hostname>:6080/. (The control plane — the API and SSH — stays on .ai.) Ignored on write."
+          },
+          "mitm_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "readOnly": true,
+            "description": "Read-only (response-only). Domains the policy escalates to the MITM proxy. Ignored on write."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "readOnly": true,
+            "description": "Read-only (response-only). Non-fatal notes (e.g. rules degraded where the MITM data path is not active). Ignored on write."
           }
         }
       },
@@ -1711,7 +1715,7 @@
               "outbound",
               "inbound"
             ],
-            "description": "Event family: `outbound` (egress) or `inbound` (expose a guest port). An unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input for outbound."
+            "description": "Traffic direction: `outbound` controls connections initiated by the VM; `inbound` exposes a guest port. Unknown values are rejected."
           },
           "match": {
             "$ref": "#/components/schemas/PolicyMatch"
@@ -1723,9 +1727,9 @@
             "type": "string",
             "enum": [
               "open",
-              "authenticated"
+              "arker"
             ],
-            "description": "Inbound `allow` only: the exposed tunnel's auth posture. `open` = public (no bearer); `authenticated` (the default when absent) requires the org bearer key. Invalid on a `deny` or any outbound rule (400). Inbound `match.ports` must be explicit single ports (ranges are rejected)."
+            "description": "Authentication for an inbound allow rule. `open` exposes the port publicly; `arker` requires an API key for the caller's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. Inbound port matches must use individual ports rather than ranges."
           }
         }
       },
@@ -1889,7 +1893,7 @@
           "host",
           "allow_on_status"
         ],
-        "description": "`action.gate`: a BLOCKING outbound HTTP check. When the rule matches, the proxy makes this HTTP request and WAITS before opening the guest's outbound connection; the response STATUS decides \u2014 status in `allow_on_status` => forward (applying any sibling `rewrite`), any other status => deny (403). A timeout / connection failure => `deny_on_timeout` (default fail-closed). Generic client: the target may be any endpoint (external authz / LLM / the arker `/run` API); the run-spec, if any, lives in `body`. `path` / header VALUES / string leaves of `body` are `$`-interpolated ($domain/$path/$method/$vm_id/$body); `host` is NOT interpolated (SSRF lever). Values injected into the JSON `body` are JSON-escaped. The outbound connection is SSRF-reguarded (refuses internal / link-local / RFC1918).",
+        "description": "`action.gate` performs an outbound HTTP authorization check before opening the VM's matching connection. A response status in `allow_on_status` permits the connection and applies any sibling `rewrite`; any other status denies it. Timeouts and connection failures follow `deny_on_timeout`, which defaults to deny. `path`, header values, and string leaves of `body` support `$` substitution with the documented request variables. `host` is not substituted. Injected JSON values are escaped, and gate requests reject private, link-local, and internal destinations.",
         "properties": {
           "host": {
             "type": "string",
@@ -1930,37 +1934,37 @@
           }
         }
       },
-      "PutPoliciesResponse": {
-        "type": "object",
-        "required": [
-          "policy"
-        ],
-        "additionalProperties": false,
-        "description": "Response to PUT /v1/vms/{id}/policies.",
-        "properties": {
-          "policy": {
-            "$ref": "#/components/schemas/PolicyDoc",
-            "description": "The stored policy document \u2014 read its rules as `policy.policies`."
-          },
-          "mitm_domains": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Domains the policy escalates to the MITM proxy."
-          },
-          "warnings": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Non-fatal notes (e.g. rules degraded where the MITM data path is not active)."
-          }
-        }
-      },
       "ForkRequest": {
         "type": "object",
         "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "source_vm_id"
+            ],
+            "properties": {
+              "source_vm_id": {
+                "type": "string"
+              },
+              "source_vm_name": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "required": [
+              "source_vm_name"
+            ],
+            "properties": {
+              "source_vm_id": {
+                "type": "null"
+              },
+              "source_vm_name": {
+                "type": "string"
+              }
+            }
+          }
+        ],
         "properties": {
           "source_vm_id": {
             "type": [
@@ -1997,27 +2001,12 @@
             ],
             "description": "Make the new VM publicly forkable from other orgs."
           },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkInput"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Inbound reachability and SSH authorized keys for the new VM."
-          },
-          "egress": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkPolicyInput"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Outbound egress policy for the new VM. Omit it to inherit the source VM's policy."
+          "ssh_public_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "SSH public keys to authorize on the new VM as raw `authorized_keys` entries, such as `ssh-ed25519 AAAA... you@host`. The list becomes the VM's authorized-key set. Omit it or pass an empty list to create the VM with no keys; add keys later with `PATCH /v1/vms/{id}`. Configure inbound reachability through the VM's policy."
           },
           "disk": {
             "type": [
@@ -2042,7 +2031,7 @@
             }
           },
           "policies": {
-            "description": "ARK-125 outbound policy for the new VM. Omit (null) to inherit the source VM's policy, re-encrypted under the child's own key. Present (even an empty doc) replaces it: an empty doc clears to allow-all rather than inheriting. Distinct from `egress` (legacy NetworkPolicy) and `network` (inbound).",
+            "description": "Network policy for the new VM. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PolicyDoc"
@@ -2243,56 +2232,9 @@
               "null"
             ]
           },
-          "vcpu_count": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "maximum": 255,
-            "deprecated": true,
-            "readOnly": true,
-            "description": "Deprecated compatibility projection of `resources.vcpu`."
-          },
-          "memory_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "deprecated": true,
-            "readOnly": true,
-            "description": "Deprecated compatibility projection of `resources.memory_mib`."
-          },
-          "disk_mib": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0,
-            "deprecated": true,
-            "readOnly": true,
-            "description": "Deprecated compatibility projection of `resources.disk_mib`."
-          },
           "network": {
             "$ref": "#/components/schemas/VmNetwork",
-            "description": "Inbound reachability settings for this VM."
-          },
-          "egress": {
-            "$ref": "#/components/schemas/NetworkPolicy",
-            "description": "Outbound egress policy stored on the VM."
-          },
-          "base_image": {
-            "type": "string",
-            "deprecated": true,
-            "readOnly": true,
-            "description": "Deprecated compatibility alias for `root_source_vm_name`."
-          },
-          "source_golden": {
-            "type": "string",
-            "deprecated": true,
-            "readOnly": true,
-            "description": "Deprecated compatibility alias for `root_source_vm_name`."
+            "description": "The VM's network object — SSH keys only. Inbound reachability and per-port tunnels are derived from `policies` and surface on the policies GET/PUT response, not here."
           },
           "max_vcpus": {
             "type": [
@@ -2468,7 +2410,7 @@
             "default": false
           },
           "timeout": {
-            "description": "Execution/kill bound in milliseconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600000 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background.",
+            "description": "Execution/kill bound in seconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background.",
             "type": [
               "integer",
               "null"
@@ -2512,16 +2454,6 @@
             ],
             "minimum": 0
           },
-          "network": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkRequest"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "acquire": {
             "type": [
               "string",
@@ -2540,50 +2472,26 @@
             "type": [
               "string",
               "null"
-            ]
-          }
-        }
-      },
-      "NetworkRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "inbound": {
+            ],
+            "enum": [
+              "SIGINT",
+              "SIGTERM",
+              "SIGKILL",
+              "SIGHUP",
+              null
+            ],
+            "description": "Deliver a signal to the selected persistent session's foreground process group. When set, the service does not execute `command`; it returns a completed acknowledgement with no run id. Use `session_id` or `session_idx` to select the session."
+          },
+          "policies": {
+            "description": "Network policy applied to the VM before this run and retained afterward. A non-empty document replaces the persisted policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to use the current policy unchanged. If the policy cannot be stored and applied, the command does not run.",
             "anyOf": [
               {
-                "$ref": "#/components/schemas/InboundRequest"
+                "$ref": "#/components/schemas/PolicyDoc"
               },
               {
                 "type": "null"
               }
             ]
-          }
-        }
-      },
-      "InboundRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "ports": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/InboundPortRequest"
-            },
-            "default": {}
-          }
-        }
-      },
-      "InboundPortRequest": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "visibility": {
-            "type": "string",
-            "default": "private"
-          },
-          "protocol": {
-            "type": "string",
-            "default": "http"
           }
         }
       },
@@ -2645,21 +2553,21 @@
             ]
           },
           "memory_requested_mib": {
-            "description": "ARK-107: requested total memory (MiB) when this run carried an explicit memory override. Absent when the run had no memory override.",
+            "description": "Requested total memory in MiB when this run included a memory override. Absent when no override was requested.",
             "type": [
               "integer",
               "null"
             ]
           },
           "memory_achieved_mib": {
-            "description": "ARK-107: achieved total memory (MiB) after the run's resize. Memory shrink is best-effort, so this can exceed memory_requested_mib when guest pages are pinned. Absent when the run had no memory override.",
+            "description": "Achieved total memory in MiB after applying the run's memory override. A memory reduction is best-effort, so this value can exceed `memory_requested_mib` when guest pages cannot be released. Absent when no override was requested.",
             "type": [
               "integer",
               "null"
             ]
           },
           "memory_partial": {
-            "description": "ARK-107: true when the run's memory shrink was partial (achieved differs from requested beyond the virtio-mem block granularity). The command still ran at the achieved footprint (best-effort); this flags the gap instead of a silent success. Defaults false.",
+            "description": "True when a requested memory reduction was only partially applied. The command runs with the achieved allocation, and `memory_achieved_mib` reports that allocation. Defaults to false.",
             "type": "boolean"
           }
         }
@@ -3059,63 +2967,6 @@
           }
         }
       },
-      "NetworkStatus": {
-        "type": "object",
-        "required": [
-          "inbound"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "inbound": {
-            "$ref": "#/components/schemas/InboundStatus"
-          }
-        }
-      },
-      "InboundStatus": {
-        "type": "object",
-        "required": [
-          "ports"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "ports": {
-            "type": "object",
-            "additionalProperties": {
-              "$ref": "#/components/schemas/InboundPortStatus"
-            }
-          }
-        }
-      },
-      "InboundPortStatus": {
-        "type": "object",
-        "required": [
-          "requested",
-          "observed",
-          "effective",
-          "protocol"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "requested": {
-            "type": "string"
-          },
-          "observed": {
-            "type": "string"
-          },
-          "effective": {
-            "type": "string"
-          },
-          "protocol": {
-            "type": "string"
-          },
-          "url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
       "CancelRunResponse": {
         "type": "object",
         "required": [
@@ -3224,7 +3075,7 @@
           },
           "path": {
             "type": "string",
-            "description": "VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`."
+            "description": "VM-side path where the filesystem is mounted."
           },
           "region": {
             "type": [
@@ -3279,33 +3130,6 @@
           },
           "path": {
             "type": "string"
-          }
-        }
-      },
-      "SyncReadRequest": {
-        "type": "object",
-        "required": [
-          "path"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "path": {
-            "type": "string"
-          }
-        }
-      },
-      "SyncWriteRequest": {
-        "type": "object",
-        "required": [
-          "writes"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "writes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SyncWriteEntry"
-            }
           }
         }
       },
@@ -3516,7 +3340,11 @@
             "type": "string"
           },
           "encoding": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "utf8",
+              "base64"
+            ]
           }
         }
       },
@@ -3907,14 +3735,8 @@
       "NetworkInput": {
         "type": "object",
         "additionalProperties": false,
+        "description": "SSH key configuration for a fork or patch. Inbound reachability is controlled by the VM's policy document and reported by the policy endpoints.",
         "properties": {
-          "reachable": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Enable inbound reachability for this VM. Defaults to false."
-          },
           "ssh_public_keys": {
             "type": "array",
             "items": {
@@ -3942,66 +3764,15 @@
       },
       "VmNetwork": {
         "type": "object",
-        "required": [
-          "reachable"
-        ],
         "additionalProperties": false,
+        "description": "A VM's network object: SSH keys ONLY. Inbound reachability, the .app hostname, and per-port tunnels are DERIVED from the VM's policy doc and surface on the policies GET/PUT response (the PolicyDoc's read-only fields), not here.",
         "properties": {
-          "reachable": {
-            "type": "boolean"
-          },
-          "hostname": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Stable per-VM hostname on the .app customer plane (<vm>.<region>.arker.app), present when reachable is true. Reach a guest desktop at https://<hostname>:6080/. Equals data_hostname. (The control plane — the API and SSH — stays on .ai.)"
-          },
-          "data_hostname": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Customer inbound data-plane hostname (equals hostname). Insert -<port> before the region suffix to reach any HTTP port your guest listens on: <vm>-<port>.<region>.arker.app (bare form defaults to guest port 80). Present when reachable and the data-plane domain is configured."
-          },
-          "ports": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VmInboundPort"
-            },
-            "description": "Per-port inbound URLs the VM exposes on the .app data plane, derived from its inbound allow policy rules (the same source the data-plane gate enforces). Each carries the fully-formed https://<vm>-<port>.<region>.arker.app URL so clients never build it by hand. Empty when nothing is exposed inbound."
-          },
           "ssh_public_keys": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SshPublicKeyInfo"
             },
             "description": "Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty."
-          }
-        }
-      },
-      "VmInboundPort": {
-        "type": "object",
-        "required": [
-          "port",
-          "url",
-          "auth"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "port": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 65535,
-            "description": "Guest TCP port exposed by an inbound allow policy rule."
-          },
-          "url": {
-            "type": "string",
-            "description": "Fully-formed reachable URL: https://<vm>-<port>.<region>.arker.app"
-          },
-          "auth": {
-            "type": "string",
-            "description": "Auth posture required to reach it: 'open' (public, no bearer) or 'authenticated' (org bearer required)."
           }
         }
       },
@@ -4023,6 +3794,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/NetworkInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "policies": {
+            "description": "Network policy for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PolicyDoc"
               },
               {
                 "type": "null"

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
 
@@ -11,10 +11,6 @@ from typing import Any, Literal, TypeAlias
 class HealthResponse:
     status: str
     timestamp: str
-    role: Literal['router'] | None = None
-    worker_available: bool | None = None
-    release_id: str | None = None
-    version: str | None = None
 
 
 ErrorCode: TypeAlias = Literal[
@@ -69,41 +65,6 @@ SessionState: TypeAlias = VmState
 
 
 RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
-
-
-ResourceKind: TypeAlias = Literal['cpu', 'memory', 'disk']
-
-
-@dataclass(frozen=True)
-class NetworkPolicy1:
-    type: Literal['open']
-
-
-@dataclass(frozen=True)
-class NetworkPolicy2:
-    type: Literal['blocked']
-
-
-@dataclass(frozen=True)
-class NetworkPolicy3:
-    type: Literal['allow']
-    allow: list[str]
-
-
-@dataclass(frozen=True)
-class NetworkPolicy4:
-    type: Literal['block']
-    block: list[str]
-
-
-NetworkPolicy: TypeAlias = (
-    NetworkPolicy1 | NetworkPolicy2 | NetworkPolicy3 | NetworkPolicy4
-)
-
-
-NetworkPolicyInput: TypeAlias = (
-    bool | Literal['open', 'blocked', 'true', 'false', 'none'] | NetworkPolicy
-)
 
 
 Port: TypeAlias = int
@@ -188,12 +149,6 @@ class PatchSessionRequest:
 class PatchSessionResponse:
     ok: bool
     session_id: str
-
-
-@dataclass(frozen=True)
-class InboundPortRequest:
-    visibility: str | None = 'private'
-    protocol: str | None = 'http'
 
 
 @dataclass(frozen=True)
@@ -304,15 +259,6 @@ class ListOrgRunsResponse:
 
 
 @dataclass(frozen=True)
-class InboundPortStatus:
-    requested: str
-    observed: str
-    effective: str
-    protocol: str
-    url: str | None = None
-
-
-@dataclass(frozen=True)
 class CancelRunResponse:
     cancelled: bool
 
@@ -360,11 +306,6 @@ class SyncCreateRequest:
 
 
 @dataclass(frozen=True)
-class SyncReadRequest:
-    path: str
-
-
-@dataclass(frozen=True)
 class SyncReadOperationRequest:
     op: Literal['read']
     path: str
@@ -405,7 +346,7 @@ class SyncReadInlineResponse:
     path: str
     size: int
     content: str
-    encoding: str
+    encoding: Literal['utf8', 'base64']
 
 
 @dataclass(frozen=True)
@@ -469,7 +410,6 @@ class VmResources:
 
 @dataclass(frozen=True)
 class NetworkInput:
-    reachable: bool | None = None
     ssh_public_keys: list[str] | None = None
 
 
@@ -480,16 +420,8 @@ class SshPublicKeyInfo:
 
 
 @dataclass(frozen=True)
-class VmInboundPort:
-    port: int
-    url: str
-    auth: str
-
-
-@dataclass(frozen=True)
-class PatchVmRequest:
-    resources: VmResources | None = None
-    network: NetworkInput | None = None
+class VmNetwork:
+    ssh_public_keys: list[SshPublicKeyInfo] | None = None
 
 
 @dataclass(frozen=True)
@@ -620,6 +552,7 @@ class AttachSessionPtyParameters:
     rows: int | None = 24
     command: str | None = None
     persist: bool | None = True
+    cancel_ttl_secs: int | None = None
     ticket: str | None = None
 
 
@@ -685,16 +618,36 @@ PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1 | PolicyActio
 
 
 @dataclass(frozen=True)
-class InboundRequest:
-    ports: dict[str, InboundPortRequest] | None = field(default_factory=dict)
-
-
-RunResponse: TypeAlias = CompletedRunResponse | BackgroundRunResponse
+class Vm:
+    vm_id: str
+    owner_org_id: str
+    created_at: str
+    public: bool
+    state: VmState
+    network: VmNetwork
+    sessions: list[Session]
+    resources: VmResources
+    name: str | None = None
+    root_source_vm_id: str | None = None
+    root_source_vm_name: str | None = None
+    region: str | None = None
+    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    started_at: str | None = None
+    max_vcpus: int | None = None
+    min_vcpus: int | None = None
+    max_memory_mib: int | None = None
+    min_memory_mib: int | None = None
+    min_disk_mib: int | None = None
+    max_disk_mib: int | None = None
 
 
 @dataclass(frozen=True)
-class InboundStatus:
-    ports: dict[str, InboundPortStatus]
+class ListVmsResponse:
+    vms: list[Vm]
+    next_cursor: str | None = None
+
+
+RunResponse: TypeAlias = CompletedRunResponse | BackgroundRunResponse
 
 
 SyncWriteEntry: TypeAlias = (
@@ -739,71 +692,11 @@ class SyncCommitWriteResult:
 
 
 @dataclass(frozen=True)
-class VmNetwork:
-    reachable: bool
-    hostname: str | None = None
-    data_hostname: str | None = None
-    ports: list[VmInboundPort] | None = None
-    ssh_public_keys: list[SshPublicKeyInfo] | None = None
-
-
-@dataclass(frozen=True)
 class PolicyEntry:
     type: Literal['outbound', 'inbound']
     action: PolicyAction
     match: PolicyMatch | None = None
-    auth: Literal['open', 'authenticated'] | None = None
-
-
-@dataclass(frozen=True)
-class Vm:
-    vm_id: str
-    owner_org_id: str
-    created_at: str
-    public: bool
-    state: VmState
-    network: VmNetwork
-    sessions: list[Session]
-    resources: VmResources
-    name: str | None = None
-    root_source_vm_id: str | None = None
-    root_source_vm_name: str | None = None
-    region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
-    started_at: str | None = None
-    vcpu_count: int | None = None
-    memory_mib: int | None = None
-    disk_mib: int | None = None
-    egress: NetworkPolicy | None = None
-    base_image: str | None = None
-    source_golden: str | None = None
-    max_vcpus: int | None = None
-    min_vcpus: int | None = None
-    max_memory_mib: int | None = None
-    min_memory_mib: int | None = None
-    min_disk_mib: int | None = None
-    max_disk_mib: int | None = None
-
-
-@dataclass(frozen=True)
-class ListVmsResponse:
-    vms: list[Vm]
-    next_cursor: str | None = None
-
-
-@dataclass(frozen=True)
-class NetworkRequest:
-    inbound: InboundRequest | None = None
-
-
-@dataclass(frozen=True)
-class NetworkStatus:
-    inbound: InboundStatus
-
-
-@dataclass(frozen=True)
-class SyncWriteRequest:
-    writes: list[SyncWriteEntry]
+    auth: Literal['open', 'arker'] | None = None
 
 
 @dataclass(frozen=True)
@@ -823,29 +716,43 @@ SyncWriteResult: TypeAlias = (
 @dataclass(frozen=True)
 class PolicyDoc:
     policies: list[PolicyEntry] | None = None
-
-
-@dataclass(frozen=True)
-class PutPoliciesResponse:
-    policy: PolicyDoc
+    secrets: dict[str, str] | None = None
+    hostname: str | None = None
     mitm_domains: list[str] | None = None
     warnings: list[str] | None = None
 
 
 @dataclass(frozen=True)
-class ForkRequest:
-    source_vm_id: str | None = None
-    source_vm_name: str | None = None
+class ForkRequest1:
+    source_vm_id: str
+    source_vm_name: None = None
     source_org_id: str | None = None
     name: str | None = None
     public: bool | None = None
-    network: NetworkInput | None = None
-    egress: NetworkPolicyInput | None = None
+    ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
     platforms: list[str] | None = None
     policies: PolicyDoc | None = None
     resources: VmResources | None = None
+
+
+@dataclass(frozen=True)
+class ForkRequest2:
+    source_vm_name: str
+    source_vm_id: None = None
+    source_org_id: str | None = None
+    name: str | None = None
+    public: bool | None = None
+    ssh_public_keys: list[str] | None = None
+    disk: bool | None = None
+    durable: bool | None = None
+    platforms: list[str] | None = None
+    policies: PolicyDoc | None = None
+    resources: VmResources | None = None
+
+
+ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2
 
 
 @dataclass(frozen=True)
@@ -860,10 +767,10 @@ class RunRequest:
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
-    network: NetworkRequest | None = None
     acquire: str | None = None
     release: str | None = None
-    signal: str | None = None
+    signal: Literal['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'] | None = None
+    policies: PolicyDoc | None = None
 
 
 @dataclass(frozen=True)
@@ -871,6 +778,13 @@ class SyncWriteResponse:
     ok: bool
     op: Literal['write']
     results: list[SyncWriteResult]
+
+
+@dataclass(frozen=True)
+class PatchVmRequest:
+    resources: VmResources | None = None
+    network: NetworkInput | None = None
+    policies: PolicyDoc | None = None
 
 
 SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse
@@ -1005,7 +919,7 @@ class PutVmPoliciesOperation(TypedDict):
     path: Literal['/v1/vms/{id}/policies']
     parameters: PutVmPoliciesParameters
     request: PolicyDoc
-    success: PutPoliciesResponse
+    success: PolicyDoc
     errors: ErrorResponse
 
 

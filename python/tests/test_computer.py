@@ -89,7 +89,7 @@ def test_fork_posts_directly_to_source_vm() -> None:
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
@@ -115,7 +115,7 @@ def test_fork_infers_arker_org_for_macos_full_golden() -> None:
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {"vcpu": 4, "memory_mib": 8192, "disk_mib": 10240},
         },
     )
@@ -152,7 +152,7 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
@@ -178,7 +178,7 @@ def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
@@ -226,7 +226,7 @@ def test_list_uses_configured_base_url() -> None:
             "state": "idle",
             "sessions": [session()],
             "name": "demo",
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
             "max_vcpus": 8,
             "max_memory_mib": 32768,
@@ -252,7 +252,7 @@ def test_list_uses_configured_base_url() -> None:
     assert result.vms[0].max_memory_mib == 32768
     assert result.vms[0].min_memory_mib == 512
     assert result.vms[0].network is not None
-    assert result.vms[0].network.reachable is False
+    assert result.vms[0].network.ssh_public_keys == []
     assert result.vms[0].resources == sdk.VmResources(
         vcpu=2, memory_mib=1024, disk_mib=4096
     )
@@ -379,7 +379,7 @@ def test_resize_patches_vm_resources() -> None:
             "state": "idle",
             "sessions": [],
             "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
         },
     )
 
@@ -575,19 +575,25 @@ def test_fork_sends_durable_flag() -> None:
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"reachable": False},
+            "network": {"ssh_public_keys": []},
             "resources": {},
         },
     )
 
     with use_transport(t):
-        client().vm("ubuntu").fork(durable=True)
+        client().vm("ubuntu").fork(
+            durable=True,
+            ssh_public_keys=["ssh-ed25519 AAAA test@example"],
+            policies={"policies": []},
+        )
 
     # Computer.fork auto-fills source_vm_id; disk defaults to True.
     assert json.loads(t.calls[0]["body"]) == {
         "durable": True,
         "source_vm_id": "ubuntu",
         "disk": True,
+        "ssh_public_keys": ["ssh-ed25519 AAAA test@example"],
+        "policies": {"policies": []},
     }
 
 

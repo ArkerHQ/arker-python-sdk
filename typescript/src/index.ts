@@ -105,19 +105,15 @@ export interface ArkerOptions {
 export type VmState = ApiSchema<"VmState">;
 export type SessionState = ApiSchema<"SessionState">;
 export type RunState = ApiSchema<"RunState">;
-export type ResourceKind = ApiSchema<"ResourceKind">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
 
 // ── Core resources ─────────────────────────────────────────────────
-export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
-export type NetworkPolicyInput = ApiSchema<"NetworkPolicyInput">;
-// ── ARK-125 egress policy (fine-grained outbound rules) ────────────
 export type PolicyDoc = ApiSchema<"PolicyDoc">;
 export type PolicyEntry = ApiSchema<"PolicyEntry">;
 export type PolicyMatch = ApiSchema<"PolicyMatch">;
 export type PolicyAction = ApiSchema<"PolicyAction">;
 export type Rewrite = ApiSchema<"Rewrite">;
-export type PutPoliciesResponse = ApiSchema<"PutPoliciesResponse">;
+export type PutPoliciesResponse = PolicyDoc;
 /** A `ports` element: a single port (`80`) or an inclusive `[start, end]`
  * range (`[1000, 2000]`). A `ports` list may mix the two. */
 export type PortSpec = NonNullable<PolicyMatch["ports"]>[number];
@@ -144,8 +140,6 @@ export type Sync = ApiSchema<"Sync">;
 export type ListSyncsResponse = ApiSchema<"ListSyncsResponse">;
 export type DeleteSyncResponse = ApiSchema<"DeleteSyncResponse">;
 export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
-export type SyncReadRequest = ApiSchema<"SyncReadRequest">;
-export type SyncWriteRequest = ApiSchema<"SyncWriteRequest">;
 export type SyncReadOperationRequest = ApiSchema<"SyncReadOperationRequest">;
 export type SyncWriteOperationRequest = ApiSchema<"SyncWriteOperationRequest">;
 export type SyncWriteEntry = ApiSchema<"SyncWriteEntry">;
@@ -172,9 +166,6 @@ export type RunOptions = Partial<Omit<RunRequest, "command">> & {
    */
   idempotencyKey?: string;
 };
-export type InboundPortRequest = ApiSchema<"InboundPortRequest">;
-export type NetworkRequest = ApiSchema<"NetworkRequest">;
-export type NetworkStatus = ApiSchema<"NetworkStatus">;
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
@@ -213,13 +204,6 @@ export type ErrorResponse = ApiSchema<"ErrorResponse">;
 export type SessionInfo = Session;
 /** @deprecated Use `Run`. */
 export type RunStatusResponse = Run;
-/** @deprecated Use `NetworkRequest`. */
-export type RunNetworkRequest = NetworkRequest;
-/** @deprecated Use `NetworkStatus`. */
-export type RunNetworkStatus = NetworkStatus;
-/** @deprecated Use `InboundPortRequest`. */
-export type RunInboundPortRequest = InboundPortRequest;
-
 // ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
   type: "completed";
@@ -503,22 +487,29 @@ export class Arker {
             disk_mib: legacy.disk_mib ?? null,
           }
         : null);
-    const body: ForkRequest = {
-      source_vm_id: src.sourceVmId ?? null,
-      source_vm_name: src.sourceVmName ?? null,
+    const requestOptions = {
       source_org_id: sourceOrgId ?? null,
       name: src.name ?? null,
       public: src.public ?? null,
-      network: src.network ?? null,
-      egress: src.egress ?? null,
+      ssh_public_keys: src.ssh_public_keys,
       disk: src.disk ?? true,
       durable: src.durable ?? null,
       platforms: src.platforms,
       resources,
-      // ARK-125: omit to inherit the source's policy; pass a doc to override
-      // (an empty `{ policies: [] }` clears to allow-all, NOT inherit).
+      // Omit to inherit the source's policy; pass a document to replace it.
       policies: src.policies ?? null,
     };
+    const body: ForkRequest = src.sourceVmId
+      ? {
+          ...requestOptions,
+          source_vm_id: src.sourceVmId,
+          source_vm_name: null,
+        }
+      : {
+          ...requestOptions,
+          source_vm_id: null,
+          source_vm_name: src.sourceVmName!,
+        };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
     const useBurst =
@@ -918,20 +909,16 @@ export class VM {
     return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
   }
 
-  // ── ARK-125 egress policy ────────────────────────────────────────
   /**
-   * Read this VM's outbound egress policy document (ARK-125). Returns an
-   * empty doc (`{}`) when no policy is set.
+   * Read this VM's network policy document.
    */
   async getPolicies(): Promise<PolicyDoc> {
     return this._client._request<PolicyDoc>("GET", `${vmPath(this.id)}/policies`, undefined, this.baseUrl);
   }
 
   /**
-   * Replace this VM's outbound egress policy with `doc` — an ordered,
-   * first-match-wins rule list. An empty doc (`{}` or `{ policies: [] }`)
-   * clears the policy to allow-all. Returns the stored policy plus the
-   * domains it escalates to MITM and any degrade warnings.
+   * Replace this VM's network policy with `doc`. The response is the stored
+   * policy document, including response-only hostname and warning fields.
    *
    *     await vm.setPolicies({
    *       policies: [

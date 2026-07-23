@@ -16,8 +16,8 @@
  * Run multiple targets:
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_SMOKE_TARGETS='[
- *     {"name":"burst","baseUrl":"https://aws-burst-us-west-2.arker.ai/api","source":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
- *     {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai","source":"ubuntu"}
+ *     {"name":"burst","baseUrl":"https://aws-burst-us-west-2.arker.ai/api","sourceVmId":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
+ *     {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai/api","sourceVmName":"ubuntu"}
  *   ]' \
  *   bun run smoke
  */
@@ -28,7 +28,8 @@ interface SmokeTarget {
   name?: string;
   apiKey?: string;
   baseUrl: string;
-  source: string;
+  sourceVmId?: string;
+  sourceVmName?: string;
   runtime?: string;
 }
 
@@ -55,7 +56,7 @@ function targets(): SmokeTarget[] {
   return [{
     name: "default",
     baseUrl: requiredEnv("ARKER_BASE_URL"),
-    source: process.env.ARKER_SOURCE_VM ?? "ubuntu",
+    sourceVmName: process.env.ARKER_SOURCE_VM ?? "ubuntu",
     runtime: process.env.ARKER_RUNTIME,
   }];
 }
@@ -78,8 +79,9 @@ function pathSegment(value: string): string {
   return encodeURIComponent(value);
 }
 
-function apiPath(vmId: string, operation: "fork" | "run" | "sync"): string {
-  return `/v1/vms/${pathSegment(vmId)}/${operation}`;
+function apiPath(vmId: string, operation: "run" | "sync"): string {
+  const suffix = operation === "run" ? "runs" : "sync";
+  return `/v1/vms/${pathSegment(vmId)}/${suffix}`;
 }
 
 function jsonObject(value: unknown, context: string): JsonObject {
@@ -105,10 +107,6 @@ function assertExactKeys(body: JsonObject, keys: string[], context: string): voi
 function stringField(value: unknown, context: string): string {
   assert(typeof value === "string" && value.length > 0, `${context} must be a non-empty string`);
   return value;
-}
-
-function optionalString(value: unknown, context: string): void {
-  assert(value === undefined || value === null || typeof value === "string", `${context} must be a string when present`);
 }
 
 function optionalObject(value: unknown, context: string): void {
@@ -193,8 +191,13 @@ function decodeContent(content: string, encoding: string): string {
   return content;
 }
 
-function canonicalForkRequest(): JsonObject {
-  return {};
+function canonicalForkRequest(target: SmokeTarget): JsonObject {
+  const hasId = Boolean(target.sourceVmId);
+  const hasName = Boolean(target.sourceVmName);
+  assert(hasId !== hasName, "set exactly one of sourceVmId or sourceVmName");
+  return hasId
+    ? { source_vm_id: target.sourceVmId }
+    : { source_vm_name: target.sourceVmName };
 }
 
 function canonicalRunRequest(command: string, runtime?: string): JsonObject {
@@ -220,41 +223,45 @@ function canonicalReadRequest(path: string): JsonObject {
 }
 
 function assertForkResponse(body: JsonObject): string {
-  // Contract 0.3 renamed `owner_id → owner_org_id`, dropped
-  // `ssh_private_key` from the public surface, and added `public`,
-  // `state`, `tunnels`. Old arkerd / Lambda may still emit the legacy
-  // fields, so accept either shape and prefer the new one when both
-  // are present.
-  const required = ["vm_id", "created_at", "sessions"];
+  const required = [
+    "vm_id",
+    "owner_org_id",
+    "created_at",
+    "public",
+    "state",
+    "sessions",
+  ];
   for (const key of required) {
     assert(body[key] !== undefined, `fork response.${key} missing`);
   }
-  const ownerOrgId = body.owner_org_id ?? body.owner_id;
-  assert(
-    typeof ownerOrgId === "string" && ownerOrgId.length > 0,
-    "fork response.owner_org_id (or legacy .owner_id) must be a non-empty string",
-  );
+  stringField(body.owner_org_id, "fork response.owner_org_id");
   const vmId = stringField(body.vm_id, "fork response.vm_id");
   stringField(body.created_at, "fork response.created_at");
+  assert(typeof body.public === "boolean", "fork response.public must be a boolean");
+  assert(body.state === "idle" || body.state === "running", "fork response.state must be idle or running");
   arrayField(body.sessions, "fork response.sessions");
-  optionalString(body.ssh_private_key, "fork response.ssh_private_key");
-  if (body.tunnels !== undefined) arrayField(body.tunnels, "fork response.tunnels");
   optionalObject(body.network, "fork response.network");
+  for (const alias of [
+    "owner_id",
+    "ssh_private_key",
+    "vcpu_count",
+    "memory_mib",
+    "disk_mib",
+    "base_image",
+    "source_golden",
+    "egress",
+  ]) {
+    assert(body[alias] === undefined, `fork response must not contain ${alias}`);
+  }
   return vmId;
 }
 
 function assertCompletedRunResponse(body: JsonObject, expectedStdout: string): void {
-  // Contract 0.3 dropped `completed: bool` from CompletedRunResponse
-  // (state is implicit in the response variant). Accept either shape
-  // so this conformance test passes against both pre- and post-0.3
-  // backends.
   const minimal = ["stdout", "stdout_encoding", "stderr", "stderr_encoding", "exit_code"];
   for (const key of minimal) {
     assert(body[key] !== undefined, `run response.${key} missing`);
   }
-  if (body.completed !== undefined) {
-    assert(body.completed === true, "run response.completed (legacy) must be true when present");
-  }
+  assert(body.completed === undefined, "run response must not contain completed");
   assert(stringField(body.stdout, "run response.stdout") === expectedStdout, `unexpected stdout: ${JSON.stringify(body.stdout)}`);
   stringField(body.stdout_encoding, "run response.stdout_encoding");
   assert(typeof body.stderr === "string", "run response.stderr must be a string");
@@ -294,7 +301,7 @@ function assertSyncReadResponse(body: JsonObject, path: string, expectedContents
     numberField(body.size, "sync read response.size");
     const content = stringField(body.content, "sync read response.content");
     const encoding = stringField(body.encoding, "sync read response.encoding");
-    assert(["utf8", "utf-8", "base64"].includes(encoding), "sync read response.encoding must be utf8, utf-8, or base64");
+    assert(["utf8", "base64"].includes(encoding), "sync read response.encoding must be utf8 or base64");
     const contents = decodeContent(content, encoding);
     assert(contents === expectedContents, `unexpected sync contents: ${JSON.stringify(contents)}`);
     return;
@@ -321,7 +328,7 @@ async function smoke(target: SmokeTarget): Promise<void> {
 
   try {
     const fork = jsonObject(
-      await requestJson(client, "POST", apiPath(target.source, "fork"), canonicalForkRequest()),
+      await requestJson(client, "POST", "/v1/fork", canonicalForkRequest(target)),
       "fork response",
     );
     vmId = assertForkResponse(fork);

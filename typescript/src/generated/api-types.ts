@@ -11,7 +11,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Public health/readiness probe. The response body is intentionally minimal and does not expose host, region, release, or golden-image internals. */
+        /**
+         * Check service readiness
+         * @description Public health/readiness probe. The response body is intentionally minimal and does not expose host, region, release, or golden-image internals.
+         */
         get: operations["health"];
         put?: never;
         post?: never;
@@ -31,10 +34,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * @description Create a new VM by forking from an image, an existing VM ID, or
-         *     a VM name within an org. Exactly one of `source_image`,
-         *     `source_vm_id`, or `source_vm_name` must be set. Forking a VM
-         *     owned by another org requires that VM to be `public: true`.
+         * Fork a VM
+         * @description Create a new VM by forking from an existing VM ID or a VM name within an organization. Exactly one of `source_vm_id` or `source_vm_name` must be set. Forking a VM owned by another organization requires that VM to be public.
          */
         post: operations["fork"];
         delete?: never;
@@ -50,6 +51,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * List VMs
+         * @description List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, or lifecycle state.
+         */
         get: operations["listVms"];
         put?: never;
         post?: never;
@@ -66,7 +71,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions. */
+        /**
+         * List organization runs
+         * @description Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions.
+         */
         get: operations["listOrgRuns"];
         put?: never;
         post?: never;
@@ -85,12 +93,24 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * Get a VM
+         * @description Return one VM visible to the authenticated caller.
+         */
         get: operations["getVm"];
         put?: never;
         post?: never;
+        /**
+         * Delete a VM
+         * @description Delete a VM owned by the authenticated caller.
+         */
         delete: operations["deleteVm"];
         options?: never;
         head?: never;
+        /**
+         * Update a VM
+         * @description Update a VM's resources, SSH keys, or network policy.
+         */
         patch: operations["patchVm"];
         trace?: never;
     };
@@ -103,7 +123,15 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * Get a VM network policy
+         * @description Return the VM's network policy together with its derived inbound exposure and enforcement metadata.
+         */
         get: operations["getVmPolicies"];
+        /**
+         * Replace a VM network policy
+         * @description Replace the VM's complete network policy and apply it to the running VM.
+         */
         put: operations["putVmPolicies"];
         post?: never;
         delete?: never;
@@ -121,13 +149,15 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * List VM runs
+         * @description List recorded runs for one VM, with optional lifecycle and time filters.
+         */
         get: operations["listRuns"];
         put?: never;
         /**
-         * @description Run a command. Foreground execution is the portable baseline.
-         *     Optional `background`, `session_id`, `network`, `signal`,
-         *     `acquire`/`release`, and per-run resource overrides may return
-         *     `unsupported_operation` on backends that don't support them.
+         * Run a command
+         * @description Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` on backends that do not support them.
          */
         post: operations["createRun"];
         delete?: never;
@@ -146,9 +176,17 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * Get a run
+         * @description Return one recorded run, including its current state and available output.
+         */
         get: operations["getRun"];
         put?: never;
         post?: never;
+        /**
+         * Cancel a run
+         * @description Request cancellation of an in-flight run.
+         */
         delete: operations["cancelRun"];
         options?: never;
         head?: never;
@@ -164,8 +202,16 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * List VM sessions
+         * @description List persistent command sessions for one VM.
+         */
         get: operations["listSessions"];
         put?: never;
+        /**
+         * Create a session
+         * @description Create a persistent command session in a VM.
+         */
         post: operations["createSession"];
         delete?: never;
         options?: never;
@@ -183,9 +229,17 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * Get a session
+         * @description Return one persistent VM session.
+         */
         get: operations["getSession"];
         put?: never;
         post?: never;
+        /**
+         * Delete a session
+         * @description Close and remove a persistent VM session.
+         */
         delete: operations["deleteSession"];
         options?: never;
         head?: never;
@@ -205,8 +259,10 @@ export interface paths {
                 rows?: number;
                 /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
                 command?: string;
-                /** @description E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {"type":"kill"} or the server idle TTL destroy a persistent shell. */
+                /** @description When true (default), disconnecting keeps the shell running so the same session_id can reconnect to it and receive recent scrollback. When false, the shell is terminated on disconnect. A kill control message or the configured idle TTL terminates a persistent shell. */
                 persist?: boolean;
+                /** @description Destroy the PTY after this many seconds without terminal input or output. Omit or set to zero to disable this PTY-specific idle limit. */
+                cancel_ttl_secs?: number;
                 /** @description Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set). */
                 ticket?: string;
             };
@@ -219,7 +275,7 @@ export interface paths {
         };
         /**
          * Open an interactive PTY (WebSocket upgrade)
-         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Auth on the upgrade is a Bearer key (a key may only attach to its own org's VMs) OR a ?ticket= for browsers. Reopening with the same session_id RECONNECTS to the same running shell when persist=true (scrollback replayed). Wire format: server→client Binary frames are raw terminal output (ANSI escapes/colors intact); client→server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client→server Text frames are JSON control: {"type":"resize","cols":N,"rows":M}, {"type":"kill"}, {"type":"ping"}. A plain socket close DETACHES (persist) or tears down; {"type":"kill"} always destroys. Caps: one live attachment per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.
+         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.
          */
         get: operations["attachSessionPty"];
         put?: never;
@@ -244,7 +300,7 @@ export interface paths {
         put?: never;
         /**
          * Mint a browser PTY ticket
-         * @description Returns a short-lived (5 min, multi-use) ticket for opening the PTY WebSocket from a browser, which cannot send an Authorization header. Bearer-authed; the caller must own the VM. Open wss://.../pty?ticket=<ticket> with it. The ticket is a stateless HMAC bound to (org, vm, session), so it validates on any node.
+         * @description Returns a short-lived, multi-use credential for opening the PTY WebSocket from a browser, which cannot set an Authorization header. The bearer-authenticated caller must own the VM. Pass the returned credential as the `ticket` query parameter on the PTY WebSocket URL.
          */
         post: operations["mintSessionPtyTicket"];
         delete?: never;
@@ -262,9 +318,14 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * List filesystem mounts
+         * @description List persistent filesystem mounts for one VM, optionally filtered by filesystem.
+         */
         get: operations["listSyncs"];
         put?: never;
         /**
+         * Mount a filesystem
          * @description Create a persistent sync: ensure a Filesystem exists (creating
          *     one if requested) and bind-mount it into this VM at `path`.
          *     Bidirectional by virtue of being a mount — there is no separate
@@ -291,6 +352,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /**
+         * Unmount a filesystem
+         * @description Remove a persistent filesystem mount from a VM.
+         */
         delete: operations["deleteSync"];
         options?: never;
         head?: never;
@@ -309,6 +374,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
+         * Read or write VM files
          * @description Read or write files in the VM filesystem. Op-discriminated:
          *     `{op:"read",path}` reads a file (inline content for small files, a
          *     presigned GET URL for large ones); `{op:"write",writes:[...]}` writes,
@@ -329,8 +395,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * List filesystems
+         * @description List shared filesystems visible to the authenticated caller.
+         */
         get: operations["listFilesystems"];
         put?: never;
+        /**
+         * Create a filesystem
+         * @description Create a shared filesystem owned by the authenticated caller's organization.
+         */
         post: operations["createFilesystem"];
         delete?: never;
         options?: never;
@@ -347,9 +421,17 @@ export interface paths {
             };
             cookie?: never;
         };
+        /**
+         * Get a filesystem
+         * @description Return one shared filesystem visible to the authenticated caller.
+         */
         get: operations["getFilesystem"];
         put?: never;
         post?: never;
+        /**
+         * Delete a filesystem
+         * @description Delete a shared filesystem after all VM mounts have been removed.
+         */
         delete: operations["deleteFilesystem"];
         options?: never;
         head?: never;
@@ -368,17 +450,6 @@ export interface components {
              * @description Server time when the health response was generated.
              */
             timestamp: string;
-            /**
-             * @description Present when the public health response is served by a regional router.
-             * @enum {string}
-             */
-            role?: "router";
-            /** @description Whether the router can currently select an active worker. Present on router responses. */
-            worker_available?: boolean;
-            /** @description Deployed release identifier, when configured. Present on router responses. */
-            release_id?: string | null;
-            /** @description Router package version. Present on router responses. */
-            version?: string;
         };
         /**
          * @description Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature. `payment_required` means billing setup or payment is required before new compute can start.
@@ -387,7 +458,7 @@ export interface components {
         ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "backend_unavailable" | "api_worker_unavailable" | "bad_gateway" | "network_error" | "stale_route" | "unrecoverable";
         ErrorBody: {
             code: components["schemas"]["ErrorCode"];
-            /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic; server logs retain the underlying cause. */
+            /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic. */
             message: string;
             /**
              * Format: date-time
@@ -425,44 +496,34 @@ export interface components {
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /** @enum {string} */
-        ResourceKind: "cpu" | "memory" | "disk";
-        /** @description Outbound egress policy stored on the VM. */
-        NetworkPolicy: {
-            /** @constant */
-            type: "open";
-        } | {
-            /** @constant */
-            type: "blocked";
-        } | {
-            /** @constant */
-            type: "allow";
-            allow: string[];
-        } | {
-            /** @constant */
-            type: "block";
-            block: string[];
-        };
-        /** @description Outbound egress policy input. `true`/`open` means unrestricted; `false`/`blocked`/`none` means deny all. */
-        NetworkPolicyInput: boolean | ("open" | "blocked" | "true" | "false" | "none") | components["schemas"]["NetworkPolicy"];
-        /** @description A VM's egress policy document (ARK-125): an ordered, first-match-wins rule list. Empty `policies` means no policy (allow-all). The engine default when no rule matches is DENY (fail-closed); an explicit catch-all `{ "type": "outbound", "action": "allow" }` rule expresses default-allow. */
+        /** @description A VM's network policy document: an ordered, first-match-wins rule list for outbound and inbound traffic. An empty `policies` list uses the default posture: allow outbound traffic and require Arker authentication for inbound traffic. When a non-empty policy has no matching rule for a direction, traffic in that direction is denied. Use an explicit catch-all allow rule to express default-allow behavior. */
         PolicyDoc: {
             policies?: components["schemas"]["PolicyEntry"][];
+            /** @description Named secrets referenced by `${secret:NAME}` in a `rewrite` action's host/path/header/body values. Encrypted at rest with the rest of the document and REDACTED (masked with `***`) whenever the doc is echoed back on GET — so a GET response is NOT round-trippable back into a PUT without re-supplying real secret values. */
+            secrets?: {
+                [key: string]: string;
+            };
+            /** @description Read-only (response-only). The single per-VM base hostname on the .app customer plane (<vm>.<region>.arker.app), present when the data-plane domain is configured — its presence is what signals the VM is reachable inbound. Reach a guest desktop at https://<hostname>:6080/. (The control plane — the API and SSH — stays on .ai.) Ignored on write. */
+            readonly hostname?: string | null;
+            /** @description Read-only (response-only). Domains the policy escalates to the MITM proxy. Ignored on write. */
+            readonly mitm_domains?: string[];
+            /** @description Read-only (response-only). Non-fatal notes (e.g. rules degraded where the MITM data path is not active). Ignored on write. */
+            readonly warnings?: string[];
         };
         /** @description One policy rule. `match` AND's its present fields (absent ⇒ catch-all). */
         PolicyEntry: {
             /**
-             * @description Event family: `outbound` (egress) or `inbound` (expose a guest port). An unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input for outbound.
+             * @description Traffic direction: `outbound` controls connections initiated by the VM; `inbound` exposes a guest port. Unknown values are rejected.
              * @enum {string}
              */
             type: "outbound" | "inbound";
             match?: components["schemas"]["PolicyMatch"];
             action: components["schemas"]["PolicyAction"];
             /**
-             * @description Inbound `allow` only: the exposed tunnel's auth posture. `open` = public (no bearer); `authenticated` (the default when absent) requires the org bearer key. Invalid on a `deny` or any outbound rule (400). Inbound `match.ports` must be explicit single ports (ranges are rejected).
+             * @description Authentication for an inbound allow rule. `open` exposes the port publicly; `arker` requires an API key for the caller's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. Inbound port matches must use individual ports rather than ranges.
              * @enum {string}
              */
-            auth?: "open" | "authenticated";
+            auth?: "open" | "arker";
         };
         /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field is enforced at the request layer by the managed MITM proxy; where the proxy is not active for a VM the rule degrades to its host/L4 projection — allow → host-allow, deny/rewrite → fail-closed deny. */
         PolicyMatch: {
@@ -508,7 +569,7 @@ export interface components {
             /** @description Replace the request body entirely with this (interpolated) value; `$body` re-injects the original body. Absent = body forwarded unchanged. */
             body?: string;
         };
-        /** @description `action.gate`: a BLOCKING outbound HTTP check. When the rule matches, the proxy makes this HTTP request and WAITS before opening the guest's outbound connection; the response STATUS decides — status in `allow_on_status` => forward (applying any sibling `rewrite`), any other status => deny (403). A timeout / connection failure => `deny_on_timeout` (default fail-closed). Generic client: the target may be any endpoint (external authz / LLM / the arker `/run` API); the run-spec, if any, lives in `body`. `path` / header VALUES / string leaves of `body` are `$`-interpolated ($domain/$path/$method/$vm_id/$body); `host` is NOT interpolated (SSRF lever). Values injected into the JSON `body` are JSON-escaped. The outbound connection is SSRF-reguarded (refuses internal / link-local / RFC1918). */
+        /** @description `action.gate` performs an outbound HTTP authorization check before opening the VM's matching connection. A response status in `allow_on_status` permits the connection and applies any sibling `rewrite`; any other status denies it. Timeouts and connection failures follow `deny_on_timeout`, which defaults to deny. `path`, header values, and string leaves of `body` support `$` substitution with the documented request variables. `host` is not substituted. Injected JSON values are escaped, and gate requests reject private, link-local, and internal destinations. */
         Gate: {
             /** @description Target endpoint INCLUDING scheme, e.g. https://authz.example.com. Not interpolated. */
             host: string;
@@ -529,15 +590,6 @@ export interface components {
             /** @description Max wall-clock for the gate call before it is abandoned (then deny_on_timeout applies). Default ~30000. */
             timeout_ms?: number;
         };
-        /** @description Response to PUT /v1/vms/{id}/policies. */
-        PutPoliciesResponse: {
-            /** @description The stored policy document — read its rules as `policy.policies`. */
-            policy: components["schemas"]["PolicyDoc"];
-            /** @description Domains the policy escalates to the MITM proxy. */
-            mitm_domains?: string[];
-            /** @description Non-fatal notes (e.g. rules degraded where the MITM data path is not active). */
-            warnings?: string[];
-        };
         ForkRequest: {
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
@@ -549,19 +601,23 @@ export interface components {
             name?: string | null;
             /** @description Make the new VM publicly forkable from other orgs. */
             public?: boolean | null;
-            /** @description Inbound reachability and SSH authorized keys for the new VM. */
-            network?: components["schemas"]["NetworkInput"] | null;
-            /** @description Outbound egress policy for the new VM. Omit it to inherit the source VM's policy. */
-            egress?: components["schemas"]["NetworkPolicyInput"] | null;
+            /** @description SSH public keys to authorize on the new VM as raw `authorized_keys` entries, such as `ssh-ed25519 AAAA... you@host`. The list becomes the VM's authorized-key set. Omit it or pass an empty list to create the VM with no keys; add keys later with `PATCH /v1/vms/{id}`. Configure inbound reachability through the VM's policy. */
+            ssh_public_keys?: string[];
             disk?: boolean | null;
             durable?: boolean | null;
             /** @description Desired platform(s) when forking a golden, e.g. ["graviton3"] or a flexible set ["graviton2","graviton3"]. The fork is scheduled onto a host serving one of these, intersected with the platforms the golden is baked for. Optional: omit (null) or pass an empty list for no preference — the router picks from the golden's available platforms, weighted by host availability. Requesting a platform the golden isn't baked for returns 400. Ignored when forking an existing VM, which inherits its parent's platform. */
             platforms?: string[] | null;
-            /** @description ARK-125 outbound policy for the new VM. Omit (null) to inherit the source VM's policy, re-encrypted under the child's own key. Present (even an empty doc) replaces it: an empty doc clears to allow-all rather than inheriting. Distinct from `egress` (legacy NetworkPolicy) and `network` (inbound). */
+            /** @description Network policy for the new VM. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
             policies?: components["schemas"]["PolicyDoc"] | null;
             /** @description Resource shape for the new VM. */
             resources?: components["schemas"]["VmResources"] | null;
-        };
+        } & ({
+            source_vm_id: string;
+            source_vm_name?: null;
+        } | {
+            source_vm_id?: null;
+            source_vm_name: string;
+        });
         Session: {
             session_id: string;
             /** @default 0 */
@@ -602,35 +658,8 @@ export interface components {
             /** @enum {string|null} */
             provider?: "aws" | "gcp" | "azure" | null;
             started_at?: string | null;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility projection of `resources.vcpu`.
-             */
-            readonly vcpu_count?: number | null;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility projection of `resources.memory_mib`.
-             */
-            readonly memory_mib?: number | null;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility projection of `resources.disk_mib`.
-             */
-            readonly disk_mib?: number | null;
-            /** @description Inbound reachability settings for this VM. */
+            /** @description The VM's network object — SSH keys only. Inbound reachability and per-port tunnels are derived from `policies` and surface on the policies GET/PUT response, not here. */
             network: components["schemas"]["VmNetwork"];
-            /** @description Outbound egress policy stored on the VM. */
-            egress?: components["schemas"]["NetworkPolicy"];
-            /**
-             * @deprecated
-             * @description Deprecated compatibility alias for `root_source_vm_name`.
-             */
-            readonly base_image?: string;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility alias for `root_source_vm_name`.
-             */
-            readonly source_golden?: string;
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
             max_vcpus?: number | null;
             /** @description Smallest vCPU count accepted for this VM. */
@@ -675,7 +704,7 @@ export interface components {
             command: string;
             /** @default false */
             background?: boolean;
-            /** @description Execution/kill bound in milliseconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600000 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background. */
+            /** @description Execution/kill bound in seconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background. */
             timeout?: number | null;
             /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout. */
             time_to_background?: number | null;
@@ -684,7 +713,6 @@ export interface components {
             vcpu_count?: number | null;
             memory_mib?: number | null;
             disk_mib?: number | null;
-            network?: components["schemas"]["NetworkRequest"] | null;
             /**
              * @description Comma-separated list of resources to ensure are
              *     pre-allocated (warm) before the run starts. Values: `cpu`,
@@ -699,22 +727,13 @@ export interface components {
              *     suspend).
              */
             release?: string | null;
-            signal?: string | null;
-        };
-        NetworkRequest: {
-            inbound?: components["schemas"]["InboundRequest"] | null;
-        };
-        InboundRequest: {
-            /** @default {} */
-            ports?: {
-                [key: string]: components["schemas"]["InboundPortRequest"];
-            };
-        };
-        InboundPortRequest: {
-            /** @default private */
-            visibility?: string;
-            /** @default http */
-            protocol?: string;
+            /**
+             * @description Deliver a signal to the selected persistent session's foreground process group. When set, the service does not execute `command`; it returns a completed acknowledgement with no run id. Use `session_id` or `session_idx` to select the session.
+             * @enum {string|null}
+             */
+            signal?: "SIGINT" | "SIGTERM" | "SIGKILL" | "SIGHUP" | null;
+            /** @description Network policy applied to the VM before this run and retained afterward. A non-empty document replaces the persisted policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to use the current policy unchanged. If the policy cannot be stored and applied, the command does not run. */
+            policies?: components["schemas"]["PolicyDoc"] | null;
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
@@ -736,11 +755,11 @@ export interface components {
             stderr_encoding: "utf-8" | "base64";
             exit_code: number;
             dispatch?: string | null;
-            /** @description ARK-107: requested total memory (MiB) when this run carried an explicit memory override. Absent when the run had no memory override. */
+            /** @description Requested total memory in MiB when this run included a memory override. Absent when no override was requested. */
             memory_requested_mib?: number | null;
-            /** @description ARK-107: achieved total memory (MiB) after the run's resize. Memory shrink is best-effort, so this can exceed memory_requested_mib when guest pages are pinned. Absent when the run had no memory override. */
+            /** @description Achieved total memory in MiB after applying the run's memory override. A memory reduction is best-effort, so this value can exceed `memory_requested_mib` when guest pages cannot be released. Absent when no override was requested. */
             memory_achieved_mib?: number | null;
-            /** @description ARK-107: true when the run's memory shrink was partial (achieved differs from requested beyond the virtio-mem block granularity). The command still ran at the achieved footprint (best-effort); this flags the gap instead of a silent success. Defaults false. */
+            /** @description True when a requested memory reduction was only partially applied. The command runs with the achieved allocation, and `memory_achieved_mib` reports that allocation. Defaults to false. */
             memory_partial?: boolean;
         };
         BackgroundRunResponse: {
@@ -838,21 +857,6 @@ export interface components {
             lite: boolean;
             rows: components["schemas"]["OrgRunListRow"][];
         };
-        NetworkStatus: {
-            inbound: components["schemas"]["InboundStatus"];
-        };
-        InboundStatus: {
-            ports: {
-                [key: string]: components["schemas"]["InboundPortStatus"];
-            };
-        };
-        InboundPortStatus: {
-            requested: string;
-            observed: string;
-            effective: string;
-            protocol: string;
-            url?: string | null;
-        };
         CancelRunResponse: {
             cancelled: boolean;
         };
@@ -879,7 +883,7 @@ export interface components {
             sync_id: string;
             vm_id: string;
             filesystem_id: string;
-            /** @description VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`. */
+            /** @description VM-side path where the filesystem is mounted. */
             path: string;
             region?: string | null;
         };
@@ -893,12 +897,6 @@ export interface components {
         SyncCreateRequest: {
             filesystem_id: string;
             path?: string;
-        };
-        SyncReadRequest: {
-            path: string;
-        };
-        SyncWriteRequest: {
-            writes: components["schemas"]["SyncWriteEntry"][];
         };
         SyncReadOperationRequest: {
             /** @constant */
@@ -945,7 +943,8 @@ export interface components {
             path: string;
             size: number;
             content: string;
-            encoding: string;
+            /** @enum {string} */
+            encoding: "utf8" | "base64";
         };
         SyncReadPresignedResponse: {
             ok: boolean;
@@ -1032,9 +1031,8 @@ export interface components {
             /** @description GPU slice size: VRAM cap in MiB. Only valid when the VM targets a GPU platform. Requesting more VRAM than the physical GPU has returns 400. Omit for the host's default slice size. */
             gpu_vram_mib?: number | null;
         };
+        /** @description SSH key configuration for a fork or patch. Inbound reachability is controlled by the VM's policy document and reported by the policy endpoints. */
         NetworkInput: {
-            /** @description Enable inbound reachability for this VM. Defaults to false. */
-            reachable?: boolean | null;
             /** @description OpenSSH public keys authorized for terminator auth and in-VM sshd injection. */
             ssh_public_keys?: string[];
         };
@@ -1042,28 +1040,16 @@ export interface components {
             public_key: string;
             fingerprint: string;
         };
+        /** @description A VM's network object: SSH keys ONLY. Inbound reachability, the .app hostname, and per-port tunnels are DERIVED from the VM's policy doc and surface on the policies GET/PUT response (the PolicyDoc's read-only fields), not here. */
         VmNetwork: {
-            reachable: boolean;
-            /** @description Stable per-VM hostname on the .app customer plane (<vm>.<region>.arker.app), present when reachable is true. Reach a guest desktop at https://<hostname>:6080/. Equals data_hostname. (The control plane — the API and SSH — stays on .ai.) */
-            hostname?: string | null;
-            /** @description Customer inbound data-plane hostname (equals hostname). Insert -<port> before the region suffix to reach any HTTP port your guest listens on: <vm>-<port>.<region>.arker.app (bare form defaults to guest port 80). Present when reachable and the data-plane domain is configured. */
-            data_hostname?: string | null;
-            /** @description Per-port inbound URLs the VM exposes on the .app data plane, derived from its inbound allow policy rules (the same source the data-plane gate enforces). Each carries the fully-formed https://<vm>-<port>.<region>.arker.app URL so clients never build it by hand. Empty when nothing is exposed inbound. */
-            ports?: components["schemas"]["VmInboundPort"][];
             /** @description Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty. */
             ssh_public_keys?: components["schemas"]["SshPublicKeyInfo"][];
-        };
-        VmInboundPort: {
-            /** @description Guest TCP port exposed by an inbound allow policy rule. */
-            port: number;
-            /** @description Fully-formed reachable URL: https://<vm>-<port>.<region>.arker.app */
-            url: string;
-            /** @description Auth posture required to reach it: 'open' (public, no bearer) or 'authenticated' (org bearer required). */
-            auth: string;
         };
         PatchVmRequest: {
             resources?: components["schemas"]["VmResources"] | null;
             network?: components["schemas"]["NetworkInput"] | null;
+            /** @description Network policy for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
+            policies?: components["schemas"]["PolicyDoc"] | null;
         };
     };
     responses: {
@@ -1079,6 +1065,7 @@ export interface components {
         /** @description API error. */
         Error: {
             headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
                 [name: string]: unknown;
             };
             content: {
@@ -1096,6 +1083,8 @@ export interface components {
         };
     };
     parameters: {
+        /** @description Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict. */
+        IdempotencyKey: string;
         VmId: string;
         RunId: string;
         SessionId: string;
@@ -1107,7 +1096,10 @@ export interface components {
         Limit: number;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description Delay in seconds before retrying a transiently unavailable request. */
+        RetryAfter: number;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -1348,7 +1340,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The VM's egress policy document (empty when none is set). */
+            /** @description The VM's policy document (empty when none is set), plus its derived inbound exposure (reachability + per-port tunnels). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1381,7 +1373,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PutPoliciesResponse"];
+                    "application/json": components["schemas"]["PolicyDoc"];
                 };
             };
             default: components["responses"]["Error"];
@@ -1422,7 +1414,10 @@ export interface operations {
     createRun: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 id: components["parameters"]["VmId"];
             };
@@ -1645,8 +1640,10 @@ export interface operations {
                 rows?: number;
                 /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
                 command?: string;
-                /** @description E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {"type":"kill"} or the server idle TTL destroy a persistent shell. */
+                /** @description When true (default), disconnecting keeps the shell running so the same session_id can reconnect to it and receive recent scrollback. When false, the shell is terminated on disconnect. A kill control message or the configured idle TTL terminates a persistent shell. */
                 persist?: boolean;
+                /** @description Destroy the PTY after this many seconds without terminal input or output. Omit or set to zero to disable this PTY-specific idle limit. */
+                cancel_ttl_secs?: number;
                 /** @description Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set). */
                 ticket?: string;
             };

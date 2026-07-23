@@ -33,7 +33,8 @@ from .generated.api_models import (
     ErrorResponse,
     Filesystem,
     FilesystemCreateRequest,
-    ForkRequest,
+    ForkRequest1,
+    ForkRequest2,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -47,15 +48,12 @@ from .generated.api_models import (
     ListVmsResponse,
     ListVmsParameters,
     NetworkInput,
-    NetworkPolicyInput,
-    NetworkRequest,
     OrgRunListRow,
     PatchSessionRequest,
     PatchSessionResponse,
     PatchVmRequest,
     PolicyDoc,
     PtyTicketResponse,
-    PutPoliciesResponse,
     Run,
     RunRequest,
     RunResponse,
@@ -284,15 +282,14 @@ class Arker:
         source_org_id: str | None = None,
         name: str | None = None,
         public: bool | None = None,
-        network: NetworkInput | dict[str, Any] | None = None,
-        egress: NetworkPolicyInput | dict[str, Any] | None = None,
+        ssh_public_keys: list[str] | None = None,
         disk: bool | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         durable: bool | None = None,
         platforms: list[str] | None = None,
-        policies: dict[str, Any] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -311,12 +308,9 @@ class Arker:
         always wins, and it's irrelevant when forking by id. ``name``
         (optional) is the *new* VM's name in your org.
 
-        ``policies`` (ARK-125) is the child's outbound egress policy document.
-        Omit it (``None``) to inherit the source VM's policy, re-encrypted under
-        the child's own key. Pass a doc to override it — even an empty
-        ``{"policies": []}``, which clears to allow-all rather than inheriting.
-        Distinct from ``egress`` (the legacy coarse policy) and ``network``
-        (inbound reachability).
+        ``policies`` is the child's network policy document. Omit it to inherit
+        the source VM's policy, or pass a document to replace it. Pass
+        ``ssh_public_keys`` to authorize keys on the new VM.
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -345,20 +339,28 @@ class Arker:
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
             )
-        policy_doc = _decode_model(PolicyDoc, policies) if policies is not None else None
-        body = ForkRequest(
-            source_vm_id=source_vm_id,
-            source_vm_name=source_vm_name,
+        policy_doc = (
+            policies
+            if isinstance(policies, PolicyDoc)
+            else _decode_model(PolicyDoc, policies)
+            if policies is not None
+            else None
+        )
+        request_options = dict(
             source_org_id=source_org_id,
             name=name,
             public=public,
-            network=network,
-            egress=egress,
+            ssh_public_keys=ssh_public_keys,
             disk=disk if disk is not None else True,
             durable=durable,
             platforms=platforms,
             resources=resources,
             policies=policy_doc,
+        )
+        body = (
+            ForkRequest1(source_vm_id=source_vm_id, **request_options)
+            if source_vm_id is not None
+            else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )
         burst_ref = source_vm_name or source_vm_id
         use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
@@ -600,7 +602,7 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
-        network: NetworkRequest | dict[str, Any] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
         acquire: str | list[str] | None = None,
         release: str | list[str] | None = None,
         signal: str | None = None,
@@ -620,6 +622,13 @@ class VM:
         ``run_id``. ``None`` (default) = 30. It does not bound command
         runtime — that is ``timeout``.
         """
+        policy_doc = (
+            policies
+            if isinstance(policies, PolicyDoc)
+            else _decode_model(PolicyDoc, policies)
+            if policies is not None
+            else None
+        )
         body = RunRequest(
             command=command,
             session_id=session_id,
@@ -631,7 +640,7 @@ class VM:
             vcpu_count=vcpu_count,
             memory_mib=memory_mib,
             disk_mib=disk_mib,
-            network=network,
+            policies=policy_doc,
             acquire=",".join(acquire) if isinstance(acquire, list) else acquire,
             release=",".join(release) if isinstance(release, list) else release,
             signal=signal,
@@ -672,19 +681,15 @@ class VM:
         return _decode_model(DeleteVmResponse, payload)
 
     def get_policies(self) -> PolicyDoc:
-        """Read this VM's outbound egress policy document (ARK-125) via
-        ``GET /v1/vms/{id}/policies``. Returns an empty doc (``{}``) when no
-        policy is set; read its rules as ``doc.policies``."""
+        """Read this VM's network policy via ``GET /v1/vms/{id}/policies``."""
         payload = self._client._request("GET", f"{_vm_path(self.id)}/policies", base_url=self.base_url)
         return _decode_model(PolicyDoc, payload)
 
-    def set_policies(self, doc: PolicyDoc | dict[str, Any]) -> PutPoliciesResponse:
-        """Replace this VM's outbound egress policy with ``doc`` — an ordered,
-        first-match-wins rule list — via ``PUT /v1/vms/{id}/policies``. An empty
-        doc (``{}`` or ``{"policies": []}``) clears the policy to allow-all.
+    def set_policies(self, doc: PolicyDoc | dict[str, Any]) -> PolicyDoc:
+        """Replace this VM's network policy via ``PUT /v1/vms/{id}/policies``.
 
-        Returns the ``PutPoliciesResponse``: the stored ``policy`` plus the
-        ``mitm_domains`` it escalates to MITM and any degrade ``warnings``::
+        Returns the stored policy document, including response-only hostname
+        and warning fields::
 
             vm.set_policies({
                 "policies": [
@@ -697,7 +702,7 @@ class VM:
         """
         request = doc if isinstance(doc, PolicyDoc) else _decode_model(PolicyDoc, doc)
         payload = self._client._request("PUT", f"{_vm_path(self.id)}/policies", request, base_url=self.base_url)
-        return _decode_model(PutPoliciesResponse, payload)
+        return _decode_model(PolicyDoc, payload)
 
     def sync(self, path: str, data: bytes | str | None = None) -> bytes | None:
         """Read or write a file in this VM over ``POST /v1/vms/{id}/sync``.

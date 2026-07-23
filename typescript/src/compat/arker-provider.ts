@@ -131,7 +131,9 @@ class ArkerComputeSandbox implements SandboxInterface {
     if (options?.background) fullCommand = `nohup sh -lc ${shellQuote(fullCommand)} > /dev/null 2>&1 &`;
 
     const runOptions: RunOptions = {};
-    if (options?.timeout) runOptions.timeout = options.timeout;
+    if (options?.timeout !== undefined) {
+      runOptions.timeout = options.timeout === 0 ? 0 : Math.ceil(options.timeout / 1_000);
+    }
 
     const result = await this.vm.run(fullCommand, runOptions);
     if (result.type !== "completed") {
