@@ -1,0 +1,90 @@
+name: OpenAPI freshness
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted SDK tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Resolve the SDK revision to check
+        id: revision
+        env:
+          CURRENT_REPOSITORY: ${{ github.repository }}
+          CURRENT_SHA: ${{ github.sha }}
+          PR_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          echo "repository=${PR_REPOSITORY:-$CURRENT_REPOSITORY}" >> "$GITHUB_OUTPUT"
+          echo "sha=${PR_SHA:-$CURRENT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Mark the freshness status pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDK_SHA: ${{ steps.revision.outputs.sha }}
+        run: >-
+          gh api --method POST
+          "repos/${GITHUB_REPOSITORY}/statuses/${SDK_SHA}"
+          -f state=pending
+          -f context=openapi-freshness
+          -f description="Comparing the SDK contract with arker-app/main"
+          -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Download the candidate SDK contract without executing pull request code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDK_REPOSITORY: ${{ steps.revision.outputs.repository }}
+          SDK_SHA: ${{ steps.revision.outputs.sha }}
+        run: >-
+          gh api
+          -H "Accept: application/vnd.github.raw+json"
+          "repos/${SDK_REPOSITORY}/contents/contract/openapi.json?ref=${SDK_SHA}"
+          > "$RUNNER_TEMP/sdk-openapi.json"
+
+      - name: Compare with arker-app main
+        id: freshness
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.ARKER_APP_OPENAPI_READ_TOKEN }}
+        run: ./scripts/check-openapi-freshness --candidate-contract "$RUNNER_TEMP/sdk-openapi.json"
+
+      - name: Publish the freshness status result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDK_SHA: ${{ steps.revision.outputs.sha }}
+          RESULT: ${{ steps.freshness.outcome }}
+        run: |
+          if [[ "$RESULT" == "success" ]]; then
+            state=success
+            description="SDK contract matches arker-app/main"
+          else
+            state=failure
+            description="SDK contract is stale or could not be verified"
+          fi
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${SDK_SHA}" \
+            -f state="$state" \
+            -f context=openapi-freshness \
+            -f description="$description" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Enforce freshness
+        if: always() && steps.freshness.outcome != 'success'
+        run: exit 1
