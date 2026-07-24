@@ -106,6 +106,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     description: { type: "string" },
     name: { type: "string" },
     "no-disk": { type: "boolean" },
+    platform: { type: "string" },
     public: { type: "boolean" },
     "source-org-id": { type: "string" },
     "source-vm-id": { type: "string" },
@@ -165,6 +166,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     description: { type: "string" },
     name: { type: "string" },
     "no-disk": { type: "boolean" },
+    platform: { type: "string" },
     public: { type: "boolean" },
     release: { type: "string" },
     "session-id": { type: "string" },
@@ -495,8 +497,19 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
 
   if (!sourceVmId && !sourceVmName) {
     die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]\n" +
-        "       [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]");
+        "       [--platform <token[,token...]>] [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]");
   }
+
+  // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
+  // the fork onto a worker of that compute platform and fails closed if none
+  // is available — it never silently falls back to another arch. Comma-
+  // separate to allow any of several platforms (e.g. `graviton2,icelake`).
+  // Omit to inherit the source VM's platform / the golden's declared set.
+  const platformFlag = args.flags.platform as string | undefined;
+  const platforms = platformFlag
+    ?.split(",")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
 
   // Resource overrides — same flag names as `arker update` for consistency.
   // Folded into the contract's single `resources` object; unset fields stay
@@ -521,6 +534,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     name,
     description,
     public: publicFlag,
+    ...(platforms && platforms.length > 0 ? { platforms } : {}),
     ...(resources ? { resources } : {}),
     ...(disk !== undefined ? { disk } : {}),
   });
@@ -951,6 +965,8 @@ function usage(_command?: string): void {
       "                                                 fork by name in another org",
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource overrides",
+      "  arker fork <vm> --platform <token[,token...]>  pin the fork to a compute platform",
+      "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
