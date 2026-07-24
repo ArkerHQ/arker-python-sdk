@@ -80,6 +80,18 @@ from .generated.api_models import (
 
 Model = TypeVar("Model")
 
+
+class _UnsetType:
+    pass
+
+
+class _ExplicitNullType:
+    pass
+
+
+_UNSET = _UnsetType()
+_EXPLICIT_NULL = _ExplicitNullType()
+
 CHUNK_SIZE = 4 * 1024 * 1024
 
 # Org id for the "Arker" org — the org that owns the public golden VMs
@@ -278,8 +290,11 @@ class Arker:
         source_vm_name: str | None = None,
         source_org_id: str | None = None,
         name: str | None = None,
+        description: str | None = None,
         public: bool | None = None,
         ssh_public_keys: list[str] | None = None,
+        network: dict[str, Any] | None = None,
+        egress: dict[str, Any] | bool | str | None = None,
         disk: bool | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
@@ -303,11 +318,14 @@ class Arker:
         ``source_org_id`` defaults to the Arker org when ``source_vm_name`` is
         a known public golden, otherwise to your own org; an explicit value
         always wins, and it's irrelevant when forking by id. ``name``
-        (optional) is the *new* VM's name in your org.
+        (optional) is the *new* VM's name in your org. ``description`` is a
+        short description owned by the new VM and is never inherited.
 
         ``policies`` is the child's network policy document. Omit it to inherit
-        the source VM's policy, or pass a document to replace it. Pass
-        ``ssh_public_keys`` to authorize keys on the new VM.
+        the source VM's policy, re-encrypted under the child's own key. Pass a
+        document to replace it — even an empty
+        ``{"policies": []}``, which clears to allow-all rather than inheriting.
+        Pass ``ssh_public_keys`` to authorize keys on the new VM.
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -323,6 +341,12 @@ class Arker:
             raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, or source_vm_id)", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
+        if network is not None or egress is not None:
+            raise ArkerError(
+                "bad_request",
+                "fork network/egress inputs were removed; use policies",
+                400,
+            )
         # A public golden by name defaults to the Arker org; any other name
         # defaults (server-side) to the caller's own org. Explicit wins;
         # irrelevant when forking by id.
@@ -346,6 +370,7 @@ class Arker:
         request_options = dict(
             source_org_id=source_org_id,
             name=name,
+            description=description,
             public=public,
             ssh_public_keys=ssh_public_keys,
             disk=disk if disk is not None else True,
@@ -546,6 +571,7 @@ class VM:
     # the contract ``Vm``.
     vm_id: str | None
     name: str | None
+    description: str | None
     state: str | None
     owner_org_id: str | None
     created_at: str | None
@@ -599,6 +625,7 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        network: dict[str, Any] | None = None,
         policies: PolicyDoc | dict[str, Any] | None = None,
         acquire: str | list[str] | None = None,
         release: str | list[str] | None = None,
@@ -619,6 +646,12 @@ class VM:
         ``run_id``. ``None`` (default) = 30. It does not bound command
         runtime — that is ``timeout``.
         """
+        if network is not None:
+            raise ArkerError(
+                "bad_request",
+                "run network inputs were removed; use policies",
+                400,
+            )
         policy_doc = (
             policies
             if isinstance(policies, PolicyDoc)
@@ -637,10 +670,10 @@ class VM:
             vcpu_count=vcpu_count,
             memory_mib=memory_mib,
             disk_mib=disk_mib,
-            policies=policy_doc,
             acquire=",".join(acquire) if isinstance(acquire, list) else acquire,
             release=",".join(release) if isinstance(release, list) else release,
             signal=signal,
+            policies=policy_doc,
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         return _run_response(self._client._request(
@@ -657,11 +690,13 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        description: str | None | _UnsetType = _UNSET,
         network: NetworkInput | dict[str, Any] | None = None,
     ) -> Vm:
-        """Update this VM's resource allocation and/or inbound reachability
-        (``network`` carries ``reachable`` and ``ssh_public_keys``) via
-        ``PATCH /v1/vms/{id}``. Returns the updated :class:`Vm`."""
+        """Update this VM's description, resource allocation, and/or authorized
+        SSH keys (``network.ssh_public_keys``) via ``PATCH /v1/vms/{id}``.
+        Pass ``None`` or an empty description to clear it. Omit
+        ``description`` to leave it unchanged. Returns the updated :class:`Vm`."""
         resources: VmResources | None = None
         if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
             resources = VmResources(
@@ -669,7 +704,15 @@ class VM:
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
             )
-        body = PatchVmRequest(resources=resources, network=network)
+        body: PatchVmRequest | dict[str, Any]
+        if description is _UNSET:
+            body = PatchVmRequest(resources=resources, network=network)
+        else:
+            body = {
+                "description": _EXPLICIT_NULL if description is None else description,
+                "resources": resources,
+                "network": network,
+            }
         payload = self._client._request("PATCH", _vm_path(self.id), body, base_url=self.base_url)
         return _vm_info(payload)
 
@@ -683,7 +726,9 @@ class VM:
         return _decode_model(PolicyDoc, payload)
 
     def set_policies(self, doc: PolicyDoc | dict[str, Any]) -> PolicyDoc:
-        """Replace this VM's network policy via ``PUT /v1/vms/{id}/policies``.
+        """Replace this VM's network policy with ``doc`` via
+        ``PUT /v1/vms/{id}/policies``. An empty
+        doc (``{}`` or ``{"policies": []}``) clears the policy to allow-all.
 
         Returns the stored policy document, including response-only hostname
         and warning fields::
@@ -1279,6 +1324,8 @@ def _build_pty_ws_url(base_url: str, vm_id: str, session_id: str, params: dict[s
 
 
 def _drop_none(value: Any) -> Any:
+    if value is _EXPLICIT_NULL:
+        return None
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         value = {
             field.name: getattr(value, field.name) for field in dataclasses.fields(value)

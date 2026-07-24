@@ -118,12 +118,22 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
     },
   );
 
-  const vm = await client(fetch).vm("ubuntu").fork({ name: "demo" });
+  const vm = await client(fetch).vm("ubuntu").fork({
+    name: "demo",
+    description: "CI runner",
+    ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
+  });
 
   assert.equal(vm.id, "vm_child");
   assert.deepEqual(
     JSON.parse(fetch.calls[0]!.body!),
-    { name: "demo", source_vm_id: "ubuntu", disk: true },
+    {
+      name: "demo",
+      description: "CI runner",
+      ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
+      source_vm_id: "ubuntu",
+      disk: true,
+    },
   );
 }
 
@@ -159,6 +169,37 @@ async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
   assert.deepEqual(body.policies, { policies: [] });
   assert.equal(body.network, undefined);
   assert.equal(body.egress, undefined);
+}
+
+async function testRemovedNetworkInputsFailBeforeRequests(): Promise<void> {
+  const fetch = new FakeFetch();
+  const isBadRequest = (error: unknown) =>
+    error instanceof ArkerError &&
+    error.code === "bad_request" &&
+    error.status === 400 &&
+    error.message.includes("use policies");
+
+  await assert.rejects(
+    () =>
+      client(fetch).fork(
+        "ubuntu",
+        { network: { reachable: false } } as never,
+      ),
+    isBadRequest,
+  );
+  await assert.rejects(
+    () => client(fetch).vm("vm_1").fork({ egress: "blocked" } as never),
+    isBadRequest,
+  );
+  await assert.rejects(
+    () =>
+      client(fetch).vm("vm_1").run(
+        "curl https://example.com",
+        { network: { inbound: null } } as never,
+      ),
+    isBadRequest,
+  );
+  assert.equal(fetch.calls.length, 0);
 }
 
 async function testNestedErrorWithoutOkStillParses(): Promise<void> {
@@ -551,6 +592,7 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 
 await testForkPostsDirectlyToSourceVm();
 await testForkInfersArkerOrgForMacosFullGolden();
+await testRemovedNetworkInputsFailBeforeRequests();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testRegionRoutesGoldensToMainEndpoint();

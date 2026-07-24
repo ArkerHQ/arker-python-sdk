@@ -86,21 +86,32 @@ def test_fork_posts_directly_to_source_vm() -> None:
             "vm_id": "vm_child",
             "owner_org_id": "owner",
             "created_at": "now",
+            "description": None,
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "network": {"ssh_public_keys": []},
+            "network": {},
             "resources": {},
         },
     )
 
     with use_transport(t):
-        vm = client().vm("ubuntu").fork(name="demo")
+        vm = client().vm("ubuntu").fork(
+            name="demo",
+            description="CI runner",
+            ssh_public_keys=["ssh-ed25519 AAAA test@example.com"],
+        )
 
     assert vm.id == "vm_child"
     body = json.loads(t.calls[0]["body"])
     # Computer.fork passes source_vm_id; disk defaults to True.
-    assert body == {"name": "demo", "source_vm_id": "ubuntu", "disk": True}
+    assert body == {
+        "name": "demo",
+        "description": "CI runner",
+        "ssh_public_keys": ["ssh-ed25519 AAAA test@example.com"],
+        "source_vm_id": "ubuntu",
+        "disk": True,
+    }
 
 
 def test_fork_infers_arker_org_for_macos_full_golden() -> None:
@@ -112,10 +123,11 @@ def test_fork_infers_arker_org_for_macos_full_golden() -> None:
             "vm_id": "vm_macos",
             "owner_org_id": "owner",
             "created_at": "now",
+            "description": None,
             "public": False,
             "state": "idle",
             "sessions": [session()],
-            "network": {"ssh_public_keys": []},
+            "network": {},
             "resources": {"vcpu": 4, "memory_mib": 8192, "disk_mib": 10240},
         },
     )
@@ -149,10 +161,11 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
             "vm_id": "vmh-child",
             "owner_org_id": "owner",
             "created_at": "now",
+            "description": None,
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"ssh_public_keys": []},
+            "network": {},
             "resources": {},
         },
     )
@@ -175,10 +188,11 @@ def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
             "vm_id": "vmh-burst-child",
             "owner_org_id": "owner",
             "created_at": "now",
+            "description": None,
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"ssh_public_keys": []},
+            "network": {},
             "resources": {},
         },
     )
@@ -222,11 +236,12 @@ def test_list_uses_configured_base_url() -> None:
             "vm_id": "vm_1",
             "owner_org_id": "ArkerHQ",
             "created_at": "now",
+            "description": None,
             "public": True,
             "state": "idle",
             "sessions": [session()],
             "name": "demo",
-            "network": {"ssh_public_keys": []},
+            "network": {},
             "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
             "max_vcpus": 8,
             "max_memory_mib": 32768,
@@ -252,7 +267,7 @@ def test_list_uses_configured_base_url() -> None:
     assert result.vms[0].max_memory_mib == 32768
     assert result.vms[0].min_memory_mib == 512
     assert result.vms[0].network is not None
-    assert result.vms[0].network.ssh_public_keys == []
+    assert result.vms[0].network.ssh_public_keys is None
     assert result.vms[0].resources == sdk.VmResources(
         vcpu=2, memory_mib=1024, disk_mib=4096
     )
@@ -366,6 +381,38 @@ def test_run_sends_command_without_default_session_id() -> None:
     assert json.loads(t.calls[0]["body"]) == {"command": "printf hi"}
 
 
+def test_run_sends_policies() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        {
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": 0,
+        },
+    )
+    policies = {
+        "policies": [
+            {
+                "type": "outbound",
+                "action": "deny",
+                "match": {"protocol": "tcp", "ports": [443]},
+            }
+        ]
+    }
+
+    with use_transport(t):
+        client().vm("vm_1").run("curl https://example.com", policies=policies)
+
+    assert json.loads(t.calls[0]["body"]) == {
+        "command": "curl https://example.com",
+        "policies": policies,
+    }
+
+
 def test_resize_patches_vm_resources() -> None:
     t = FakeTransport()
     t.add_json(
@@ -375,11 +422,12 @@ def test_resize_patches_vm_resources() -> None:
             "vm_id": "vm_1",
             "owner_org_id": "owner",
             "created_at": "now",
+            "description": None,
             "public": False,
             "state": "idle",
             "sessions": [],
             "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
-            "network": {"ssh_public_keys": []},
+            "network": {},
         },
     )
 
@@ -390,6 +438,79 @@ def test_resize_patches_vm_resources() -> None:
     # the old POST /v1/vms/{id}/resize route does not exist). None fields are pruned.
     assert json.loads(t.calls[0]["body"]) == {"resources": {"memory_mib": 1024}}
     assert result is not None
+
+
+def test_update_patches_vm_description() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "PATCH" and url.endswith("/v1/vms/vm_1"),
+        200,
+        {
+            "vm_id": "vm_1",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": "CI runner",
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
+            "network": {},
+        },
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").update(description="CI runner")
+
+    assert json.loads(t.calls[0]["body"]) == {"description": "CI runner"}
+    assert result.description == "CI runner"
+
+
+def test_update_can_clear_vm_description_with_null() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "PATCH" and url.endswith("/v1/vms/vm_1"),
+        200,
+        {
+            "vm_id": "vm_1",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "resources": {},
+            "network": {},
+        },
+    )
+
+    with use_transport(t):
+        client().vm("vm_1").update(description=None)
+
+    assert json.loads(t.calls[0]["body"]) == {"description": None}
+
+
+def test_update_can_clear_vm_description_with_blank_string() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "PATCH" and url.endswith("/v1/vms/vm_1"),
+        200,
+        {
+            "vm_id": "vm_1",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "resources": {},
+            "network": {},
+        },
+    )
+
+    with use_transport(t):
+        client().vm("vm_1").update(description="")
+
+    assert json.loads(t.calls[0]["body"]) == {"description": ""}
 
 
 def test_background_run_response() -> None:
@@ -572,10 +693,11 @@ def test_fork_sends_durable_flag() -> None:
             "vm_id": "vm_child",
             "owner_org_id": "owner",
             "created_at": "now",
+            "description": None,
             "public": False,
             "state": "idle",
             "sessions": [],
-            "network": {"ssh_public_keys": []},
+            "network": {},
             "resources": {},
         },
     )

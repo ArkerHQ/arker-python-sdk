@@ -646,6 +646,7 @@ class Vm:
     vm_id: str
     owner_org_id: str
     created_at: str
+    description: str | None
     public: bool
     state: VmState
     network: VmNetwork
@@ -760,6 +761,7 @@ class ForkRequest1:
     source_vm_name: None = None
     source_org_id: str | None = None
     name: str | None = None
+    description: str | None = None
     public: bool | None = None
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
@@ -776,6 +778,7 @@ class ForkRequest2:
     source_vm_id: None = None
     source_org_id: str | None = None
     name: str | None = None
+    description: str | None = None
     public: bool | None = None
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
@@ -816,6 +819,7 @@ class SyncWriteResponse:
 
 @dataclass(frozen=True)
 class PatchVmRequest:
+    description: str | None = None
     resources: VmResources | None = None
     network: NetworkInput | None = None
     policies: PolicyWriteRequest | None = None

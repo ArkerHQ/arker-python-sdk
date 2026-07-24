@@ -103,6 +103,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   fork: {
     ...GLOBAL_OPTIONS,
     ...RESOURCE_OPTIONS,
+    description: { type: "string" },
     name: { type: "string" },
     "no-disk": { type: "boolean" },
     public: { type: "boolean" },
@@ -153,6 +154,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   update: {
     ...GLOBAL_OPTIONS,
     ...RESOURCE_OPTIONS,
+    description: { type: "string" },
   },
   vms: {
     ...GLOBAL_OPTIONS,
@@ -160,6 +162,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     ...RESOURCE_OPTIONS,
     acquire: { type: "string" },
     background: { type: "boolean" },
+    description: { type: "string" },
     name: { type: "string" },
     "no-disk": { type: "boolean" },
     public: { type: "boolean" },
@@ -476,6 +479,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const srcVmNameFlag = args.flags["source-vm-name"] as string | undefined;
   const srcOrgIdFlag = args.flags["source-org-id"] as string | undefined;
   const name = args.flags.name as string | undefined;
+  const description = args.flags.description as string | undefined;
   const publicFlag = boolFlag(args, "public");
 
   let sourceVmId: string | undefined = srcVmIdFlag;
@@ -515,6 +519,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     sourceVmName,
     sourceOrgId,
     name,
+    description,
     public: publicFlag,
     ...(resources ? { resources } : {}),
     ...(disk !== undefined ? { disk } : {}),
@@ -766,19 +771,25 @@ async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
 
 async function cmdUpdate(args: ParsedArgs, client: Arker): Promise<void> {
   const vm = args.positional[0];
-  if (!vm) die("usage: arker update <vm_id> [--memory-mib N] [--vcpu N] [--disk-mib N]");
+  if (!vm) die("usage: arker update <vm_id> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]");
   const memoryMib = numFlag(args, "memory-mib");
   const vcpu = numFlag(args, "vcpu");
   const diskMib = numFlag(args, "disk-mib");
-  if (memoryMib === undefined && vcpu === undefined && diskMib === undefined) {
-    die("update: pass at least one of --memory-mib, --vcpu, --disk-mib");
+  const description = args.flags.description as string | undefined;
+  if (memoryMib === undefined && vcpu === undefined && diskMib === undefined && description === undefined) {
+    die("update: pass at least one of --description, --memory-mib, --vcpu, --disk-mib");
   }
   const updated = await client.vm(vm).update({
-    resources: {
-      vcpu: vcpu ?? null,
-      memory_mib: memoryMib ?? null,
-      disk_mib: diskMib ?? null,
-    },
+    ...(description !== undefined ? { description } : {}),
+    ...(memoryMib !== undefined || vcpu !== undefined || diskMib !== undefined
+      ? {
+          resources: {
+            vcpu: vcpu ?? null,
+            memory_mib: memoryMib ?? null,
+            disk_mib: diskMib ?? null,
+          },
+        }
+      : {}),
   });
   if (args.flags.json) return out(updated);
   out(fmtVm(updated));
@@ -941,7 +952,7 @@ function usage(_command?: string): void {
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource overrides",
       "  arker run [flags] <vm> <command> [args...]     run a command",
-      "  arker update <vm> [--memory-mib N] [--vcpu N] [--disk-mib N]   update a VM (PATCH)",
+      "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "",
       "Resources:",
@@ -960,10 +971,14 @@ function usage(_command?: string): void {
       "  -v, --version              show version without connecting",
       "",
       "Fork flags:",
+      "  --description <text>       short description for the new VM",
       "  --vcpu <n>                 vCPU count for the new VM (capped by source max_vcpus)",
       "  --memory-mib <n>           memory (MiB) for the new VM",
       "  --disk-mib <n>             disk size (MiB) for the new VM",
       "  --no-disk                  fork a memory-backed (nodisk) VM",
+      "",
+      "Update flags:",
+      "  --description <text>       replace the VM description (empty clears it)",
       "",
       "Run flags:",
       "  --session-id <ulid>        run in a specific existing session",

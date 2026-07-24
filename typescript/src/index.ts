@@ -105,11 +105,23 @@ export type RunState = ApiSchema<"RunState">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
 
 // ── Core resources ─────────────────────────────────────────────────
+/** @deprecated Network topology is no longer a public policy input. */
+export type NetworkPolicy = { type: "open" } | { type: "blocked" };
+/** @deprecated Fork-time egress inputs were replaced by `policies`. */
+export type NetworkPolicyInput =
+  | boolean
+  | "open"
+  | "blocked"
+  | "true"
+  | "false"
+  | "none"
+  | NetworkPolicy;
 export type PolicyDoc = ApiSchema<"PolicyDoc">;
 export type PolicyEntry = ApiSchema<"PolicyEntry">;
 export type PolicyMatch = ApiSchema<"PolicyMatch">;
 export type PolicyAction = ApiSchema<"PolicyAction">;
 export type Rewrite = ApiSchema<"Rewrite">;
+/** @deprecated Policy writes now return the stored `PolicyDoc` directly. */
 export type PutPoliciesResponse = PolicyDoc;
 /** A `ports` element: a single port (`80`) or an inclusive `[start, end]`
  * range (`[1000, 2000]`). A `ports` list may mix the two. */
@@ -162,6 +174,30 @@ export type RunOptions = Partial<Omit<RunRequest, "command">> & {
    * `Idempotency-Key` HTTP header.
    */
   idempotencyKey?: string;
+};
+/** @deprecated Run-time inbound configuration moved to `policies`. */
+export type InboundPortRequest = {
+  visibility?: string;
+  protocol?: string;
+};
+/** @deprecated Run-time inbound configuration moved to `policies`. */
+export type NetworkRequest = {
+  inbound?: { ports?: Record<string, InboundPortRequest> } | null;
+};
+/** @deprecated Network status is represented by the VM's policy document. */
+export type NetworkStatus = {
+  inbound: {
+    ports: Record<
+      string,
+      {
+        requested: string;
+        observed: string;
+        effective: string;
+        protocol: string;
+        url?: string | null;
+      }
+    >;
+  };
 };
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
@@ -349,6 +385,21 @@ export class ArkerError extends Error {
   }
 }
 
+function rejectRemovedNetworkInputs(operation: "fork" | "run", request: unknown): void {
+  if (request == null || typeof request !== "object") return;
+  const legacy = request as Record<string, unknown>;
+  const fields = ["network", "egress"].filter(
+    (field) => legacy[field] !== undefined,
+  );
+  if (fields.length > 0) {
+    throw new ArkerError(
+      "bad_request",
+      `${operation} ${fields.join("/")} inputs were removed; use policies`,
+      400,
+    );
+  }
+}
+
 /** Source for `Arker.fork()`. Exactly one of `sourceVmId` or
  * `sourceVmName` must be set. When `sourceVmName` is set,
  * `sourceOrgId` selects which org to look the name up in (defaults
@@ -446,6 +497,7 @@ export class Arker {
         : source instanceof VM
           ? { sourceVmId: source.id, ...opts }
           : source;
+    rejectRemovedNetworkInputs("fork", src);
     if (!src.sourceVmId && !src.sourceVmName) {
       throw new ArkerError(
         "bad_request",
@@ -487,6 +539,7 @@ export class Arker {
     const requestOptions = {
       source_org_id: sourceOrgId ?? null,
       name: src.name ?? null,
+      description: src.description ?? null,
       public: src.public ?? null,
       ssh_public_keys: src.ssh_public_keys,
       disk: src.disk ?? true,
@@ -742,6 +795,7 @@ export class VM {
    * a VM instance.
    */
   async fork(request: Partial<ForkRequest> = {}): Promise<VM> {
+    rejectRemovedNetworkInputs("fork", request);
     const merged: ForkRequest = {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
@@ -755,6 +809,7 @@ export class VM {
   }
 
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
+    rejectRemovedNetworkInputs("run", options);
     const { idempotencyKey, ...body } = options;
     const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
     const request: RunRequest = { ...body, command };
@@ -877,7 +932,7 @@ export class VM {
    * Update this VM's resource allocation and/or network settings via
    * `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
    *
-   * Accepts either a `PatchVmRequest` (`{ resources, network }`) or, for
+   * Accepts either a `PatchVmRequest` (`{ description, resources, network }`) or, for
    * convenience, flat resource fields (`{ vcpu, memory_mib, disk_mib }`)
    * which are folded into `resources`.
    */
@@ -890,14 +945,21 @@ export class VM {
       VmResources & { resources?: VmResources | null };
     const body: PatchVmRequest =
       r.resources !== undefined || (r.vcpu === undefined && r.memory_mib === undefined && r.disk_mib === undefined)
-        ? { resources: r.resources ?? null, network: r.network ?? null }
+        ? {
+            description: r.description,
+            resources: r.resources ?? null,
+            network: r.network ?? null,
+            policies: r.policies,
+          }
         : {
+            description: r.description,
             resources: {
               vcpu: r.vcpu ?? null,
               memory_mib: r.memory_mib ?? null,
               disk_mib: r.disk_mib ?? null,
             },
             network: r.network ?? null,
+            policies: r.policies,
           };
     return this._client._request("PATCH", vmPath(this.id), body, this.baseUrl);
   }

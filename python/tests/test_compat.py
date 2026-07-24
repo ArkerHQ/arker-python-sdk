@@ -55,10 +55,11 @@ def vm_payload(vm_id: str) -> dict[str, Any]:
         "vm_id": vm_id,
         "owner_org_id": "owner",
         "created_at": "now",
+        "description": None,
         "public": False,
         "state": "idle",
         "sessions": [],
-        "network": {"ssh_public_keys": []},
+        "network": {},
         "resources": {},
     }
 

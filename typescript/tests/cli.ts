@@ -473,6 +473,7 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     method: string;
     url: string;
     body?: unknown;
+    bodyContains?: Record<string, unknown>;
   }> = [
     {
       name: "vms get",
@@ -490,18 +491,34 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     },
     {
       name: "vms fork",
-      args: ["vms", "fork", "ubuntu-full"],
+      args: [
+        "vms",
+        "fork",
+        "--description",
+        "CI runner",
+        "ubuntu-full",
+      ],
       response: { vm_id: "vm_child" },
       method: "POST",
       url: "/api/v1/fork",
+      bodyContains: { description: "CI runner" },
     },
     {
       name: "vms update",
-      args: ["vms", "update", "--memory-mib", "1024", "vm_1"],
+      args: [
+        "vms",
+        "update",
+        "--description",
+        "Release runner",
+        "--memory-mib",
+        "1024",
+        "vm_1",
+      ],
       response: { vm_id: "vm_1", state: "idle", memory_mib: 1024 },
       method: "PATCH",
       url: "/api/v1/vms/vm_1",
       body: {
+        description: "Release runner",
         resources: { vcpu: null, memory_mib: 1024, disk_mib: null },
         network: null,
       },
@@ -589,6 +606,18 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       assert.equal(requests[0]?.method, testCase.method, testCase.name);
       assert.equal(requests[0]?.url, testCase.url, testCase.name);
       if (testCase.body !== undefined) assert.deepEqual(requests[0]?.body, testCase.body, testCase.name);
+      if (testCase.bodyContains !== undefined) {
+        assert.deepEqual(
+          Object.fromEntries(
+            Object.keys(testCase.bodyContains).map((key) => [
+              key,
+              (requests[0]?.body as Record<string, unknown>)[key],
+            ]),
+          ),
+          testCase.bodyContains,
+          testCase.name,
+        );
+      }
     });
   }
 }

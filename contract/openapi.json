@@ -2037,6 +2037,14 @@
             ],
             "description": "Optional name for the new VM, scoped to the caller's org."
           },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 255,
+            "description": "Optional short description for the new VM. Blank strings normalize to null and forked VMs never inherit their source's description."
+          },
           "public": {
             "type": [
               "boolean",
@@ -2231,6 +2239,7 @@
           "vm_id",
           "owner_org_id",
           "created_at",
+          "description",
           "public",
           "state",
           "sessions",
@@ -2257,6 +2266,14 @@
               "null"
             ],
             "description": "VM name, scoped to `owner_org_id`."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 255,
+            "description": "Short optional description owned by this VM."
           },
           "public": {
             "type": "boolean",
@@ -4108,6 +4125,14 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 255,
+            "description": "Replace the VM description. Null or a blank string clears it; omit this field to leave it unchanged."
+          },
           "resources": {
             "description": "CPU, memory, and disk configuration.",
             "anyOf": [

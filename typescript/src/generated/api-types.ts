@@ -630,6 +630,8 @@ export interface components {
             source_org_id?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
             name?: string | null;
+            /** @description Optional short description for the new VM. Blank strings normalize to null and forked VMs never inherit their source's description. */
+            description?: string | null;
             /** @description Make the new VM publicly forkable from other orgs. */
             public?: boolean | null;
             /** @description SSH public keys to authorize on the new VM as raw `authorized_keys` entries, such as `ssh-ed25519 AAAA... you@host`. The list becomes the VM's authorized-key set. Omit it or pass an empty list to create the VM with no keys; add keys later with `PATCH /v1/vms/{id}`. Configure inbound reachability through the VM's policy. */
@@ -696,6 +698,8 @@ export interface components {
             created_at: string;
             /** @description VM name, scoped to `owner_org_id`. */
             name?: string | null;
+            /** @description Short optional description owned by this VM. */
+            description: string | null;
             /** @description When `true`, other orgs can fork this VM (but cannot run on it). */
             public: boolean;
             /** @description ID of the root (deepest-ancestor) source VM, if this VM was created by a chain of forks. None for VMs forked directly from an image. */
@@ -1322,6 +1326,8 @@ export interface components {
             ssh_public_keys?: components["schemas"]["SshPublicKeyInfo"][];
         };
         PatchVmRequest: {
+            /** @description Replace the VM description. Null or a blank string clears it; omit this field to leave it unchanged. */
+            description?: string | null;
             /** @description CPU, memory, and disk configuration. */
             resources?: components["schemas"]["VmResources"] | null;
             /** @description SSH access configuration for the VM. */
