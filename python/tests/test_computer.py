@@ -381,6 +381,66 @@ def test_run_sends_command_without_default_session_id() -> None:
     assert json.loads(t.calls[0]["body"]) == {"command": "printf hi"}
 
 
+def test_sync_run_polls_backgrounded_run_to_completion(monkeypatch) -> None:
+    # A synchronous run() that outlives the server sync window gets a background
+    # ack; run() must poll get_run() under the hood and return the terminal run
+    # — the caller never sees the intermediate background shape.
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        {"run_id": "run_bg", "state": "running"},
+    )
+    # First poll: still running. Second poll: terminal.
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_bg"),
+        200,
+        {"run_id": "run_bg", "state": "running", "started_at": "now", "exit_code": None,
+         "stdout": "", "stdout_encoding": "utf-8", "stderr": "", "stderr_encoding": "utf-8"},
+    )
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_bg"),
+        200,
+        {"run_id": "run_bg", "state": "completed", "started_at": "now", "exit_code": 0,
+         "stdout": "done\n", "stdout_encoding": "utf-8", "stderr": "", "stderr_encoding": "utf-8"},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("sleep 999")
+
+    assert isinstance(result, sdk.CompletedRunResult)
+    assert result.run_id == "run_bg"
+    assert result.state == "completed"
+    assert result.exit_code == 0
+    assert result.stdout == b"done\n"
+    # POST + 2 polls.
+    assert [c["method"] for c in t.calls] == ["POST", "GET", "GET"]
+
+
+def test_background_true_returns_ack_without_polling(monkeypatch) -> None:
+    # background=True is a pure pass-through — run() returns the running ack
+    # immediately and never polls get_run().
+    slept: list[float] = []
+    monkeypatch.setattr(sdk.time, "sleep", lambda s: slept.append(s))
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        {"run_id": "run_bg", "state": "running"},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("sleep 999", background=True)
+
+    assert isinstance(result, sdk.BackgroundRunResult)
+    assert result.run_id == "run_bg"
+    # Only the POST — no polling, no sleeping.
+    assert [c["method"] for c in t.calls] == ["POST"]
+    assert slept == []
+    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 999", "background": True}
+
+
 def test_run_sends_policies() -> None:
     t = FakeTransport()
     t.add_json(

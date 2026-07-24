@@ -254,6 +254,62 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "printf hello" });
 }
 
+async function testSyncRunPollsBackgroundedRunToCompletion(): Promise<void> {
+  // A synchronous run() that outlives the server sync window gets a background
+  // ack; run() must poll getRun() under the hood and resolve to the terminal
+  // run — the caller never sees the intermediate background shape.
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
+    200,
+    { run_id: "run_bg", state: "running" },
+  );
+  // First poll: still running. Second poll: terminal.
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/runs/run_bg",
+    200,
+    { run_id: "run_bg", state: "running", started_at: "now", exit_code: null, stdout: "", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8" },
+  );
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/runs/run_bg",
+    200,
+    { run_id: "run_bg", state: "completed", started_at: "now", exit_code: 0, stdout: "done\n", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8" },
+  );
+
+  const result = await client(fetch).vm("vm_1").run("sleep 999");
+
+  assert.equal(result.type, "completed");
+  const completed = result as CompletedRunResult;
+  assert.equal(completed.runId, "run_bg");
+  assert.equal(completed.state, "completed");
+  assert.equal(completed.exitCode, 0);
+  assert.equal(decode(completed.stdout), "done\n");
+  // POST + 2 polls.
+  assert.equal(fetch.calls.length, 3);
+  assert.equal(fetch.calls[0]!.method, "POST");
+  assert.equal(fetch.calls[1]!.method, "GET");
+  assert.equal(fetch.calls[2]!.method, "GET");
+}
+
+async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
+  // background:true is a pure pass-through — run() returns the running ack
+  // immediately and never polls getRun().
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
+    200,
+    { run_id: "run_bg", state: "running" },
+  );
+
+  const result = await client(fetch).vm("vm_1").run("sleep 999", { background: true });
+
+  assert.equal(result.type, "background");
+  assert.equal((result as { runId: string }).runId, "run_bg");
+  // Only the POST — no polling.
+  assert.equal(fetch.calls.length, 1);
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "sleep 999", background: true });
+}
+
 async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   // Computer.fork() always posts to `/v1/fork` on the owning VM's
@@ -595,6 +651,8 @@ await testForkInfersArkerOrgForMacosFullGolden();
 await testRemovedNetworkInputsFailBeforeRequests();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
+await testSyncRunPollsBackgroundedRunToCompletion();
+await testBackgroundTrueReturnsAckWithoutPolling();
 await testRegionRoutesGoldensToMainEndpoint();
 await testRegionRoutesArkuntuAliasToBurstEndpoint();
 await testRegionRoutesBurstVmIdsToBurstEndpoint();
