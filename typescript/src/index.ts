@@ -922,6 +922,140 @@ export class VM {
     else await this.syncWritePresigned(path, bytes);
   }
 
+  /**
+   * Recursively sync a local directory INTO this VM at `remoteDir`, rsync-style:
+   * fetch the VM's file *manifest* (per-file sha256) in ONE request, diff it
+   * against the local tree, and upload ONLY the files that are new or changed —
+   * packed into a single tarball the guest extracts with `tar -x` (so the guest
+   * does the writes, always consistent with its own filesystem). Node-only: it
+   * reads the local filesystem.
+   *
+   * The remote manifest is authoritative. `options.cache` (a caller-owned Map you
+   * reuse across calls) is a pure accelerator: it skips re-hashing local files
+   * whose (size, mtime) are unchanged. It never decides remote state, so it can
+   * never cause a stale or missing upload — worst case it re-hashes a file it
+   * didn't need to.
+   *
+   *     const cache = new Map();
+   *     await vm.syncDir("./project", "/home/user/project", { cache }); // full
+   *     await vm.syncDir("./project", "/home/user/project", { cache }); // delta
+   */
+  async syncDir(localDir: string, remoteDir: string, options: SyncDirOptions = {}): Promise<SyncDirResult> {
+    const fs = await import("node:fs");
+    const nodePath = await import("node:path");
+    const { createHash } = await import("node:crypto");
+    const fsp = fs.promises;
+
+    const localRoot = nodePath.resolve(localDir);
+    const remoteRoot = "/" + remoteDir.replace(/^\/+/, "").replace(/\/+$/, "");
+
+    // 1. Authoritative remote manifest: rel_path -> sha256. A directory that
+    //    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
+    const remote = await this.remoteManifest(remoteRoot);
+
+    // 2. Enumerate local regular files (skip symlinks — the manifest lists
+    //    regular files only, so a symlink would always look "missing").
+    const localFiles: Array<{ rel: string; abs: string; size: number; mtimeMs: number }> = [];
+    const walk = async (dir: string): Promise<void> => {
+      for (const dirent of await fsp.readdir(dir, { withFileTypes: true })) {
+        const abs = nodePath.join(dir, dirent.name);
+        if (dirent.isSymbolicLink()) continue;
+        if (dirent.isDirectory()) { await walk(abs); continue; }
+        if (!dirent.isFile()) continue;
+        const st = await fsp.stat(abs);
+        const rel = nodePath.relative(localRoot, abs).split(nodePath.sep).join("/");
+        localFiles.push({ rel, abs, size: st.size, mtimeMs: st.mtimeMs });
+      }
+    };
+    await walk(localRoot);
+    localFiles.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+
+    // 3. Diff local vs the REMOTE manifest -> the set to transfer.
+    const cache = options.cache;
+    const result: SyncDirResult = { sent: 0, skipped: 0, bytesSent: 0 };
+    const changed: Array<{ rel: string; abs: string }> = [];
+    for (const file of localFiles) {
+      const cached = cache?.get(file.abs);
+      let hash: string;
+      if (cached && cached.size === file.size && cached.mtimeMs === file.mtimeMs) {
+        hash = cached.hash;
+      } else {
+        hash = createHash("sha256").update(await fsp.readFile(file.abs)).digest("hex");
+        cache?.set(file.abs, { size: file.size, mtimeMs: file.mtimeMs, hash });
+      }
+      if (remote.get(file.rel) === hash) { result.skipped += 1; continue; }
+      changed.push({ rel: file.rel, abs: file.abs });
+      result.sent += 1;
+      result.bytesSent += file.size;
+    }
+
+    // 4. Ship the changed files as ONE tarball and extract it in the guest. The
+    //    extract's exit is checked, so a failure surfaces (never a silent partial);
+    //    the manifest also fails safe — any omitted file is re-sent next call.
+    if (changed.length > 0) await this.uploadAndExtractTarball(changed, localRoot, remoteRoot, fsp);
+    return result;
+  }
+
+  /** Fetch the VM's file manifest under `path` -> Map(rel_path -> sha256), via the
+   * host-first `op: "manifest"` op (no FC boot; works on a never-run VM). */
+  private async remoteManifest(path: string): Promise<Map<string, string>> {
+    const payload = await this._client._request<{ entries?: Array<{ path?: unknown; hash?: unknown }> }>(
+      "POST",
+      `${vmPath(this.id)}/sync`,
+      { op: "manifest", path },
+      this.baseUrl,
+    );
+    const out = new Map<string, string>();
+    if (!Array.isArray(payload.entries)) return out;
+    for (const entry of payload.entries) {
+      if (entry && typeof entry.path === "string" && typeof entry.hash === "string") {
+        out.set(entry.path, entry.hash);
+      }
+    }
+    return out;
+  }
+
+  /** Pack the changed files (paths relative to `localRoot`) into one tar and
+   * extract it in the guest with `tar -x`. Uses node-tar, which reads the files
+   * from disk preserving mode (exec bits) + mtime. */
+  private async uploadAndExtractTarball(
+    changed: Array<{ rel: string; abs: string }>,
+    localRoot: string,
+    remoteRoot: string,
+    fsp: typeof import("node:fs").promises,
+  ): Promise<void> {
+    const tar = await import("tar");
+    const os = await import("node:os");
+    const nodePath = await import("node:path");
+
+    const localTar = nodePath.join(os.tmpdir(), `arker-sync-${ulid()}.tar`);
+    try {
+      await tar.create({ file: localTar, cwd: localRoot }, changed.map((entry) => entry.rel));
+      const data = await fsp.readFile(localTar);
+
+      const remoteTar = `/tmp/.arker-sync-${ulid()}.tar`;
+      await this.sync(remoteTar, data); // inline for small tarballs, presigned for large
+
+      // `set -e` + explicit rm: any extract failure exits non-zero; the tarball
+      // is removed on success. Missing parent dirs are created by mkdir/tar.
+      const q = shellQuoteSingle;
+      const cmd =
+        `set -e; mkdir -p ${q(remoteRoot)}; ` +
+        `tar -xf ${q(remoteTar)} -C ${q(remoteRoot)}; rm -f ${q(remoteTar)}`;
+      const res = await this.run(cmd);
+      if (res.state === "failed" || res.exitCode !== 0) {
+        const stderr = new TextDecoder().decode(res.stderr ?? new Uint8Array()).slice(0, 300);
+        throw new ArkerError(
+          "internal",
+          `syncDir tar extract failed (exit=${res.exitCode}, state=${res.state}): ${stderr}`,
+          200,
+        );
+      }
+    } finally {
+      await fsp.unlink(localTar).catch(() => {});
+    }
+  }
+
   private async syncRead(path: string): Promise<Uint8Array> {
     const request: SyncReadOperationRequest = { op: "read", path };
     const response = await this._client._request<SyncReadInlineResponse | SyncReadPresignedResponse>(
@@ -1635,6 +1769,29 @@ function bytesToBase64(data: Uint8Array): string {
     binary += String.fromCharCode(...chunk);
   }
   return btoa(binary);
+}
+
+/** Result of {@link VM.syncDir}. */
+export interface SyncDirResult {
+  /** Files uploaded (new or changed on the VM). */
+  sent: number;
+  /** Files already up-to-date on the VM (skipped). */
+  skipped: number;
+  /** Total uncompressed bytes of the uploaded files. */
+  bytesSent: number;
+}
+
+/** Options for {@link VM.syncDir}. */
+export interface SyncDirOptions {
+  /** Caller-owned accelerator cache: absolute local path -> {size, mtimeMs, hash}.
+   * Reused across calls it skips re-hashing files whose (size, mtime) are
+   * unchanged. Pure optimization — it never affects which files are sent. */
+  cache?: Map<string, { size: number; mtimeMs: number; hash: string }>;
+}
+
+/** POSIX-single-quote a string so it is safe inside a `/bin/sh` command. */
+function shellQuoteSingle(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
 function base64ToBytes(text: string): Uint8Array {
