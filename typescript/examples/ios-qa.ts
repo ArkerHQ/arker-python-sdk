@@ -11,14 +11,12 @@
  *   ARKER_API_KEY=ark_live_... IOS_QA_WORKDIR=/Users/arker/app IOS_QA_SCHEME=MyApp bun run example:ios-qa
  */
 
-import { Buffer } from "node:buffer";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Arker, type CompletedRunResult, type Run, type RunResult, type VM } from "../src/index.js";
+import { Arker, type CompletedRunResult, type VM } from "../src/index.js";
 
 const decoder = new TextDecoder();
-const encoder = new TextEncoder();
 
 function env(name: string, fallback?: string): string {
   const value = process.env[name]?.trim();
@@ -47,10 +45,6 @@ function text(bytes: Uint8Array): string {
   return decoder.decode(bytes);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function vmMetadata(vm: VM): string {
   const fields = [
     vm.state ? `state=${vm.state}` : "",
@@ -61,42 +55,12 @@ function vmMetadata(vm: VM): string {
   return fields.length > 0 ? ` (${fields.join(", ")})` : "";
 }
 
-function outputBytes(value: string, encoding: string): Uint8Array {
-  const normalized = encoding.toLowerCase();
-  if (normalized === "utf-8" || normalized === "utf8") return encoder.encode(value);
-  if (normalized === "base64") return new Uint8Array(Buffer.from(value, "base64"));
-  throw new Error(`unsupported run output encoding: ${encoding}`);
-}
-
-function completedFromRun(run: Run): CompletedRunResult {
-  return {
-    type: "completed",
-    runId: run.run_id,
-    state: run.state,
-    stdout: outputBytes(run.stdout, run.stdout_encoding),
-    stdoutEncoding: run.stdout_encoding,
-    stderr: outputBytes(run.stderr, run.stderr_encoding),
-    stderrEncoding: run.stderr_encoding,
-    exitCode: run.exit_code ?? -1,
-    failReason: run.fail_reason ?? null,
-  };
-}
-
-async function waitForBackgroundRun(vm: VM, runId: string, timeout: number, label: string): Promise<CompletedRunResult> {
-  const deadline = Date.now() + timeout * 1000;
-  for (;;) {
-    await sleep(2_000);
-    const run = await vm.getRun(runId);
-    if (run.state !== "running") return completedFromRun(run);
-    if (Date.now() >= deadline) {
-      throw new Error(`${label} did not finish within ${timeout}s (run ${runId})`);
-    }
-  }
-}
-
-async function runAndWait(vm: VM, command: string, timeout: number, label: string): Promise<CompletedRunResult> {
-  const result: RunResult = await vm.run(command, { timeout: timeout * 1000 });
-  return result.type === "completed" ? result : waitForBackgroundRun(vm, result.runId, timeout, label);
+// Synchronous run() auto-polls a backgrounded run (one that outlived its sync
+// window) to completion under the hood, so the result is always the terminal
+// run — no manual background polling needed here. `label` is retained for
+// call-site readability.
+async function runAndWait(vm: VM, command: string, timeout: number, _label: string): Promise<CompletedRunResult> {
+  return vm.run(command, { timeout: timeout * 1000 });
 }
 
 function writeRunOutput(result: CompletedRunResult): void {

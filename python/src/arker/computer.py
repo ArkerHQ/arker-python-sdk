@@ -105,6 +105,22 @@ DEFAULT_RETRY_ATTEMPTS = 4
 DEFAULT_RETRY_BASE_DELAY_S = 0.2
 DEFAULT_RETRY_MAX_DELAY_S = 2.0
 DEFAULT_RETRY_JITTER_S = 0.05
+# ── Synchronous run() auto-poll ────────────────────────────────────
+# When a run outlives its server-side sync window (``time_to_background``),
+# the API hands back a background ack carrying a run_id. For a synchronous
+# caller (one that did not ask to background) run() then polls get_run()
+# under the hood until the run reaches a terminal state and returns the
+# completed run — so the caller transparently gets the final result.
+RUN_POLL_INITIAL_S = 0.5
+RUN_POLL_MAX_S = 3.0
+RUN_POLL_BACKOFF = 1.5
+# Slack beyond the run's kill bound before we stop polling and raise a timeout.
+RUN_POLL_MARGIN_S = 30.0
+# Server default kill bound (seconds) used when ``timeout`` is unset or 0 (disabled).
+DEFAULT_RUN_TIMEOUT_S = 3600
+# Terminal run states — RunState ("running" | "completed" | "failed" |
+# "cancelled") minus the sole non-terminal "running".
+TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
 PRESIGNED_PUT_TIMEOUT_S = 600
 RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {
@@ -197,6 +213,11 @@ class BackgroundRunResult:
     type: str = "background"
 
 
+# Result of VM.run(). A synchronous call (``background`` unset/False) always
+# returns a CompletedRunResult — if the run outlives its sync window run()
+# polls it to completion under the hood. Only an explicit ``background=True``
+# yields a BackgroundRunResult (the running ack, returned immediately for the
+# caller to poll via VM.get_run()).
 RunResult = CompletedRunResult | BackgroundRunResult
 
 
@@ -634,6 +655,21 @@ class VM:
     ) -> RunResult:
         """Run ``command`` in this VM via ``POST /v1/vms/{id}/runs``.
 
+        Synchronous by default. If the run outlives the server sync window
+        (``time_to_background``) the API returns a background ack with a
+        ``run_id``; run() then transparently polls :meth:`get_run` until the run
+        reaches a terminal state and returns the completed
+        :class:`CompletedRunResult` — so a synchronous caller always receives
+        the final result. Polling is bounded by ``timeout`` (the run's kill
+        bound; ``None``/``0`` ⇒ the 3600s default) plus a margin; if that budget
+        is exceeded run() raises an :class:`ArkerError` with code ``"timeout"``
+        (the run keeps executing server-side — poll :meth:`get_run` to retrieve
+        it).
+
+        Pass ``background=True`` to skip the wait entirely: run() returns the
+        running :class:`BackgroundRunResult` immediately and you manage polling
+        yourself via :meth:`get_run`.
+
         ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
         time the command may run before the host kills it. ``None`` (default)
         applies the server default (3600 seconds);
@@ -676,13 +712,46 @@ class VM:
             policies=policy_doc,
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        return _run_response(self._client._request(
+        result = _run_response(self._client._request(
             "POST",
             f"{_vm_path(self.id)}/runs",
             body,
             base_url=self.base_url,
             extra_headers=headers,
         ))
+        # The server backgrounds a run that outlived its sync window. When the
+        # caller did NOT request background, poll get_run() to a terminal state
+        # and hand back the completed run so the synchronous call is
+        # transparent. background=True is a pure pass-through — return the ack.
+        if isinstance(result, BackgroundRunResult) and background is not True:
+            return self._await_run(result.run_id, timeout)
+        return result
+
+    def _await_run(self, run_id: str, timeout: int | None) -> CompletedRunResult:
+        """Poll :meth:`get_run` until the run reaches a terminal state, then
+        return it as a :class:`CompletedRunResult`. Backs the transparent
+        synchronous :meth:`run`: invoked only when the server backgrounds a run
+        that outlived its sync window. Bounded by ``timeout`` (the run's kill
+        bound) plus a margin; raises an :class:`ArkerError` with code
+        ``"timeout"`` if the budget is exceeded."""
+        kill_bound_s = timeout if (timeout is not None and timeout > 0) else DEFAULT_RUN_TIMEOUT_S
+        budget_s = kill_bound_s + RUN_POLL_MARGIN_S
+        deadline = time.monotonic() + budget_s
+        delay = RUN_POLL_INITIAL_S
+        while True:
+            time.sleep(delay)
+            run = self.get_run(run_id)
+            if run.state in TERMINAL_RUN_STATES:
+                return _run_to_completed_result(run)
+            if time.monotonic() >= deadline:
+                raise ArkerError(
+                    "timeout",
+                    f"run {run_id} did not reach a terminal state within "
+                    f'{int(budget_s)}s; it continues server-side — poll '
+                    f'get_run("{run_id}") to retrieve it',
+                    0,
+                )
+            delay = min(RUN_POLL_MAX_S, delay * RUN_POLL_BACKOFF)
 
     def update(
         self,
@@ -1486,6 +1555,25 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
         )
 
     raise ArkerError("internal", "unrecognized run response shape", 200)
+
+
+def _run_to_completed_result(run: Run) -> CompletedRunResult:
+    """Project a terminal run-status (:class:`Run`) into the
+    :class:`CompletedRunResult` a synchronous :meth:`VM.run` resolves to. The
+    stored run carries no memory-override fields, so those stay ``None``."""
+    exit_code = run.exit_code
+    if exit_code is None:
+        exit_code = 0 if run.state == "completed" else 1
+    return CompletedRunResult(
+        stdout=_decode_bytes(run.stdout, run.stdout_encoding),
+        stdout_encoding=run.stdout_encoding,
+        stderr=_decode_bytes(run.stderr, run.stderr_encoding),
+        stderr_encoding=run.stderr_encoding,
+        exit_code=exit_code,
+        run_id=run.run_id,
+        state=run.state,
+        fail_reason=run.fail_reason,
+    )
 
 
 def _run_status_response(payload: dict[str, Any]) -> Run:

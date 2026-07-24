@@ -765,8 +765,8 @@ export interface components {
             session_id?: string | null;
             /** @description Zero-based session index within the VM. */
             session_idx?: number | null;
-            /** @description Command submitted for execution. */
-            command: string;
+            /** @description Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op). */
+            command?: string;
             /**
              * @description When true, return immediately with a run ID and continue execution in the background.
              * @default false
@@ -774,7 +774,7 @@ export interface components {
             background?: boolean;
             /** @description Maximum command runtime in seconds. Omitted defaults to 3,600 seconds. Set to 0 to disable the runtime limit. This is separate from `time_to_background`, which controls how long the request waits for completion. */
             timeout?: number | null;
-            /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout. */
+            /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime — that is timeout. */
             time_to_background?: number | null;
             /**
              * @description Output marker used to determine when interactive execution is complete.

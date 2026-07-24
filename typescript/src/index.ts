@@ -39,6 +39,22 @@ const DEFAULT_RETRY_ATTEMPTS = 4;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
 const DEFAULT_RETRY_MAX_DELAY_MS = 2_000;
 const DEFAULT_RETRY_JITTER_MS = 50;
+// ── Synchronous run() auto-poll ────────────────────────────────────
+// When a run outlives its server-side sync window (`time_to_background`),
+// the API hands back a background ack carrying a run_id. For a synchronous
+// caller (one that did not ask to background) run() then polls getRun()
+// under the hood until the run reaches a terminal state and resolves to the
+// completed run — so the caller transparently gets the final result.
+const RUN_POLL_INITIAL_MS = 500;
+const RUN_POLL_MAX_MS = 3_000;
+const RUN_POLL_BACKOFF = 1.5;
+// Slack beyond the run's kill bound before we stop polling and surface a timeout.
+const RUN_POLL_MARGIN_MS = 30_000;
+// Server default kill bound (seconds) used when `timeout` is unset or 0 (disabled).
+const DEFAULT_RUN_TIMEOUT_SECS = 3_600;
+// Terminal run states — RunState ("running" | "completed" | "failed" |
+// "cancelled") minus the sole non-terminal "running".
+const TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
 const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
@@ -267,6 +283,13 @@ export interface BackgroundRunResult {
   state: string;
 }
 
+/**
+ * Result of {@link VM.run}. A synchronous call (`background` unset/false)
+ * always resolves to a {@link CompletedRunResult} — if the run outlives its
+ * sync window run() polls it to completion under the hood. Only an explicit
+ * `background: true` yields a {@link BackgroundRunResult} (the running ack,
+ * returned immediately for the caller to poll via {@link VM.getRun}).
+ */
 export type RunResult = CompletedRunResult | BackgroundRunResult;
 
 export type ListOrgRunsOptions = Omit<
@@ -808,6 +831,26 @@ export class VM {
     return new VM(this._client, vmId, this.baseUrl, vm);
   }
 
+  /**
+   * Run `command` in this VM via `POST /v1/vms/{id}/runs`.
+   *
+   * Synchronous by default. If the run outlives the server sync window
+   * (`time_to_background`, default 120s) the API returns a background ack
+   * with a `run_id`; run() then transparently polls {@link getRun} until the
+   * run reaches a terminal state and resolves to the completed run — so a
+   * synchronous caller always receives the final result. Polling is bounded
+   * by the run's `timeout` (its kill bound, default 3600s; `0`/unset ⇒ the
+   * default) plus a margin; if that budget is exceeded run() throws an
+   * ArkerError with code `"timeout"` (the run keeps executing server-side —
+   * poll {@link getRun} to retrieve it).
+   *
+   * Pass `background: true` to skip the wait entirely: run() returns the
+   * running acknowledgement (`{ type: "background", runId }`) immediately and
+   * you manage polling yourself via {@link getRun}.
+   */
+  async run(command: string, options?: RunOptions & { background?: false | null }): Promise<CompletedRunResult>;
+  async run(command: string, options: RunOptions & { background: true }): Promise<BackgroundRunResult>;
+  async run(command: string, options?: RunOptions): Promise<RunResult>;
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
     rejectRemovedNetworkInputs("run", options);
     const { idempotencyKey, ...body } = options;
@@ -820,7 +863,43 @@ export class VM {
       this.baseUrl,
       headers,
     );
-    return parseRunResponse(response);
+    const result = parseRunResponse(response);
+    // The server backgrounds a run that outlived its sync window. When the
+    // caller did NOT request background, poll getRun() to a terminal state
+    // and hand back the completed run so the synchronous call is transparent.
+    // background:true is a pure pass-through — return the ack immediately.
+    if (result.type === "background" && options.background !== true) {
+      return this._awaitRun(result.runId, options.timeout);
+    }
+    return result;
+  }
+
+  /**
+   * Poll {@link getRun} until the run reaches a terminal state, then return it
+   * as a {@link CompletedRunResult}. Backs the transparent synchronous run():
+   * invoked only when the server backgrounds a run that outlived its sync
+   * window. Bounded by `timeoutSecs` (the run's kill bound) plus a margin;
+   * throws `"timeout"` if the budget is exceeded.
+   */
+  private async _awaitRun(runId: string, timeoutSecs?: number | null): Promise<CompletedRunResult> {
+    const killBoundSecs = timeoutSecs && timeoutSecs > 0 ? timeoutSecs : DEFAULT_RUN_TIMEOUT_SECS;
+    const budgetMs = killBoundSecs * 1000 + RUN_POLL_MARGIN_MS;
+    const deadline = Date.now() + budgetMs;
+    let delay = RUN_POLL_INITIAL_MS;
+    for (;;) {
+      await sleep(delay);
+      const run = await this.getRun(runId);
+      if (TERMINAL_RUN_STATES.has(run.state)) return runToCompletedResult(run);
+      if (Date.now() >= deadline) {
+        throw new ArkerError(
+          "timeout",
+          `run ${runId} did not reach a terminal state within ${Math.round(budgetMs / 1000)}s; ` +
+            `it continues server-side — poll getRun(${JSON.stringify(runId)}) to retrieve it`,
+          0,
+        );
+      }
+      delay = Math.min(RUN_POLL_MAX_MS, Math.ceil(delay * RUN_POLL_BACKOFF));
+    }
   }
 
   /**
@@ -1435,6 +1514,23 @@ function parseRunResponse(payload: unknown): RunResult {
     };
   }
   throw new ArkerError("internal", "unrecognized run response shape", 200);
+}
+
+/** Project a terminal run-status (`Run`) into the `CompletedRunResult` shape
+ * that a synchronous run() resolves to. The stored run carries no memory
+ * override fields, so those stay undefined. */
+function runToCompletedResult(run: Run): CompletedRunResult {
+  return {
+    type: "completed",
+    runId: run.run_id,
+    state: run.state,
+    stdout: decodeBytes(run.stdout, run.stdout_encoding),
+    stdoutEncoding: run.stdout_encoding,
+    stderr: decodeBytes(run.stderr, run.stderr_encoding),
+    stderrEncoding: run.stderr_encoding,
+    exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
+    failReason: run.fail_reason ?? null,
+  };
 }
 
 function parseJson(text: string): unknown {
