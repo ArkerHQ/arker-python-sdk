@@ -9,10 +9,14 @@ from __future__ import annotations
 import atexit
 import base64
 import dataclasses
+import hashlib
 import json
 import os
 import re
 import secrets
+import shlex
+import tarfile
+import tempfile
 import threading
 import time
 import types
@@ -62,6 +66,8 @@ from .generated.api_models import (
     Sync,
     SyncChunkWrite,
     SyncCreateRequest,
+    SyncManifestOperationRequest,
+    SyncManifestResponse,
     SyncPresignedWriteCommit,
     SyncPresignedWriteRequest,
     SyncPresignedWriteRequestResult,
@@ -917,6 +923,128 @@ class VM:
             200,
         )
 
+    # ── Directory sync (rsync-style, manifest diff) ──────────────────
+    def sync_dir(
+        self,
+        local_dir: str,
+        remote_dir: str,
+        *,
+        cache: dict[str, tuple[int, int, str]] | None = None,
+    ) -> SyncDirResult:
+        """Recursively sync a local directory INTO this VM at ``remote_dir``,
+        rsync-style: fetch the VM's file *manifest* (per-file sha256) in ONE
+        request via the host-first ``op="manifest"`` (no FC boot; works on a
+        never-run VM), diff it against the local tree, and upload ONLY the files
+        that are new or changed — packed into a single tarball the guest extracts
+        with ``tar -x`` (so the guest does the writes, always consistent with its
+        own filesystem).
+
+        The remote manifest is authoritative. ``cache`` (an optional dict you own
+        and reuse across calls) is a pure accelerator: it skips re-hashing local
+        files whose (size, mtime) are unchanged. It never decides remote state,
+        so it can never cause a stale or missing upload — worst case it hashes a
+        file it didn't need to.
+
+        Returns a :class:`SyncDirResult` (sent / skipped / bytes).
+        """
+        local_root = os.path.abspath(local_dir)
+        remote_root = "/" + remote_dir.strip("/")
+
+        # 1. Authoritative remote manifest: rel_path -> sha256. A directory that
+        #    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
+        remote = self._remote_manifest(remote_root)
+
+        # 2. Enumerate local regular files (skip symlinks — the manifest lists
+        #    regular files only, so a symlink would always look "missing").
+        local_files: dict[str, tuple[str, int, int]] = {}
+        for root, _dirs, files in os.walk(local_root):
+            for name in files:
+                abs_path = os.path.join(root, name)
+                if os.path.islink(abs_path) or not os.path.isfile(abs_path):
+                    continue
+                rel = os.path.relpath(abs_path, local_root).replace(os.sep, "/")
+                st = os.stat(abs_path)
+                local_files[rel] = (abs_path, st.st_size, st.st_mtime_ns)
+
+        # 3. Diff local vs the REMOTE manifest → the set of new/changed files.
+        result = SyncDirResult()
+        changed: list[tuple[str, str]] = []  # (rel, abs_path)
+        for rel, (abs_path, size, mtime_ns) in sorted(local_files.items()):
+            local_hash = _file_hash_cached(abs_path, size, mtime_ns, cache)
+            if remote.get(rel) == local_hash:
+                result.skipped += 1
+                continue
+            changed.append((rel, abs_path))
+            result.sent += 1
+            result.bytes_sent += size
+
+        # 4. Ship the changed files as ONE tarball and extract it in the guest.
+        #    The GUEST does the file writes (via `tar -x`), so they are always
+        #    consistent with its own filesystem — and one stream + one extract is
+        #    far faster than one write per file. The extract's exit code is
+        #    checked, so a failure surfaces (never a silent partial); the manifest
+        #    also fails safe: any omitted file is re-sent next call.
+        if changed:
+            self._upload_and_extract_tarball(changed, remote_root)
+        return result
+
+    def _remote_manifest(self, path: str) -> dict[str, str]:
+        """Fetch the VM's file manifest under ``path`` → {rel_path: sha256}, via
+        the host-first ``op="manifest"`` op (no FC boot; works on a never-run
+        VM). A path that doesn't exist yet yields an empty manifest."""
+        request = SyncManifestOperationRequest(op="manifest", path=path)
+        payload = self._client._request(
+            "POST", f"{_vm_path(self.id)}/sync",
+            request, base_url=self.base_url,
+        )
+        response = _decode_model(SyncManifestResponse, payload)
+        return {entry.path: entry.hash for entry in response.entries}
+
+    def _upload_and_extract_tarball(
+        self, changed: list[tuple[str, str]], remote_root: str
+    ) -> None:
+        """Pack the changed files (arcname = path relative to ``remote_root``)
+        into ONE tar, upload it in a single write, and extract it in the guest
+        with `tar -x` (which preserves mode/exec bits and creates missing parent
+        dirs). The extract's exit is checked so any failure surfaces."""
+        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tf:
+            tar_local = tf.name
+        try:
+            with tarfile.open(tar_local, "w") as tar:
+                for rel, abs_path in changed:
+                    tar.add(abs_path, arcname=rel, recursive=False)
+            with open(tar_local, "rb") as fh:
+                data = fh.read()
+
+            remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar"
+            self.sync(remote_tar, data)  # inline for small tarballs, presigned for large
+
+            q = shlex.quote
+            # `set -e` + explicit rm: any extract failure exits non-zero; the
+            # tarball is removed on success. Missing parent dirs are created by
+            # mkdir/tar.
+            cmd = (
+                f"set -e; mkdir -p {q(remote_root)}; "
+                f"tar -xf {q(remote_tar)} -C {q(remote_root)}; rm -f {q(remote_tar)}"
+            )
+            res = self.run(cmd)
+            code = getattr(res, "exit_code", None)
+            state = getattr(res, "state", None)
+            if (code not in (0, None)) or state == "failed":
+                stderr = getattr(res, "stderr", b"")
+                if isinstance(stderr, (bytes, bytearray)):
+                    stderr = stderr.decode("utf-8", "replace")
+                raise ArkerError(
+                    "internal",
+                    f"sync_dir tar extract failed (exit={code}, state={state}): {stderr[:300]}",
+                    200,
+                )
+        finally:
+            try:
+                os.unlink(tar_local)
+            except OSError:
+                pass
+
     # ── Syncs: bindings of a filesystem into this VM at a path ────────
     def list_syncs(self, *, cursor: str | None = None, limit: int | None = None, filesystem_id: str | None = None) -> ListSyncsResponse:
         parameters = ListSyncsParameters(
@@ -1513,6 +1641,41 @@ def _assert_write_complete(result: SyncWriteResult, context: str) -> None:
     if result.complete and result.written:
         return
     raise ArkerError("internal", f"{context} did not complete", 200)
+
+
+@dataclasses.dataclass
+class SyncDirResult:
+    """Outcome of :meth:`VM.sync_dir`."""
+
+    sent: int = 0
+    """Files uploaded (new or changed)."""
+    skipped: int = 0
+    """Files whose remote hash already matched (nothing sent)."""
+    bytes_sent: int = 0
+    """Total bytes of the uploaded files."""
+
+
+def _file_hash_cached(
+    abs_path: str,
+    size: int,
+    mtime_ns: int,
+    cache: dict[str, tuple[int, int, str]] | None,
+) -> str:
+    """Lowercase-hex sha256 of a file, reusing ``cache`` when (size, mtime) are
+    unchanged. The cache is a pure accelerator: on any mismatch (or no cache) the
+    file is re-hashed, so a stale cache entry can never cause a wrong upload."""
+    if cache is not None:
+        cached = cache.get(abs_path)
+        if cached is not None and cached[0] == size and cached[1] == mtime_ns:
+            return cached[2]
+    hasher = hashlib.sha256()
+    with open(abs_path, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(block)
+    digest = hasher.hexdigest()
+    if cache is not None:
+        cache[abs_path] = (size, mtime_ns, digest)
+    return digest
 
 
 def _session_info(payload: dict[str, Any]) -> Session:
