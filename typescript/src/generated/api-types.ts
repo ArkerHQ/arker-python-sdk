@@ -469,10 +469,10 @@ export interface components {
             timestamp: string;
         };
         /**
-         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start.
+         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit. `resource_pressure` means the serving infrastructure is temporarily at capacity.
          * @enum {string}
          */
-        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "resource_pressure" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
+        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "rate_limited" | "budget_exceeded" | "concurrency_limit_exceeded" | "resource_pressure" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
         ErrorBody: {
             code: components["schemas"]["ErrorCode"];
             /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic. */
