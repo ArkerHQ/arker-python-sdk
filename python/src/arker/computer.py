@@ -33,7 +33,8 @@ from .generated.api_models import (
     ErrorResponse,
     Filesystem,
     FilesystemCreateRequest,
-    ForkRequest,
+    ForkRequest1,
+    ForkRequest2,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -108,10 +109,7 @@ PRESIGNED_PUT_TIMEOUT_S = 600
 RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {
     "unavailable",
-    "backend_unavailable",
-    "api_worker_unavailable",
     "bad_gateway",
-    "network_error",
     "stale_route",
 }
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
@@ -303,7 +301,7 @@ class Arker:
         disk_mib: int | None = None,
         durable: bool | None = None,
         platforms: list[str] | None = None,
-        policies: dict[str, Any] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -323,10 +321,11 @@ class Arker:
         (optional) is the *new* VM's name in your org. ``description`` is a
         short description owned by the new VM and is never inherited.
 
-        ``policies`` (ARK-125) is the child's outbound egress policy document.
-        Omit it (``None``) to inherit the source VM's policy, re-encrypted under
-        the child's own key. Pass a doc to override it — even an empty
+        ``policies`` is the child's network policy document. Omit it to inherit
+        the source VM's policy, re-encrypted under the child's own key. Pass a
+        document to replace it — even an empty
         ``{"policies": []}``, which clears to allow-all rather than inheriting.
+        Pass ``ssh_public_keys`` to authorize keys on the new VM.
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -361,10 +360,14 @@ class Arker:
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
             )
-        policy_doc = _decode_model(PolicyDoc, policies) if policies is not None else None
-        body = ForkRequest(
-            source_vm_id=source_vm_id,
-            source_vm_name=source_vm_name,
+        policy_doc = (
+            policies
+            if isinstance(policies, PolicyDoc)
+            else _decode_model(PolicyDoc, policies)
+            if policies is not None
+            else None
+        )
+        request_options = dict(
             source_org_id=source_org_id,
             name=name,
             description=description,
@@ -375,6 +378,11 @@ class Arker:
             platforms=platforms,
             resources=resources,
             policies=policy_doc,
+        )
+        body = (
+            ForkRequest1(source_vm_id=source_vm_id, **request_options)
+            if source_vm_id is not None
+            else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )
         burst_ref = source_vm_name or source_vm_id
         use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
@@ -522,7 +530,7 @@ class Arker:
                 if attempt < self._retry.attempts - 1:
                     time.sleep(self._retry_delay(attempt))
                     continue
-                raise ArkerError("network_error", str(error), 0) from error
+                raise ArkerError("unavailable", str(error), 0) from error
 
             text = raw.decode("utf-8", "replace")
             payload = _parse_json(text)
@@ -618,10 +626,10 @@ class VM:
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         network: dict[str, Any] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
         acquire: str | list[str] | None = None,
         release: str | list[str] | None = None,
         signal: str | None = None,
-        policies: PolicyDoc | dict[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> RunResult:
         """Run ``command`` in this VM via ``POST /v1/vms/{id}/runs``.
@@ -644,7 +652,13 @@ class VM:
                 "run network inputs were removed; use policies",
                 400,
             )
-        policy_doc = _decode_model(PolicyDoc, policies) if isinstance(policies, dict) else policies
+        policy_doc = (
+            policies
+            if isinstance(policies, PolicyDoc)
+            else _decode_model(PolicyDoc, policies)
+            if policies is not None
+            else None
+        )
         body = RunRequest(
             command=command,
             session_id=session_id,
@@ -707,19 +721,17 @@ class VM:
         return _decode_model(DeleteVmResponse, payload)
 
     def get_policies(self) -> PolicyDoc:
-        """Read this VM's outbound egress policy document (ARK-125) via
-        ``GET /v1/vms/{id}/policies``. Returns an empty doc (``{}``) when no
-        policy is set; read its rules as ``doc.policies``."""
+        """Read this VM's network policy via ``GET /v1/vms/{id}/policies``."""
         payload = self._client._request("GET", f"{_vm_path(self.id)}/policies", base_url=self.base_url)
         return _decode_model(PolicyDoc, payload)
 
     def set_policies(self, doc: PolicyDoc | dict[str, Any]) -> PolicyDoc:
-        """Replace this VM's outbound egress policy with ``doc`` — an ordered,
-        first-match-wins rule list — via ``PUT /v1/vms/{id}/policies``. An empty
+        """Replace this VM's network policy with ``doc`` via
+        ``PUT /v1/vms/{id}/policies``. An empty
         doc (``{}`` or ``{"policies": []}``) clears the policy to allow-all.
 
-        Returns the stored policy document, including server-derived metadata
-        such as ``mitm_domains`` and ``warnings``::
+        Returns the stored policy document, including response-only hostname
+        and warning fields::
 
             vm.set_policies({
                 "policies": [
@@ -800,7 +812,7 @@ class VM:
                 response = _http_client.put(url, content=data, timeout=PRESIGNED_PUT_TIMEOUT_S)
             except httpx.RequestError as error:
                 if attempt == self._client._retry.attempts - 1:
-                    raise ArkerError("network_error", f"upload PUT failed: {error}", 0) from error
+                    raise ArkerError("unavailable", f"upload PUT failed: {error}", 0) from error
                 time.sleep(self._client._retry_delay(attempt))
                 continue
             if response.status_code < 400:
@@ -1078,9 +1090,9 @@ class Pty:
 
         if not self._open.wait(timeout=connect_timeout):
             self.close()
-            raise ArkerError("network_error", "PTY WebSocket failed to open (timeout)", 0)
+            raise ArkerError("unavailable", "PTY WebSocket failed to open (timeout)", 0)
         if self._open_error is not None:
-            raise ArkerError("network_error", f"PTY WebSocket failed to open: {self._open_error}", 0)
+            raise ArkerError("unavailable", f"PTY WebSocket failed to open: {self._open_error}", 0)
 
     # ── Listener registration ──────────────────────────────────────────
     def on_data(self, listener: Callable[[bytes], None]) -> Callable[[], None]:

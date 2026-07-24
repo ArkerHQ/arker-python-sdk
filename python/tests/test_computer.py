@@ -703,13 +703,19 @@ def test_fork_sends_durable_flag() -> None:
     )
 
     with use_transport(t):
-        client().vm("ubuntu").fork(durable=True)
+        client().vm("ubuntu").fork(
+            durable=True,
+            ssh_public_keys=["ssh-ed25519 AAAA test@example"],
+            policies={"policies": []},
+        )
 
     # Computer.fork auto-fills source_vm_id; disk defaults to True.
     assert json.loads(t.calls[0]["body"]) == {
         "durable": True,
         "source_vm_id": "ubuntu",
         "disk": True,
+        "ssh_public_keys": ["ssh-ed25519 AAAA test@example"],
+        "policies": {"policies": []},
     }
 
 

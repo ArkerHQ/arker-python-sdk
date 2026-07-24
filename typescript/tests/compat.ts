@@ -291,6 +291,18 @@ async function testInternalArkerProvider(): Promise<void> {
     404,
     { code: "not_found", message: "missing" },
   );
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://arker.invalid/api/v1/vms/vm_created/runs",
+    200,
+    {
+      state: "completed",
+      stdout: "",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+      exit_code: 0,
+    },
+  );
 
   const provider = createArkerComputeProvider({
     apiKey: "ark-key",
@@ -307,6 +319,10 @@ async function testInternalArkerProvider(): Promise<void> {
 
   const missing = await provider.sandbox.getById("missing");
   assert.equal(missing, null);
+
+  await sandbox.runCommand("sleep 1", { timeout: 1_500 });
+  const runBody = JSON.parse(fetch.calls[2]!.body!) as Record<string, unknown>;
+  assert.equal(runBody.timeout, 2);
 }
 
 await testDaytonaSurface();

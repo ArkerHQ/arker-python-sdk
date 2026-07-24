@@ -11,7 +11,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Public health/readiness probe. The response body is intentionally minimal and does not expose host, region, release, or golden-image internals. */
+        /**
+         * Check service readiness
+         * @description Public health and readiness probe. Returns service status and server time.
+         */
         get: operations["health"];
         put?: never;
         post?: never;
@@ -31,10 +34,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * @description Create a new VM by forking from an image, an existing VM ID, or
-         *     a VM name within an org. Exactly one of `source_image`,
-         *     `source_vm_id`, or `source_vm_name` must be set. Forking a VM
-         *     owned by another org requires that VM to be `public: true`.
+         * Fork a VM
+         * @description Create a new VM by forking from an existing VM ID or a VM name within an organization. Exactly one of `source_vm_id` or `source_vm_name` must be set. Forking a VM owned by another organization requires that VM to be public.
          */
         post: operations["fork"];
         delete?: never;
@@ -50,6 +51,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * List VMs
+         * @description List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, or lifecycle state.
+         */
         get: operations["listVms"];
         put?: never;
         post?: never;
@@ -66,7 +71,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions. */
+        /**
+         * List organization runs
+         * @description Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions.
+         */
         get: operations["listOrgRuns"];
         put?: never;
         post?: never;
@@ -81,16 +89,29 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
         };
+        /**
+         * Get a VM
+         * @description Return one VM visible to the authenticated caller.
+         */
         get: operations["getVm"];
         put?: never;
         post?: never;
+        /**
+         * Delete a VM
+         * @description Delete a VM owned by the authenticated caller.
+         */
         delete: operations["deleteVm"];
         options?: never;
         head?: never;
+        /**
+         * Update a VM
+         * @description Update a VM's resources, SSH keys, or network policy.
+         */
         patch: operations["patchVm"];
         trace?: never;
     };
@@ -99,11 +120,20 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
         };
+        /**
+         * Get a VM network policy
+         * @description Return the VM's network policy together with its derived inbound exposure and enforcement metadata.
+         */
         get: operations["getVmPolicies"];
+        /**
+         * Replace a VM network policy
+         * @description Replace the VM's complete network policy and apply it to the running VM.
+         */
         put: operations["putVmPolicies"];
         post?: never;
         delete?: never;
@@ -117,17 +147,20 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
         };
+        /**
+         * List VM runs
+         * @description List recorded runs for one VM, with optional lifecycle and time filters.
+         */
         get: operations["listRuns"];
         put?: never;
         /**
-         * @description Run a command. Foreground execution is the portable baseline.
-         *     Optional `background`, `session_id`, `network`, `signal`,
-         *     `acquire`/`release`, and per-run resource overrides may return
-         *     `unsupported_operation` on backends that don't support them.
+         * Run a command
+         * @description Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` when they are unavailable in the selected region or provider.
          */
         post: operations["createRun"];
         delete?: never;
@@ -141,14 +174,24 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Run identifier. */
                 run_id: components["parameters"]["RunId"];
             };
             cookie?: never;
         };
+        /**
+         * Get a run
+         * @description Return one recorded run, including its current state and available output.
+         */
         get: operations["getRun"];
         put?: never;
         post?: never;
+        /**
+         * Cancel a run
+         * @description Request cancellation of an in-flight run.
+         */
         delete: operations["cancelRun"];
         options?: never;
         head?: never;
@@ -160,12 +203,21 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
         };
+        /**
+         * List VM sessions
+         * @description List persistent command sessions for one VM.
+         */
         get: operations["listSessions"];
         put?: never;
+        /**
+         * Create a session
+         * @description Create a persistent command session in a VM.
+         */
         post: operations["createSession"];
         delete?: never;
         options?: never;
@@ -178,14 +230,24 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
         };
+        /**
+         * Get a session
+         * @description Return one persistent VM session.
+         */
         get: operations["getSession"];
         put?: never;
         post?: never;
+        /**
+         * Delete a session
+         * @description Close and remove a persistent VM session.
+         */
         delete: operations["deleteSession"];
         options?: never;
         head?: never;
@@ -205,21 +267,25 @@ export interface paths {
                 rows?: number;
                 /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
                 command?: string;
-                /** @description E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {"type":"kill"} or the server idle TTL destroy a persistent shell. */
+                /** @description When true (default), disconnecting keeps the shell running so the same session_id can reconnect to it and receive recent scrollback. When false, the shell is terminated on disconnect. A kill control message or the configured idle TTL terminates a persistent shell. */
                 persist?: boolean;
+                /** @description Destroy the PTY after this many seconds without terminal input or output. Omit or set to zero to disable this PTY-specific idle limit. */
+                cancel_ttl_secs?: number;
                 /** @description Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set). */
                 ticket?: string;
             };
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
         };
         /**
          * Open an interactive PTY (WebSocket upgrade)
-         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Auth on the upgrade is a Bearer key (a key may only attach to its own org's VMs) OR a ?ticket= for browsers. Reopening with the same session_id RECONNECTS to the same running shell when persist=true (scrollback replayed). Wire format: server→client Binary frames are raw terminal output (ANSI escapes/colors intact); client→server Binary frames are stdin bytes (control chars like 0x03=Ctrl-C raise SIGINT via the guest tty); client→server Text frames are JSON control: {"type":"resize","cols":N,"rows":M}, {"type":"kill"}, {"type":"ping"}. A plain socket close DETACHES (persist) or tears down; {"type":"kill"} always destroys. Caps: one live attachment per session, ARKER_PTY_MAX_PER_VM per VM, ARKER_PTY_MAX_PER_ORG per org (429 past limits); oversized stdin (>64KiB) or control (>4KiB) frames close the connection; idle (ARKER_PTY_IDLE_SECS) closes the connection.
+         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.
          */
         get: operations["attachSessionPty"];
         put?: never;
@@ -235,7 +301,9 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
@@ -244,7 +312,7 @@ export interface paths {
         put?: never;
         /**
          * Mint a browser PTY ticket
-         * @description Returns a short-lived (5 min, multi-use) ticket for opening the PTY WebSocket from a browser, which cannot send an Authorization header. Bearer-authed; the caller must own the VM. Open wss://.../pty?ticket=<ticket> with it. The ticket is a stateless HMAC bound to (org, vm, session), so it validates on any node.
+         * @description Returns a short-lived, multi-use credential for opening the PTY WebSocket from a browser, which cannot set an Authorization header. The bearer-authenticated caller must own the VM. Pass the returned credential as the `ticket` query parameter on the PTY WebSocket URL.
          */
         post: operations["mintSessionPtyTicket"];
         delete?: never;
@@ -258,13 +326,19 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
         };
+        /**
+         * List filesystem mounts
+         * @description List persistent filesystem mounts for one VM, optionally filtered by filesystem.
+         */
         get: operations["listSyncs"];
         put?: never;
         /**
+         * Mount a filesystem
          * @description Create a persistent sync: ensure a Filesystem exists (creating
          *     one if requested) and bind-mount it into this VM at `path`.
          *     Bidirectional by virtue of being a mount — there is no separate
@@ -283,7 +357,9 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Filesystem mount identifier. */
                 sync_id: components["parameters"]["SyncId"];
             };
             cookie?: never;
@@ -291,6 +367,10 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
+        /**
+         * Unmount a filesystem
+         * @description Remove a persistent filesystem mount from a VM.
+         */
         delete: operations["deleteSync"];
         options?: never;
         head?: never;
@@ -302,6 +382,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -309,6 +390,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
+         * Read or write VM files
          * @description Read or write files in the VM filesystem. Op-discriminated:
          *     `{op:"read",path}` reads a file (inline content for small files, a
          *     presigned GET URL for large ones); `{op:"write",writes:[...]}` writes,
@@ -329,8 +411,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * List filesystems
+         * @description List shared filesystems visible to the authenticated caller.
+         */
         get: operations["listFilesystems"];
         put?: never;
+        /**
+         * Create a filesystem
+         * @description Create a shared filesystem owned by the authenticated caller's organization.
+         */
         post: operations["createFilesystem"];
         delete?: never;
         options?: never;
@@ -343,13 +433,22 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
+                /** @description Filesystem identifier. */
                 filesystem_id: components["parameters"]["FilesystemId"];
             };
             cookie?: never;
         };
+        /**
+         * Get a filesystem
+         * @description Return one shared filesystem visible to the authenticated caller.
+         */
         get: operations["getFilesystem"];
         put?: never;
         post?: never;
+        /**
+         * Delete a filesystem
+         * @description Delete a shared filesystem after all VM mounts have been removed.
+         */
         delete: operations["deleteFilesystem"];
         options?: never;
         head?: never;
@@ -368,26 +467,15 @@ export interface components {
              * @description Server time when the health response was generated.
              */
             timestamp: string;
-            /**
-             * @description Present when the public health response is served by a regional router.
-             * @enum {string}
-             */
-            role?: "router";
-            /** @description Whether the router can currently select an active worker. Present on router responses. */
-            worker_available?: boolean;
-            /** @description Deployed release identifier, when configured. Present on router responses. */
-            release_id?: string | null;
-            /** @description Router package version. Present on router responses. */
-            version?: string;
         };
         /**
-         * @description Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature. `payment_required` means billing setup or payment is required before new compute can start.
+         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit. `resource_pressure` means the serving infrastructure is temporarily at capacity.
          * @enum {string}
          */
-        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "not_implemented" | "resource_pressure" | "internal" | "unavailable" | "backend_unavailable" | "api_worker_unavailable" | "bad_gateway" | "network_error" | "stale_route" | "unrecoverable";
+        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "rate_limited" | "budget_exceeded" | "concurrency_limit_exceeded" | "resource_pressure" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
         ErrorBody: {
             code: components["schemas"]["ErrorCode"];
-            /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic; server logs retain the underlying cause. */
+            /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic. */
             message: string;
             /**
              * Format: date-time
@@ -396,7 +484,7 @@ export interface components {
             timestamp: string;
             /** @description Suggested retry delay in seconds. Present on retryable responses and mirrored by the Retry-After header. */
             retry_after?: number;
-            /** @description Operation that failed, when the backend can identify it safely. */
+            /** @description Operation that failed, when the service can identify it safely. */
             operation?: string;
             /** @description Runtime involved in the failure, when safe to expose. */
             runtime?: string;
@@ -415,56 +503,55 @@ export interface components {
         VmState: "idle" | "running";
         SessionState: components["schemas"]["VmState"];
         /**
-         * @description Lifecycle state for a Run. `running` = command in flight.
-         *     `completed` = the command ran to completion; `exit_code` conveys
-         *     success (0) or a non-zero program exit (a non-zero exit is still
-         *     `completed`). `failed` = the platform could not run or finish the
-         *     command (host died, evicted mid-run, exec error); `fail_reason`
-         *     explains why, distinct from the program's `stderr`. `cancelled` =
-         *     cancelled by the client.
+         * @description Lifecycle state for a run. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run.
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /** @enum {string} */
-        ResourceKind: "cpu" | "memory" | "disk";
-        /** @description VM network TOPOLOGY (output): `open` = a guest NIC with allow-all baseline egress, `blocked` = no NIC / no connectivity. Egress FILTERING is expressed exclusively by the ARK-125 policy document, not here. */
-        NetworkPolicy: {
-            /** @constant */
-            type: "open";
-        } | {
-            /** @constant */
-            type: "blocked";
-        };
-        /** @description A VM's network policy document (ARK-125): an ordered, first-match-wins rule list covering BOTH directions (`outbound` egress and `inbound` ingress). Empty `policies` means no policy (allow-all outbound; reachable-with-bearer inbound). Per direction, when no rule matches the engine default is DENY (fail-closed); an explicit catch-all `{ "type": "outbound", "action": "allow" }` rule expresses default-allow. This document is the SOLE control of a VM's network; the legacy `egress`/`network` fork fields no longer filter traffic. */
-        PolicyDoc: {
+        /**
+         * @description Infrastructure provider currently hosting the resource.
+         * @enum {string}
+         */
+        Provider: "aws" | "azure" | "runpod" | "mac";
+        /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. */
+        PolicyWriteRequest: {
+            /** @description Ordered network policy rules. An empty list selects the default posture: allow outbound traffic and require Arker authentication for inbound traffic. */
             policies?: components["schemas"]["PolicyEntry"][];
-            /** @description Named secrets referenced by `${secret:NAME}` in a `rewrite` action's host/path/header/body values. Encrypted at rest with the rest of the document and REDACTED (masked with `***`) whenever the doc is echoed back on GET — so a GET response is NOT round-trippable back into a PUT without re-supplying real secret values. */
+            /** @description Named secret values referenced by `${secret:NAME}` in rewrite actions. Values are encrypted at rest and masked in subsequent policy responses. */
             secrets?: {
                 [key: string]: string;
             };
-            /** @description Read-only (response-only). The single per-VM base hostname on the .app customer plane (<vm>.<region>.arker.app), present when the data-plane domain is configured — its presence is what signals the VM is reachable inbound. Reach a guest desktop at https://<hostname>:6080/. (The control plane — the API and SSH — stays on .ai.) Ignored on write. */
+        };
+        /** @description A VM's current network policy and its derived inbound exposure metadata. */
+        PolicyDoc: {
+            /** @description Ordered network policy rules. An empty list selects the default posture: allow outbound traffic and require Arker authentication for inbound traffic. */
+            policies?: components["schemas"]["PolicyEntry"][];
+            /** @description Named secrets referenced by `${secret:NAME}` in rewrite actions. Stored values are represented as `***`; supply the original value when replacing a policy that uses it. */
+            secrets?: {
+                [key: string]: string;
+            };
+            /** @description The VM's inbound application hostname when inbound access is available. */
             readonly hostname?: string | null;
-            /** @description Read-only (response-only). Domains the policy escalates to the MITM proxy. Ignored on write. */
+            /** @description Domains whose matching traffic is evaluated by the request-level policy engine. */
             readonly mitm_domains?: string[];
-            /** @description Read-only (response-only). Non-fatal notes (e.g. rules degraded where the MITM data path is not active). Ignored on write. */
+            /** @description Non-fatal policy application notices. */
             readonly warnings?: string[];
         };
         /** @description One policy rule. `match` AND's its present fields (absent ⇒ catch-all). */
         PolicyEntry: {
             /**
-             * @description Event family: `outbound` (egress) or `inbound` (expose a guest port). An unknown value is rejected with 400. The legacy `network.outbound` spelling is still accepted on input for outbound.
+             * @description Traffic direction: `outbound` controls connections initiated by the VM; `inbound` exposes a guest port. Unknown values are rejected.
              * @enum {string}
              */
             type: "outbound" | "inbound";
             match?: components["schemas"]["PolicyMatch"];
             action: components["schemas"]["PolicyAction"];
             /**
-             * @description Inbound `allow` only: the exposed tunnel's auth posture. `open` = public passthrough (no Arker check); `arker` (the default when absent) has Arker check the caller's org bearer / API key before forwarding to the guest. Invalid on a `deny` or any outbound rule (400). Inbound `match.ports` must be explicit single ports (ranges are rejected). The legacy value `authenticated` is accepted on read as an alias for `arker`.
+             * @description Authentication for an inbound allow rule. `open` exposes the port publicly; `arker` requires an API key for the caller's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. Inbound port matches must use individual ports rather than ranges.
              * @enum {string}
              */
             auth?: "open" | "arker";
         };
-        /** @description Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field is enforced at the request layer by the managed MITM proxy; where the proxy is not active for a VM the rule degrades to its host/L4 projection — allow → host-allow, deny/rewrite → fail-closed deny. */
+        /** @description Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive. Port, IP, and host rules operate at the connection layer. Method, path, header, and body rules operate at the request layer. */
         PolicyMatch: {
             /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. */
             ports?: (number | number[])[];
@@ -472,6 +559,7 @@ export interface components {
             ips?: string[];
             /** @description Label-boundary suffix match on the request host: `github.com` matches `api.github.com`, not `evilgithub.com`. */
             hosts?: string[];
+            /** @description HTTP methods matched by this rule. */
             methods?: string[];
             /** @description Full-segment path prefixes. */
             paths?: string[];
@@ -479,9 +567,10 @@ export interface components {
             headers?: {
                 [key: string]: string[];
             };
+            /** @description Substrings that must appear in the request body. */
             body_contains?: string[];
         };
-        /** @description allow / deny, a mutating object `{ rewrite?, gate? }`, or `{ scaling: { suspend? } }`. Mutating and scaling actions need the MITM data-path. */
+        /** @description Allow or deny matching traffic, rewrite a matching request, require an authorization gate, or suspend the VM while a matching request is in flight. */
         PolicyAction: ("allow" | "deny") | {
             rewrite?: components["schemas"]["Rewrite"];
             gate?: components["schemas"]["Gate"];
@@ -498,17 +587,20 @@ export interface components {
         };
         /** @description Mutate-and-forward. Host/path/header/body values support request-time `$`-token interpolation: `$domain`, `$path`, `$method`, `$vm_id`, `$body` (the request body as received, also `${…}`-braced), and `$$` for a literal `$`. Unknown/unresolved tokens pass through unchanged. */
         Rewrite: {
+            /** @description Replacement request host. */
             host?: string;
+            /** @description Path inside the VM. */
             path?: string;
             /** @description Merge-set these request headers (not replace-all). */
             headers?: {
                 [key: string]: string;
             };
+            /** @description Request header names to remove before forwarding. */
             remove_headers?: string[];
             /** @description Replace the request body entirely with this (interpolated) value; `$body` re-injects the original body. Absent = body forwarded unchanged. */
             body?: string;
         };
-        /** @description `action.gate`: a BLOCKING outbound HTTP check. When the rule matches, the proxy makes this HTTP request and WAITS before opening the guest's outbound connection; the response STATUS decides — status in `allow_on_status` => forward (applying any sibling `rewrite`), any other status => deny (403). A timeout / connection failure => `deny_on_timeout` (default fail-closed). Generic client: the target may be any endpoint (external authz / LLM / the arker `/run` API); the run-spec, if any, lives in `body`. `path` / header VALUES / string leaves of `body` are `$`-interpolated ($domain/$path/$method/$vm_id/$body); `host` is NOT interpolated (SSRF lever). Values injected into the JSON `body` are JSON-escaped. The outbound connection is SSRF-reguarded (refuses internal / link-local / RFC1918). */
+        /** @description `action.gate` performs an outbound HTTP authorization check before opening the VM's matching connection. A response status in `allow_on_status` permits the connection and applies any sibling `rewrite`; any other status denies it. Timeouts and connection failures follow `deny_on_timeout`, which defaults to deny. `path`, header values, and string leaves of `body` support `$` substitution with the documented request variables. `host` is not substituted. Injected JSON values are escaped, and gate requests reject private, link-local, and internal destinations. */
         Gate: {
             /** @description Target endpoint INCLUDING scheme, e.g. https://authz.example.com. Not interpolated. */
             host: string;
@@ -516,7 +608,7 @@ export interface components {
             path?: string;
             /** @description HTTP method. Default GET. */
             method?: string;
-            /** @description Request headers (values interpolated). A stored credential (e.g. authorization) is encrypted at rest and REDACTED on policy read-back. */
+            /** @description Request headers with interpolated values. Stored credentials are encrypted at rest and masked in policy responses. */
             headers?: {
                 [key: string]: string;
             };
@@ -532,9 +624,9 @@ export interface components {
         ForkRequest: {
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
-            /** @description VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org (for public goldens such as `ubuntu`) or one with a `public: true` VM by that name. */
+            /** @description VM name within an organization. `source_org_id` defaults to the caller's organization. A VM owned by another organization must be public. */
             source_vm_name?: string | null;
-            /** @description Optional explicit org context for `source_vm_name`. SDK auto-fills the Arker org when forking the public goldens. */
+            /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
             source_org_id?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
             name?: string | null;
@@ -542,43 +634,67 @@ export interface components {
             description?: string | null;
             /** @description Make the new VM publicly forkable from other orgs. */
             public?: boolean | null;
-            /** @description SSH public keys to authorize on the new VM (authorized_keys), as raw key strings ('ssh-ed25519 AAAA... you@host'). Successor to the retired network.ssh_public_keys fork input, applied the same way: it becomes the fork's authorized-keys set (omit or pass an empty list to create the fork with no keys; add them later via PATCH /v1/vms/{id}). Inbound reachability is NOT set here — it is derived from the VM's policy. */
+            /** @description SSH public keys to authorize on the new VM as raw `authorized_keys` entries, such as `ssh-ed25519 AAAA... you@host`. The list becomes the VM's authorized-key set. Omit it or pass an empty list to create the VM with no keys; add keys later with `PATCH /v1/vms/{id}`. Configure inbound reachability through the VM's policy. */
             ssh_public_keys?: string[];
+            /** @description Whether the new VM should include persistent disk storage. */
             disk?: boolean | null;
+            /** @description Whether the VM should preserve recoverable state across compute interruptions. */
             durable?: boolean | null;
-            /** @description Desired platform(s) when forking a golden, e.g. ["graviton3"] or a flexible set ["graviton2","graviton3"]. The fork is scheduled onto a host serving one of these, intersected with the platforms the golden is baked for. Optional: omit (null) or pass an empty list for no preference — the router picks from the golden's available platforms, weighted by host availability. Requesting a platform the golden isn't baked for returns 400. Ignored when forking an existing VM, which inherits its parent's platform. */
+            /** @description Preferred compute platforms for a public template, such as `["graviton3"]`. Supply multiple values to allow any listed platform. Omit or pass an empty list for automatic selection. A fork of an existing VM inherits its source platform. */
             platforms?: string[] | null;
-            /** @description ARK-125 network policy for the new VM (the SOLE control of its outbound egress + inbound ingress). Omit (null) to inherit the source VM's policy, re-encrypted under the child's own key. Present (even an empty doc) replaces it: an empty doc clears to the default posture (allow-all outbound, reachable-with-bearer inbound) rather than inheriting. Network topology (NIC-or-not) is not a fork input (it inherits from the source); SSH keys are set via the top-level ssh_public_keys field. */
-            policies?: components["schemas"]["PolicyDoc"] | null;
+            /** @description State to inherit from the source VM. Omit this field or pass `["disk", "memory"]` for a warm fork that resumes the source's filesystem and running processes. Pass `["disk"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`. */
+            layers?: ("disk" | "memory")[] | null;
+            /** @description Network policy for the new VM. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
+            policies?: components["schemas"]["PolicyWriteRequest"] | null;
             /** @description Resource shape for the new VM. */
             resources?: components["schemas"]["VmResources"] | null;
-        };
+        } & ({
+            source_vm_id: string;
+            source_vm_name?: null;
+        } | {
+            source_vm_id?: null;
+            source_vm_name: string;
+        });
         Session: {
+            /** @description Unique session identifier. */
             session_id: string;
-            /** @default 0 */
+            /**
+             * @description Zero-based session index within the VM.
+             * @default 0
+             */
             session_idx?: number;
             state: components["schemas"]["SessionState"];
+            /** @description Working directory inside the VM. */
             cwd: string;
             /** @description Optional environment-variable overrides for this session. */
             env?: {
                 [key: string]: string;
             } | null;
+            /** @description RFC 3339 timestamp when execution or the session started. */
             started_at?: string | null;
+            /** @description Unique VM identifier. */
             vm_id?: string | null;
+            /** @description Customer-defined VM name. */
             vm_name?: string | null;
+            /** @description Organization that owns the source VM. */
             source_org_id?: string | null;
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /** @enum {string|null} */
-            provider?: "aws" | "gcp" | "azure" | null;
+            /** @description Infrastructure provider currently hosting the session's VM. */
+            provider?: components["schemas"]["Provider"] | null;
         };
         ListSessionsResponse: {
+            /** @description Sessions associated with the VM. */
             sessions: components["schemas"]["Session"][];
+            /** @description Cursor for the next page, or null when no further page is available. */
             next_cursor?: string | null;
         };
         Vm: {
+            /** @description Unique VM identifier. */
             vm_id: string;
             /** @description Org that owns this VM. */
             owner_org_id: string;
+            /** @description RFC 3339 timestamp when the resource was created. */
             created_at: string;
             /** @description VM name, scoped to `owner_org_id`. */
             name?: string | null;
@@ -591,39 +707,14 @@ export interface components {
             /** @description Name of the root source VM. Populated together with `root_source_vm_id`. */
             root_source_vm_name?: string | null;
             state: components["schemas"]["VmState"];
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /** @enum {string|null} */
-            provider?: "aws" | "gcp" | "azure" | null;
+            /** @description Infrastructure provider currently hosting the VM. */
+            provider?: components["schemas"]["Provider"] | null;
+            /** @description RFC 3339 timestamp when execution or the session started. */
             started_at?: string | null;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility projection of `resources.vcpu`.
-             */
-            readonly vcpu_count?: number | null;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility projection of `resources.memory_mib`.
-             */
-            readonly memory_mib?: number | null;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility projection of `resources.disk_mib`.
-             */
-            readonly disk_mib?: number | null;
             /** @description The VM's network object — SSH keys only. Inbound reachability and per-port tunnels are derived from `policies` and surface on the policies GET/PUT response, not here. */
             network: components["schemas"]["VmNetwork"];
-            /** @description Outbound egress policy stored on the VM. */
-            egress?: components["schemas"]["NetworkPolicy"];
-            /**
-             * @deprecated
-             * @description Deprecated compatibility alias for `root_source_vm_name`.
-             */
-            readonly base_image?: string;
-            /**
-             * @deprecated
-             * @description Deprecated compatibility alias for `root_source_vm_name`.
-             */
-            readonly source_golden?: string;
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
             max_vcpus?: number | null;
             /** @description Smallest vCPU count accepted for this VM. */
@@ -636,18 +727,23 @@ export interface components {
             min_disk_mib?: number | null;
             /** @description Largest disk size (MiB) accepted for this VM. `0` means nodisk. */
             max_disk_mib?: number | null;
+            /** @description Sessions associated with the VM. */
             sessions: components["schemas"]["Session"][];
             /** @description Current VM resource allocation. */
             resources: components["schemas"]["VmResources"];
         };
         ListVmsResponse: {
+            /** @description VMs visible to the authenticated caller. */
             vms: components["schemas"]["Vm"][];
+            /** @description Cursor for the next page, or null when no further page is available. */
             next_cursor?: string | null;
         };
         DeleteVmResponse: {
+            /** @description True when the resource has been deleted. */
             deleted: boolean;
         };
         DeleteSessionResponse: {
+            /** @description True when the resource has been deleted. */
             deleted: boolean;
         };
         PatchSessionRequest: {
@@ -659,23 +755,37 @@ export interface components {
             timeout_secs?: number;
         };
         PatchSessionResponse: {
+            /** @description True when the operation succeeded. */
             ok: boolean;
+            /** @description Unique session identifier. */
             session_id: string;
         };
         RunRequest: {
+            /** @description Unique session identifier. */
             session_id?: string | null;
+            /** @description Zero-based session index within the VM. */
             session_idx?: number | null;
+            /** @description Command submitted for execution. */
             command: string;
-            /** @default false */
+            /**
+             * @description When true, return immediately with a run ID and continue execution in the background.
+             * @default false
+             */
             background?: boolean;
-            /** @description Execution/kill bound in milliseconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600000 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background. */
+            /** @description Maximum command runtime in seconds. Omitted defaults to 3,600 seconds. Set to 0 to disable the runtime limit. This is separate from `time_to_background`, which controls how long the request waits for completion. */
             timeout?: number | null;
             /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout. */
             time_to_background?: number | null;
-            /** @default auto */
+            /**
+             * @description Output marker used to determine when interactive execution is complete.
+             * @default auto
+             */
             end_symbol?: string | null;
+            /** @description Virtual CPU allocation for this run. */
             vcpu_count?: number | null;
+            /** @description Memory allocation in mebibytes. */
             memory_mib?: number | null;
+            /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
             /**
              * @description Comma-separated list of resources to ensure are
@@ -691,9 +801,13 @@ export interface components {
              *     suspend).
              */
             release?: string | null;
-            signal?: string | null;
-            /** @description ARK-125 network policy applied to the VM for (and persisting past) this run — the SOLE control of its network (outbound egress + inbound ingress). Same treatment as `ForkRequest.policies`: present non-empty replaces the VM's persisted policy and reapplies it live; an empty doc clears to the default posture (allow-all outbound, reachable-with-bearer inbound); omit (null) to run under the VM's current policy (no change). Written and reconciled fail-closed BEFORE the command runs: if it cannot be persisted/applied the run is refused (5xx on a durability failure), so a command never executes under a half-applied posture. Last-writer-wins-persist: a later plain run then runs under this policy. */
-            policies?: components["schemas"]["PolicyDoc"] | null;
+            /**
+             * @description Deliver a signal to the selected persistent session's foreground process group. When set, the service does not execute `command`; it returns a completed acknowledgement with no run id. Use `session_id` or `session_idx` to select the session.
+             * @enum {string|null}
+             */
+            signal?: "SIGINT" | "SIGTERM" | "SIGKILL" | "SIGHUP" | null;
+            /** @description Network policy applied to the VM before this run and retained afterward. A non-empty document replaces the persisted policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to use the current policy unchanged. If the policy cannot be stored and applied, the command does not run. */
+            policies?: components["schemas"]["PolicyWriteRequest"] | null;
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
@@ -701,144 +815,199 @@ export interface components {
             run_id?: string | null;
             /** @description Lifecycle state — "completed" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape. */
             state?: string;
+            /** @description Standard output produced by the command. */
             stdout: string;
             /**
              * @description Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
              * @enum {string}
              */
             stdout_encoding: "utf-8" | "base64";
+            /** @description Standard error produced by the command. */
             stderr: string;
             /**
              * @description Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
              * @enum {string}
              */
             stderr_encoding: "utf-8" | "base64";
+            /** @description Process exit code. Null when no process completed. */
             exit_code: number;
+            /** @description Execution mode selected by the service, when reported. */
             dispatch?: string | null;
-            /** @description ARK-107: requested total memory (MiB) when this run carried an explicit memory override. Absent when the run had no memory override. */
+            /** @description Requested total memory in MiB when this run included a memory override. Absent when no override was requested. */
             memory_requested_mib?: number | null;
-            /** @description ARK-107: achieved total memory (MiB) after the run's resize. Memory shrink is best-effort, so this can exceed memory_requested_mib when guest pages are pinned. Absent when the run had no memory override. */
+            /** @description Achieved total memory in MiB after applying the run's memory override. A memory reduction is best-effort, so this value can exceed `memory_requested_mib` when guest pages cannot be released. Absent when no override was requested. */
             memory_achieved_mib?: number | null;
-            /** @description ARK-107: true when the run's memory shrink was partial (achieved differs from requested beyond the virtio-mem block granularity). The command still ran at the achieved footprint (best-effort); this flags the gap instead of a silent success. Defaults false. */
+            /** @description True when a requested memory reduction was only partially applied. The command runs with the achieved allocation, and `memory_achieved_mib` reports that allocation. Defaults to false. */
             memory_partial?: boolean;
         };
         BackgroundRunResponse: {
+            /** @description Unique run identifier. */
             run_id: string;
             /** @description Lifecycle state — "running" for a backgrounded run. */
             state?: string;
         };
         Run: {
+            /** @description Unique run identifier. */
             run_id: string;
+            /** @description Unique session identifier. */
             session_id?: string | null;
+            /** @description Command submitted for execution. */
             command?: string | null;
             state: components["schemas"]["RunState"];
+            /** @description RFC 3339 timestamp when execution or the session started. */
             started_at: string;
+            /** @description RFC 3339 timestamp when execution reached a terminal state. */
             completed_at?: string | null;
+            /** @description Process exit code. Null when no process completed. */
             exit_code: number | null;
-            /** @description System failure explanation when `state` is `failed` (e.g. "host died:&nbsp;<id>", "evicted mid-run"). Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion. */
+            /** @description Client-safe platform failure explanation when `state` is `failed`. Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion. */
             fail_reason?: string | null;
+            /** @description Standard output produced by the command. */
             stdout: string;
             /**
              * @description Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
              * @enum {string}
              */
             stdout_encoding: "utf-8" | "base64";
+            /** @description Standard error produced by the command. */
             stderr: string;
             /**
              * @description Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
              * @enum {string}
              */
             stderr_encoding: "utf-8" | "base64";
-            /** @default 0 */
+            /**
+             * @description Number of automatic recovery attempts for this run.
+             * @default 0
+             */
             retry_count?: number;
+            /** @description Unique VM identifier. */
             vm_id?: string | null;
+            /** @description Customer-defined VM name. */
             vm_name?: string | null;
+            /** @description Organization that owns the source VM. */
             source_org_id?: string | null;
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /** @enum {string|null} */
-            provider?: "aws" | "gcp" | "azure" | null;
+            /** @description Infrastructure provider that hosted the run. */
+            provider?: components["schemas"]["Provider"] | null;
         };
         RunSummary: {
+            /** @description Unique run identifier. */
             run_id: string;
+            /** @description Unique session identifier. */
             session_id?: string | null;
+            /** @description Command submitted for execution. */
             command?: string | null;
             state: components["schemas"]["RunState"];
+            /** @description RFC 3339 timestamp when execution or the session started. */
             started_at: string;
+            /** @description RFC 3339 timestamp when execution reached a terminal state. */
             completed_at?: string | null;
+            /** @description Process exit code. Null when no process completed. */
             exit_code: number | null;
             /** @description System failure explanation when `state` is `failed` — see `Run.fail_reason`. Distinct from the program's `stderr`. */
             fail_reason?: string | null;
+            /** @description Unique VM identifier. */
             vm_id?: string | null;
+            /** @description Customer-defined VM name. */
             vm_name?: string | null;
+            /** @description Organization that owns the source VM. */
             source_org_id?: string | null;
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /** @enum {string|null} */
-            provider?: "aws" | "gcp" | "azure" | null;
+            /** @description Infrastructure provider that hosted the run. */
+            provider?: components["schemas"]["Provider"] | null;
         };
         ListRunsResponse: {
+            /** @description Runs matching the request. */
             runs: components["schemas"]["RunSummary"][];
+            /** @description Cursor for the next page, or null when no further page is available. */
             next_cursor?: string | null;
         };
         OrgRunListRow: {
-            /** @enum {string} */
+            /**
+             * @description Service that recorded the activity.
+             * @enum {string}
+             */
             source: "arkerd";
+            /** @description Activity timestamp as Unix epoch milliseconds. */
             t_ms: number;
+            /** @description Request identifier used to correlate this activity. */
             request_id: string;
+            /** @description Unique run identifier. */
             run_id: string;
+            /** @description Unique VM identifier. */
             vm_id: string;
+            /** @description Unique session identifier. */
             session_id: string;
+            /** @description Region containing the resource or activity. */
             region: string;
+            /** @description HTTP response status code. */
             status: number;
+            /** @description Total request duration in milliseconds. */
             total_ms: number;
+            /** @description Time spent waiting for execution capacity, in milliseconds. */
             queue_ms: number;
+            /** @description Wall-clock command execution time, in milliseconds. */
             executor_duration_ms: number;
+            /** @description Execution engine used for the command. */
             executor_kind: string;
+            /** @description CPU time consumed by command execution, in milliseconds. */
             executor_cpu_ms: number;
+            /** @description Peak memory attributed to command execution, in megabytes. */
             executor_mem_mb: number;
+            /** @description VM virtual CPU allocation at execution time. */
             vm_vcpus: number;
+            /** @description VM memory allocation at execution time, in mebibytes. */
             vm_memory_mib: number;
+            /** @description Path inside the VM. */
             path: string;
+            /** @description HTTP method. */
             method: string;
+            /** @description Command submitted for execution. */
             command: string;
+            /** @description VM identifier used as the fork source. */
             source_vm_id: string;
+            /** @description Process exit code. Null when no process completed. */
             exit_code: number | null;
+            /** @description API operation category associated with the activity. */
             endpoint: string;
+            /** @description Non-secret prefix identifying the API key used for the request. */
             api_key_prefix: string;
+            /** @description Request body size in bytes. */
             body_bytes_in: number;
+            /** @description Response body size in bytes. */
             body_bytes_out: number;
+            /** @description Captured request body preview when included in the response. */
             body_in: string;
+            /** @description Captured response body preview when included in the response. */
             body_out: string;
         };
         ListOrgRunsResponse: {
+            /** @description Inclusive start of the activity window, as Unix epoch seconds. */
             since: number;
+            /** @description Exclusive end of the activity window, as Unix epoch seconds. */
             until: number;
+            /** @description Maximum number of records requested. */
             limit: number;
+            /** @description Number of matching records skipped before this page. */
             offset: number;
+            /** @description When true, omit large request and response previews. */
             lite: boolean;
+            /** @description Activity records matching the request. */
             rows: components["schemas"]["OrgRunListRow"][];
         };
-        NetworkStatus: {
-            inbound: components["schemas"]["InboundStatus"];
-        };
-        InboundStatus: {
-            ports: {
-                [key: string]: components["schemas"]["InboundPortStatus"];
-            };
-        };
-        InboundPortStatus: {
-            requested: string;
-            observed: string;
-            effective: string;
-            protocol: string;
-            url?: string | null;
-        };
         CancelRunResponse: {
+            /** @description True when the run was cancelled. */
             cancelled: boolean;
         };
         CreateSessionRequest: {
+            /** @description Environment variables to set for the session. */
             env?: {
                 [key: string]: string;
             } | null;
+            /** @description Working directory inside the VM. */
             cwd?: string | null;
             /** @description Mark this session for an interactive PTY. The PTY stream is attached separately through the session WebSocket endpoint. */
             pty?: boolean | null;
@@ -850,177 +1019,308 @@ export interface components {
             command?: string | null;
         };
         PtyTicketResponse: {
+            /** @description Short-lived credential for opening the terminal WebSocket. */
             ticket: string;
             /** @description Seconds until expiry. */
             expires_in: number;
         };
         Sync: {
+            /** @description Unique sync identifier. */
             sync_id: string;
+            /** @description Unique VM identifier. */
             vm_id: string;
+            /** @description Unique filesystem identifier. */
             filesystem_id: string;
-            /** @description VM-side path where the filesystem is mounted. Same field name as used by `SyncReadRequest.path`. */
+            /** @description VM-side path where the filesystem is mounted. */
             path: string;
+            /** @description Region containing the resource or activity. */
             region?: string | null;
         };
         ListSyncsResponse: {
+            /** @description Sync mounts matching the request. */
             syncs: components["schemas"]["Sync"][];
+            /** @description Cursor for the next page, or null when no further page is available. */
             next_cursor?: string | null;
         };
         DeleteSyncResponse: {
+            /** @description True when the resource has been deleted. */
             deleted: boolean;
         };
         SyncCreateRequest: {
+            /** @description Unique filesystem identifier. */
             filesystem_id: string;
+            /** @description Path inside the VM. */
             path?: string;
         };
-        SyncReadRequest: {
-            path: string;
-        };
-        SyncWriteRequest: {
-            writes: components["schemas"]["SyncWriteEntry"][];
-        };
         SyncReadOperationRequest: {
-            /** @constant */
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
             op: "read";
+            /** @description Path inside the VM. */
             path: string;
         };
         SyncWriteOperationRequest: {
-            /** @constant */
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
             op: "write";
+            /** @description Files to write in this sync operation. */
             writes: components["schemas"]["SyncWriteEntry"][];
         };
-        SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"];
-        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"];
+        SyncManifestOperationRequest: {
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
+            op: "manifest";
+            /** @description Non-root directory inside the VM to list recursively. */
+            path: string;
+        };
+        ManifestEntry: {
+            /** @description File path relative to the requested manifest root, without a leading slash. */
+            path: string;
+            /** @description File size in bytes. */
+            size: number;
+            /** @description Unix file mode reported by the VM filesystem. */
+            mode: number;
+            /** @description Lowercase hexadecimal digest of the file content using the response's `hash_algo`. */
+            hash: string;
+        };
+        SyncManifestResponse: {
+            /** @description Normalized absolute directory represented by this manifest. */
+            root: string;
+            /**
+             * @description Hash algorithm used by every `entries[].hash` value.
+             * @constant
+             */
+            hash_algo: "sha256";
+            /** @description Regular files found recursively under `root`. */
+            entries: components["schemas"]["ManifestEntry"][];
+            /** @description True when the result reached the entry limit. Request manifests for narrower subdirectories to retrieve the remaining files. */
+            truncated: boolean;
+        };
+        SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"] | components["schemas"]["SyncManifestOperationRequest"];
+        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncManifestResponse"];
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description Identifier for a multipart upload. */
             upload_id: string;
+            /** @description Base64-encoded file content. */
             content: string;
+            /** @description Inclusive starting byte offset. */
             start: number;
+            /** @description Inclusive ending byte offset. */
             end: number;
+            /** @description Lowercase hexadecimal SHA-256 digest used to verify file content. */
             sha256?: string | null;
-            /** @default false */
+            /**
+             * @description When true, prevent the file content from appearing in logs or previews.
+             * @default false
+             */
             is_secret?: boolean;
         };
         SyncPresignedWriteRequest: {
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description When true, request a temporary upload URL instead of sending content inline. */
             presigned: boolean;
-            /** @default false */
+            /**
+             * @description When true, prevent the file content from appearing in logs or previews.
+             * @default false
+             */
             is_secret?: boolean;
         };
         SyncPresignedWriteCommit: {
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description Identifier for a multipart upload. */
             upload_id: string;
+            /** @description Lowercase hexadecimal SHA-256 digest used to verify file content. */
             sha256?: string | null;
         };
         SyncReadResponse: components["schemas"]["SyncReadInlineResponse"] | components["schemas"]["SyncReadPresignedResponse"];
         SyncReadInlineResponse: {
+            /** @description True when the operation succeeded. */
             ok: boolean;
-            /** @constant */
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
             op: "read";
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description Base64-encoded file content. */
             content: string;
-            encoding: string;
+            /**
+             * @description Encoding used for the content field.
+             * @enum {string}
+             */
+            encoding: "utf8" | "base64";
         };
         SyncReadPresignedResponse: {
+            /** @description True when the operation succeeded. */
             ok: boolean;
-            /** @constant */
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
             op: "read";
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description Temporary URL for transferring file content. */
             presigned_url: string;
+            /** @description Seconds until the temporary URL or credential expires. */
             expires_in: number;
+            /** @description HTTP method. */
             method: string;
         };
         SyncWriteResponse: {
+            /** @description True when the operation succeeded. */
             ok: boolean;
-            /** @constant */
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
             op: "write";
+            /** @description Per-file results for the sync operation. */
             results: components["schemas"]["SyncWriteResult"][];
         };
         SyncWriteResult: components["schemas"]["SyncChunkWriteResult"] | components["schemas"]["SyncPresignedWriteRequestResult"] | components["schemas"]["SyncCommitWriteResult"];
         SyncChunkWriteResult: {
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description Number of file bytes received so far. */
             received_bytes: number;
+            /** @description Byte ranges received for this file. */
             ranges: components["schemas"]["SyncByteRange"][];
+            /** @description True when all data for this operation has been received and applied. */
             complete: boolean;
+            /** @description True when the file was committed to the VM. */
             written: boolean;
+            /** @description Structured error details for this entry, when the operation failed. */
             error?: components["schemas"]["SyncEntryError"] | null;
         };
         SyncPresignedWriteRequestResult: {
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description Temporary URL for transferring file content. */
             presigned_url: string;
+            /** @description Identifier for a multipart upload. */
             upload_id: string;
+            /** @description Seconds until the temporary URL or credential expires. */
             expires_in: number;
+            /** @description HTTP method. */
             method: string;
+            /** @description True when all data for this operation has been received and applied. */
             complete: boolean;
+            /** @description True when the file was committed to the VM. */
             written: boolean;
+            /** @description Structured error details for this entry, when the operation failed. */
             error?: components["schemas"]["SyncEntryError"] | null;
         };
         SyncCommitWriteResult: {
+            /** @description Path inside the VM. */
             path: string;
+            /** @description File size in bytes. */
             size: number;
+            /** @description True when all data for this operation has been received and applied. */
             complete: boolean;
+            /** @description True when the file was committed to the VM. */
             written: boolean;
+            /** @description Structured error details for this entry, when the operation failed. */
             error?: components["schemas"]["SyncEntryError"] | null;
         };
         SyncByteRange: {
+            /** @description Inclusive starting byte offset. */
             start: number;
+            /** @description Inclusive ending byte offset. */
             end: number;
         };
         SyncEntryError: {
+            /** @description Stable machine-readable error code. */
             code: string;
+            /** @description Human-readable error message. */
             message: string;
         };
         Filesystem: {
+            /** @description Unique filesystem identifier. */
             filesystem_id: string;
+            /** @description Customer-defined resource name. */
             name: string;
+            /** @description Organization that owns the resource. */
             owner_org_id: string;
+            /** @description RFC 3339 timestamp when the resource was created. */
             created_at: string;
+            /** @description Resource size in bytes. */
             size_bytes?: number | null;
-            /** @default us-west-2 */
+            /**
+             * @description Region containing the resource or activity.
+             * @default us-west-2
+             */
             region?: string | null;
             /**
+             * @description Infrastructure provider hosting the filesystem.
              * @default aws
-             * @enum {string|null}
              */
-            provider?: "aws" | "gcp" | "azure" | null;
+            provider?: components["schemas"]["Provider"] | null;
         };
         ListFilesystemsResponse: {
+            /** @description Filesystems visible to the authenticated caller. */
             filesystems: components["schemas"]["Filesystem"][];
+            /** @description Cursor for the next page, or null when no further page is available. */
             next_cursor?: string | null;
         };
         DeleteFilesystemResponse: {
+            /** @description True when the resource has been deleted. */
             deleted: boolean;
         };
         FilesystemCreateRequest: {
+            /** @description Customer-defined resource name. */
             name: string;
         };
         VmResources: {
+            /** @description Virtual CPU allocation. */
             vcpu?: number | null;
+            /** @description Memory allocation in mebibytes. */
             memory_mib?: number | null;
+            /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
-            /** @description GPU slice size: number of streaming multiprocessors (SMs) the VM may use. Only valid when the VM targets a GPU platform (e.g. "x86_64-a40"). Requesting more SMs than the physical GPU has returns 400. Omit for the host's default slice size. */
+            /** @description Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-a40`. Omit to use the platform default. */
             gpu_sms?: number | null;
-            /** @description GPU slice size: VRAM cap in MiB. Only valid when the VM targets a GPU platform. Requesting more VRAM than the physical GPU has returns 400. Omit for the host's default slice size. */
+            /** @description GPU memory available to the VM, in MiB. Only valid for GPU platforms. Omit to use the platform default. */
             gpu_vram_mib?: number | null;
         };
-        /** @description SSH-key network input for a fork/patch. Reachability is NOT an input: it is derived from inbound policy exposure and surfaced only on the policies GET/PUT response. A stray legacy `reachable` key is ignored server-side, not rejected. */
+        /** @description SSH key configuration for a fork or patch. Inbound reachability is controlled by the VM's policy document and reported by the policy endpoints. */
         NetworkInput: {
             /** @description OpenSSH public keys authorized for terminator auth and in-VM sshd injection. */
             ssh_public_keys?: string[];
         };
         SshPublicKeyInfo: {
+            /** @description SSH public key in authorized_keys format. */
             public_key: string;
+            /** @description Stable fingerprint of the SSH public key. */
             fingerprint: string;
         };
-        /** @description A VM's network object: SSH keys ONLY. Inbound reachability, the .app hostname, and per-port tunnels are DERIVED from the VM's policy doc and surface on the policies GET/PUT response (the PolicyDoc's read-only fields), not here. */
+        /** @description SSH access configuration for a VM. Configure inbound application access through the VM's network policy. */
         VmNetwork: {
             /** @description Authorized SSH keys with fingerprints. Returned by GET /v1/vms/{id}; omitted from list responses when empty. */
             ssh_public_keys?: components["schemas"]["SshPublicKeyInfo"][];
@@ -1028,10 +1328,12 @@ export interface components {
         PatchVmRequest: {
             /** @description Replace the VM description. Null or a blank string clears it; omit this field to leave it unchanged. */
             description?: string | null;
+            /** @description CPU, memory, and disk configuration. */
             resources?: components["schemas"]["VmResources"] | null;
+            /** @description SSH access configuration for the VM. */
             network?: components["schemas"]["NetworkInput"] | null;
-            /** @description ARK-125 network policy for the VM — the SOLE control of its network (outbound egress + inbound ingress). Same treatment as `ForkRequest.policies`: present non-empty replaces the persisted policy and reapplies it live; an empty doc clears to the default posture (allow-all outbound, reachable-with-bearer inbound); omit (null) for no change. Persisted and reconciled fail-closed exactly as `PUT /v1/vms/{id}/policies` does — a durability failure returns 5xx, never a silent success. */
-            policies?: components["schemas"]["PolicyDoc"] | null;
+            /** @description Network policy for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
+            policies?: components["schemas"]["PolicyWriteRequest"] | null;
         };
     };
     responses: {
@@ -1047,13 +1349,14 @@ export interface components {
         /** @description API error. */
         Error: {
             headers: {
+                "Retry-After": components["headers"]["RetryAfter"];
                 [name: string]: unknown;
             };
             content: {
                 "application/json": components["schemas"]["ErrorResponse"];
             };
         };
-        /** @description The request is valid, but this backend does not support the requested operation or option. */
+        /** @description The request is valid, but the requested operation or option is unavailable in the selected region or provider. */
         UnsupportedOperation: {
             headers: {
                 [name: string]: unknown;
@@ -1064,18 +1367,28 @@ export interface components {
         };
     };
     parameters: {
+        /** @description Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict. */
+        IdempotencyKey: string;
+        /** @description VM identifier. */
         VmId: string;
+        /** @description Run identifier. */
         RunId: string;
+        /** @description Session identifier. */
         SessionId: string;
+        /** @description Filesystem mount identifier. */
         SyncId: string;
+        /** @description Filesystem identifier. */
         FilesystemId: string;
         /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
         Cursor: string | null;
-        /** @description Max items per page. Backend caps may apply. */
+        /** @description Maximum items per page. Service caps may apply. */
         Limit: number;
     };
     requestBodies: never;
-    headers: never;
+    headers: {
+        /** @description Delay in seconds before retrying a transiently unavailable request. */
+        RetryAfter: number;
+    };
     pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -1142,12 +1455,12 @@ export interface operations {
             query?: {
                 /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
                 cursor?: components["parameters"]["Cursor"];
-                /** @description Max items per page. Backend caps may apply. */
+                /** @description Maximum items per page. Service caps may apply. */
                 limit?: components["parameters"]["Limit"];
-                /** @description Narrow to a single backend region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region. */
+                /** @description Narrow to a single region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region. */
                 region?: string;
                 /** @description Narrow results to a cloud provider. */
-                provider?: "aws" | "gcp" | "azure";
+                provider?: components["schemas"]["Provider"];
                 /** @description List public VMs owned by this org. Currently only `ArkerHQ` is supported, together with `public=true`, for the public template catalog. */
                 org_id?: string;
                 /** @description Filter by public visibility. Use with `org_id=ArkerHQ` to list the public template catalog. */
@@ -1184,17 +1497,17 @@ export interface operations {
                 vm?: string;
                 /** @description Comma-separated VM ID filter. */
                 vms?: string;
-                /** @description Backend region filter. */
+                /** @description Region filter. */
                 region?: string;
                 /** @description Cloud provider filter. */
-                provider?: "aws" | "gcp" | "azure";
+                provider?: components["schemas"]["Provider"];
                 /** @description Free-text search across run metadata. */
                 search?: string;
-                /** @description Maximum number of rows to return. */
+                /** @description Maximum number of rows to return. The maximum is 200 normally and 20,000 when `lite=true`. */
                 limit?: number;
                 /** @description Number of rows to skip. */
                 offset?: number;
-                /** @description When true, omit large input/output previews where supported by the backend. */
+                /** @description When true, omit large input and output previews where supported. */
                 lite?: boolean;
                 /** @description Runtime filter. */
                 runtime?: string;
@@ -1236,6 +1549,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1259,6 +1573,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1282,6 +1597,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1310,6 +1626,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1333,17 +1650,18 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PolicyDoc"];
+                "application/json": components["schemas"]["PolicyWriteRequest"];
             };
         };
         responses: {
-            /** @description Stored policy, plus the domains it escalates to MITM and any degrade warnings. */
+            /** @description Stored policy, plus request-level enforcement domains and any non-fatal notices. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1360,15 +1678,20 @@ export interface operations {
             query?: {
                 /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
                 cursor?: components["parameters"]["Cursor"];
-                /** @description Max items per page. Backend caps may apply. */
+                /** @description Maximum items per page. Service caps may apply. */
                 limit?: components["parameters"]["Limit"];
+                /** @description Return only runs in this lifecycle state. */
                 state?: components["schemas"]["RunState"];
+                /** @description Return runs started at or after this RFC 3339 timestamp. */
                 started_after?: string;
+                /** @description Return runs started at or before this RFC 3339 timestamp. */
                 started_before?: string;
+                /** @description Return runs completed at or after this RFC 3339 timestamp. */
                 completed_after?: string;
             };
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1390,8 +1713,12 @@ export interface operations {
     createRun: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1421,7 +1748,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Run identifier. */
                 run_id: components["parameters"]["RunId"];
             };
             cookie?: never;
@@ -1446,7 +1775,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Run identifier. */
                 run_id: components["parameters"]["RunId"];
             };
             cookie?: never;
@@ -1471,12 +1802,14 @@ export interface operations {
             query?: {
                 /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
                 cursor?: components["parameters"]["Cursor"];
-                /** @description Max items per page. Backend caps may apply. */
+                /** @description Maximum items per page. Service caps may apply. */
                 limit?: components["parameters"]["Limit"];
+                /** @description Return only sessions in this lifecycle state. */
                 state?: components["schemas"]["SessionState"];
             };
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1501,6 +1834,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1530,7 +1864,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
@@ -1555,7 +1891,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
@@ -1580,7 +1918,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
@@ -1613,14 +1953,18 @@ export interface operations {
                 rows?: number;
                 /** @description Single executable path to launch (no shell-splitting). Defaults to the login shell. */
                 command?: string;
-                /** @description E2B-style persistence. When true (default), disconnecting keeps the shell running so the same session_id can RECONNECT to it (recent scrollback is replayed); when false the shell is torn down on disconnect. {"type":"kill"} or the server idle TTL destroy a persistent shell. */
+                /** @description When true (default), disconnecting keeps the shell running so the same session_id can reconnect to it and receive recent scrollback. When false, the shell is terminated on disconnect. A kill control message or the configured idle TTL terminates a persistent shell. */
                 persist?: boolean;
+                /** @description Destroy the PTY after this many seconds without terminal input or output. Omit or set to zero to disable this PTY-specific idle limit. */
+                cancel_ttl_secs?: number;
                 /** @description Browser auth: a short-lived ticket from POST .../pty-ticket, used in place of the Authorization header (which a browser WebSocket cannot set). */
                 ticket?: string;
             };
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
@@ -1646,7 +1990,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
             };
             cookie?: never;
@@ -1673,12 +2019,14 @@ export interface operations {
             query?: {
                 /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
                 cursor?: components["parameters"]["Cursor"];
-                /** @description Max items per page. Backend caps may apply. */
+                /** @description Maximum items per page. Service caps may apply. */
                 limit?: components["parameters"]["Limit"];
+                /** @description Return only mounts for this filesystem. */
                 filesystem_id?: string;
             };
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1702,6 +2050,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1731,7 +2080,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
+                /** @description Filesystem mount identifier. */
                 sync_id: components["parameters"]["SyncId"];
             };
             cookie?: never;
@@ -1755,6 +2106,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description VM identifier. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1784,8 +2136,9 @@ export interface operations {
             query?: {
                 /** @description Opaque pagination cursor returned by the previous page's `next_cursor`. */
                 cursor?: components["parameters"]["Cursor"];
-                /** @description Max items per page. Backend caps may apply. */
+                /** @description Maximum items per page. Service caps may apply. */
                 limit?: components["parameters"]["Limit"];
+                /** @description Return only filesystems whose names begin with this value. */
                 name_prefix?: string;
             };
             header?: never;
@@ -1837,6 +2190,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Filesystem identifier. */
                 filesystem_id: components["parameters"]["FilesystemId"];
             };
             cookie?: never;
@@ -1860,6 +2214,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Filesystem identifier. */
                 filesystem_id: components["parameters"]["FilesystemId"];
             };
             cookie?: never;

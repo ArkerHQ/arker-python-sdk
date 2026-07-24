@@ -149,12 +149,15 @@ async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      network: { reachable: false },
+      network: { ssh_public_keys: [] },
       resources: { vcpu: 4, memory_mib: 8192, disk_mib: 10240 },
     },
   );
 
-  const vm = await client(fetch).fork("macos-full");
+  const vm = await client(fetch).fork("macos-full", {
+    ssh_public_keys: ["ssh-ed25519 AAAA test@example"],
+    policies: { policies: [] },
+  });
 
   assert.equal(vm.id, "vm_macos");
   const body = JSON.parse(fetch.calls[0]!.body!);
@@ -162,6 +165,10 @@ async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
   assert.equal(body.source_org_id, "ArkerHQ");
   assert.equal(body.disk, true);
   assert.equal(body.platforms, undefined);
+  assert.deepEqual(body.ssh_public_keys, ["ssh-ed25519 AAAA test@example"]);
+  assert.deepEqual(body.policies, { policies: [] });
+  assert.equal(body.network, undefined);
+  assert.equal(body.egress, undefined);
 }
 
 async function testRemovedNetworkInputsFailBeforeRequests(): Promise<void> {
@@ -414,7 +421,7 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
         state: "idle",
         sessions: [],
         tunnels: [],
-        network: { type: "open" },
+        network: { ssh_public_keys: [] },
         max_vcpus: 8,
         max_memory_mib: 32768,
         min_memory_mib: 512,
@@ -433,7 +440,7 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
   assert.equal(result.vms[0]!.max_vcpus, 8);
   assert.equal(result.vms[0]!.max_memory_mib, 32768);
   assert.equal(result.vms[0]!.min_memory_mib, 512);
-  assert.deepEqual(result.vms[0]!.network, { type: "open" });
+  assert.deepEqual(result.vms[0]!.network, { ssh_public_keys: [] });
 }
 
 async function testForkSendsDurableFlag(): Promise<void> {

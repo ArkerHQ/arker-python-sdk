@@ -43,10 +43,7 @@ const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
   "unavailable",
-  "backend_unavailable",
-  "api_worker_unavailable",
   "bad_gateway",
-  "network_error",
   "stale_route",
 ]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
@@ -105,11 +102,11 @@ export interface ArkerOptions {
 export type VmState = ApiSchema<"VmState">;
 export type SessionState = ApiSchema<"SessionState">;
 export type RunState = ApiSchema<"RunState">;
-export type ResourceKind = ApiSchema<"ResourceKind">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
 
 // ── Core resources ─────────────────────────────────────────────────
-export type NetworkPolicy = ApiSchema<"NetworkPolicy">;
+/** @deprecated Network topology is no longer a public policy input. */
+export type NetworkPolicy = { type: "open" } | { type: "blocked" };
 /** @deprecated Fork-time egress inputs were replaced by `policies`. */
 export type NetworkPolicyInput =
   | boolean
@@ -119,7 +116,6 @@ export type NetworkPolicyInput =
   | "false"
   | "none"
   | NetworkPolicy;
-// ── ARK-125 egress policy (fine-grained outbound rules) ────────────
 export type PolicyDoc = ApiSchema<"PolicyDoc">;
 export type PolicyEntry = ApiSchema<"PolicyEntry">;
 export type PolicyMatch = ApiSchema<"PolicyMatch">;
@@ -153,8 +149,6 @@ export type Sync = ApiSchema<"Sync">;
 export type ListSyncsResponse = ApiSchema<"ListSyncsResponse">;
 export type DeleteSyncResponse = ApiSchema<"DeleteSyncResponse">;
 export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
-export type SyncReadRequest = ApiSchema<"SyncReadRequest">;
-export type SyncWriteRequest = ApiSchema<"SyncWriteRequest">;
 export type SyncReadOperationRequest = ApiSchema<"SyncReadOperationRequest">;
 export type SyncWriteOperationRequest = ApiSchema<"SyncWriteOperationRequest">;
 export type SyncWriteEntry = ApiSchema<"SyncWriteEntry">;
@@ -190,7 +184,21 @@ export type InboundPortRequest = {
 export type NetworkRequest = {
   inbound?: { ports?: Record<string, InboundPortRequest> } | null;
 };
-export type NetworkStatus = ApiSchema<"NetworkStatus">;
+/** @deprecated Network status is represented by the VM's policy document. */
+export type NetworkStatus = {
+  inbound: {
+    ports: Record<
+      string,
+      {
+        requested: string;
+        observed: string;
+        effective: string;
+        protocol: string;
+        url?: string | null;
+      }
+    >;
+  };
+};
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
@@ -229,13 +237,6 @@ export type ErrorResponse = ApiSchema<"ErrorResponse">;
 export type SessionInfo = Session;
 /** @deprecated Use `Run`. */
 export type RunStatusResponse = Run;
-/** @deprecated Use `NetworkRequest`. */
-export type RunNetworkRequest = NetworkRequest;
-/** @deprecated Use `NetworkStatus`. */
-export type RunNetworkStatus = NetworkStatus;
-/** @deprecated Use `InboundPortRequest`. */
-export type RunInboundPortRequest = InboundPortRequest;
-
 // ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
   type: "completed";
@@ -535,9 +536,7 @@ export class Arker {
             disk_mib: legacy.disk_mib ?? null,
           }
         : null);
-    const body: ForkRequest = {
-      source_vm_id: src.sourceVmId ?? null,
-      source_vm_name: src.sourceVmName ?? null,
+    const requestOptions = {
       source_org_id: sourceOrgId ?? null,
       name: src.name ?? null,
       description: src.description ?? null,
@@ -547,10 +546,20 @@ export class Arker {
       durable: src.durable ?? null,
       platforms: src.platforms,
       resources,
-      // ARK-125: omit to inherit the source's policy; pass a doc to override
-      // (an empty `{ policies: [] }` clears to allow-all, NOT inherit).
+      // Omit to inherit the source's policy; pass a document to replace it.
       policies: src.policies ?? null,
     };
+    const body: ForkRequest = src.sourceVmId
+      ? {
+          ...requestOptions,
+          source_vm_id: src.sourceVmId,
+          source_vm_name: null,
+        }
+      : {
+          ...requestOptions,
+          source_vm_id: null,
+          source_vm_name: src.sourceVmName!,
+        };
     // Forks that target a burst-pool name in the Arker org go to the
     // burst backend (ps-lambda); everything else to arkerd.
     const useBurst =
@@ -693,7 +702,7 @@ export class Arker {
           continue;
         }
         const message = error instanceof Error ? error.message : String(error);
-        throw new ArkerError("network_error", message, 0);
+        throw new ArkerError("unavailable", message, 0);
       }
     }
 
@@ -892,7 +901,7 @@ export class VM {
         if (error instanceof ArkerError) throw error;
         if (attempt === attempts - 1) {
           const message = error instanceof Error ? error.message : String(error);
-          throw new ArkerError("network_error", `upload PUT failed: ${message}`, 0);
+          throw new ArkerError("unavailable", `upload PUT failed: ${message}`, 0);
         }
       }
       await sleep(this._client._retryDelay(attempt));
@@ -959,20 +968,16 @@ export class VM {
     return this._client._request("DELETE", vmPath(this.id), undefined, this.baseUrl);
   }
 
-  // ── ARK-125 egress policy ────────────────────────────────────────
   /**
-   * Read this VM's outbound egress policy document (ARK-125). Returns an
-   * empty doc (`{}`) when no policy is set.
+   * Read this VM's network policy document.
    */
   async getPolicies(): Promise<PolicyDoc> {
     return this._client._request<PolicyDoc>("GET", `${vmPath(this.id)}/policies`, undefined, this.baseUrl);
   }
 
   /**
-   * Replace this VM's outbound egress policy with `doc` — an ordered,
-   * first-match-wins rule list. An empty doc (`{}` or `{ policies: [] }`)
-   * clears the policy to allow-all. Returns the stored policy plus the
-   * domains it escalates to MITM and any degrade warnings.
+   * Replace this VM's network policy with `doc`. The response is the stored
+   * policy document, including response-only hostname and warning fields.
    *
    *     await vm.setPolicies({
    *       policies: [

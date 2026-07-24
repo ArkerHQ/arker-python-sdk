@@ -176,7 +176,8 @@ def test_public_wire_types_are_generated() -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert {
-        "ForkRequest",
+        "ForkRequest1",
+        "ForkRequest2",
         "ListFilesystemsParameters",
         "ListOrgRunsParameters",
         "ListRunsParameters",
@@ -190,6 +191,22 @@ def test_public_wire_types_are_generated() -> None:
         "SyncReadOperationRequest",
         "SyncWriteOperationRequest",
     }.issubset(called_python_models)
+
+
+def test_sdk_runtime_uses_only_current_public_error_codes() -> None:
+    retired_codes = {
+        "api_worker_unavailable",
+        "backend_unavailable",
+        "network_error",
+        "routing_unavailable",
+        "temporarily_unavailable",
+    }
+    for relative_path in (
+        Path("python/src/arker/computer.py"),
+        Path("typescript/src/index.ts"),
+    ):
+        source = (REPO_ROOT / relative_path).read_text()
+        assert retired_codes.isdisjoint(source.split('"')), relative_path
 
 
 def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
@@ -265,6 +282,7 @@ if __name__ == "__main__":
         test_source_metadata_matches_contract,
         test_generation_is_deterministic_for_both_languages,
         test_public_wire_types_are_generated,
+        test_sdk_runtime_uses_only_current_public_error_codes,
         test_sync_from_local_contract_regenerates_all_managed_files,
         test_check_detects_generated_drift,
         test_pull_request_ci_checks_all_generated_surfaces,
