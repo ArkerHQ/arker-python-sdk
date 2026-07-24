@@ -640,6 +640,8 @@ export interface components {
             durable?: boolean | null;
             /** @description Preferred compute platforms for a public template, such as `["graviton3"]`. Supply multiple values to allow any listed platform. Omit or pass an empty list for automatic selection. A fork of an existing VM inherits its source platform. */
             platforms?: string[] | null;
+            /** @description State to inherit from the source VM. Omit this field or pass `["disk", "memory"]` for a warm fork that resumes the source's filesystem and running processes. Pass `["disk"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`. */
+            layers?: ("disk" | "memory")[] | null;
             /** @description Network policy for the new VM. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
             /** @description Resource shape for the new VM. */
@@ -1064,8 +1066,40 @@ export interface components {
             /** @description Files to write in this sync operation. */
             writes: components["schemas"]["SyncWriteEntry"][];
         };
-        SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"];
-        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"];
+        SyncManifestOperationRequest: {
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
+            op: "manifest";
+            /** @description Non-root directory inside the VM to list recursively. */
+            path: string;
+        };
+        ManifestEntry: {
+            /** @description File path relative to the requested manifest root, without a leading slash. */
+            path: string;
+            /** @description File size in bytes. */
+            size: number;
+            /** @description Unix file mode reported by the VM filesystem. */
+            mode: number;
+            /** @description Lowercase hexadecimal digest of the file content using the response's `hash_algo`. */
+            hash: string;
+        };
+        SyncManifestResponse: {
+            /** @description Normalized absolute directory represented by this manifest. */
+            root: string;
+            /**
+             * @description Hash algorithm used by every `entries[].hash` value.
+             * @constant
+             */
+            hash_algo: "sha256";
+            /** @description Regular files found recursively under `root`. */
+            entries: components["schemas"]["ManifestEntry"][];
+            /** @description True when the result reached the entry limit. Request manifests for narrower subdirectories to retrieve the remaining files. */
+            truncated: boolean;
+        };
+        SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"] | components["schemas"]["SyncManifestOperationRequest"];
+        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncManifestResponse"];
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
             /** @description Path inside the VM. */

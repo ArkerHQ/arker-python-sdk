@@ -314,6 +314,28 @@ class SyncReadOperationRequest:
 
 
 @dataclass(frozen=True)
+class SyncManifestOperationRequest:
+    op: Literal['manifest']
+    path: str
+
+
+@dataclass(frozen=True)
+class ManifestEntry:
+    path: str
+    size: int
+    mode: int
+    hash: str
+
+
+@dataclass(frozen=True)
+class SyncManifestResponse:
+    root: str
+    hash_algo: Literal['sha256']
+    entries: list[ManifestEntry]
+    truncated: bool
+
+
+@dataclass(frozen=True)
 class SyncChunkWrite:
     path: str
     size: int
@@ -707,7 +729,9 @@ class SyncWriteOperationRequest:
     writes: list[SyncWriteEntry]
 
 
-SyncRequest: TypeAlias = SyncReadOperationRequest | SyncWriteOperationRequest
+SyncRequest: TypeAlias = (
+    SyncReadOperationRequest | SyncWriteOperationRequest | SyncManifestOperationRequest
+)
 
 
 SyncWriteResult: TypeAlias = (
@@ -741,6 +765,7 @@ class ForkRequest1:
     disk: bool | None = None
     durable: bool | None = None
     platforms: list[str] | None = None
+    layers: list[Literal['disk', 'memory']] | None = None
     policies: PolicyWriteRequest | None = None
     resources: VmResources | None = None
 
@@ -756,6 +781,7 @@ class ForkRequest2:
     disk: bool | None = None
     durable: bool | None = None
     platforms: list[str] | None = None
+    layers: list[Literal['disk', 'memory']] | None = None
     policies: PolicyWriteRequest | None = None
     resources: VmResources | None = None
 
@@ -795,7 +821,7 @@ class PatchVmRequest:
     policies: PolicyWriteRequest | None = None
 
 
-SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse
+SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse | SyncManifestResponse
 
 from typing import TypedDict
 

@@ -2075,6 +2075,21 @@
               "type": "string"
             }
           },
+          "layers": {
+            "description": "State to inherit from the source VM. Omit this field or pass `[\"disk\", \"memory\"]` for a warm fork that resumes the source's filesystem and running processes. Pass `[\"disk\"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "disk",
+                "memory"
+              ]
+            }
+          },
           "policies": {
             "description": "Network policy for the new VM. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`.",
             "anyOf": [
@@ -3320,6 +3335,92 @@
           }
         }
       },
+      "SyncManifestOperationRequest": {
+        "type": "object",
+        "required": [
+          "op",
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "description": "Sync operation performed.",
+            "type": "string",
+            "const": "manifest"
+          },
+          "path": {
+            "description": "Non-root directory inside the VM to list recursively.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ManifestEntry": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "mode",
+          "hash"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "File path relative to the requested manifest root, without a leading slash.",
+            "type": "string",
+            "minLength": 1
+          },
+          "size": {
+            "description": "File size in bytes.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "mode": {
+            "description": "Unix file mode reported by the VM filesystem.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "hash": {
+            "description": "Lowercase hexadecimal digest of the file content using the response's `hash_algo`.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "SyncManifestResponse": {
+        "type": "object",
+        "required": [
+          "root",
+          "hash_algo",
+          "entries",
+          "truncated"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "root": {
+            "description": "Normalized absolute directory represented by this manifest.",
+            "type": "string"
+          },
+          "hash_algo": {
+            "description": "Hash algorithm used by every `entries[].hash` value.",
+            "type": "string",
+            "const": "sha256"
+          },
+          "entries": {
+            "description": "Regular files found recursively under `root`.",
+            "type": "array",
+            "maxItems": 50000,
+            "items": {
+              "$ref": "#/components/schemas/ManifestEntry"
+            }
+          },
+          "truncated": {
+            "description": "True when the result reached the entry limit. Request manifests for narrower subdirectories to retrieve the remaining files.",
+            "type": "boolean"
+          }
+        }
+      },
       "SyncRequest": {
         "oneOf": [
           {
@@ -3327,6 +3428,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncWriteOperationRequest"
+          },
+          {
+            "$ref": "#/components/schemas/SyncManifestOperationRequest"
           }
         ]
       },
@@ -3337,6 +3441,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncWriteResponse"
+          },
+          {
+            "$ref": "#/components/schemas/SyncManifestResponse"
           }
         ]
       },
