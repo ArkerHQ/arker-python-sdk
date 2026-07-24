@@ -43,10 +43,7 @@ const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
   "unavailable",
-  "backend_unavailable",
-  "api_worker_unavailable",
   "bad_gateway",
-  "network_error",
   "stale_route",
 ]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
@@ -652,7 +649,7 @@ export class Arker {
           continue;
         }
         const message = error instanceof Error ? error.message : String(error);
-        throw new ArkerError("network_error", message, 0);
+        throw new ArkerError("unavailable", message, 0);
       }
     }
 
@@ -849,7 +846,7 @@ export class VM {
         if (error instanceof ArkerError) throw error;
         if (attempt === attempts - 1) {
           const message = error instanceof Error ? error.message : String(error);
-          throw new ArkerError("network_error", `upload PUT failed: ${message}`, 0);
+          throw new ArkerError("unavailable", `upload PUT failed: ${message}`, 0);
         }
       }
       await sleep(this._client._retryDelay(attempt));

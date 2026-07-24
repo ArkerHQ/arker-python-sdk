@@ -97,10 +97,7 @@ PRESIGNED_PUT_TIMEOUT_S = 600
 RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {
     "unavailable",
-    "backend_unavailable",
-    "api_worker_unavailable",
     "bad_gateway",
-    "network_error",
     "stale_route",
 }
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
@@ -508,7 +505,7 @@ class Arker:
                 if attempt < self._retry.attempts - 1:
                     time.sleep(self._retry_delay(attempt))
                     continue
-                raise ArkerError("network_error", str(error), 0) from error
+                raise ArkerError("unavailable", str(error), 0) from error
 
             text = raw.decode("utf-8", "replace")
             payload = _parse_json(text)
@@ -770,7 +767,7 @@ class VM:
                 response = _http_client.put(url, content=data, timeout=PRESIGNED_PUT_TIMEOUT_S)
             except httpx.RequestError as error:
                 if attempt == self._client._retry.attempts - 1:
-                    raise ArkerError("network_error", f"upload PUT failed: {error}", 0) from error
+                    raise ArkerError("unavailable", f"upload PUT failed: {error}", 0) from error
                 time.sleep(self._client._retry_delay(attempt))
                 continue
             if response.status_code < 400:
@@ -1048,9 +1045,9 @@ class Pty:
 
         if not self._open.wait(timeout=connect_timeout):
             self.close()
-            raise ArkerError("network_error", "PTY WebSocket failed to open (timeout)", 0)
+            raise ArkerError("unavailable", "PTY WebSocket failed to open (timeout)", 0)
         if self._open_error is not None:
-            raise ArkerError("network_error", f"PTY WebSocket failed to open: {self._open_error}", 0)
+            raise ArkerError("unavailable", f"PTY WebSocket failed to open: {self._open_error}", 0)
 
     # ── Listener registration ──────────────────────────────────────────
     def on_data(self, listener: Callable[[bytes], None]) -> Callable[[], None]:

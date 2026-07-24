@@ -28,14 +28,10 @@ ErrorCode: TypeAlias = Literal[
     'conflict',
     'method_not_allowed',
     'payload_too_large',
-    'not_implemented',
     'resource_pressure',
     'internal',
     'unavailable',
-    'backend_unavailable',
-    'api_worker_unavailable',
     'bad_gateway',
-    'network_error',
     'stale_route',
     'unrecoverable',
 ]
@@ -65,6 +61,9 @@ SessionState: TypeAlias = VmState
 
 
 RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
+
+
+Provider: TypeAlias = Literal['aws', 'azure', 'runpod', 'mac']
 
 
 Port: TypeAlias = int
@@ -119,7 +118,7 @@ class Session:
     vm_name: str | None = None
     source_org_id: str | None = None
     region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    provider: Provider | None = None
 
 
 @dataclass(frozen=True)
@@ -191,7 +190,7 @@ class Run:
     vm_name: str | None = None
     source_org_id: str | None = None
     region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    provider: Provider | None = None
 
 
 @dataclass(frozen=True)
@@ -208,7 +207,7 @@ class RunSummary:
     vm_name: str | None = None
     source_org_id: str | None = None
     region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    provider: Provider | None = None
 
 
 @dataclass(frozen=True)
@@ -380,7 +379,7 @@ class Filesystem:
     created_at: str
     size_bytes: int | None = None
     region: str | None = 'us-west-2'
-    provider: Literal['aws', 'gcp', 'azure'] | None = 'aws'
+    provider: Provider | None = 'aws'
 
 
 @dataclass(frozen=True)
@@ -429,7 +428,7 @@ class ListVmsParameters:
     cursor: str | None = None
     limit: int | None = None
     region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    provider: Provider | None = None
     org_id: str | None = None
     public: bool | None = None
     state: VmState | None = None
@@ -442,7 +441,7 @@ class ListOrgRunsParameters:
     vm: str | None = None
     vms: str | None = None
     region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    provider: Provider | None = None
     search: str | None = None
     limit: int | None = None
     offset: int | None = None
@@ -631,7 +630,7 @@ class Vm:
     root_source_vm_id: str | None = None
     root_source_vm_name: str | None = None
     region: str | None = None
-    provider: Literal['aws', 'gcp', 'azure'] | None = None
+    provider: Provider | None = None
     started_at: str | None = None
     max_vcpus: int | None = None
     min_vcpus: int | None = None
@@ -714,6 +713,12 @@ SyncWriteResult: TypeAlias = (
 
 
 @dataclass(frozen=True)
+class PolicyWriteRequest:
+    policies: list[PolicyEntry] | None = None
+    secrets: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
 class PolicyDoc:
     policies: list[PolicyEntry] | None = None
     secrets: dict[str, str] | None = None
@@ -733,7 +738,7 @@ class ForkRequest1:
     disk: bool | None = None
     durable: bool | None = None
     platforms: list[str] | None = None
-    policies: PolicyDoc | None = None
+    policies: PolicyWriteRequest | None = None
     resources: VmResources | None = None
 
 
@@ -748,7 +753,7 @@ class ForkRequest2:
     disk: bool | None = None
     durable: bool | None = None
     platforms: list[str] | None = None
-    policies: PolicyDoc | None = None
+    policies: PolicyWriteRequest | None = None
     resources: VmResources | None = None
 
 
@@ -770,7 +775,7 @@ class RunRequest:
     acquire: str | None = None
     release: str | None = None
     signal: Literal['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'] | None = None
-    policies: PolicyDoc | None = None
+    policies: PolicyWriteRequest | None = None
 
 
 @dataclass(frozen=True)
@@ -784,7 +789,7 @@ class SyncWriteResponse:
 class PatchVmRequest:
     resources: VmResources | None = None
     network: NetworkInput | None = None
-    policies: PolicyDoc | None = None
+    policies: PolicyWriteRequest | None = None
 
 
 SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse
@@ -918,7 +923,7 @@ class PutVmPoliciesOperation(TypedDict):
     method: Literal['PUT']
     path: Literal['/v1/vms/{id}/policies']
     parameters: PutVmPoliciesParameters
-    request: PolicyDoc
+    request: PolicyWriteRequest
     success: PolicyDoc
     errors: ErrorResponse
 

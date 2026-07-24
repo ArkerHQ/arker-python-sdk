@@ -8,7 +8,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "servers": [
     {
-      "url": "https://aws-us-west-2.arker.ai/api"
+      "url": "https://arker.ai/api"
     }
   ],
   "security": [
@@ -50,7 +50,6 @@
       "description": "Create shared filesystems and mount them into VMs."
     }
   ],
-  "x-arker-source": "arker-app/shared/arker-api-contract",
   "paths": {
     "/v1/health": {
       "get": {
@@ -85,7 +84,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Public health/readiness probe. The response body is intentionally minimal and does not expose host, region, release, or golden-image internals."
+        "description": "Public health and readiness probe. Returns service status and server time."
       }
     },
     "/v1/fork": {
@@ -148,7 +147,7 @@
             "in": "query",
             "name": "region",
             "required": false,
-            "description": "Narrow to a single backend region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region.",
+            "description": "Narrow to a single region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region.",
             "schema": {
               "type": "string"
             }
@@ -159,12 +158,7 @@
             "required": false,
             "description": "Narrow results to a cloud provider.",
             "schema": {
-              "type": "string",
-              "enum": [
-                "aws",
-                "gcp",
-                "azure"
-              ]
+              "$ref": "#/components/schemas/Provider"
             }
           },
           {
@@ -226,7 +220,8 @@
             "required": false,
             "description": "Unix epoch seconds; include runs at or after this time.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0
             }
           },
           {
@@ -235,7 +230,8 @@
             "required": false,
             "description": "Unix epoch seconds; include runs before this time.",
             "schema": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0
             }
           },
           {
@@ -260,7 +256,7 @@
             "in": "query",
             "name": "region",
             "required": false,
-            "description": "Backend region filter.",
+            "description": "Region filter.",
             "schema": {
               "type": "string"
             }
@@ -271,12 +267,7 @@
             "required": false,
             "description": "Cloud provider filter.",
             "schema": {
-              "type": "string",
-              "enum": [
-                "aws",
-                "gcp",
-                "azure"
-              ]
+              "$ref": "#/components/schemas/Provider"
             }
           },
           {
@@ -292,10 +283,11 @@
             "in": "query",
             "name": "limit",
             "required": false,
-            "description": "Maximum number of rows to return.",
+            "description": "Maximum number of rows to return. The maximum is 200 normally and 20,000 when `lite=true`.",
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 1,
+              "maximum": 20000
             }
           },
           {
@@ -312,7 +304,7 @@
             "in": "query",
             "name": "lite",
             "required": false,
-            "description": "When true, omit large input/output previews where supported by the backend.",
+            "description": "When true, omit large input and output previews where supported.",
             "schema": {
               "type": "boolean"
             }
@@ -556,14 +548,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PolicyDoc"
+                "$ref": "#/components/schemas/PolicyWriteRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Stored policy, plus the domains it escalates to MITM and any degrade warnings.",
+            "description": "Stored policy, plus request-level enforcement domains and any non-fatal notices.",
             "content": {
               "application/json": {
                 "schema": {
@@ -626,7 +618,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` on backends that do not support them."
+        "description": "Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` when they are unavailable in the selected region or provider."
       },
       "get": {
         "operationId": "listRuns",
@@ -646,6 +638,7 @@
             "in": "query",
             "name": "state",
             "required": false,
+            "description": "Return only runs in this lifecycle state.",
             "schema": {
               "$ref": "#/components/schemas/RunState"
             }
@@ -654,24 +647,30 @@
             "in": "query",
             "name": "started_after",
             "required": false,
+            "description": "Return runs started at or after this RFC 3339 timestamp.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "date-time"
             }
           },
           {
             "in": "query",
             "name": "started_before",
             "required": false,
+            "description": "Return runs started at or before this RFC 3339 timestamp.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "date-time"
             }
           },
           {
             "in": "query",
             "name": "completed_after",
             "required": false,
+            "description": "Return runs completed at or after this RFC 3339 timestamp.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],
@@ -778,6 +777,7 @@
             "in": "query",
             "name": "state",
             "required": false,
+            "description": "Return only sessions in this lifecycle state.",
             "schema": {
               "$ref": "#/components/schemas/SessionState"
             }
@@ -1148,6 +1148,7 @@
             "in": "query",
             "name": "filesystem_id",
             "required": false,
+            "description": "Return only mounts for this filesystem.",
             "schema": {
               "type": "string"
             }
@@ -1268,6 +1269,7 @@
             "in": "query",
             "name": "name_prefix",
             "required": false,
+            "description": "Return only filesystems whose names begin with this value.",
             "schema": {
               "type": "string"
             }
@@ -1411,6 +1413,7 @@
         "name": "id",
         "in": "path",
         "required": true,
+        "description": "VM identifier.",
         "schema": {
           "type": "string"
         }
@@ -1419,6 +1422,7 @@
         "name": "run_id",
         "in": "path",
         "required": true,
+        "description": "Run identifier.",
         "schema": {
           "type": "string"
         }
@@ -1427,6 +1431,7 @@
         "name": "sid",
         "in": "path",
         "required": true,
+        "description": "Session identifier.",
         "schema": {
           "type": "string"
         }
@@ -1435,6 +1440,7 @@
         "name": "sync_id",
         "in": "path",
         "required": true,
+        "description": "Filesystem mount identifier.",
         "schema": {
           "type": "string"
         }
@@ -1443,6 +1449,7 @@
         "name": "filesystem_id",
         "in": "path",
         "required": true,
+        "description": "Filesystem identifier.",
         "schema": {
           "type": "string"
         }
@@ -1463,7 +1470,7 @@
         "name": "limit",
         "in": "query",
         "required": false,
-        "description": "Max items per page. Backend caps may apply.",
+        "description": "Maximum items per page. Service caps may apply.",
         "schema": {
           "type": "integer",
           "minimum": 1,
@@ -1507,7 +1514,7 @@
         }
       },
       "UnsupportedOperation": {
-        "description": "The request is valid, but this backend does not support the requested operation or option.",
+        "description": "The request is valid, but the requested operation or option is unavailable in the selected region or provider.",
         "content": {
           "application/json": {
             "schema": {
@@ -1515,11 +1522,11 @@
             },
             "examples": {
               "unsupportedOperation": {
-                "summary": "Unsupported backend feature",
+                "summary": "Unavailable feature",
                 "value": {
                   "error": {
                     "code": "unsupported_operation",
-                    "message": "background runs are not supported on this backend",
+                    "message": "background runs are unavailable in the selected region",
                     "timestamp": "2026-07-21T00:00:00Z"
                   }
                 }
@@ -1566,18 +1573,14 @@
           "conflict",
           "method_not_allowed",
           "payload_too_large",
-          "not_implemented",
           "resource_pressure",
           "internal",
           "unavailable",
-          "backend_unavailable",
-          "api_worker_unavailable",
           "bad_gateway",
-          "network_error",
           "stale_route",
           "unrecoverable"
         ],
-        "description": "Stable machine-readable error code. `unsupported_operation` means the backend doesn't implement the requested optional feature. `payment_required` means billing setup or payment is required before new compute can start."
+        "description": "Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start."
       },
       "ErrorBody": {
         "type": "object",
@@ -1607,7 +1610,7 @@
           },
           "operation": {
             "type": "string",
-            "description": "Operation that failed, when the backend can identify it safely."
+            "description": "Operation that failed, when the service can identify it safely."
           },
           "runtime": {
             "type": "string",
@@ -1654,15 +1657,26 @@
           "failed",
           "cancelled"
         ],
-        "description": "Lifecycle state for a Run. `running` = command in flight.\n`completed` = the command ran to completion; `exit_code` conveys\nsuccess (0) or a non-zero program exit (a non-zero exit is still\n`completed`). `failed` = the platform could not run or finish the\ncommand (host died, evicted mid-run, exec error); `fail_reason`\nexplains why, distinct from the program's `stderr`. `cancelled` =\ncancelled by the client.\n"
+        "description": "Lifecycle state for a run. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run."
       },
-      "PolicyDoc": {
+      "Provider": {
+        "type": "string",
+        "enum": [
+          "aws",
+          "azure",
+          "runpod",
+          "mac"
+        ],
+        "description": "Infrastructure provider currently hosting the resource."
+      },
+      "PolicyWriteRequest": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A VM's network policy document: an ordered, first-match-wins rule list for outbound and inbound traffic. An empty `policies` list uses the default posture: allow outbound traffic and require Arker authentication for inbound traffic. When a non-empty policy has no matching rule for a direction, traffic in that direction is denied. Use an explicit catch-all allow rule to express default-allow behavior.",
+        "description": "A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result.",
         "properties": {
           "policies": {
             "type": "array",
+            "description": "Ordered network policy rules. An empty list selects the default posture: allow outbound traffic and require Arker authentication for inbound traffic.",
             "items": {
               "$ref": "#/components/schemas/PolicyEntry"
             }
@@ -1672,7 +1686,28 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Named secrets referenced by `${secret:NAME}` in a `rewrite` action's host/path/header/body values. Encrypted at rest with the rest of the document and REDACTED (masked with `***`) whenever the doc is echoed back on GET — so a GET response is NOT round-trippable back into a PUT without re-supplying real secret values."
+            "description": "Named secret values referenced by `${secret:NAME}` in rewrite actions. Values are encrypted at rest and masked in subsequent policy responses."
+          }
+        }
+      },
+      "PolicyDoc": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A VM's current network policy and its derived inbound exposure metadata.",
+        "properties": {
+          "policies": {
+            "type": "array",
+            "description": "Ordered network policy rules. An empty list selects the default posture: allow outbound traffic and require Arker authentication for inbound traffic.",
+            "items": {
+              "$ref": "#/components/schemas/PolicyEntry"
+            }
+          },
+          "secrets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Named secrets referenced by `${secret:NAME}` in rewrite actions. Stored values are represented as `***`; supply the original value when replacing a policy that uses it."
           },
           "hostname": {
             "type": [
@@ -1680,7 +1715,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Read-only (response-only). The single per-VM base hostname on the .app customer plane (<vm>.<region>.arker.app), present when the data-plane domain is configured — its presence is what signals the VM is reachable inbound. Reach a guest desktop at https://<hostname>:6080/. (The control plane — the API and SSH — stays on .ai.) Ignored on write."
+            "description": "The VM's inbound application hostname when inbound access is available."
           },
           "mitm_domains": {
             "type": "array",
@@ -1688,7 +1723,7 @@
               "type": "string"
             },
             "readOnly": true,
-            "description": "Read-only (response-only). Domains the policy escalates to the MITM proxy. Ignored on write."
+            "description": "Domains whose matching traffic is evaluated by the request-level policy engine."
           },
           "warnings": {
             "type": "array",
@@ -1696,7 +1731,7 @@
               "type": "string"
             },
             "readOnly": true,
-            "description": "Read-only (response-only). Non-fatal notes (e.g. rules degraded where the MITM data path is not active). Ignored on write."
+            "description": "Non-fatal policy application notices."
           }
         }
       },
@@ -1736,7 +1771,7 @@
       "PolicyMatch": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Match criteria: present fields AND'd; list items OR'd. `ips` and `hosts` are mutually exclusive. L4 fields = ports/ips/hosts; L7 fields = methods/paths/headers/body_contains. A rule with any L7 field is enforced at the request layer by the managed MITM proxy; where the proxy is not active for a VM the rule degrades to its host/L4 projection \u2014 allow \u2192 host-allow, deny/rewrite \u2192 fail-closed deny.",
+        "description": "Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive. Port, IP, and host rules operate at the connection layer. Method, path, header, and body rules operate at the request layer.",
         "properties": {
           "ports": {
             "type": "array",
@@ -1777,6 +1812,7 @@
             "description": "Label-boundary suffix match on the request host: `github.com` matches `api.github.com`, not `evilgithub.com`."
           },
           "methods": {
+            "description": "HTTP methods matched by this rule.",
             "type": "array",
             "items": {
               "type": "string"
@@ -1800,6 +1836,7 @@
             "description": "Header name \u2192 any-of values (names AND'd, a name's values OR'd)."
           },
           "body_contains": {
+            "description": "Substrings that must appear in the request body.",
             "type": "array",
             "items": {
               "type": "string"
@@ -1842,7 +1879,7 @@
             }
           }
         ],
-        "description": "allow / deny, a mutating object `{ rewrite?, gate? }`, or `{ scaling: { suspend? } }`. Mutating and scaling actions need the MITM data-path."
+        "description": "Allow or deny matching traffic, rewrite a matching request, require an authorization gate, or suspend the VM while a matching request is in flight."
       },
       "ScalingAction": {
         "type": "object",
@@ -1862,9 +1899,11 @@
         "description": "Mutate-and-forward. Host/path/header/body values support request-time `$`-token interpolation: `$domain`, `$path`, `$method`, `$vm_id`, `$body` (the request body as received, also `${\u2026}`-braced), and `$$` for a literal `$`. Unknown/unresolved tokens pass through unchanged.",
         "properties": {
           "host": {
+            "description": "Replacement request host.",
             "type": "string"
           },
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "headers": {
@@ -1875,6 +1914,7 @@
             "description": "Merge-set these request headers (not replace-all)."
           },
           "remove_headers": {
+            "description": "Request header names to remove before forwarding.",
             "type": "array",
             "items": {
               "type": "string"
@@ -1912,7 +1952,7 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Request headers (values interpolated). A stored credential (e.g. authorization) is encrypted at rest and REDACTED on policy read-back."
+            "description": "Request headers with interpolated values. Stored credentials are encrypted at rest and masked in policy responses."
           },
           "body": {
             "description": "JSON request body; string leaves are interpolated and JSON-escaped. Absent = no body."
@@ -1978,14 +2018,14 @@
               "string",
               "null"
             ],
-            "description": "VM name within an org. Defaults `source_org_id` to the caller's org. A different org must be either the Arker org (for public goldens such as `ubuntu`) or one with a `public: true` VM by that name."
+            "description": "VM name within an organization. `source_org_id` defaults to the caller's organization. A VM owned by another organization must be public."
           },
           "source_org_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Optional explicit org context for `source_vm_name`. SDK auto-fills the Arker org when forking the public goldens."
+            "description": "Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates."
           },
           "name": {
             "type": [
@@ -2009,19 +2049,21 @@
             "description": "SSH public keys to authorize on the new VM as raw `authorized_keys` entries, such as `ssh-ed25519 AAAA... you@host`. The list becomes the VM's authorized-key set. Omit it or pass an empty list to create the VM with no keys; add keys later with `PATCH /v1/vms/{id}`. Configure inbound reachability through the VM's policy."
           },
           "disk": {
+            "description": "Whether the new VM should include persistent disk storage.",
             "type": [
               "boolean",
               "null"
             ]
           },
           "durable": {
+            "description": "Whether the VM should preserve recoverable state across compute interruptions.",
             "type": [
               "boolean",
               "null"
             ]
           },
           "platforms": {
-            "description": "Desired platform(s) when forking a golden, e.g. [\"graviton3\"] or a flexible set [\"graviton2\",\"graviton3\"]. The fork is scheduled onto a host serving one of these, intersected with the platforms the golden is baked for. Optional: omit (null) or pass an empty list for no preference \u2014 the router picks from the golden's available platforms, weighted by host availability. Requesting a platform the golden isn't baked for returns 400. Ignored when forking an existing VM, which inherits its parent's platform.",
+            "description": "Preferred compute platforms for a public template, such as `[\"graviton3\"]`. Supply multiple values to allow any listed platform. Omit or pass an empty list for automatic selection. A fork of an existing VM inherits its source platform.",
             "type": [
               "array",
               "null"
@@ -2034,7 +2076,7 @@
             "description": "Network policy for the new VM. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`.",
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PolicyDoc"
+                "$ref": "#/components/schemas/PolicyWriteRequest"
               },
               {
                 "type": "null"
@@ -2064,9 +2106,11 @@
         "additionalProperties": false,
         "properties": {
           "session_id": {
+            "description": "Unique session identifier.",
             "type": "string"
           },
           "session_idx": {
+            "description": "Zero-based session index within the VM.",
             "type": "integer",
             "minimum": 0,
             "default": 0
@@ -2075,6 +2119,7 @@
             "$ref": "#/components/schemas/SessionState"
           },
           "cwd": {
+            "description": "Working directory inside the VM.",
             "type": "string"
           },
           "env": {
@@ -2092,45 +2137,49 @@
             "description": "Optional environment-variable overrides for this session."
           },
           "started_at": {
+            "description": "RFC 3339 timestamp when execution or the session started.",
             "type": [
               "string",
               "null"
             ]
           },
           "vm_id": {
+            "description": "Unique VM identifier.",
             "type": [
               "string",
               "null"
             ]
           },
           "vm_name": {
+            "description": "Customer-defined VM name.",
             "type": [
               "string",
               "null"
             ]
           },
           "source_org_id": {
+            "description": "Organization that owns the source VM.",
             "type": [
               "string",
               "null"
             ]
           },
           "region": {
+            "description": "Region containing the resource or activity.",
             "type": [
               "string",
               "null"
             ]
           },
           "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "gcp",
-              "azure",
-              null
+            "description": "Infrastructure provider currently hosting the session's VM.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Provider"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -2143,12 +2192,14 @@
         "additionalProperties": false,
         "properties": {
           "sessions": {
+            "description": "Sessions associated with the VM.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Session"
             }
           },
           "next_cursor": {
+            "description": "Cursor for the next page, or null when no further page is available.",
             "type": [
               "string",
               "null"
@@ -2171,6 +2222,7 @@
         "additionalProperties": false,
         "properties": {
           "vm_id": {
+            "description": "Unique VM identifier.",
             "type": "string"
           },
           "owner_org_id": {
@@ -2178,6 +2230,7 @@
             "description": "Org that owns this VM."
           },
           "created_at": {
+            "description": "RFC 3339 timestamp when the resource was created.",
             "type": "string"
           },
           "name": {
@@ -2209,24 +2262,25 @@
             "$ref": "#/components/schemas/VmState"
           },
           "region": {
+            "description": "Region containing the resource or activity.",
             "type": [
               "string",
               "null"
             ]
           },
           "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "gcp",
-              "azure",
-              null
+            "description": "Infrastructure provider currently hosting the VM.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Provider"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "started_at": {
+            "description": "RFC 3339 timestamp when execution or the session started.",
             "type": [
               "string",
               "null"
@@ -2287,6 +2341,7 @@
             "description": "Largest disk size (MiB) accepted for this VM. `0` means nodisk."
           },
           "sessions": {
+            "description": "Sessions associated with the VM.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Session"
@@ -2306,12 +2361,14 @@
         "additionalProperties": false,
         "properties": {
           "vms": {
+            "description": "VMs visible to the authenticated caller.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Vm"
             }
           },
           "next_cursor": {
+            "description": "Cursor for the next page, or null when no further page is available.",
             "type": [
               "string",
               "null"
@@ -2327,6 +2384,7 @@
         "additionalProperties": false,
         "properties": {
           "deleted": {
+            "description": "True when the resource has been deleted.",
             "type": "boolean"
           }
         }
@@ -2339,6 +2397,7 @@
         "additionalProperties": false,
         "properties": {
           "deleted": {
+            "description": "True when the resource has been deleted.",
             "type": "boolean"
           }
         }
@@ -2375,9 +2434,11 @@
         "additionalProperties": false,
         "properties": {
           "ok": {
+            "description": "True when the operation succeeded.",
             "type": "boolean"
           },
           "session_id": {
+            "description": "Unique session identifier.",
             "type": "string"
           }
         }
@@ -2390,12 +2451,14 @@
         "additionalProperties": false,
         "properties": {
           "session_id": {
+            "description": "Unique session identifier.",
             "type": [
               "string",
               "null"
             ]
           },
           "session_idx": {
+            "description": "Zero-based session index within the VM.",
             "type": [
               "integer",
               "null"
@@ -2403,14 +2466,16 @@
             "minimum": 0
           },
           "command": {
+            "description": "Command submitted for execution.",
             "type": "string"
           },
           "background": {
+            "description": "When true, return immediately with a run ID and continue execution in the background.",
             "type": "boolean",
             "default": false
           },
           "timeout": {
-            "description": "Execution/kill bound in seconds: max wall-clock time the command runs before the host kills it. Omitted defaults to 3600 (1 hour). 0 explicitly disables the bound. Separate from the HTTP sync window — see time_to_background.",
+            "description": "Maximum command runtime in seconds. Omitted defaults to 3,600 seconds. Set to 0 to disable the runtime limit. This is separate from `time_to_background`, which controls how long the request waits for completion.",
             "type": [
               "integer",
               "null"
@@ -2426,6 +2491,7 @@
             "minimum": 0
           },
           "end_symbol": {
+            "description": "Output marker used to determine when interactive execution is complete.",
             "type": [
               "string",
               "null"
@@ -2433,6 +2499,7 @@
             "default": "auto"
           },
           "vcpu_count": {
+            "description": "Virtual CPU allocation for this run.",
             "type": [
               "integer",
               "null"
@@ -2441,6 +2508,7 @@
             "maximum": 255
           },
           "memory_mib": {
+            "description": "Memory allocation in mebibytes.",
             "type": [
               "integer",
               "null"
@@ -2448,6 +2516,7 @@
             "minimum": 0
           },
           "disk_mib": {
+            "description": "Disk allocation in mebibytes.",
             "type": [
               "integer",
               "null"
@@ -2486,7 +2555,7 @@
             "description": "Network policy applied to the VM before this run and retained afterward. A non-empty document replaces the persisted policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to use the current policy unchanged. If the policy cannot be stored and applied, the command does not run.",
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PolicyDoc"
+                "$ref": "#/components/schemas/PolicyWriteRequest"
               },
               {
                 "type": "null"
@@ -2528,6 +2597,7 @@
             "type": "string"
           },
           "stdout": {
+            "description": "Standard output produced by the command.",
             "type": "string"
           },
           "stdout_encoding": {
@@ -2536,6 +2606,7 @@
             "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
+            "description": "Standard error produced by the command.",
             "type": "string"
           },
           "stderr_encoding": {
@@ -2544,9 +2615,11 @@
             "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "exit_code": {
+            "description": "Process exit code. Null when no process completed.",
             "type": "integer"
           },
           "dispatch": {
+            "description": "Execution mode selected by the service, when reported.",
             "type": [
               "string",
               "null"
@@ -2580,6 +2653,7 @@
         "additionalProperties": false,
         "properties": {
           "run_id": {
+            "description": "Unique run identifier.",
             "type": "string"
           },
           "state": {
@@ -2603,15 +2677,18 @@
         "additionalProperties": false,
         "properties": {
           "run_id": {
+            "description": "Unique run identifier.",
             "type": "string"
           },
           "session_id": {
+            "description": "Unique session identifier.",
             "type": [
               "string",
               "null"
             ]
           },
           "command": {
+            "description": "Command submitted for execution.",
             "type": [
               "string",
               "null"
@@ -2621,15 +2698,18 @@
             "$ref": "#/components/schemas/RunState"
           },
           "started_at": {
+            "description": "RFC 3339 timestamp when execution or the session started.",
             "type": "string"
           },
           "completed_at": {
+            "description": "RFC 3339 timestamp when execution reached a terminal state.",
             "type": [
               "string",
               "null"
             ]
           },
           "exit_code": {
+            "description": "Process exit code. Null when no process completed.",
             "type": [
               "integer",
               "null"
@@ -2640,9 +2720,10 @@
               "string",
               "null"
             ],
-            "description": "System failure explanation when `state` is `failed` (e.g. \"host died:&nbsp;<id>\", \"evicted mid-run\"). Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion."
+            "description": "Client-safe platform failure explanation when `state` is `failed`. Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion."
           },
           "stdout": {
+            "description": "Standard output produced by the command.",
             "type": "string"
           },
           "stdout_encoding": {
@@ -2651,6 +2732,7 @@
             "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
+            "description": "Standard error produced by the command.",
             "type": "string"
           },
           "stderr_encoding": {
@@ -2659,44 +2741,48 @@
             "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "retry_count": {
+            "description": "Number of automatic recovery attempts for this run.",
             "type": "integer",
             "minimum": 0,
             "default": 0
           },
           "vm_id": {
+            "description": "Unique VM identifier.",
             "type": [
               "string",
               "null"
             ]
           },
           "vm_name": {
+            "description": "Customer-defined VM name.",
             "type": [
               "string",
               "null"
             ]
           },
           "source_org_id": {
+            "description": "Organization that owns the source VM.",
             "type": [
               "string",
               "null"
             ]
           },
           "region": {
+            "description": "Region containing the resource or activity.",
             "type": [
               "string",
               "null"
             ]
           },
           "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "gcp",
-              "azure",
-              null
+            "description": "Infrastructure provider that hosted the run.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Provider"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -2712,15 +2798,18 @@
         "additionalProperties": false,
         "properties": {
           "run_id": {
+            "description": "Unique run identifier.",
             "type": "string"
           },
           "session_id": {
+            "description": "Unique session identifier.",
             "type": [
               "string",
               "null"
             ]
           },
           "command": {
+            "description": "Command submitted for execution.",
             "type": [
               "string",
               "null"
@@ -2730,15 +2819,18 @@
             "$ref": "#/components/schemas/RunState"
           },
           "started_at": {
+            "description": "RFC 3339 timestamp when execution or the session started.",
             "type": "string"
           },
           "completed_at": {
+            "description": "RFC 3339 timestamp when execution reached a terminal state.",
             "type": [
               "string",
               "null"
             ]
           },
           "exit_code": {
+            "description": "Process exit code. Null when no process completed.",
             "type": [
               "integer",
               "null"
@@ -2752,39 +2844,42 @@
             "description": "System failure explanation when `state` is `failed` \u2014 see `Run.fail_reason`. Distinct from the program's `stderr`."
           },
           "vm_id": {
+            "description": "Unique VM identifier.",
             "type": [
               "string",
               "null"
             ]
           },
           "vm_name": {
+            "description": "Customer-defined VM name.",
             "type": [
               "string",
               "null"
             ]
           },
           "source_org_id": {
+            "description": "Organization that owns the source VM.",
             "type": [
               "string",
               "null"
             ]
           },
           "region": {
+            "description": "Region containing the resource or activity.",
             "type": [
               "string",
               "null"
             ]
           },
           "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "gcp",
-              "azure",
-              null
+            "description": "Infrastructure provider that hosted the run.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Provider"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         }
@@ -2797,12 +2892,14 @@
         "additionalProperties": false,
         "properties": {
           "runs": {
+            "description": "Runs matching the request.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/RunSummary"
             }
           },
           "next_cursor": {
+            "description": "Cursor for the next page, or null when no further page is available.",
             "type": [
               "string",
               "null"
@@ -2844,90 +2941,117 @@
         "additionalProperties": false,
         "properties": {
           "source": {
+            "description": "Service that recorded the activity.",
             "type": "string",
             "enum": [
               "arkerd"
             ]
           },
           "t_ms": {
+            "description": "Activity timestamp as Unix epoch milliseconds.",
             "type": "integer"
           },
           "request_id": {
+            "description": "Request identifier used to correlate this activity.",
             "type": "string"
           },
           "run_id": {
+            "description": "Unique run identifier.",
             "type": "string"
           },
           "vm_id": {
+            "description": "Unique VM identifier.",
             "type": "string"
           },
           "session_id": {
+            "description": "Unique session identifier.",
             "type": "string"
           },
           "region": {
+            "description": "Region containing the resource or activity.",
             "type": "string"
           },
           "status": {
+            "description": "HTTP response status code.",
             "type": "integer"
           },
           "total_ms": {
+            "description": "Total request duration in milliseconds.",
             "type": "number"
           },
           "queue_ms": {
+            "description": "Time spent waiting for execution capacity, in milliseconds.",
             "type": "number"
           },
           "executor_duration_ms": {
+            "description": "Wall-clock command execution time, in milliseconds.",
             "type": "integer"
           },
           "executor_kind": {
+            "description": "Execution engine used for the command.",
             "type": "string"
           },
           "executor_cpu_ms": {
+            "description": "CPU time consumed by command execution, in milliseconds.",
             "type": "integer"
           },
           "executor_mem_mb": {
+            "description": "Peak memory attributed to command execution, in megabytes.",
             "type": "integer"
           },
           "vm_vcpus": {
+            "description": "VM virtual CPU allocation at execution time.",
             "type": "integer"
           },
           "vm_memory_mib": {
+            "description": "VM memory allocation at execution time, in mebibytes.",
             "type": "integer"
           },
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "method": {
+            "description": "HTTP method.",
             "type": "string"
           },
           "command": {
+            "description": "Command submitted for execution.",
             "type": "string"
           },
           "source_vm_id": {
+            "description": "VM identifier used as the fork source.",
             "type": "string"
           },
           "exit_code": {
+            "description": "Process exit code. Null when no process completed.",
             "type": [
               "integer",
               "null"
             ]
           },
           "endpoint": {
+            "description": "API operation category associated with the activity.",
             "type": "string"
           },
           "api_key_prefix": {
+            "description": "Non-secret prefix identifying the API key used for the request.",
             "type": "string"
           },
           "body_bytes_in": {
+            "description": "Request body size in bytes.",
             "type": "integer"
           },
           "body_bytes_out": {
+            "description": "Response body size in bytes.",
             "type": "integer"
           },
           "body_in": {
+            "description": "Captured request body preview when included in the response.",
             "type": "string"
           },
           "body_out": {
+            "description": "Captured response body preview when included in the response.",
             "type": "string"
           }
         }
@@ -2945,21 +3069,27 @@
         "additionalProperties": false,
         "properties": {
           "since": {
+            "description": "Inclusive start of the activity window, as Unix epoch seconds.",
             "type": "integer"
           },
           "until": {
+            "description": "Exclusive end of the activity window, as Unix epoch seconds.",
             "type": "integer"
           },
           "limit": {
+            "description": "Maximum number of records requested.",
             "type": "integer"
           },
           "offset": {
+            "description": "Number of matching records skipped before this page.",
             "type": "integer"
           },
           "lite": {
+            "description": "When true, omit large request and response previews.",
             "type": "boolean"
           },
           "rows": {
+            "description": "Activity records matching the request.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OrgRunListRow"
@@ -2975,6 +3105,7 @@
         "additionalProperties": false,
         "properties": {
           "cancelled": {
+            "description": "True when the run was cancelled.",
             "type": "boolean"
           }
         }
@@ -2984,6 +3115,7 @@
         "additionalProperties": false,
         "properties": {
           "env": {
+            "description": "Environment variables to set for the session.",
             "anyOf": [
               {
                 "type": "object",
@@ -2997,6 +3129,7 @@
             ]
           },
           "cwd": {
+            "description": "Working directory inside the VM.",
             "type": [
               "string",
               "null"
@@ -3045,6 +3178,7 @@
         "additionalProperties": false,
         "properties": {
           "ticket": {
+            "description": "Short-lived credential for opening the terminal WebSocket.",
             "type": "string"
           },
           "expires_in": {
@@ -3065,12 +3199,15 @@
         "additionalProperties": false,
         "properties": {
           "sync_id": {
+            "description": "Unique sync identifier.",
             "type": "string"
           },
           "vm_id": {
+            "description": "Unique VM identifier.",
             "type": "string"
           },
           "filesystem_id": {
+            "description": "Unique filesystem identifier.",
             "type": "string"
           },
           "path": {
@@ -3078,6 +3215,7 @@
             "description": "VM-side path where the filesystem is mounted."
           },
           "region": {
+            "description": "Region containing the resource or activity.",
             "type": [
               "string",
               "null"
@@ -3093,12 +3231,14 @@
         "additionalProperties": false,
         "properties": {
           "syncs": {
+            "description": "Sync mounts matching the request.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Sync"
             }
           },
           "next_cursor": {
+            "description": "Cursor for the next page, or null when no further page is available.",
             "type": [
               "string",
               "null"
@@ -3114,6 +3254,7 @@
         "additionalProperties": false,
         "properties": {
           "deleted": {
+            "description": "True when the resource has been deleted.",
             "type": "boolean"
           }
         }
@@ -3126,9 +3267,11 @@
         "additionalProperties": false,
         "properties": {
           "filesystem_id": {
+            "description": "Unique filesystem identifier.",
             "type": "string"
           },
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           }
         }
@@ -3142,10 +3285,12 @@
         "additionalProperties": false,
         "properties": {
           "op": {
+            "description": "Sync operation performed.",
             "type": "string",
             "const": "read"
           },
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           }
         }
@@ -3159,10 +3304,12 @@
         "additionalProperties": false,
         "properties": {
           "op": {
+            "description": "Sync operation performed.",
             "type": "string",
             "const": "write"
           },
           "writes": {
+            "description": "Files to write in this sync operation.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SyncWriteEntry"
@@ -3216,33 +3363,41 @@
         "additionalProperties": false,
         "properties": {
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "upload_id": {
+            "description": "Identifier for a multipart upload.",
             "type": "string"
           },
           "content": {
+            "description": "Base64-encoded file content.",
             "type": "string"
           },
           "start": {
+            "description": "Inclusive starting byte offset.",
             "type": "integer",
             "minimum": 0
           },
           "end": {
+            "description": "Inclusive ending byte offset.",
             "type": "integer",
             "minimum": 0
           },
           "sha256": {
+            "description": "Lowercase hexadecimal SHA-256 digest used to verify file content.",
             "type": [
               "string",
               "null"
             ]
           },
           "is_secret": {
+            "description": "When true, prevent the file content from appearing in logs or previews.",
             "type": "boolean",
             "default": false
           }
@@ -3258,16 +3413,20 @@
         "additionalProperties": false,
         "properties": {
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "presigned": {
+            "description": "When true, request a temporary upload URL instead of sending content inline.",
             "type": "boolean"
           },
           "is_secret": {
+            "description": "When true, prevent the file content from appearing in logs or previews.",
             "type": "boolean",
             "default": false
           }
@@ -3283,16 +3442,20 @@
         "additionalProperties": false,
         "properties": {
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "upload_id": {
+            "description": "Identifier for a multipart upload.",
             "type": "string"
           },
           "sha256": {
+            "description": "Lowercase hexadecimal SHA-256 digest used to verify file content.",
             "type": [
               "string",
               "null"
@@ -3323,23 +3486,29 @@
         "additionalProperties": false,
         "properties": {
           "ok": {
+            "description": "True when the operation succeeded.",
             "type": "boolean"
           },
           "op": {
+            "description": "Sync operation performed.",
             "type": "string",
             "const": "read"
           },
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "content": {
+            "description": "Base64-encoded file content.",
             "type": "string"
           },
           "encoding": {
+            "description": "Encoding used for the content field.",
             "type": "string",
             "enum": [
               "utf8",
@@ -3362,27 +3531,34 @@
         "additionalProperties": false,
         "properties": {
           "ok": {
+            "description": "True when the operation succeeded.",
             "type": "boolean"
           },
           "op": {
+            "description": "Sync operation performed.",
             "type": "string",
             "const": "read"
           },
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "presigned_url": {
+            "description": "Temporary URL for transferring file content.",
             "type": "string"
           },
           "expires_in": {
+            "description": "Seconds until the temporary URL or credential expires.",
             "type": "integer",
             "minimum": 0
           },
           "method": {
+            "description": "HTTP method.",
             "type": "string"
           }
         }
@@ -3397,13 +3573,16 @@
         "additionalProperties": false,
         "properties": {
           "ok": {
+            "description": "True when the operation succeeded.",
             "type": "boolean"
           },
           "op": {
+            "description": "Sync operation performed.",
             "type": "string",
             "const": "write"
           },
           "results": {
+            "description": "Per-file results for the sync operation.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SyncWriteResult"
@@ -3437,29 +3616,36 @@
         "additionalProperties": false,
         "properties": {
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "received_bytes": {
+            "description": "Number of file bytes received so far.",
             "type": "integer",
             "minimum": 0
           },
           "ranges": {
+            "description": "Byte ranges received for this file.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SyncByteRange"
             }
           },
           "complete": {
+            "description": "True when all data for this operation has been received and applied.",
             "type": "boolean"
           },
           "written": {
+            "description": "True when the file was committed to the VM.",
             "type": "boolean"
           },
           "error": {
+            "description": "Structured error details for this entry, when the operation failed.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/SyncEntryError"
@@ -3486,32 +3672,41 @@
         "additionalProperties": false,
         "properties": {
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "presigned_url": {
+            "description": "Temporary URL for transferring file content.",
             "type": "string"
           },
           "upload_id": {
+            "description": "Identifier for a multipart upload.",
             "type": "string"
           },
           "expires_in": {
+            "description": "Seconds until the temporary URL or credential expires.",
             "type": "integer",
             "minimum": 0
           },
           "method": {
+            "description": "HTTP method.",
             "type": "string"
           },
           "complete": {
+            "description": "True when all data for this operation has been received and applied.",
             "type": "boolean"
           },
           "written": {
+            "description": "True when the file was committed to the VM.",
             "type": "boolean"
           },
           "error": {
+            "description": "Structured error details for this entry, when the operation failed.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/SyncEntryError"
@@ -3534,19 +3729,24 @@
         "additionalProperties": false,
         "properties": {
           "path": {
+            "description": "Path inside the VM.",
             "type": "string"
           },
           "size": {
+            "description": "File size in bytes.",
             "type": "integer",
             "minimum": 0
           },
           "complete": {
+            "description": "True when all data for this operation has been received and applied.",
             "type": "boolean"
           },
           "written": {
+            "description": "True when the file was committed to the VM.",
             "type": "boolean"
           },
           "error": {
+            "description": "Structured error details for this entry, when the operation failed.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/SyncEntryError"
@@ -3567,10 +3767,12 @@
         "additionalProperties": false,
         "properties": {
           "start": {
+            "description": "Inclusive starting byte offset.",
             "type": "integer",
             "minimum": 0
           },
           "end": {
+            "description": "Inclusive ending byte offset.",
             "type": "integer",
             "minimum": 0
           }
@@ -3585,9 +3787,11 @@
         "additionalProperties": false,
         "properties": {
           "code": {
+            "description": "Stable machine-readable error code.",
             "type": "string"
           },
           "message": {
+            "description": "Human-readable error message.",
             "type": "string"
           }
         }
@@ -3603,18 +3807,23 @@
         "additionalProperties": false,
         "properties": {
           "filesystem_id": {
+            "description": "Unique filesystem identifier.",
             "type": "string"
           },
           "name": {
+            "description": "Customer-defined resource name.",
             "type": "string"
           },
           "owner_org_id": {
+            "description": "Organization that owns the resource.",
             "type": "string"
           },
           "created_at": {
+            "description": "RFC 3339 timestamp when the resource was created.",
             "type": "string"
           },
           "size_bytes": {
+            "description": "Resource size in bytes.",
             "type": [
               "integer",
               "null"
@@ -3622,6 +3831,7 @@
             "minimum": 0
           },
           "region": {
+            "description": "Region containing the resource or activity.",
             "type": [
               "string",
               "null"
@@ -3629,15 +3839,14 @@
             "default": "us-west-2"
           },
           "provider": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "aws",
-              "gcp",
-              "azure",
-              null
+            "description": "Infrastructure provider hosting the filesystem.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Provider"
+              },
+              {
+                "type": "null"
+              }
             ],
             "default": "aws"
           }
@@ -3651,12 +3860,14 @@
         "additionalProperties": false,
         "properties": {
           "filesystems": {
+            "description": "Filesystems visible to the authenticated caller.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Filesystem"
             }
           },
           "next_cursor": {
+            "description": "Cursor for the next page, or null when no further page is available.",
             "type": [
               "string",
               "null"
@@ -3672,6 +3883,7 @@
         "additionalProperties": false,
         "properties": {
           "deleted": {
+            "description": "True when the resource has been deleted.",
             "type": "boolean"
           }
         }
@@ -3684,6 +3896,7 @@
         "additionalProperties": false,
         "properties": {
           "name": {
+            "description": "Customer-defined resource name.",
             "type": "string"
           }
         }
@@ -3693,6 +3906,7 @@
         "additionalProperties": false,
         "properties": {
           "vcpu": {
+            "description": "Virtual CPU allocation.",
             "type": [
               "integer",
               "null"
@@ -3701,6 +3915,7 @@
             "maximum": 255
           },
           "memory_mib": {
+            "description": "Memory allocation in mebibytes.",
             "type": [
               "integer",
               "null"
@@ -3708,6 +3923,7 @@
             "minimum": 0
           },
           "disk_mib": {
+            "description": "Disk allocation in mebibytes.",
             "type": [
               "integer",
               "null"
@@ -3720,7 +3936,7 @@
               "null"
             ],
             "minimum": 1,
-            "description": "GPU slice size: number of streaming multiprocessors (SMs) the VM may use. Only valid when the VM targets a GPU platform (e.g. \"x86_64-a40\"). Requesting more SMs than the physical GPU has returns 400. Omit for the host's default slice size."
+            "description": "Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-a40`. Omit to use the platform default."
           },
           "gpu_vram_mib": {
             "type": [
@@ -3728,7 +3944,7 @@
               "null"
             ],
             "minimum": 1,
-            "description": "GPU slice size: VRAM cap in MiB. Only valid when the VM targets a GPU platform. Requesting more VRAM than the physical GPU has returns 400. Omit for the host's default slice size."
+            "description": "GPU memory available to the VM, in MiB. Only valid for GPU platforms. Omit to use the platform default."
           }
         }
       },
@@ -3755,9 +3971,11 @@
         "additionalProperties": false,
         "properties": {
           "public_key": {
+            "description": "SSH public key in authorized_keys format.",
             "type": "string"
           },
           "fingerprint": {
+            "description": "Stable fingerprint of the SSH public key.",
             "type": "string"
           }
         }
@@ -3765,7 +3983,7 @@
       "VmNetwork": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A VM's network object: SSH keys ONLY. Inbound reachability, the .app hostname, and per-port tunnels are DERIVED from the VM's policy doc and surface on the policies GET/PUT response (the PolicyDoc's read-only fields), not here.",
+        "description": "SSH access configuration for a VM. Configure inbound application access through the VM's network policy.",
         "properties": {
           "ssh_public_keys": {
             "type": "array",
@@ -3781,6 +3999,7 @@
         "additionalProperties": false,
         "properties": {
           "resources": {
+            "description": "CPU, memory, and disk configuration.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/VmResources"
@@ -3791,6 +4010,7 @@
             ]
           },
           "network": {
+            "description": "SSH access configuration for the VM.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/NetworkInput"
@@ -3804,7 +4024,7 @@
             "description": "Network policy for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails.",
             "anyOf": [
               {
-                "$ref": "#/components/schemas/PolicyDoc"
+                "$ref": "#/components/schemas/PolicyWriteRequest"
               },
               {
                 "type": "null"
