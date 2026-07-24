@@ -255,6 +255,59 @@ def test_check_detects_generated_drift() -> None:
         assert metadata["commit"] in (candidate / MANAGED_PATHS[1]).read_text()
 
 
+def test_freshness_check_detects_arker_app_main_drift() -> None:
+    metadata = source_metadata()
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory)
+        source = temporary / "source-openapi.json"
+        candidate = temporary / "candidate-openapi.json"
+        source.write_bytes((REPO_ROOT / MANAGED_PATHS[0]).read_bytes())
+        candidate.write_bytes(source.read_bytes())
+
+        current = run(
+            "./scripts/check-openapi-freshness",
+            "--candidate-contract",
+            str(candidate),
+            "--source-file",
+            str(source),
+            "--source-commit",
+            metadata["commit"],
+            check=False,
+        )
+        assert current.returncode == 0, current.stderr
+
+        document = json.loads(candidate.read_text())
+        document["info"]["version"] = "stale-sdk-contract"
+        candidate.write_text(json.dumps(document, indent=2) + "\n")
+
+        stale = run(
+            "./scripts/check-openapi-freshness",
+            "--candidate-contract",
+            str(candidate),
+            "--source-file",
+            str(source),
+            "--source-commit",
+            metadata["commit"],
+            check=False,
+        )
+        assert stale.returncode == 1
+        assert "contract/openapi.json is stale" in stale.stderr
+        assert "./scripts/sync-openapi" in stale.stderr
+
+
+def test_freshness_workflow_uses_trusted_code_and_an_explicit_status() -> None:
+    workflow = (REPO_ROOT / ".github/workflows/openapi-freshness.yml").read_text()
+
+    assert "pull_request_target:" in workflow
+    assert "statuses: write" in workflow
+    assert "ARKER_APP_OPENAPI_READ_TOKEN" in workflow
+    assert "run: ./scripts/check-openapi-freshness" in workflow
+    assert "context=openapi-freshness" in workflow
+    assert "ref: ${{ github.event.repository.default_branch }}" in workflow
+    assert "ref: ${{ github.event.pull_request.head" not in workflow
+    assert "github.event_name == 'pull_request_target'" not in workflow
+
+
 def test_pull_request_ci_checks_all_generated_surfaces() -> None:
     workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
 
@@ -267,14 +320,18 @@ def test_pull_request_ci_checks_all_generated_surfaces() -> None:
     assert "bun run test" in workflow
 
 
-def test_contract_ci_requires_no_cross_repository_credentials() -> None:
+def test_contract_ci_requires_no_cross_repository_write_credentials() -> None:
     workflows = "\n".join(
         path.read_text() for path in (REPO_ROOT / ".github/workflows").glob("*.yml")
     )
+    freshness = (REPO_ROOT / ".github/workflows/openapi-freshness.yml").read_text()
 
     assert not (REPO_ROOT / ".github/workflows/openapi-contract.yml").exists()
     assert "ARKER_CONTRACT_APP_ID" not in workflows
     assert "ARKER_CONTRACT_APP_PRIVATE_KEY" not in workflows
+    assert "ARKER_APP_OPENAPI_READ_TOKEN" in freshness
+    assert "contents: write" not in freshness
+    assert "pull-requests: write" not in freshness
 
 
 if __name__ == "__main__":
@@ -285,8 +342,10 @@ if __name__ == "__main__":
         test_sdk_runtime_uses_only_current_public_error_codes,
         test_sync_from_local_contract_regenerates_all_managed_files,
         test_check_detects_generated_drift,
+        test_freshness_check_detects_arker_app_main_drift,
+        test_freshness_workflow_uses_trusted_code_and_an_explicit_status,
         test_pull_request_ci_checks_all_generated_surfaces,
-        test_contract_ci_requires_no_cross_repository_credentials,
+        test_contract_ci_requires_no_cross_repository_write_credentials,
     )
     for test in tests:
         test()

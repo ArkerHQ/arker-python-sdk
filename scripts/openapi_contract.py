@@ -426,17 +426,26 @@ def command_generate(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_sync(args: argparse.Namespace) -> int:
-    if args.source_file:
-        if not args.source_commit:
+def source_from_args(args: argparse.Namespace) -> tuple[str, bytes]:
+    source_file = getattr(args, "source_file", None)
+    source_commit = getattr(args, "source_commit", None)
+    if source_file:
+        if not source_commit:
             raise ContractError("--source-commit is required with --source-file")
-        commit = validate_commit(args.source_commit)
-        contract = Path(args.source_file).read_bytes()
+        commit = validate_commit(source_commit)
+        try:
+            contract = Path(source_file).read_bytes()
+        except FileNotFoundError as error:
+            raise ContractError(f"source contract not found: {source_file}") from error
         validate_contract(contract)
-    elif args.source_commit:
+        return commit, contract
+    if source_commit:
         raise ContractError("--source-commit requires --source-file")
-    else:
-        commit, contract = fetch_source()
+    return fetch_source()
+
+
+def command_sync(args: argparse.Namespace) -> int:
+    commit, contract = source_from_args(args)
 
     output_root = Path(args.output_root).resolve()
     with tempfile.TemporaryDirectory(prefix="arker-openapi-sync-") as directory:
@@ -473,6 +482,37 @@ def command_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_freshness(args: argparse.Namespace) -> int:
+    candidate_path = Path(args.candidate_contract).resolve()
+    try:
+        candidate = candidate_path.read_bytes()
+    except FileNotFoundError as error:
+        raise ContractError(
+            f"candidate contract not found: {candidate_path}"
+        ) from error
+    validate_contract(candidate)
+
+    commit, source = source_from_args(args)
+    if candidate != source:
+        print(
+            "contract/openapi.json is stale; "
+            f"it does not match {REPOSITORY}@{commit}",
+            file=sys.stderr,
+        )
+        print(
+            "run ./scripts/sync-openapi and include the regenerated SDK artifacts",
+            file=sys.stderr,
+        )
+        print_diff(CONTRACT_PATH, source, candidate)
+        return 1
+
+    print(
+        "contract/openapi.json matches "
+        f"{REPOSITORY}@{commit} ({hashlib.sha256(source).hexdigest()})"
+    )
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         description="Synchronize and verify the public OpenAPI contract"
@@ -493,6 +533,14 @@ def parser() -> argparse.ArgumentParser:
     check_parser = subcommands.add_parser("check")
     check_parser.add_argument("--candidate-root")
     check_parser.set_defaults(handler=command_check)
+
+    freshness_parser = subcommands.add_parser("freshness")
+    freshness_parser.add_argument(
+        "--candidate-contract", default=str(REPO_ROOT / CONTRACT_PATH)
+    )
+    freshness_parser.add_argument("--source-file")
+    freshness_parser.add_argument("--source-commit")
+    freshness_parser.set_defaults(handler=command_freshness)
     return root
 
 
