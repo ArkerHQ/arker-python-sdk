@@ -2480,9 +2480,6 @@
       },
       "RunRequest": {
         "type": "object",
-        "required": [
-          "command"
-        ],
         "additionalProperties": false,
         "properties": {
           "session_id": {
@@ -2501,7 +2498,7 @@
             "minimum": 0
           },
           "command": {
-            "description": "Command submitted for execution.",
+            "description": "Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op).",
             "type": "string"
           },
           "background": {
@@ -2518,7 +2515,7 @@
             "minimum": 0
           },
           "time_to_background": {
-            "description": "Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 30. Does not bound command runtime — that is timeout.",
+            "description": "Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime — that is timeout.",
             "type": [
               "integer",
               "null"
