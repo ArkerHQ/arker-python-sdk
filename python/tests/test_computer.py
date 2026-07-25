@@ -779,6 +779,63 @@ def test_fork_sends_durable_flag() -> None:
     }
 
 
+def test_fork_sends_disk_only_layers() -> None:
+    """A disk-only fork (`layers=["disk"]`) puts the layer selection in the body
+    so the child inherits only the filesystem and cold-boots with fresh RAM."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().vm("ubuntu").fork(layers=["disk"])
+
+    # Computer.fork auto-fills source_vm_id; disk defaults to True.
+    assert json.loads(t.calls[0]["body"]) == {
+        "layers": ["disk"],
+        "source_vm_id": "ubuntu",
+        "disk": True,
+    }
+
+
+def test_fork_omits_layers_by_default() -> None:
+    """A plain fork sends no `layers` key — the server applies the default full
+    fork (disk + memory), so the child resumes warm."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().vm("ubuntu").fork()
+
+    assert "layers" not in json.loads(t.calls[0]["body"])
+
+
 def test_run_sends_idempotency_key_header() -> None:
     t = FakeTransport()
     t.add_json(
