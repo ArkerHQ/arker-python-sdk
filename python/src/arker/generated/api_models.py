@@ -766,6 +766,8 @@ class ForkRequest1:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    network: dict[str, Any] | None = None
+    egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     policies: PolicyWriteRequest | None = None
@@ -783,6 +785,8 @@ class ForkRequest2:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    network: dict[str, Any] | None = None
+    egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     policies: PolicyWriteRequest | None = None

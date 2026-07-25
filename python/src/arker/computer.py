@@ -328,6 +328,7 @@ class Arker:
         disk_mib: int | None = None,
         durable: bool | None = None,
         platforms: list[str] | None = None,
+        layers: list[str] | None = None,
         policies: PolicyDoc | dict[str, Any] | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
@@ -353,6 +354,14 @@ class Arker:
         document to replace it — even an empty
         ``{"policies": []}``, which clears to allow-all rather than inheriting.
         Pass ``ssh_public_keys`` to authorize keys on the new VM.
+
+        ``layers`` selects which layers of the source the child inherits. Omit
+        it for the default full fork (``["disk", "memory"]``): the child inherits
+        both the filesystem and a copy of the source's live RAM, so it resumes
+        warm. Pass ``["disk"]`` for a disk-only fork: the child inherits only the
+        filesystem and cold-boots with fresh RAM — a much cheaper fork (no RAM
+        snapshot to copy) at the cost of a cold first ``run``. Trades fork
+        latency for first-run latency; pick per workload.
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -403,6 +412,7 @@ class Arker:
             disk=disk if disk is not None else True,
             durable=durable,
             platforms=platforms,
+            layers=layers,
             resources=resources,
             policies=policy_doc,
         )
