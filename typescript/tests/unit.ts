@@ -95,6 +95,22 @@ function regionClient(fetch: FakeFetch): Arker {
   });
 }
 
+// Every other client() in this file hardcodes retry:false, so the retry
+// loop itself (index.ts's `for (attempt < this.retry.attempts)`) had zero
+// coverage. Near-zero delays keep the retry tests fast.
+function clientWithRetry(fetch: FakeFetch, attempts: number): Arker {
+  return new Arker({
+    apiKey: "ark_live_test",
+    baseUrl: "https://test.invalid/api/",
+    fetch: fetch.fetch,
+    retry: { attempts, baseDelayMs: 1, maxDelayMs: 1, jitterMs: 0 },
+  });
+}
+
+const RETRYABLE_ERROR_BODY = {
+  error: { code: "unavailable", message: "temporarily unavailable", timestamp: "2026-01-01T00:00:00.000Z" },
+};
+
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
 }
@@ -567,6 +583,170 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
   assert.equal(status.retry_count, 2);
 }
 
+async function testRetryOnRetryableStatusThenSucceeds(): Promise<void> {
+  const fetch = new FakeFetch();
+  const matchListVms = (method: string, url: string) => method === "GET" && url === "https://arker.ai/api/v1/vms";
+  // Scripted responses are one-shot and consumed in order per matching
+  // predicate: first call gets the 503, the retry gets the 200.
+  fetch.addJson(matchListVms, 503, RETRYABLE_ERROR_BODY);
+  fetch.addJson(matchListVms, 200, { vms: [] });
+
+  const result = await clientWithRetry(fetch, 3).listVms();
+
+  assert.deepEqual(result.vms, []);
+  assert.equal(fetch.calls.length, 2, "should have retried exactly once after the 503");
+}
+
+async function testRetryGivesUpAfterExhaustingAttempts(): Promise<void> {
+  const fetch = new FakeFetch();
+  const matchListVms = (method: string, url: string) => method === "GET" && url === "https://arker.ai/api/v1/vms";
+  // Every attempt sees a 503 — script exactly `attempts` of them so the
+  // FakeFetch throws "no scripted response" if the client ever calls one
+  // extra time (an off-by-one in the retry loop).
+  fetch.addJson(matchListVms, 503, RETRYABLE_ERROR_BODY);
+  fetch.addJson(matchListVms, 503, RETRYABLE_ERROR_BODY);
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).listVms(),
+    // The final attempt's parsed error code/message must surface, not a
+    // generic "internal" — the caller can still branch on `unavailable`.
+    (error) => error instanceof ArkerError && error.code === "unavailable" && error.status === 503,
+  );
+  assert.equal(fetch.calls.length, 2, "should stop retrying once attempts are exhausted, not call again");
+}
+
+async function testNonRetryableStatusFailsImmediately(): Promise<void> {
+  const fetch = new FakeFetch();
+  // A 400 is not in RETRYABLE_HTTP — even with attempts=3 configured, the
+  // client must not burn through retries on a client error.
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms",
+    400,
+    { error: { code: "invalid_request", message: "bad query", timestamp: "2026-01-01T00:00:00.000Z" } },
+  );
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 3).listVms(),
+    (error) => error instanceof ArkerError && error.code === "invalid_request",
+  );
+  assert.equal(fetch.calls.length, 1, "a non-retryable status must not be retried");
+}
+
+async function testGetAndSetPolicies(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/policies",
+    200,
+    { policies: [], secrets: {}, hostname: null, mitm_domains: [], warnings: [] },
+  );
+  const doc = await client(fetch).vm("vm_1").getPolicies();
+  assert.deepEqual(doc.policies, []);
+
+  const updated = {
+    policies: [
+      {
+        type: "outbound" as const,
+        match: { hosts: ["example.com"] },
+        action: "allow" as const,
+      },
+    ],
+  };
+  fetch.addJson(
+    (method, url) => method === "PUT" && url === "https://test.invalid/api/v1/vms/vm_1/policies",
+    200,
+    { ...updated, secrets: {}, hostname: null, mitm_domains: ["example.com"], warnings: [] },
+  );
+  const putResult = await client(fetch).vm("vm_1").setPolicies(updated);
+  assert.equal(putResult.policies?.[0]?.type, "outbound");
+  assert.deepEqual(putResult.mitm_domains, ["example.com"]);
+  const putCall = fetch.calls.find((c) => c.method === "PUT");
+  assert.ok(putCall, "setPolicies should PUT");
+  assert.ok(putCall!.body?.includes("example.com"), "PUT body should include the policy match");
+}
+
+async function testCreateFilesystem(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/filesystems",
+    200,
+    {
+      filesystem_id: "fs_1",
+      name: "my-fs",
+      owner_org_id: "ArkerHQ",
+      created_at: "now",
+      size_bytes: 0,
+      region: "us-west-2",
+      provider: "aws",
+    },
+  );
+  const fs = await client(fetch).createFilesystem({ name: "my-fs" });
+  assert.equal(fs.filesystem_id, "fs_1");
+  assert.equal(fs.name, "my-fs");
+  const call = fetch.calls[0]!;
+  assert.equal(call.method, "POST");
+  assert.ok(call.body?.includes("my-fs"));
+}
+
+async function testCancelRun(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "DELETE" && url === "https://test.invalid/api/v1/vms/vm_1/runs/run_1",
+    200,
+    { cancelled: true },
+  );
+  const result = await client(fetch).vm("vm_1").cancelRun("run_1");
+  assert.equal(result.cancelled, true);
+  assert.equal(fetch.calls[0]!.method, "DELETE");
+}
+
+async function testSessionCrudLifecycle(): Promise<void> {
+  const fetch = new FakeFetch();
+  const vm = client(fetch).vm("vm_1");
+
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/sessions",
+    200,
+    { session_id: "sess_1", state: "idle", cwd: "/home/user", env: {} },
+  );
+  const created = await vm.createSession({ cwd: "/home/user" });
+  assert.equal(created.session_id, "sess_1");
+
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/sessions/sess_1",
+    200,
+    { session_id: "sess_1", state: "idle", cwd: "/home/user", env: {} },
+  );
+  const fetched = await vm.getSession("sess_1");
+  assert.equal(fetched.session_id, "sess_1");
+
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/sessions",
+    200,
+    { sessions: [fetched], next_cursor: null },
+  );
+  const listed = await vm.listSessions();
+  assert.equal(listed.sessions.length, 1);
+  assert.equal(listed.next_cursor, null);
+
+  fetch.addJson(
+    (method, url) => method === "PATCH" && url === "https://test.invalid/api/v1/vms/vm_1/sessions/sess_1",
+    200,
+    { ok: true, session_id: "sess_1" },
+  );
+  const patched = await vm.updateSession("sess_1", { cols: 100, rows: 40 });
+  assert.equal(patched.ok, true);
+  const patchCall = fetch.calls.find((c) => c.method === "PATCH");
+  assert.ok(patchCall!.body?.includes('"cols":100'));
+
+  fetch.addJson(
+    (method, url) => method === "DELETE" && url === "https://test.invalid/api/v1/vms/vm_1/sessions/sess_1",
+    200,
+    { deleted: true },
+  );
+  const deleted = await vm.deleteSession("sess_1");
+  assert.equal(deleted.deleted, true);
+}
+
 async function testConnectPtyCreatesSessionAndUsesBearerHeader(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -743,5 +923,12 @@ await testConnectPtyUsesTicketForBrowserWebSocket();
 await testConnectPtyPassesCancelTtlSecs();
 await testConnectPtyDeliversDataAndCloseEvents();
 testSurfaceStubClassificationUsesStructuredErrorCodes();
+await testRetryOnRetryableStatusThenSucceeds();
+await testRetryGivesUpAfterExhaustingAttempts();
+await testNonRetryableStatusFailsImmediately();
+await testGetAndSetPolicies();
+await testCreateFilesystem();
+await testCancelRun();
+await testSessionCrudLifecycle();
 
 console.log("PASS unit");

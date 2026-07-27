@@ -459,7 +459,13 @@ def test_run_sends_policies() -> None:
             {
                 "type": "outbound",
                 "action": "deny",
-                "match": {"protocol": "tcp", "ports": [443]},
+                # `PolicyMatch` has no `protocol` field (real fields: ports, ips,
+                # hosts, methods, paths, headers, body_contains) — a leftover
+                # "protocol": "tcp" here only ever passed because the
+                # `_decode_value` bug (see test_get_and_set_policies) skipped
+                # nested validation entirely, so an unreal field was silently
+                # never checked. Fixed now that nested decode is fixed.
+                "match": {"ports": [443]},
             }
         ]
     }
@@ -928,3 +934,128 @@ def test_per_entry_internal_error_retries(monkeypatch) -> None:
         sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x", b"hello")
 
     assert len(t.calls) == 2
+
+
+def test_get_and_set_policies() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "GET" and url == "https://test.invalid/api/v1/vms/vm_1/policies",
+        200,
+        {"policies": [], "secrets": {}, "hostname": None, "mitm_domains": [], "warnings": []},
+    )
+    with use_transport(t):
+        doc = client().vm("vm_1").get_policies()
+    assert doc.policies == []
+
+    t.add_json(
+        lambda method, url: method == "PUT" and url == "https://test.invalid/api/v1/vms/vm_1/policies",
+        200,
+        {
+            "policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}],
+            "secrets": {},
+            "hostname": None,
+            "mitm_domains": ["example.com"],
+            "warnings": [],
+        },
+    )
+    with use_transport(t):
+        updated = client().vm("vm_1").set_policies({
+            "policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}],
+        })
+    # Regression coverage for a bug found writing this test: `PolicyDoc.policies`
+    # is typed `list[PolicyEntry] | None`. `_decode_value`'s Union branch used to
+    # only recurse when a member was itself a bare dataclass type — `list[PolicyEntry]`
+    # is a generic alias, not a dataclass, so it was never matched and the raw
+    # list-of-dicts passed through unconverted (entries stayed plain dicts;
+    # `.type` attribute access raised AttributeError). Fixed in `_decode_value`
+    # to also recurse into a single non-null Optional[list[...]]/Optional[dict[...]]
+    # member. Assert the real dataclass here so this can't silently regress.
+    assert updated.policies[0].type == "outbound"
+    assert updated.mitm_domains == ["example.com"]
+    put_call = next(c for c in t.calls if c["method"] == "PUT")
+    assert b"example.com" in put_call["body"]
+
+
+def test_create_filesystem() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/filesystems",
+        200,
+        {
+            "filesystem_id": "fs_1",
+            "name": "my-fs",
+            "owner_org_id": "ArkerHQ",
+            "created_at": "now",
+            "size_bytes": 0,
+            "region": "us-west-2",
+            "provider": "aws",
+        },
+    )
+    with use_transport(t):
+        fs = client().create_filesystem(name="my-fs")
+    assert fs.filesystem_id == "fs_1"
+    assert fs.name == "my-fs"
+    assert t.calls[0]["method"] == "POST"
+    assert b"my-fs" in t.calls[0]["body"]
+
+
+def test_cancel_run() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "DELETE" and url == "https://test.invalid/api/v1/vms/vm_1/runs/run_1",
+        200,
+        {"cancelled": True},
+    )
+    with use_transport(t):
+        result = client().vm("vm_1").cancel_run("run_1")
+    assert result.cancelled is True
+    assert t.calls[0]["method"] == "DELETE"
+
+
+def test_session_crud_lifecycle() -> None:
+    t = FakeTransport()
+    with use_transport(t):
+        vm = client().vm("vm_1")
+
+        t.add_json(
+            lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/vms/vm_1/sessions",
+            200,
+            session("sess_1"),
+        )
+        created = vm.create_session(cwd="/home/user")
+        assert created.session_id == "sess_1"
+
+        t.add_json(
+            lambda method, url: method == "GET" and url == "https://test.invalid/api/v1/vms/vm_1/sessions/sess_1",
+            200,
+            session("sess_1"),
+        )
+        fetched = vm.get_session("sess_1")
+        assert fetched.session_id == "sess_1"
+
+        t.add_json(
+            lambda method, url: method == "GET" and url == "https://test.invalid/api/v1/vms/vm_1/sessions",
+            200,
+            {"sessions": [session("sess_1")], "next_cursor": None},
+        )
+        listed = vm.list_sessions()
+        assert len(listed.sessions) == 1
+        assert listed.next_cursor is None
+
+        t.add_json(
+            lambda method, url: method == "PATCH" and url == "https://test.invalid/api/v1/vms/vm_1/sessions/sess_1",
+            200,
+            {"ok": True, "session_id": "sess_1"},
+        )
+        patched = vm.update_session("sess_1", cols=100, rows=40)
+        assert patched.ok is True
+        patch_call = next(c for c in t.calls if c["method"] == "PATCH")
+        assert b'"cols": 100' in patch_call["body"] or b'"cols":100' in patch_call["body"]
+
+        t.add_json(
+            lambda method, url: method == "DELETE" and url == "https://test.invalid/api/v1/vms/vm_1/sessions/sess_1",
+            200,
+            {"deleted": True},
+        )
+        deleted = vm.delete_session("sess_1")
+        assert deleted.deleted is True
