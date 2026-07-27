@@ -196,23 +196,16 @@ SessionInfo = Session
 
 @dataclasses.dataclass(frozen=True)
 class RunRecord(Run):
-    """A run record with ``stdout``/``stderr`` decoded to bytes — what
-    :meth:`VM.get_run` returns.
+    """A run record with ``stdout``/``stderr`` decoded to bytes.
 
     The wire model carries them as strings tagged by ``*_encoding`` (``utf-8``
-    or ``base64``). Every other output-bearing surface in this SDK — run(),
-    and the polling path behind it — hands back decoded bytes, so get_run()
-    does too; returning the raw wire string here meant a base64 payload
-    silently reached callers on the documented background-then-poll workflow.
+    or ``base64``); every output-bearing surface in this SDK hands back bytes.
 
-    Subclasses the generated model rather than restating its fields, so
-    schema additions flow through untouched. ``stdout``/``stderr`` are
-    redeclared without defaults so they keep their original positions.
-
-    Narrowing those two to ``bytes`` is not substitutable for the wire model,
-    which a strict checker flags. That is accepted deliberately: ``Run`` stays
-    the exact wire model, only this decoded form is handed to a caller, and restating ~18 generated fields here would silently drift from
-    openapi.json the next time the schema grows a field.
+    Subclasses the generated model rather than restating its fields so schema
+    additions flow through. ``stdout``/``stderr`` are redeclared without
+    defaults to keep their positions; narrowing them is not substitutable for
+    the wire model, which a strict checker flags — ``Run`` remains the exact
+    wire shape and only this decoded form reaches a caller.
     """
 
     stdout: bytes  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -781,7 +774,7 @@ class VM:
         delay = RUN_POLL_INITIAL_S
         while True:
             time.sleep(delay)
-            run = self.get_run(run_id)
+            run = self.get_run_result(run_id)
             if run.state in TERMINAL_RUN_STATES:
                 return _run_to_completed_result(run)
             if time.monotonic() >= deadline:
@@ -1124,7 +1117,12 @@ class VM:
         payload = self._client._request("GET", path, base_url=self.base_url)
         return _decode_model(ListRunsResponse, payload)
 
-    def get_run(self, run_id: str) -> RunRecord:
+    def get_run_result(self, run_id: str) -> RunRecord:
+        """The run record with ``stdout``/``stderr`` decoded to bytes, matching
+        what :meth:`run` returns."""
+        return _decode_run_record(self.get_run(run_id))
+
+    def get_run(self, run_id: str) -> Run:
         return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
 
     def cancel_run(self, run_id: str) -> CancelRunResponse:
@@ -1741,6 +1739,19 @@ def _vm_info(payload: dict[str, Any]) -> Vm:
     return _decode_model(Vm, payload)
 
 
+def _terminal_state(state: str | None, exit_code: int | None) -> str:
+    """Terminal state for a finished run.
+
+    A negative ``exit_code`` means no process status was obtained — the run was
+    killed or the compute was lost — which is ``"failed"``. Keeps the
+    synchronous run result and :meth:`VM.get_run` reporting the same state for
+    the same run.
+    """
+    if exit_code is not None and exit_code < 0:
+        return "failed"
+    return state or "completed"
+
+
 def _run_response(payload: dict[str, Any]) -> RunResult:
     response = _decode_value(RunResponse, payload)
     if isinstance(response, CompletedRunResponse):
@@ -1751,7 +1762,7 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
             stderr_encoding=response.stderr_encoding,
             exit_code=response.exit_code,
             run_id=response.run_id,
-            state=response.state or "completed",
+            state=_terminal_state(response.state, response.exit_code),
             fail_reason=_optional_str(payload.get("fail_reason")),
             memory_requested_mib=response.memory_requested_mib,
             memory_achieved_mib=response.memory_achieved_mib,
@@ -1790,11 +1801,13 @@ def _run_to_completed_result(run: RunRecord) -> CompletedRunResult:
     )
 
 
-def _run_status_response(payload: dict[str, Any]) -> RunRecord:
-    """Decode a run-status payload, converting ``stdout``/``stderr`` from their
-    wire strings to bytes so every output-bearing surface in this SDK is
-    consistent (see :class:`Run`)."""
-    wire = _decode_model(Run, payload)
+def _run_status_response(payload: dict[str, Any]) -> Run:
+    return _decode_model(Run, payload)
+
+
+def _decode_run_record(wire: Run) -> RunRecord:
+    """Project a wire run record into :class:`RunRecord`, decoding
+    ``stdout``/``stderr`` to bytes."""
     fields = dataclasses.asdict(wire)
     fields["stdout"] = _decode_bytes(wire.stdout, wire.stdout_encoding)
     fields["stderr"] = _decode_bytes(wire.stderr, wire.stderr_encoding)

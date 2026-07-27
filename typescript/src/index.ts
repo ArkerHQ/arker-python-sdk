@@ -232,14 +232,10 @@ export type Run = ApiSchema<"Run">;
 /** A run record with `stdout`/`stderr` decoded to bytes — what `getRun()`
  * returns.
  *
- * Every other output-bearing surface in this SDK — `run()`, and the polling
- * path behind it — hands back decoded bytes. `getRun()` previously returned
- * the raw wire record, so a base64 payload silently reached callers on the
- * documented background-then-poll workflow.
- *
- * A hand-written result type like `CompletedRunResult`, deliberately outside
- * the wire-contract assertions: `Run` stays the contract mirror, this is the
- * decoded projection of it. */
+ * The wire model carries them as encoded strings; every output-bearing surface
+ * in this SDK hands back bytes. A hand-written result type like
+ * `CompletedRunResult`, outside the wire-contract assertions: `Run` stays the
+ * contract mirror, this is its decoded projection. */
 export type RunRecord = Omit<Run, "stdout" | "stderr"> & {
   stdout: Uint8Array;
   stderr: Uint8Array;
@@ -970,7 +966,7 @@ export class VM {
     let delay = RUN_POLL_INITIAL_MS;
     for (;;) {
       await sleep(delay);
-      const run = await this.getRun(runId);
+      const run = await this.getRunResult(runId);
       if (TERMINAL_RUN_STATES.has(run.state)) return runToCompletedResult(run);
       if (Date.now() >= deadline) {
         throw new ArkerError(
@@ -1319,14 +1315,22 @@ export class VM {
     return this._client._request("GET", buildQuery(`${vmPath(this.id)}/runs`, query), undefined, this.baseUrl);
   }
 
-  async getRun(runId: string): Promise<RunRecord> {
-    const wire = await this._client._request<Run>(
+  /** The run record as sent on the wire: `stdout`/`stderr` are strings tagged
+   * by `stdout_encoding`/`stderr_encoding`. Use {@link getRunResult} for the
+   * decoded form. */
+  async getRun(runId: string): Promise<Run> {
+    return this._client._request<Run>(
       "GET",
       `${vmPath(this.id)}/runs/${pathSegment(runId)}`,
       undefined,
       this.baseUrl,
     );
-    return decodeWireRun(wire);
+  }
+
+  /** The run record with `stdout`/`stderr` decoded to bytes, matching what
+   * {@link run} returns. */
+  async getRunResult(runId: string): Promise<RunRecord> {
+    return decodeWireRun(await this.getRun(runId));
   }
 
   async cancelRun(runId: string): Promise<CancelRunResponse> {
@@ -1706,6 +1710,16 @@ function withoutUndefined(value: unknown): unknown {
   return output;
 }
 
+/** Terminal state for a finished run.
+ *
+ * A negative `exitCode` means no process status was obtained — the run was
+ * killed or the compute was lost — which is `"failed"`. Keeps the synchronous
+ * run result and `getRun()` reporting the same state for the same run. */
+function terminalRunState(state: unknown, exitCode: number): string {
+  if (exitCode < 0) return "failed";
+  return typeof state === "string" ? state : "completed";
+}
+
 function parseRunResponse(payload: unknown): RunResult {
   const body = objectPayload(payload, "run response");
   if (typeof body.stdout === "string") {
@@ -1713,15 +1727,16 @@ function parseRunResponse(payload: unknown): RunResult {
     const stdoutEncoding = stringField(body.stdout_encoding, "run response.stdout_encoding");
     const stderr = stringValue(body.stderr, "run response.stderr");
     const stderrEncoding = stringField(body.stderr_encoding, "run response.stderr_encoding");
+    const exitCode = numberField(body.exit_code, "run response.exit_code");
     return {
       type: "completed",
       runId: typeof body.run_id === "string" ? body.run_id : undefined,
-      state: typeof body.state === "string" ? body.state : "completed",
+      state: terminalRunState(body.state, exitCode),
       stdout: decodeBytes(stdout, stdoutEncoding),
       stdoutEncoding,
       stderr: decodeBytes(stderr, stderrEncoding),
       stderrEncoding,
-      exitCode: numberField(body.exit_code, "run response.exit_code"),
+      exitCode,
       failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
       memoryRequestedMib: optionalNumberOrNull(body.memory_requested_mib),
       memoryAchievedMib: optionalNumberOrNull(body.memory_achieved_mib),
@@ -1739,8 +1754,8 @@ function parseRunResponse(payload: unknown): RunResult {
 }
 
 /** Decode a wire run record into the public `Run`, converting `stdout`/`stderr`
- * from their encoded strings to bytes. The single place the run-status wire
- * shape becomes a caller-facing one. */
+ * from their encoded strings to bytes. The single boundary where the
+ * run-status wire shape becomes a caller-facing one. */
 function decodeWireRun(wire: Run): RunRecord {
   return {
     ...wire,
@@ -1753,9 +1768,8 @@ function decodeWireRun(wire: Run): RunRecord {
  * that a synchronous run() resolves to. The stored run carries no memory
  * override fields, so those stay undefined.
  *
- * `run.stdout`/`run.stderr` are already bytes — `decodeWireRun` decodes at the
- * wire boundary — so they pass through untouched. Decoding again would corrupt
- * base64 payloads. */
+ * `run.stdout`/`run.stderr` are already bytes — decoded at the wire boundary —
+ * so they pass through untouched. */
 function runToCompletedResult(run: RunRecord): CompletedRunResult {
   return {
     type: "completed",

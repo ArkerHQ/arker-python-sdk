@@ -333,6 +333,38 @@ async function testRunFailureReasonIsVisible(): Promise<void> {
   });
 }
 
+async function testPoliciesGetAndSet(): Promise<void> {
+  const doc = { policies: [{ action: "allow", domains: ["example.com"] }], mitm_domains: [] };
+
+  await withCapturedServer((_request, res) => jsonResponse(res, doc), async (baseUrl) => {
+    const got = await runCli(baseUrl, ["policies", "get", "vm_1"]);
+    assert.equal(got.code, 0);
+    assert.deepEqual(JSON.parse(stdoutText(got)), doc);
+  });
+
+  // `set` reads the document from stdin and PUTs it verbatim.
+  await withCapturedServer((_request, res) => jsonResponse(res, { ok: true }), async (baseUrl, requests) => {
+    const set = await runCli(baseUrl, ["policies", "set", "vm_1"], { stdin: JSON.stringify(doc) });
+    assert.equal(set.code, 0);
+    const put = requests.find((r) => r.method === "PUT");
+    assert.ok(put, "expected a PUT to the policies endpoint");
+    assert.ok(put!.url!.includes("/policies"), `unexpected url: ${put!.url}`);
+    assert.deepEqual(put!.body, doc);
+  });
+}
+
+async function testPoliciesSetRejectsInvalidJson(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, { ok: true }), async (baseUrl) => {
+    const bad = await runCli(baseUrl, ["policies", "set", "vm_1"], { stdin: "{not json" });
+    assert.notEqual(bad.code, 0);
+    assert.match(bad.stderr, /not valid JSON/);
+
+    const arr = await runCli(baseUrl, ["policies", "set", "vm_1"], { stdin: "[1,2]" });
+    assert.notEqual(arr.code, 0);
+    assert.match(arr.stderr, /must be a JSON object/);
+  });
+}
+
 async function testRunsGetUsesRunFormatter(): Promise<void> {
   const response = completedRun({
     run_id: "run_1",
@@ -646,5 +678,7 @@ await testShellSetupUsesPackagedCli();
 await testStructuredErrorsDoNotRepeatCode();
 await testFalseMutationResultsExitNonzero();
 await testRemainingHttpCommandSurface();
+await testPoliciesGetAndSet();
+await testPoliciesSetRejectsInvalidJson();
 
 console.log("PASS cli");

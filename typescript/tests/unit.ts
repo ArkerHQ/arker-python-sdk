@@ -918,6 +918,91 @@ function testSurfaceStubClassificationUsesStructuredErrorCodes(): void {
   assert.equal(isExpectedSurfaceStub("internal", "request failed"), false);
 }
 
+async function testRunReportsFailedWhenPlatformKilledTheRun(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
+    200,
+    {
+      run_id: "01RUN",
+      state: "completed",
+      stdout: "",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+      exit_code: -1,
+    },
+  );
+
+  const result = await client(fetch).vm("vm_1").run("sleep 30", { timeout: 2 });
+
+  const completed = result as CompletedRunResult;
+  assert.equal(completed.state, "failed");
+  assert.equal(completed.exitCode, -1);
+}
+
+async function testRunKeepsCompletedForNonzeroProgramExit(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
+    200,
+    {
+      run_id: "01RUN",
+      state: "completed",
+      stdout: "",
+      stdout_encoding: "utf-8",
+      stderr: "boom\n",
+      stderr_encoding: "utf-8",
+      exit_code: 7,
+    },
+  );
+
+  const result = await client(fetch).vm("vm_1").run("exit 7");
+
+  const completed = result as CompletedRunResult;
+  assert.equal(completed.state, "completed");
+  assert.equal(completed.exitCode, 7);
+}
+
+async function testRunAndGetRunAgreeOnStateForKilledRun(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs",
+    200,
+    {
+      run_id: "01RUN",
+      state: "completed",
+      stdout: "",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+      exit_code: -1,
+    },
+  );
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://test.invalid/api/v1/vms/vm_1/runs/01RUN",
+    200,
+    {
+      run_id: "01RUN",
+      state: "failed",
+      started_at: "2026-07-27T00:00:00Z",
+      exit_code: null,
+      fail_reason: "the compute environment became unavailable",
+      stdout: "",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+    },
+  );
+
+  const vm = client(fetch).vm("vm_1");
+  const sync = (await vm.run("sleep 30", { timeout: 2 })) as CompletedRunResult;
+  const stored = await vm.getRunResult("01RUN");
+
+  assert.equal(sync.state, "failed");
+  assert.equal(stored.state, "failed");
+}
+
 await testConnectPtyCreatesSessionAndUsesBearerHeader();
 await testConnectPtyUsesTicketForBrowserWebSocket();
 await testConnectPtyPassesCancelTtlSecs();
@@ -930,5 +1015,8 @@ await testGetAndSetPolicies();
 await testCreateFilesystem();
 await testCancelRun();
 await testSessionCrudLifecycle();
+await testRunReportsFailedWhenPlatformKilledTheRun();
+await testRunKeepsCompletedForNonzeroProgramExit();
+await testRunAndGetRunAgreeOnStateForKilledRun();
 
 console.log("PASS unit");

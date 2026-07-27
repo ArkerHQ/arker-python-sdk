@@ -1,6 +1,6 @@
 {
   "name": "@arker-ai/sdk",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "TypeScript SDK for the Arker virtual computer platform — spawn sandboxed VMs, run code, sync files.",
   "type": "module",
   "main": "./dist/index.cjs",

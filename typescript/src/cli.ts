@@ -30,6 +30,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
 import { bridgePty } from "./cli-pty.js";
 import type {
+  PolicyDoc,
   RunRecord,
   VM,
   RunResult,
@@ -144,6 +145,10 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     "session-id": { type: "string" },
     "source-vm-name": { type: "string" },
     "vm-id": { type: "string" },
+  },
+  policies: {
+    ...GLOBAL_OPTIONS,
+    file: { type: "string" },
   },
   sync: GLOBAL_OPTIONS,
   syncs: {
@@ -592,8 +597,7 @@ function printStoredRun(run: RunRecord, json: boolean): void {
     type: "completed",
     runId: run.run_id,
     state: run.state,
-    // getRun() decodes at the wire boundary; decoding again would corrupt
-    // base64 payloads.
+    // Already decoded at the wire boundary.
     stdout: run.stdout,
     stderr: run.stderr,
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
@@ -655,7 +659,7 @@ async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
     case "get": {
       const [vm, runId] = rest;
       if (!vm || !runId) die("usage: arker runs get <vm_id> <run_id>");
-      printStoredRun(await client.vm(vm).getRun(runId), Boolean(args.flags.json));
+      printStoredRun(await client.vm(vm).getRunResult(runId), Boolean(args.flags.json));
       return;
     }
     case "rm":
@@ -714,6 +718,46 @@ async function cmdSessions(args: ParsedArgs, client: Arker): Promise<void> {
     }
     default:
       die(`usage: arker sessions <ls|get|create|rm> ...`);
+  }
+}
+
+// Policies are a whole-document GET/PUT, so `set` replaces the document. It is
+// read from --file or stdin because PolicyDoc is nested and does not flatten
+// onto argv.
+async function cmdPolicies(args: ParsedArgs, client: Arker): Promise<void> {
+  const sub = args.positional[0];
+  const vm = args.positional[1];
+  switch (sub) {
+    case undefined:
+    case "get": {
+      if (!vm) die("usage: arker policies get <vm_id>");
+      return out(await client.vm(vm).getPolicies());
+    }
+    case "set": {
+      if (!vm) die("usage: arker policies set <vm_id> --file <doc.json>   (or pipe the document on stdin)");
+      const file = args.flags.file as string | undefined;
+      let raw: string;
+      if (file) {
+        if (!existsSync(file)) die(`no such file: ${file}`);
+        raw = readFileSync(file, "utf8");
+      } else if (stdinHasDataSource()) {
+        raw = new TextDecoder().decode(await readAllStdin());
+      } else {
+        return die("provide the policy document via --file <path> or on stdin");
+      }
+      let doc: unknown;
+      try {
+        doc = JSON.parse(raw);
+      } catch (err) {
+        return die(`policy document is not valid JSON: ${(err as Error).message}`);
+      }
+      if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+        return die("policy document must be a JSON object");
+      }
+      return out(await client.vm(vm).setPolicies(doc as PolicyDoc));
+    }
+    default:
+      return die(`unknown policies subcommand: ${sub}. Use get|set.`);
   }
 }
 
@@ -1049,6 +1093,8 @@ async function main(): Promise<void> {
         return await cmdSync(args, client);
       case "syncs":
         return await cmdSyncs(args, client);
+      case "policies":
+        return await cmdPolicies(args, client);
       case "shell":
         return await cmdShell(args, client);
       // Resources.
