@@ -30,7 +30,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
 import { bridgePty } from "./cli-pty.js";
 import type {
-  Run,
+  RunRecord,
   VM,
   RunResult,
   Vm,
@@ -583,7 +583,7 @@ function printRunResult(result: RunResult, json: boolean): void {
   printCompletedRun(result, json);
 }
 
-function printStoredRun(run: Run, json: boolean): void {
+function printStoredRun(run: RunRecord, json: boolean): void {
   if (run.state === "running") {
     out({ run_id: run.run_id, state: run.state });
     return;

@@ -58,7 +58,7 @@ from .generated.api_models import (
     PatchVmRequest,
     PolicyDoc,
     PtyTicketResponse,
-    Run as _WireRun,
+    Run,
     RunRequest,
     RunResponse,
     RunSummary,
@@ -195,8 +195,9 @@ SessionInfo = Session
 
 
 @dataclasses.dataclass(frozen=True)
-class Run(_WireRun):
-    """A run record with ``stdout``/``stderr`` decoded to bytes.
+class RunRecord(Run):
+    """A run record with ``stdout``/``stderr`` decoded to bytes — what
+    :meth:`VM.get_run` returns.
 
     The wire model carries them as strings tagged by ``*_encoding`` (``utf-8``
     or ``base64``). Every other output-bearing surface in this SDK — run(),
@@ -209,9 +210,8 @@ class Run(_WireRun):
     redeclared without defaults so they keep their original positions.
 
     Narrowing those two to ``bytes`` is not substitutable for the wire model,
-    which a strict checker flags. That is accepted deliberately: the wire type
-    is internal (``_WireRun``), only this decoded form is ever handed to a
-    caller, and restating ~18 generated fields here would silently drift from
+    which a strict checker flags. That is accepted deliberately: ``Run`` stays
+    the exact wire model, only this decoded form is handed to a caller, and restating ~18 generated fields here would silently drift from
     openapi.json the next time the schema grows a field.
     """
 
@@ -1124,7 +1124,7 @@ class VM:
         payload = self._client._request("GET", path, base_url=self.base_url)
         return _decode_model(ListRunsResponse, payload)
 
-    def get_run(self, run_id: str) -> Run:
+    def get_run(self, run_id: str) -> RunRecord:
         return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
 
     def cancel_run(self, run_id: str) -> CancelRunResponse:
@@ -1767,7 +1767,7 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     raise ArkerError("internal", "unrecognized run response shape", 200)
 
 
-def _run_to_completed_result(run: Run) -> CompletedRunResult:
+def _run_to_completed_result(run: RunRecord) -> CompletedRunResult:
     """Project a terminal run-status (:class:`Run`) into the
     :class:`CompletedRunResult` a synchronous :meth:`VM.run` resolves to. The
     stored run carries no memory-override fields, so those stay ``None``.
@@ -1790,15 +1790,15 @@ def _run_to_completed_result(run: Run) -> CompletedRunResult:
     )
 
 
-def _run_status_response(payload: dict[str, Any]) -> Run:
+def _run_status_response(payload: dict[str, Any]) -> RunRecord:
     """Decode a run-status payload, converting ``stdout``/``stderr`` from their
     wire strings to bytes so every output-bearing surface in this SDK is
     consistent (see :class:`Run`)."""
-    wire = _decode_model(_WireRun, payload)
+    wire = _decode_model(Run, payload)
     fields = dataclasses.asdict(wire)
     fields["stdout"] = _decode_bytes(wire.stdout, wire.stdout_encoding)
     fields["stderr"] = _decode_bytes(wire.stderr, wire.stderr_encoding)
-    return Run(**fields)
+    return RunRecord(**fields)
 
 
 def _org_runs_response(payload: dict[str, Any]) -> ListOrgRunsResponse:
