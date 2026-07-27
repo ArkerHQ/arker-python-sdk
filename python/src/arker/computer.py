@@ -58,7 +58,7 @@ from .generated.api_models import (
     PatchVmRequest,
     PolicyDoc,
     PtyTicketResponse,
-    Run,
+    Run as _WireRun,
     RunRequest,
     RunResponse,
     RunSummary,
@@ -192,6 +192,31 @@ VmSummary = Vm
 # Backwards-compat aliases — pre-rename names. Drop in a future major.
 VmInfo = Vm
 SessionInfo = Session
+
+
+@dataclasses.dataclass(frozen=True)
+class Run(_WireRun):
+    """A run record with ``stdout``/``stderr`` decoded to bytes.
+
+    The wire model carries them as strings tagged by ``*_encoding`` (``utf-8``
+    or ``base64``). Every other output-bearing surface in this SDK — run(),
+    and the polling path behind it — hands back decoded bytes, so get_run()
+    does too; returning the raw wire string here meant a base64 payload
+    silently reached callers on the documented background-then-poll workflow.
+
+    Subclasses the generated model rather than restating its fields, so
+    schema additions flow through untouched. ``stdout``/``stderr`` are
+    redeclared without defaults so they keep their original positions.
+
+    Narrowing those two to ``bytes`` is not substitutable for the wire model,
+    which a strict checker flags. That is accepted deliberately: the wire type
+    is internal (``_WireRun``), only this decoded form is ever handed to a
+    caller, and restating ~18 generated fields here would silently drift from
+    openapi.json the next time the schema grows a field.
+    """
+
+    stdout: bytes  # pyright: ignore[reportIncompatibleVariableOverride]
+    stderr: bytes  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1745,14 +1770,18 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
 def _run_to_completed_result(run: Run) -> CompletedRunResult:
     """Project a terminal run-status (:class:`Run`) into the
     :class:`CompletedRunResult` a synchronous :meth:`VM.run` resolves to. The
-    stored run carries no memory-override fields, so those stay ``None``."""
+    stored run carries no memory-override fields, so those stay ``None``.
+
+    ``run.stdout``/``run.stderr`` are already bytes — :func:`_run_status_response`
+    decodes at the wire boundary — so they pass through untouched here. Decoding
+    again would corrupt base64 payloads."""
     exit_code = run.exit_code
     if exit_code is None:
         exit_code = 0 if run.state == "completed" else 1
     return CompletedRunResult(
-        stdout=_decode_bytes(run.stdout, run.stdout_encoding),
+        stdout=run.stdout,
         stdout_encoding=run.stdout_encoding,
-        stderr=_decode_bytes(run.stderr, run.stderr_encoding),
+        stderr=run.stderr,
         stderr_encoding=run.stderr_encoding,
         exit_code=exit_code,
         run_id=run.run_id,
@@ -1762,7 +1791,14 @@ def _run_to_completed_result(run: Run) -> CompletedRunResult:
 
 
 def _run_status_response(payload: dict[str, Any]) -> Run:
-    return _decode_model(Run, payload)
+    """Decode a run-status payload, converting ``stdout``/``stderr`` from their
+    wire strings to bytes so every output-bearing surface in this SDK is
+    consistent (see :class:`Run`)."""
+    wire = _decode_model(_WireRun, payload)
+    fields = dataclasses.asdict(wire)
+    fields["stdout"] = _decode_bytes(wire.stdout, wire.stdout_encoding)
+    fields["stderr"] = _decode_bytes(wire.stderr, wire.stderr_encoding)
+    return Run(**fields)
 
 
 def _org_runs_response(payload: dict[str, Any]) -> ListOrgRunsResponse:

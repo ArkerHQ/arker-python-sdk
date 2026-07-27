@@ -592,8 +592,10 @@ function printStoredRun(run: Run, json: boolean): void {
     type: "completed",
     runId: run.run_id,
     state: run.state,
-    stdout: decodeOutput(run.stdout, run.stdout_encoding),
-    stderr: decodeOutput(run.stderr, run.stderr_encoding),
+    // getRun() decodes at the wire boundary; decoding again would corrupt
+    // base64 payloads.
+    stdout: run.stdout,
+    stderr: run.stderr,
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
     failReason: run.fail_reason,
   }, json);
@@ -629,11 +631,6 @@ function printCompletedRun(result: PrintableRun, json: boolean): void {
 function runExitCode(state: string, exitCode: number): number {
   if (state === "failed" && exitCode === 0) return 1;
   return exitCode;
-}
-
-function decodeOutput(value: string, encoding: string): Uint8Array {
-  if (encoding.toLowerCase() === "base64") return Buffer.from(value, "base64");
-  return new TextEncoder().encode(value);
 }
 
 async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {

@@ -224,7 +224,21 @@ export type NetworkStatus = {
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
-export type Run = ApiSchema<"Run">;
+/** The run record exactly as it arrives on the wire: `stdout`/`stderr` are
+ * strings tagged by `stdoutEncoding`/`stderrEncoding` (`utf-8` or `base64`).
+ * Internal — `getRun()` decodes before handing a record to a caller. */
+type WireRun = ApiSchema<"Run">;
+
+/** A run record with `stdout`/`stderr` decoded to bytes.
+ *
+ * Every other output-bearing surface in this SDK — `run()`, and the polling
+ * path behind it — returns decoded bytes, so `getRun()` does too. Returning
+ * the raw wire string here meant a base64 payload silently reached callers on
+ * the documented background-then-poll workflow. */
+export type Run = Omit<WireRun, "stdout" | "stderr"> & {
+  stdout: Uint8Array;
+  stderr: Uint8Array;
+};
 export type RunSummary = ApiSchema<"RunSummary">;
 export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
 export type OrgRunListRow = ApiSchema<"OrgRunListRow">;
@@ -1301,7 +1315,13 @@ export class VM {
   }
 
   async getRun(runId: string): Promise<Run> {
-    return this._client._request("GET", `${vmPath(this.id)}/runs/${pathSegment(runId)}`, undefined, this.baseUrl);
+    const wire = await this._client._request<WireRun>(
+      "GET",
+      `${vmPath(this.id)}/runs/${pathSegment(runId)}`,
+      undefined,
+      this.baseUrl,
+    );
+    return decodeWireRun(wire);
   }
 
   async cancelRun(runId: string): Promise<CancelRunResponse> {
@@ -1713,17 +1733,32 @@ function parseRunResponse(payload: unknown): RunResult {
   throw new ArkerError("internal", "unrecognized run response shape", 200);
 }
 
+/** Decode a wire run record into the public `Run`, converting `stdout`/`stderr`
+ * from their encoded strings to bytes. The single place the run-status wire
+ * shape becomes a caller-facing one. */
+function decodeWireRun(wire: WireRun): Run {
+  return {
+    ...wire,
+    stdout: decodeBytes(wire.stdout, wire.stdout_encoding),
+    stderr: decodeBytes(wire.stderr, wire.stderr_encoding),
+  };
+}
+
 /** Project a terminal run-status (`Run`) into the `CompletedRunResult` shape
  * that a synchronous run() resolves to. The stored run carries no memory
- * override fields, so those stay undefined. */
+ * override fields, so those stay undefined.
+ *
+ * `run.stdout`/`run.stderr` are already bytes — `decodeWireRun` decodes at the
+ * wire boundary — so they pass through untouched. Decoding again would corrupt
+ * base64 payloads. */
 function runToCompletedResult(run: Run): CompletedRunResult {
   return {
     type: "completed",
     runId: run.run_id,
     state: run.state,
-    stdout: decodeBytes(run.stdout, run.stdout_encoding),
+    stdout: run.stdout,
     stdoutEncoding: run.stdout_encoding,
-    stderr: decodeBytes(run.stderr, run.stderr_encoding),
+    stderr: run.stderr,
     stderrEncoding: run.stderr_encoding,
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
     failReason: run.fail_reason ?? null,
