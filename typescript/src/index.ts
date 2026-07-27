@@ -184,6 +184,12 @@ export type SyncEntryError = ApiSchema<"SyncEntryError">;
 
 // ── Runs ───────────────────────────────────────────────────────────
 export type RunRequest = ApiSchema<"RunRequest">;
+/**
+ * POSIX signal deliverable to a session's foreground process group via
+ * {@link VM.signal}. Derived from the generated schema so it stays in sync
+ * with `openapi.json` rather than drifting as a hand-written union.
+ */
+export type RunSignal = NonNullable<RunRequest["signal"]>;
 export type RunOptions = Partial<Omit<RunRequest, "command">> & {
   /**
    * Optional idempotency key for retrying the run. Sent as the
@@ -870,6 +876,63 @@ export class VM {
     // background:true is a pure pass-through — return the ack immediately.
     if (result.type === "background" && options.background !== true) {
       return this._awaitRun(result.runId, options.timeout);
+    }
+    return result;
+  }
+
+  /**
+   * Deliver a POSIX signal to a session's foreground process group.
+   *
+   * Sent as `POST /v1/vms/{id}/runs` with `signal` and no `command`; the
+   * service acknowledges immediately and returns no run id.
+   *
+   * This is the recovery path when a session is stuck — e.g. an interactive
+   * program (`python3`, `psql`, `cat`) holds the terminal and never returns to
+   * a prompt the run matcher recognises. Nothing else clears that state:
+   * {@link cancelRun} cancels the run record but not the process, a run's
+   * `timeout` does not apply once a REPL owns the terminal, and attaching a
+   * PTY to a busy session does not get through. A signal request
+   * short-circuits before the exec dispatch, so it is not queued behind the
+   * stuck run.
+   *
+   * `SIGKILL` is the reliable choice. `SIGINT` behaves exactly as Ctrl-C would
+   * — a Python REPL catches it, prints `KeyboardInterrupt` and keeps running —
+   * so it will not free a session held by one.
+   *
+   * Requires a live runtime: a VM that has been forked but never run throws
+   * `not_found` ("no running runtime to signal"), since there is no session
+   * whose foreground group could receive it.
+   *
+   * ```ts
+   * await vm.signal("SIGKILL");              // default session
+   * await vm.signal("SIGKILL", { sessionIdx: 0 });
+   * await vm.run("echo back");               // session is usable again
+   * ```
+   */
+  async signal(
+    signal: RunSignal,
+    options: { sessionId?: string; sessionIdx?: number } = {},
+  ): Promise<CompletedRunResult> {
+    const request: RunRequest = {
+      signal,
+      ...(options.sessionId !== undefined ? { session_id: options.sessionId } : {}),
+      ...(options.sessionIdx !== undefined ? { session_idx: options.sessionIdx } : {}),
+    } as RunRequest;
+    const response = await this._client._request<unknown>(
+      "POST",
+      `${vmPath(this.id)}/runs`,
+      request,
+      this.baseUrl,
+    );
+    const result = parseRunResponse(response);
+    if (result.type === "background") {
+      // The contract says a signal request never returns a run id; treat a
+      // background ack as a protocol violation rather than silently polling.
+      throw new ArkerError(
+        "unexpected_response",
+        `signal ${signal} unexpectedly returned a background run id`,
+        502,
+      );
     }
     return result;
   }
