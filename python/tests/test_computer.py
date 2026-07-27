@@ -1059,3 +1059,85 @@ def test_session_crud_lifecycle() -> None:
         )
         deleted = vm.delete_session("sess_1")
         assert deleted.deleted is True
+
+
+def test_run_reports_failed_when_platform_killed_the_run() -> None:
+    """A negative exit code means no process status was obtained."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        {
+            "run_id": "01RUN",
+            "state": "completed",  # service reports the enum variant's name
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": -1,
+        },
+    )
+    with use_transport(t):
+        result = client().vm("vm_1").run("sleep 30", timeout=2)
+    assert result.state == "failed"
+    assert result.exit_code == -1
+
+
+def test_run_keeps_completed_for_nonzero_program_exit() -> None:
+    """A non-zero status is the program's failure, not the platform's."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        {
+            "run_id": "01RUN",
+            "state": "completed",
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "boom\n",
+            "stderr_encoding": "utf-8",
+            "exit_code": 7,
+        },
+    )
+    with use_transport(t):
+        result = client().vm("vm_1").run("exit 7")
+    assert result.state == "completed"
+    assert result.exit_code == 7
+
+
+def test_run_and_get_run_agree_on_state_for_a_killed_run() -> None:
+    """The two paths report the same state for the same run."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        {
+            "run_id": "01RUN",
+            "state": "completed",
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": -1,
+        },
+    )
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/01RUN"),
+        200,
+        {
+            "run_id": "01RUN",
+            "state": "failed",
+            "started_at": "2026-07-27T00:00:00Z",
+            "exit_code": None,
+            "fail_reason": "the compute environment became unavailable",
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+        },
+    )
+    with use_transport(t):
+        vm = client().vm("vm_1")
+        sync = vm.run("sleep 30", timeout=2)
+        stored = vm.get_run_result("01RUN")
+    assert sync.state == stored.state == "failed"

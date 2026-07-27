@@ -111,8 +111,7 @@ async function main(): Promise<void> {
       await new Promise((r) => setTimeout(r, 1000));
       run = await vm.getRun(bg.runId);
     }
-    // getRun() returns decoded bytes; render for the textual assertions below.
-      const out = new TextDecoder().decode(run.stdout ?? new Uint8Array()).trim();
+    const out = (run.stdout ?? "").trim();
     console.log(`  workload: state=${run.state} exit=${run.exit_code} tail=[${out.slice(-60)}]`);
     assert(run.state === "completed" && run.exit_code === 0, `workload did not complete cleanly: state=${run.state} exit=${run.exit_code}`);
     assert(/WL_DONE/.test(out), "workload did not reach WL_DONE (writes+compute broke under concurrent FIFREEZE)");
