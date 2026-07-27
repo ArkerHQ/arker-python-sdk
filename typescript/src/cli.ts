@@ -30,7 +30,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
 import { bridgePty } from "./cli-pty.js";
 import type {
-  Run,
+  RunRecord,
   VM,
   RunResult,
   Vm,
@@ -583,7 +583,7 @@ function printRunResult(result: RunResult, json: boolean): void {
   printCompletedRun(result, json);
 }
 
-function printStoredRun(run: Run, json: boolean): void {
+function printStoredRun(run: RunRecord, json: boolean): void {
   if (run.state === "running") {
     out({ run_id: run.run_id, state: run.state });
     return;
@@ -592,8 +592,10 @@ function printStoredRun(run: Run, json: boolean): void {
     type: "completed",
     runId: run.run_id,
     state: run.state,
-    stdout: decodeOutput(run.stdout, run.stdout_encoding),
-    stderr: decodeOutput(run.stderr, run.stderr_encoding),
+    // getRun() decodes at the wire boundary; decoding again would corrupt
+    // base64 payloads.
+    stdout: run.stdout,
+    stderr: run.stderr,
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
     failReason: run.fail_reason,
   }, json);
@@ -629,11 +631,6 @@ function printCompletedRun(result: PrintableRun, json: boolean): void {
 function runExitCode(state: string, exitCode: number): number {
   if (state === "failed" && exitCode === 0) return 1;
   return exitCode;
-}
-
-function decodeOutput(value: string, encoding: string): Uint8Array {
-  if (encoding.toLowerCase() === "base64") return Buffer.from(value, "base64");
-  return new TextEncoder().encode(value);
 }
 
 async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
