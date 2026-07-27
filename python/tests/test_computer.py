@@ -459,7 +459,13 @@ def test_run_sends_policies() -> None:
             {
                 "type": "outbound",
                 "action": "deny",
-                "match": {"protocol": "tcp", "ports": [443]},
+                # `PolicyMatch` has no `protocol` field (real fields: ports, ips,
+                # hosts, methods, paths, headers, body_contains) — a leftover
+                # "protocol": "tcp" here only ever passed because the
+                # `_decode_value` bug (see test_get_and_set_policies) skipped
+                # nested validation entirely, so an unreal field was silently
+                # never checked. Fixed now that nested decode is fixed.
+                "match": {"ports": [443]},
             }
         ]
     }
@@ -956,19 +962,15 @@ def test_get_and_set_policies() -> None:
         updated = client().vm("vm_1").set_policies({
             "policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}],
         })
-    # BUG (found writing this test): `PolicyDoc.policies` is typed
-    # `list[PolicyEntry] | None`. `_decode_value`'s Union branch only
-    # recurses into a member when the member itself is a dataclass type;
-    # `list[PolicyEntry]` is a generic alias, not a dataclass, so it's
-    # never matched and the raw list-of-dicts passes through unconverted.
-    # Entries stay plain dicts instead of `PolicyEntry` — `.type` attribute
-    # access raises AttributeError; only `["type"]` dict access works. The
-    # same shape (`list[SshPublicKeyInfo] | None`) affects
-    # `NetworkInfo.ssh_public_keys` too. Fixing `_decode_value` is a
-    # production-code change outside this test-only pass; asserting the
-    # current (dict) shape here so a future fix is a visible, deliberate
-    # diff instead of a silent behavior change.
-    assert updated.policies[0]["type"] == "outbound"
+    # Regression coverage for a bug found writing this test: `PolicyDoc.policies`
+    # is typed `list[PolicyEntry] | None`. `_decode_value`'s Union branch used to
+    # only recurse when a member was itself a bare dataclass type — `list[PolicyEntry]`
+    # is a generic alias, not a dataclass, so it was never matched and the raw
+    # list-of-dicts passed through unconverted (entries stayed plain dicts;
+    # `.type` attribute access raised AttributeError). Fixed in `_decode_value`
+    # to also recurse into a single non-null Optional[list[...]]/Optional[dict[...]]
+    # member. Assert the real dataclass here so this can't silently regress.
+    assert updated.policies[0].type == "outbound"
     assert updated.mitm_domains == ["example.com"]
     put_call = next(c for c in t.calls if c["method"] == "PUT")
     assert b"example.com" in put_call["body"]

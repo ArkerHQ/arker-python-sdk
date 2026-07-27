@@ -1572,9 +1572,10 @@ def _decode_value(annotation: Any, value: Any) -> Any:
         _, value_type = get_args(annotation)
         return {key: _decode_value(value_type, item) for key, item in value.items()}
     if origin is types.UnionType:
+        args = get_args(annotation)
         model_types = [
             member
-            for member in get_args(annotation)
+            for member in args
             if isinstance(member, type) and dataclasses.is_dataclass(member)
         ]
         if isinstance(value, dict):
@@ -1595,6 +1596,17 @@ def _decode_value(annotation: Any, value: Any) -> Any:
             if candidates:
                 _, model_type = max(candidates, key=lambda candidate: candidate[0])
                 return _decode_model(model_type, value)
+        # Optional[list[Dataclass]] / Optional[dict[str, Dataclass]]: the
+        # single non-null member is itself a parameterized container, not a
+        # bare dataclass type (that case is handled above), so it never
+        # matched `model_types` and fell through to a raw passthrough —
+        # e.g. PolicyDoc.policies: list[PolicyEntry] | None decoded as
+        # plain dicts instead of PolicyEntry instances. Recurse into the
+        # single non-null member so its own list/dict branch above can
+        # decode each item.
+        non_none = [member for member in args if member is not type(None)]
+        if len(non_none) == 1 and get_origin(non_none[0]) in (list, dict):
+            return _decode_value(non_none[0], value)
         return value
     if isinstance(annotation, type) and dataclasses.is_dataclass(annotation):
         return _decode_model(annotation, value)
