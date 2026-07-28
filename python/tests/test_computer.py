@@ -77,8 +77,8 @@ def test_constructor_reads_env(monkeypatch) -> None:
 
 def test_fork_posts_directly_to_source_vm() -> None:
     t = FakeTransport()
-    # Contract 0.3 routes forks to `/v1/fork`; the Computer.fork()
-    # ergonomic auto-fills `source_vm_id` from the owning Computer.
+    # Contract 0.3 routes forks to `/v1/fork`, with the source vm id
+    # passed in the body.
     t.add_json(
         lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
         200,
@@ -96,7 +96,8 @@ def test_fork_posts_directly_to_source_vm() -> None:
     )
 
     with use_transport(t):
-        vm = client().vm("ubuntu").fork(
+        vm = client().fork(
+            source_vm_id="ubuntu",
             name="demo",
             description="CI runner",
             ssh_public_keys=["ssh-ed25519 AAAA test@example.com"],
@@ -149,7 +150,7 @@ def test_fork_rejects_legacy_id_response() -> None:
     )
 
     with use_transport(t), pytest.raises(TypeError, match="outside openapi.json"):
-        client().vm("ubuntu").fork()
+        client().fork(source_vm_id="ubuntu")
 
 
 def test_region_routes_goldens_to_main_endpoint() -> None:
@@ -172,57 +173,10 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
 
     with use_transport(t):
         arker = region_client()
-        vm = arker.vm("ubuntu").fork()
+        vm = arker.fork(source_vm_id="ubuntu")
 
     assert arker.base_url == "https://aws-us-west-2.arker.ai/api"
-    assert arker.burst_base_url == "https://aws-burst-us-west-2.arker.ai/api"
     assert vm.base_url == "https://aws-us-west-2.arker.ai/api"
-
-
-def test_region_routes_arkuntu_alias_to_burst_endpoint() -> None:
-    t = FakeTransport()
-    t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/fork",
-        200,
-        {
-            "vm_id": "vmh-burst-child",
-            "owner_org_id": "owner",
-            "created_at": "now",
-            "description": None,
-            "public": False,
-            "state": "idle",
-            "sessions": [],
-            "network": {},
-            "resources": {},
-        },
-    )
-
-    with use_transport(t):
-        vm = region_client().vm("arkuntu").fork()
-
-    assert vm.id == "vmh-burst-child"
-    assert vm.base_url == "https://aws-burst-us-west-2.arker.ai/api"
-
-
-def test_region_routes_burst_vm_ids_to_burst_endpoint() -> None:
-    t = FakeTransport()
-    # Contract 0.3 renamed per-VM run endpoint from `/run` to `/runs`.
-    t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs",
-        200,
-        {
-            "stdout": "hi\n",
-            "stdout_encoding": "utf-8",
-            "stderr": "",
-            "stderr_encoding": "utf-8",
-            "exit_code": 0,
-        },
-    )
-
-    with use_transport(t):
-        region_client().vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hi")
-
-    assert t.calls[0]["url"] == "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs"
 
 
 def test_list_uses_configured_base_url() -> None:
@@ -372,8 +326,10 @@ def test_run_sends_command_without_default_session_id() -> None:
         result = client().vm("vm_1").run("printf hi")
 
     assert isinstance(result, sdk.CompletedRunResult)
-    assert result.stdout == b"hi\n"
-    assert result.stderr == b""
+    assert result.stdout == "hi\n"
+    assert result.stdout_bytes == b"hi\n"
+    assert result.stderr == ""
+    assert result.stderr_bytes == b""
     assert result.exit_code == 0
     assert result.memory_requested_mib == 1024
     assert result.memory_achieved_mib == 1536
@@ -413,7 +369,8 @@ def test_sync_run_polls_backgrounded_run_to_completion(monkeypatch) -> None:
     assert result.run_id == "run_bg"
     assert result.state == "completed"
     assert result.exit_code == 0
-    assert result.stdout == b"done\n"
+    assert result.stdout == "done\n"
+    assert result.stdout_bytes == b"done\n"
     # POST + 2 polls.
     assert [c["method"] for c in t.calls] == ["POST", "GET", "GET"]
 
@@ -769,7 +726,8 @@ def test_fork_sends_durable_flag() -> None:
     )
 
     with use_transport(t):
-        client().vm("ubuntu").fork(
+        client().fork(
+            source_vm_id="ubuntu",
             durable=True,
             ssh_public_keys=["ssh-ed25519 AAAA test@example"],
             policies={"policies": []},
@@ -806,7 +764,7 @@ def test_fork_sends_disk_only_layers() -> None:
     )
 
     with use_transport(t):
-        client().vm("ubuntu").fork(layers=["disk"])
+        client().fork(source_vm_id="ubuntu", layers=["disk"])
 
     # Computer.fork auto-fills source_vm_id; disk defaults to True.
     assert json.loads(t.calls[0]["body"]) == {
@@ -837,7 +795,7 @@ def test_fork_omits_layers_by_default() -> None:
     )
 
     with use_transport(t):
-        client().vm("ubuntu").fork()
+        client().fork(source_vm_id="ubuntu")
 
     assert "layers" not in json.loads(t.calls[0]["body"])
 
@@ -1139,5 +1097,124 @@ def test_run_and_get_run_agree_on_state_for_a_killed_run() -> None:
     with use_transport(t):
         vm = client().vm("vm_1")
         sync = vm.run("sleep 30", timeout=2)
-        stored = vm.get_run_result("01RUN")
+        stored = vm.get_run("01RUN")
     assert sync.state == stored.state == "failed"
+
+
+# ── Binary output ──────────────────────────────────────────────────
+# A run can emit anything: an image, an archive, random bytes. The text view is
+# lossy for those by definition, so `*_bytes` must round-trip them exactly.
+
+# 1x1 PNG. Starts with 0x89, which is not a valid UTF-8 start byte, so decoding
+# to text mangles it — that is the whole point of keeping the bytes.
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _binary_run_body(payload: bytes) -> dict[str, Any]:
+    return {
+        "stdout": base64.b64encode(payload).decode(),
+        "stdout_encoding": "base64",
+        "stderr": "",
+        "stderr_encoding": "utf-8",
+        "exit_code": 0,
+    }
+
+
+def test_run_returns_image_bytes_intact_and_text_is_lossy() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        _binary_run_body(PNG_1X1),
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("cat photo.png")
+
+    # The bytes survive exactly — you can write them straight to a file.
+    assert result.stdout_bytes == PNG_1X1
+    assert result.stdout_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(result.stdout_bytes) == len(PNG_1X1)
+    # The text view is lossy for binary, and must not raise.
+    assert isinstance(result.stdout, str)
+    assert "�" in result.stdout
+
+
+def test_get_run_returns_image_bytes_intact() -> None:
+    t = FakeTransport()
+    body = _binary_run_body(PNG_1X1)
+    body.update({"run_id": "run_1", "state": "completed", "started_at": "now"})
+    t.add_json(lambda method, url: method == "GET" and url.endswith("/runs/run_1"), 200, body)
+
+    with use_transport(t):
+        stored = client().vm("vm_1").get_run("run_1")
+
+    assert stored.stdout_bytes == PNG_1X1
+    assert "�" in stored.stdout
+
+
+def test_run_and_get_run_agree_on_binary_output() -> None:
+    """The two paths decode the same wire payload identically — the asymmetry
+    that made `get_run` return encoded strings is what broke callers."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        _binary_run_body(PNG_1X1),
+    )
+    stored_body = _binary_run_body(PNG_1X1)
+    stored_body.update({"run_id": "run_1", "state": "completed", "started_at": "now"})
+    t.add_json(lambda method, url: method == "GET" and url.endswith("/runs/run_1"), 200, stored_body)
+
+    with use_transport(t):
+        vm = client().vm("vm_1")
+        live = vm.run("cat photo.png")
+        stored = vm.get_run("run_1")
+
+    assert live.stdout_bytes == stored.stdout_bytes == PNG_1X1
+    assert live.stdout == stored.stdout
+
+
+def test_every_byte_value_round_trips() -> None:
+    """All 256 byte values, including NUL and the invalid-UTF-8 range. Text
+    decoding collapses many of these to U+FFFD; the bytes must not."""
+    payload = bytes(range(256))
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        _binary_run_body(payload),
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("cat /dev/urandom")
+
+    assert result.stdout_bytes == payload
+    assert len(result.stdout_bytes) == 256
+    # Lossy as text: distinct bytes collapse onto the replacement char.
+    assert len(set(result.stdout)) < 256
+
+
+def test_utf8_wire_still_yields_both_forms() -> None:
+    """The utf-8 wire path must populate bytes too, not only text."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200,
+        {
+            "stdout": "café \U0001f389\n",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": 0,
+        },
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("echo cafe")
+
+    assert result.stdout == "café \U0001f389\n"
+    assert result.stdout_bytes == "café \U0001f389\n".encode()
+    assert result.stdout_bytes.decode() == result.stdout

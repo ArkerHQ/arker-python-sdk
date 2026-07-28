@@ -16,8 +16,8 @@
  * Run multiple targets:
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_SMOKE_TARGETS='[
- *     {"name":"burst","baseUrl":"https://aws-burst-us-west-2.arker.ai/api","sourceVmId":"01KQH2ADR3DCAJF06N4R453WPJ_uswe"},
- *     {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai/api","sourceVmName":"ubuntu"}
+ *     {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai/api","sourceVmName":"ubuntu"},
+ *     {"name":"ubuntu-full","baseUrl":"https://aws-us-west-2.arker.ai/api","sourceVmName":"ubuntu-full"}
  *   ]' \
  *   bun run smoke
  */

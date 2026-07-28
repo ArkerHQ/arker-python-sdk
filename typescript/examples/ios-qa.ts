@@ -64,8 +64,8 @@ async function runAndWait(vm: VM, command: string, timeout: number, _label: stri
 }
 
 function writeRunOutput(result: CompletedRunResult): void {
-  if (result.stdout.byteLength > 0) process.stdout.write(text(result.stdout));
-  if (result.stderr.byteLength > 0) process.stderr.write(text(result.stderr));
+  if (result.stdout.length > 0) process.stdout.write(result.stdout);
+  if (result.stderr.length > 0) process.stderr.write(result.stderr);
 }
 
 async function runOrThrow(vm: VM, command: string, timeout: number, label: string): Promise<CompletedRunResult> {

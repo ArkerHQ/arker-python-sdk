@@ -66,10 +66,8 @@ const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
 const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
-const DEFAULT_PROVIDER: "aws" | "aws-burst" = "aws";
+const DEFAULT_PROVIDER = "aws" as const;
 const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
-const BURST_SOURCE_REFS = new Set(["arkuntu"]);
-const BURST_VM_ID = /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$/;
 
 type FetchLike = typeof fetch;
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -96,16 +94,11 @@ export interface ArkerOptions {
    * compute endpoint. Back-compat: accepts the legacy combined form
    * `"aws-us-west-2"`. */
   region?: string;
-  /** Provider for compute calls. Defaults to `"aws"` (arkerd-managed
-   * VMs). Use `"aws-burst"` to target the Lambda burst backend
-   * directly. Has no effect on the burst-classified routing — a fork
-   * of `arkuntu` in the Arker org still goes to burst regardless. */
-  provider?: "aws" | "aws-burst";
+  /** Provider for compute calls. Defaults to `"aws"` (arkerd-managed VMs). */
+  provider?: "aws";
   /** Override the compute base URL (e.g. for internal / dev targets).
    * If set, `provider` + `region` are ignored for compute. */
   baseUrl?: string;
-  /** Override the burst compute base URL. */
-  burstBaseUrl?: string;
   /** Override the control-plane URL — the CF Worker that owns
    * administrative endpoints like `GET /v1/vms` (cross-provider list)
    * and `/v1/filesystems`. Default `https://arker.ai/api`. */
@@ -236,9 +229,15 @@ export type Run = ApiSchema<"Run">;
  * in this SDK hands back bytes. A hand-written result type like
  * `CompletedRunResult`, outside the wire-contract assertions: `Run` stays the
  * contract mirror, this is its decoded projection. */
-export type RunRecord = Omit<Run, "stdout" | "stderr"> & {
-  stdout: Uint8Array;
-  stderr: Uint8Array;
+/** A fetched run. Output is available as text and as exact bytes.
+ *
+ * `stdout`/`stderr` are decoded text, ready to print or match on.
+ * `stdoutBytes`/`stderrBytes` are exactly what the command wrote — use those
+ * when the output is not text (an image, an archive, anything binary), because
+ * decoding to text replaces undecodable bytes and cannot be undone. */
+export type RunRecord = Run & {
+  stdoutBytes: Uint8Array;
+  stderrBytes: Uint8Array;
 };
 export type RunSummary = ApiSchema<"RunSummary">;
 export type ListRunsResponse = ApiSchema<"ListRunsResponse">;
@@ -281,10 +280,12 @@ export interface CompletedRunResult {
   runId?: string;
   /** Lifecycle state — "completed" or "failed". Mirrors the run-status (`Run`) shape. */
   state: string;
-  stdout: Uint8Array;
-  stdoutEncoding: string;
-  stderr: Uint8Array;
-  stderrEncoding: string;
+  /** Decoded text, ready to print or match on. */
+  stdout: string;
+  stderr: string;
+  /** Exactly what the command wrote — use these when the output is not text. */
+  stdoutBytes: Uint8Array;
+  stderrBytes: Uint8Array;
   exitCode: number;
   /** System failure explanation when `state` is "failed". Distinct from
    * `stderr` (the program's own error output); null otherwise. */
@@ -462,13 +463,11 @@ export class Arker {
    * per-VM ops. SDK calls go straight to this host, skipping the CF
    * Worker control plane. */
   readonly baseUrl: string;
-  /** Compute base URL for the burst provider in this region. */
-  readonly burstBaseUrl?: string;
   /** CF Worker control-plane URL — used for cross-cutting admin calls
    * like list-VMs and filesystems. */
   readonly controlBaseUrl: string;
   readonly region?: string;
-  readonly provider: "aws" | "aws-burst";
+  readonly provider: "aws";
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly http2: boolean;
@@ -484,7 +483,6 @@ export class Arker {
     const effectiveProvider = providerFromRegion ?? provider;
 
     const baseUrl = explicitBaseUrl ?? (region ? computeBaseUrl(effectiveProvider, region) : undefined);
-    const burstBaseUrl = opts.burstBaseUrl ?? env("ARKER_BURST_BASE_URL") ?? (region ? computeBaseUrl("aws-burst", region) : undefined);
     const controlBaseUrl = opts.controlBaseUrl ?? env("ARKER_CONTROL_BASE_URL") ?? DEFAULT_CONTROL_BASE_URL;
 
     if (!apiKey) throw new Error("apiKey is required; pass apiKey or set ARKER_API_KEY");
@@ -492,7 +490,6 @@ export class Arker {
 
     this.apiKey = apiKey;
     this.baseUrl = normalizeBaseUrl(baseUrl);
-    this.burstBaseUrl = burstBaseUrl ? normalizeBaseUrl(burstBaseUrl) : undefined;
     this.controlBaseUrl = normalizeBaseUrl(controlBaseUrl);
     this.region = region ? normalizeRegion(region) : undefined;
     this.provider = effectiveProvider;
@@ -604,13 +601,7 @@ export class Arker {
           source_vm_id: null,
           source_vm_name: src.sourceVmName!,
         };
-    // Forks that target a burst-pool name in the Arker org go to the
-    // burst backend (ps-lambda); everything else to arkerd.
-    const useBurst =
-      sourceOrgId === ARKER_ORG_ID &&
-      src.sourceVmName != null &&
-      isBurstRef(src.sourceVmName);
-    const baseUrl = useBurst && this.burstBaseUrl ? this.burstBaseUrl : this.baseUrl;
+    const baseUrl = this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
     const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
@@ -776,7 +767,6 @@ export class Arker {
 
   /** @internal */
   _baseUrlFor(ref: string): string {
-    if (isBurstRef(ref) && this.burstBaseUrl) return this.burstBaseUrl;
     return this.baseUrl;
   }
 }
@@ -966,7 +956,7 @@ export class VM {
     let delay = RUN_POLL_INITIAL_MS;
     for (;;) {
       await sleep(delay);
-      const run = await this.getRunResult(runId);
+      const run = await this.getRun(runId);
       if (TERMINAL_RUN_STATES.has(run.state)) return runToCompletedResult(run);
       if (Date.now() >= deadline) {
         throw new ArkerError(
@@ -1122,7 +1112,7 @@ export class VM {
         `tar -xf ${q(remoteTar)} -C ${q(remoteRoot)}; rm -f ${q(remoteTar)}`;
       const res = await this.run(cmd);
       if (res.state === "failed" || res.exitCode !== 0) {
-        const stderr = new TextDecoder().decode(res.stderr ?? new Uint8Array()).slice(0, 300);
+        const stderr = (res.stderr ?? "").slice(0, 300);
         throw new ArkerError(
           "internal",
           `syncDir tar extract failed (exit=${res.exitCode}, state=${res.state}): ${stderr}`,
@@ -1315,22 +1305,19 @@ export class VM {
     return this._client._request("GET", buildQuery(`${vmPath(this.id)}/runs`, query), undefined, this.baseUrl);
   }
 
-  /** The run record as sent on the wire: `stdout`/`stderr` are strings tagged
-   * by `stdout_encoding`/`stderr_encoding`. Use {@link getRunResult} for the
-   * decoded form. */
-  async getRun(runId: string): Promise<Run> {
-    return this._client._request<Run>(
-      "GET",
-      `${vmPath(this.id)}/runs/${pathSegment(runId)}`,
-      undefined,
-      this.baseUrl,
+  /** Fetch a past run.
+   *
+   * `stdout`/`stderr` come back decoded, the same as {@link run}, alongside
+   * `stdoutBytes`/`stderrBytes` for output that is not text. */
+  async getRun(runId: string): Promise<RunRecord> {
+    return decodeWireRun(
+      await this._client._request<Run>(
+        "GET",
+        `${vmPath(this.id)}/runs/${pathSegment(runId)}`,
+        undefined,
+        this.baseUrl,
+      ),
     );
-  }
-
-  /** The run record with `stdout`/`stderr` decoded to bytes, matching what
-   * {@link run} returns. */
-  async getRunResult(runId: string): Promise<RunRecord> {
-    return decodeWireRun(await this.getRun(runId));
   }
 
   async cancelRun(runId: string): Promise<CancelRunResponse> {
@@ -1635,43 +1622,29 @@ function normalizeRegion(region: string): string {
   return trimmed;
 }
 
-function computeBaseUrl(provider: "aws" | "aws-burst", region: string): string {
+function computeBaseUrl(provider: "aws", region: string): string {
   // The subdomain encodes provider+region — `https://aws-us-west-2.arker.ai`
-  // routes to arkerd in us-west-2; `https://aws-burst-us-west-2.arker.ai`
-  // routes to ps-lambda. Today both subdomains still resolve through the
-  // CF Worker (which dispatches based on hostname), so the path includes
+  // routes to arkerd in us-west-2. Today the subdomain still resolves through
+  // the CF Worker (which dispatches based on hostname), so the path includes
   // `/api`. When DNS is split to bypass the worker on the compute
-  // subdomains, drop `/api` here.
+  // subdomain, drop `/api` here.
   const normalized = normalizeRegion(region);
   return `https://${provider}-${normalized}.arker.ai/api`;
 }
 
-function parseProvider(value: string | undefined | null): "aws" | "aws-burst" {
-  if (!value) return DEFAULT_PROVIDER;
-  const trimmed = value.trim().toLowerCase();
-  if (trimmed === "aws-burst" || trimmed === "burst") return "aws-burst";
-  return "aws";
+function parseProvider(_value: string | undefined | null): "aws" {
+  return DEFAULT_PROVIDER;
 }
 
 /** Accept both the new `region`-only form ("us-west-2") and the legacy
- * combined form ("aws-us-west-2" / "aws-burst-us-west-2"). When the
- * combined form is used we return the embedded provider so the caller
- * doesn't need to set both. */
-function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: "aws" | "aws-burst" } {
+ * combined form ("aws-us-west-2"). */
+function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: "aws" } {
   if (!value) return {};
   const normalized = value.trim().toLowerCase();
-  if (normalized.startsWith("aws-burst-")) {
-    return { region: normalized.slice("aws-burst-".length), providerFromRegion: "aws-burst" };
-  }
   if (normalized.startsWith("aws-")) {
     return { region: normalized.slice("aws-".length), providerFromRegion: "aws" };
   }
   return { region: normalized };
-}
-
-function isBurstRef(ref: string): boolean {
-  const trimmed = ref.trim();
-  return BURST_SOURCE_REFS.has(trimmed.toLowerCase()) || BURST_VM_ID.test(trimmed);
 }
 
 function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {
@@ -1732,10 +1705,10 @@ function parseRunResponse(payload: unknown): RunResult {
       type: "completed",
       runId: typeof body.run_id === "string" ? body.run_id : undefined,
       state: terminalRunState(body.state, exitCode),
-      stdout: decodeBytes(stdout, stdoutEncoding),
-      stdoutEncoding,
-      stderr: decodeBytes(stderr, stderrEncoding),
-      stderrEncoding,
+      stdout: asText(decodeBytes(stdout, stdoutEncoding)),
+      stderr: asText(decodeBytes(stderr, stderrEncoding)),
+      stdoutBytes: decodeBytes(stdout, stdoutEncoding),
+      stderrBytes: decodeBytes(stderr, stderrEncoding),
       exitCode,
       failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
       memoryRequestedMib: optionalNumberOrNull(body.memory_requested_mib),
@@ -1756,11 +1729,24 @@ function parseRunResponse(payload: unknown): RunResult {
 /** Decode a wire run record into the public `Run`, converting `stdout`/`stderr`
  * from their encoded strings to bytes. The single boundary where the
  * run-status wire shape becomes a caller-facing one. */
+/** Decode command output for the caller-facing `stdout`/`stderr`.
+ *
+ * Never throws — `TextDecoder` is non-fatal, so bytes that are not valid UTF-8
+ * become U+FFFD. Defined once so the conversion cannot drift between result
+ * types. */
+function asText(data: Uint8Array): string {
+  return new TextDecoder().decode(data);
+}
+
 function decodeWireRun(wire: Run): RunRecord {
+  const stdoutBytes = decodeBytes(wire.stdout, wire.stdout_encoding);
+  const stderrBytes = decodeBytes(wire.stderr, wire.stderr_encoding);
   return {
     ...wire,
-    stdout: decodeBytes(wire.stdout, wire.stdout_encoding),
-    stderr: decodeBytes(wire.stderr, wire.stderr_encoding),
+    stdout: asText(stdoutBytes),
+    stderr: asText(stderrBytes),
+    stdoutBytes,
+    stderrBytes,
   };
 }
 
@@ -1776,9 +1762,9 @@ function runToCompletedResult(run: RunRecord): CompletedRunResult {
     runId: run.run_id,
     state: run.state,
     stdout: run.stdout,
-    stdoutEncoding: run.stdout_encoding,
     stderr: run.stderr,
-    stderrEncoding: run.stderr_encoding,
+    stdoutBytes: run.stdoutBytes,
+    stderrBytes: run.stderrBytes,
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
     failReason: run.fail_reason ?? null,
   };
