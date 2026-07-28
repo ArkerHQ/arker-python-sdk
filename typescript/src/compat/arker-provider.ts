@@ -141,8 +141,8 @@ class ArkerComputeSandbox implements SandboxInterface {
     }
 
     const commandResult = {
-      stdout: decode(result.stdout),
-      stderr: decode(result.stderr),
+      stdout: result.stdout,
+      stderr: result.stderr,
       exitCode: result.exitCode,
       durationMs: Date.now() - startTime,
     };

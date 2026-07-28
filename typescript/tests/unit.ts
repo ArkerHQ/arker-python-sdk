@@ -266,7 +266,8 @@ async function testCompletedRunDecodesOutput(): Promise<void> {
   assert.equal(completed.memoryRequestedMib, 1024);
   assert.equal(completed.memoryAchievedMib, 1536);
   assert.equal(completed.memoryPartial, true);
-  assert.equal(decode(completed.stdout), "hello\n");
+  assert.equal(completed.stdout, "hello\n");
+  assert.deepEqual(completed.stdoutBytes, new TextEncoder().encode("hello\n"));
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "printf hello" });
 }
 
@@ -299,7 +300,8 @@ async function testSyncRunPollsBackgroundedRunToCompletion(): Promise<void> {
   assert.equal(completed.runId, "run_bg");
   assert.equal(completed.state, "completed");
   assert.equal(completed.exitCode, 0);
-  assert.equal(decode(completed.stdout), "done\n");
+  assert.equal(completed.stdout, "done\n");
+  assert.deepEqual(completed.stdoutBytes, new TextEncoder().encode("done\n"));
   // POST + 2 polls.
   assert.equal(fetch.calls.length, 3);
   assert.equal(fetch.calls[0]!.method, "POST");
@@ -329,7 +331,7 @@ async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
 async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   // Computer.fork() always posts to `/v1/fork` on the owning VM's
-  // backend (default-provider compute URL for "ubuntu", a non-burst
+  // backend (default-provider compute URL for "ubuntu",
   // name).
   fetch.addJson(
     (method, url) => method === "POST" && url === "https://aws-us-west-2.arker.ai/api/v1/fork",
@@ -349,51 +351,7 @@ async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const vm = await arker.vm("ubuntu").fork();
 
   assert.equal(arker.baseUrl, "https://aws-us-west-2.arker.ai/api");
-  assert.equal(arker.burstBaseUrl, "https://aws-burst-us-west-2.arker.ai/api");
   assert.equal(vm.baseUrl, "https://aws-us-west-2.arker.ai/api");
-}
-
-async function testRegionRoutesArkuntuAliasToBurstEndpoint(): Promise<void> {
-  const fetch = new FakeFetch();
-  // The "arkuntu" alias is burst-pool; Computer("arkuntu") gets the
-  // burst base URL and posts the fork there.
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/fork",
-    200,
-    {
-      vm_id: "01KR4AN62T47VXQ0A3AVSSWFTZ_uswe",
-      owner_org_id: "owner",
-      created_at: "now",
-      public: false,
-      state: "idle",
-      sessions: [],
-      tunnels: [],
-    },
-  );
-
-  const vm = await regionClient(fetch).vm("arkuntu").fork();
-
-  assert.equal(vm.id, "01KR4AN62T47VXQ0A3AVSSWFTZ_uswe");
-  assert.equal(vm.baseUrl, "https://aws-burst-us-west-2.arker.ai/api");
-}
-
-async function testRegionRoutesBurstVmIdsToBurstEndpoint(): Promise<void> {
-  const fetch = new FakeFetch();
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs",
-    200,
-    {
-      stdout: "hello\n",
-      stdout_encoding: "utf-8",
-      stderr: "",
-      stderr_encoding: "utf-8",
-      exit_code: 0,
-    },
-  );
-
-  await regionClient(fetch).vm("01KR4AN62T47VXQ0A3AVSSWFTZ_uswe").run("printf hello");
-
-  assert.equal(fetch.calls[0]!.url, "https://aws-burst-us-west-2.arker.ai/api/v1/vms/01KR4AN62T47VXQ0A3AVSSWFTZ_uswe/runs");
 }
 
 async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
@@ -834,8 +792,6 @@ await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();
 await testBackgroundTrueReturnsAckWithoutPolling();
 await testRegionRoutesGoldensToMainEndpoint();
-await testRegionRoutesArkuntuAliasToBurstEndpoint();
-await testRegionRoutesBurstVmIdsToBurstEndpoint();
 await testListRunsUsesControlPlaneAndFilters();
 await testListVmsPreservesForkLimitFields();
 await testForkSendsDurableFlag();
@@ -997,11 +953,112 @@ async function testRunAndGetRunAgreeOnStateForKilledRun(): Promise<void> {
 
   const vm = client(fetch).vm("vm_1");
   const sync = (await vm.run("sleep 30", { timeout: 2 })) as CompletedRunResult;
-  const stored = await vm.getRunResult("01RUN");
+  const stored = await vm.getRun("01RUN");
 
   assert.equal(sync.state, "failed");
   assert.equal(stored.state, "failed");
 }
+
+// ── Binary output ──────────────────────────────────────────────────
+// A run can emit anything: an image, an archive, random bytes. The text view is
+// lossy for those by definition, so `*Bytes` must round-trip them exactly.
+
+// 1x1 PNG. Starts with 0x89, not a valid UTF-8 start byte, so decoding to text
+// mangles it — which is the whole point of keeping the bytes.
+const PNG_1X1 = Uint8Array.from(
+  atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="),
+  (c) => c.charCodeAt(0),
+);
+
+function binaryRunBody(payload: Uint8Array): Record<string, unknown> {
+  let binary = "";
+  for (const byte of payload) binary += String.fromCharCode(byte);
+  return {
+    stdout: btoa(binary),
+    stdout_encoding: "base64",
+    stderr: "",
+    stderr_encoding: "utf-8",
+    exit_code: 0,
+  };
+}
+
+async function testRunReturnsImageBytesIntactAndTextIsLossy(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson((m, u) => m === "POST" && u.endsWith("/v1/vms/vm_1/runs"), 200, binaryRunBody(PNG_1X1));
+
+  const result = (await client(fetch).vm("vm_1").run("cat photo.png")) as CompletedRunResult;
+
+  // The bytes survive exactly — you can write them straight to a file.
+  assert.deepEqual(result.stdoutBytes, PNG_1X1);
+  assert.deepEqual(result.stdoutBytes.slice(0, 8), Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  // The text view is lossy for binary, and must not throw.
+  assert.equal(typeof result.stdout, "string");
+  assert.ok(result.stdout.includes("\uFFFD"));
+}
+
+async function testGetRunReturnsImageBytesIntact(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson((m, u) => m === "GET" && u.endsWith("/runs/run_1"), 200, {
+    ...binaryRunBody(PNG_1X1),
+    run_id: "run_1",
+    state: "completed",
+    started_at: "now",
+  });
+
+  const stored = await client(fetch).vm("vm_1").getRun("run_1");
+
+  assert.deepEqual(stored.stdoutBytes, PNG_1X1);
+  assert.ok(stored.stdout.includes("\uFFFD"));
+}
+
+async function testRunAndGetRunAgreeOnBinaryOutput(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson((m, u) => m === "POST" && u.endsWith("/v1/vms/vm_1/runs"), 200, binaryRunBody(PNG_1X1));
+  fetch.addJson((m, u) => m === "GET" && u.endsWith("/runs/run_1"), 200, {
+    ...binaryRunBody(PNG_1X1),
+    run_id: "run_1",
+    state: "completed",
+    started_at: "now",
+  });
+
+  const vm = client(fetch).vm("vm_1");
+  const live = (await vm.run("cat photo.png")) as CompletedRunResult;
+  const stored = await vm.getRun("run_1");
+
+  assert.deepEqual(live.stdoutBytes, stored.stdoutBytes);
+  assert.equal(live.stdout, stored.stdout);
+}
+
+async function testEveryByteValueRoundTrips(): Promise<void> {
+  const payload = Uint8Array.from({ length: 256 }, (_, i) => i);
+  const fetch = new FakeFetch();
+  fetch.addJson((m, u) => m === "POST" && u.endsWith("/v1/vms/vm_1/runs"), 200, binaryRunBody(payload));
+
+  const result = (await client(fetch).vm("vm_1").run("cat /dev/urandom")) as CompletedRunResult;
+
+  assert.deepEqual(result.stdoutBytes, payload);
+  assert.equal(result.stdoutBytes.length, 256);
+  // Lossy as text: distinct bytes collapse onto the replacement char.
+  assert.ok(new Set(result.stdout).size < 256);
+}
+
+async function testUtf8WireStillYieldsBothForms(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson((m, u) => m === "POST" && u.endsWith("/v1/vms/vm_1/runs"), 200, {
+    stdout: "caf\u00e9 \u{1f389}\n",
+    stdout_encoding: "utf-8",
+    stderr: "",
+    stderr_encoding: "utf-8",
+    exit_code: 0,
+  });
+
+  const result = (await client(fetch).vm("vm_1").run("echo cafe")) as CompletedRunResult;
+
+  assert.equal(result.stdout, "caf\u00e9 \u{1f389}\n");
+  assert.deepEqual(result.stdoutBytes, new TextEncoder().encode("caf\u00e9 \u{1f389}\n"));
+  assert.equal(new TextDecoder().decode(result.stdoutBytes), result.stdout);
+}
+
 
 await testConnectPtyCreatesSessionAndUsesBearerHeader();
 await testConnectPtyUsesTicketForBrowserWebSocket();
@@ -1018,5 +1075,11 @@ await testSessionCrudLifecycle();
 await testRunReportsFailedWhenPlatformKilledTheRun();
 await testRunKeepsCompletedForNonzeroProgramExit();
 await testRunAndGetRunAgreeOnStateForKilledRun();
+
+await testRunReturnsImageBytesIntactAndTextIsLossy();
+await testGetRunReturnsImageBytesIntact();
+await testRunAndGetRunAgreeOnBinaryOutput();
+await testEveryByteValueRoundTrips();
+await testUtf8WireStillYieldsBothForms();
 
 console.log("PASS unit");

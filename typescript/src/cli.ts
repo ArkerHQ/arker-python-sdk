@@ -67,7 +67,7 @@ type OptionSpecs = Record<string, OptionSpec>;
 const GLOBAL_OPTIONS: OptionSpecs = {
   help: { type: "boolean" },
   json: { type: "boolean" },
-  provider: { type: "string", values: ["aws", "aws-burst"] },
+  provider: { type: "string", values: ["aws"] },
   region: { type: "string" },
 };
 
@@ -351,7 +351,7 @@ interface CliConfig {
   apiKey?: string;
   baseUrl?: string;
   region?: string;
-  provider?: "aws" | "aws-burst";
+  provider?: "aws";
   controlBaseUrl?: string;
 }
 
@@ -390,8 +390,8 @@ function clientFromArgs(args: ParsedArgs): Arker {
   // can stay unset.
   const region =
     explicitRegion ?? file.region ?? (baseUrl ? undefined : DEFAULT_REGION);
-  const provider = (args.flags.provider as "aws" | "aws-burst" | undefined) ??
-    (process.env.ARKER_PROVIDER as "aws" | "aws-burst" | undefined) ??
+  const provider = (args.flags.provider as "aws" | undefined) ??
+    (process.env.ARKER_PROVIDER as "aws" | undefined) ??
     file.provider;
   if (!apiKey) {
     die("Missing API key. Set ARKER_API_KEY or add apiKey to ~/.arker/config.json.");
@@ -571,6 +571,8 @@ interface PrintableRun {
   type: "completed";
   runId?: string;
   state: string;
+  /** The CLI writes command output through to its own stdout/stderr, so it
+   * carries the exact bytes: decoding here would corrupt binary output. */
   stdout: Uint8Array;
   stderr: Uint8Array;
   exitCode: number;
@@ -585,7 +587,7 @@ function printRunResult(result: RunResult, json: boolean): void {
     out({ run_id: result.runId, state: result.state });
     return;
   }
-  printCompletedRun(result, json);
+  printCompletedRun({ ...result, stdout: result.stdoutBytes, stderr: result.stderrBytes }, json);
 }
 
 function printStoredRun(run: RunRecord, json: boolean): void {
@@ -597,9 +599,9 @@ function printStoredRun(run: RunRecord, json: boolean): void {
     type: "completed",
     runId: run.run_id,
     state: run.state,
-    // Already decoded at the wire boundary.
-    stdout: run.stdout,
-    stderr: run.stderr,
+    // Exact bytes — the CLI pipes them through unchanged.
+    stdout: run.stdoutBytes,
+    stderr: run.stderrBytes,
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
     failReason: run.fail_reason,
   }, json);
@@ -659,7 +661,7 @@ async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
     case "get": {
       const [vm, runId] = rest;
       if (!vm || !runId) die("usage: arker runs get <vm_id> <run_id>");
-      printStoredRun(await client.vm(vm).getRunResult(runId), Boolean(args.flags.json));
+      printStoredRun(await client.vm(vm).getRun(runId), Boolean(args.flags.json));
       return;
     }
     case "rm":
@@ -1022,7 +1024,7 @@ function usage(_command?: string): void {
       "",
       "Flags:",
       "  --region <region>          (or env ARKER_REGION; e.g. us-west-2)",
-      "  --provider <provider>      aws or aws-burst (or env ARKER_PROVIDER)",
+      "  --provider <provider>      aws (or env ARKER_PROVIDER)",
       "  --json                     emit JSON instead of tabular output",
       "  -h, --help                 show help without connecting",
       "  -v, --version              show version without connecting",

@@ -10,7 +10,7 @@ from .computer import Arker, ArkerError, CompletedRunResult, VM
 
 DEFAULT_REGION = "aws-us-east-1"
 DEFAULT_SOURCE = "ubuntu-full"
-ARKER_CLIENT_KEYS = {"api_key", "base_url", "burst_base_url", "control_base_url", "region", "provider", "retry"}
+ARKER_CLIENT_KEYS = {"api_key", "base_url", "control_base_url", "region", "provider", "retry"}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -72,8 +72,8 @@ def run_command(vm: VM, command: str, *, timeout: int | None = None) -> CommandR
     if not isinstance(result, CompletedRunResult):
         raise RuntimeError(f"Arker run did not complete synchronously (type={result.type}).")
     return CommandResult(
-        stdout=decode(result.stdout, result.stdout_encoding),
-        stderr=decode(result.stderr, result.stderr_encoding),
+        stdout=result.stdout,
+        stderr=result.stderr,
         exit_code=result.exit_code,
     )
 

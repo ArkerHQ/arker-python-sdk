@@ -60,8 +60,8 @@ try {
   const hello = "hello-from-ts-sdk";
   const run = await vm.run(`printf '${hello}\\n'`);
   assertCompleted(run);
-  if (run.exitCode !== 0 || decode(run.stdout) !== `${hello}\n`) {
-    throw new Error(`unexpected run output: exit=${run.exitCode} stdout=${JSON.stringify(decode(run.stdout))}`);
+  if (run.exitCode !== 0 || run.stdout !== `${hello}\n`) {
+    throw new Error(`unexpected run output: exit=${run.exitCode} stdout=${JSON.stringify(run.stdout)}`);
   }
 
   await vm.sync("/home/user/ts-sdk-demo.txt", `${hello}\n`);

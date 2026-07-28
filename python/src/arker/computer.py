@@ -21,7 +21,7 @@ import threading
 import time
 import types
 import urllib.parse
-from typing import Any, Callable, TypeVar, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, get_args, get_origin, get_type_hints
 
 import httpx
 
@@ -140,8 +140,6 @@ DEFAULT_REGION_ENV = "ARKER_REGION"
 DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
 DEFAULT_PROVIDER = "aws"
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
-BURST_SOURCE_REFS = {"arkuntu"}
-BURST_VM_ID = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9]+$")
 
 # Public golden VM names owned by the Arker org. Forking one of these by name
 # auto-fills source_org_id = ARKER_ORG_ID (see Arker.fork).
@@ -194,30 +192,39 @@ VmInfo = Vm
 SessionInfo = Session
 
 
+def _as_text(data: bytes) -> str:
+    """Decode command output for the caller-facing ``stdout``/``stderr``.
+
+    Never raises: bytes that are not valid UTF-8 become U+FFFD. Defined once so
+    the conversion cannot drift between result types.
+    """
+    return data.decode("utf-8", "replace")
+
+
 @dataclasses.dataclass(frozen=True)
 class RunRecord(Run):
-    """A run record with ``stdout``/``stderr`` decoded to bytes.
+    """A fetched run. Output is available as text and as exact bytes.
 
-    The wire model carries them as strings tagged by ``*_encoding`` (``utf-8``
-    or ``base64``); every output-bearing surface in this SDK hands back bytes.
+    ``stdout``/``stderr`` are decoded text, ready to print or match on.
+    ``stdout_bytes``/``stderr_bytes`` are exactly what the command wrote — use
+    those when the output is not text (an image, an archive, anything binary),
+    because decoding to text replaces undecodable bytes and cannot be undone.
 
-    Subclasses the generated model rather than restating its fields so schema
-    additions flow through. ``stdout``/``stderr`` are redeclared without
-    defaults to keep their positions; narrowing them is not substitutable for
-    the wire model, which a strict checker flags — ``Run`` remains the exact
-    wire shape and only this decoded form reaches a caller.
+    Subclasses the generated model rather than restating its fields, so schema
+    additions flow through. ``Run`` stays the exact wire shape; on this type the
+    text fields hold the *decoded* output rather than the encoded wire value.
     """
 
-    stdout: bytes  # pyright: ignore[reportIncompatibleVariableOverride]
-    stderr: bytes  # pyright: ignore[reportIncompatibleVariableOverride]
+    stdout_bytes: bytes = b""
+    stderr_bytes: bytes = b""
 
 
 @dataclasses.dataclass(frozen=True)
 class CompletedRunResult:
-    stdout: bytes
-    stdout_encoding: str
-    stderr: bytes
-    stderr_encoding: str
+    stdout: str
+    stderr: str
+    stdout_bytes: bytes
+    stderr_bytes: bytes
     exit_code: int
     run_id: str | None = None  # present for executed runs; None for operation acks
     state: str = "completed"   # "completed" | "failed"; mirrors the run-status (Run) shape
@@ -263,7 +270,6 @@ class Arker:
         self,
         api_key: str | None = None,
         base_url: str | None = None,
-        burst_base_url: str | None = None,
         control_base_url: str | None = None,
         region: str | None = None,
         provider: str | None = None,
@@ -280,11 +286,6 @@ class Arker:
         resolved_base_url = explicit_base_url or (
             _compute_base_url(effective_provider, resolved_region) if resolved_region else None
         )
-        resolved_burst_base_url = (
-            burst_base_url
-            or _env("ARKER_BURST_BASE_URL")
-            or (_compute_base_url("aws-burst", resolved_region) if resolved_region else None)
-        )
         resolved_control_base_url = (
             control_base_url
             or _env("ARKER_CONTROL_BASE_URL")
@@ -298,7 +299,6 @@ class Arker:
 
         self._api_key = resolved_api_key
         self._base_url = _normalize_base_url(resolved_base_url)
-        self._burst_base_url = _normalize_base_url(resolved_burst_base_url) if resolved_burst_base_url else None
         self._control_base_url = _normalize_base_url(resolved_control_base_url)
         self._region = _normalize_region(resolved_region) if resolved_region else None
         self._provider = effective_provider
@@ -307,10 +307,6 @@ class Arker:
     @property
     def base_url(self) -> str:
         return self._base_url
-
-    @property
-    def burst_base_url(self) -> str | None:
-        return self._burst_base_url
 
     @property
     def control_base_url(self) -> str:
@@ -439,9 +435,7 @@ class Arker:
             if source_vm_id is not None
             else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )
-        burst_ref = source_vm_name or source_vm_id
-        use_burst = bool(burst_ref) and _is_burst_ref(burst_ref) and self._burst_base_url is not None
-        base_url = self._burst_base_url if use_burst else self._base_url
+        base_url = self._base_url
         payload = self._request("POST", "/v1/fork", body, base_url=base_url)
         info = _vm_info(payload)
         # Child lives on the host the fork was posted to.
@@ -615,8 +609,6 @@ class Arker:
         return base + secrets.randbelow(max(1, int(self._retry.jitter_s * 1000) + 1)) / 1000.0
 
     def _base_url_for(self, ref: str) -> str:
-        if _is_burst_ref(ref) and self._burst_base_url:
-            return self._burst_base_url
         return self._base_url
 
 
@@ -662,10 +654,6 @@ class VM:
         """Re-fetch this VM and return a fresh, fully-populated handle."""
         info = _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
         return VM(self._client, self.id, self.base_url, info)
-
-    def fork(self, **kwargs: Any) -> VM:
-        """Deprecated: prefer ``Arker.fork(source_vm_id=..., ...)``."""
-        return self._client.fork(source_vm_id=self.id, **kwargs)
 
     def run(
         self,
@@ -774,7 +762,7 @@ class VM:
         delay = RUN_POLL_INITIAL_S
         while True:
             time.sleep(delay)
-            run = self.get_run_result(run_id)
+            run = self.get_run(run_id)
             if run.state in TERMINAL_RUN_STATES:
                 return _run_to_completed_result(run)
             if time.monotonic() >= deadline:
@@ -1117,13 +1105,21 @@ class VM:
         payload = self._client._request("GET", path, base_url=self.base_url)
         return _decode_model(ListRunsResponse, payload)
 
-    def get_run_result(self, run_id: str) -> RunRecord:
-        """The run record with ``stdout``/``stderr`` decoded to bytes, matching
-        what :meth:`run` returns."""
-        return _decode_run_record(self.get_run(run_id))
+    def get_run(self, run_id: str) -> RunRecord:
+        """Fetch a past run.
 
-    def get_run(self, run_id: str) -> Run:
-        return _run_status_response(self._client._request("GET", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url))
+        ``stdout``/``stderr`` are bytes, matching what :meth:`run` returns.
+        ``stdout_encoding``/``stderr_encoding`` report how the service encoded
+        them on the wire, for callers that need to know.
+        """
+        wire = _run_status_response(
+            self._client._request(
+                "GET",
+                f"{_vm_path(self.id)}/runs/{_segment(run_id)}",
+                base_url=self.base_url,
+            )
+        )
+        return _decode_run_record(wire)
 
     def cancel_run(self, run_id: str) -> CancelRunResponse:
         payload = self._client._request("DELETE", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url)
@@ -1464,7 +1460,7 @@ def _normalize_region(region: str) -> str:
 def _compute_base_url(provider: str, region: str) -> str:
     """The subdomain encodes provider+region.
 
-    Today both ``aws-{region}.arker.ai`` and ``aws-burst-{region}.arker.ai``
+    Today ``aws-{region}.arker.ai``
     still resolve through the CF Worker (which dispatches based on hostname),
     so the path includes ``/api``. When DNS is split to bypass the worker on
     the compute subdomains, drop ``/api`` here.
@@ -1476,29 +1472,19 @@ def _compute_base_url(provider: str, region: str) -> str:
 def _parse_provider(value: str | None) -> str:
     if not value:
         return DEFAULT_PROVIDER
-    trimmed = value.strip().lower()
-    if trimmed in ("aws-burst", "burst"):
-        return "aws-burst"
     return "aws"
 
 
 def _split_region(value: str | None) -> tuple[str | None, str | None]:
     """Accept either ``us-west-2`` or the legacy combined form
-    ``aws-us-west-2`` / ``aws-burst-us-west-2``.
+    ``aws-us-west-2``.
     """
     if not value:
         return None, None
     normalized = value.strip().lower()
-    if normalized.startswith("aws-burst-"):
-        return normalized[len("aws-burst-"):], "aws-burst"
     if normalized.startswith("aws-"):
         return normalized[len("aws-"):], "aws"
     return normalized, None
-
-
-def _is_burst_ref(ref: str) -> bool:
-    trimmed = ref.strip()
-    return trimmed.lower() in BURST_SOURCE_REFS or bool(BURST_VM_ID.match(trimmed))
 
 
 def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> RetryOptions:
@@ -1756,10 +1742,10 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     response = _decode_value(RunResponse, payload)
     if isinstance(response, CompletedRunResponse):
         return CompletedRunResult(
-            stdout=_decode_bytes(response.stdout, response.stdout_encoding),
-            stdout_encoding=response.stdout_encoding,
-            stderr=_decode_bytes(response.stderr, response.stderr_encoding),
-            stderr_encoding=response.stderr_encoding,
+            stdout=_as_text(_decode_bytes(response.stdout, response.stdout_encoding)),
+            stderr=_as_text(_decode_bytes(response.stderr, response.stderr_encoding)),
+            stdout_bytes=_decode_bytes(response.stdout, response.stdout_encoding),
+            stderr_bytes=_decode_bytes(response.stderr, response.stderr_encoding),
             exit_code=response.exit_code,
             run_id=response.run_id,
             state=_terminal_state(response.state, response.exit_code),
@@ -1791,9 +1777,9 @@ def _run_to_completed_result(run: RunRecord) -> CompletedRunResult:
         exit_code = 0 if run.state == "completed" else 1
     return CompletedRunResult(
         stdout=run.stdout,
-        stdout_encoding=run.stdout_encoding,
         stderr=run.stderr,
-        stderr_encoding=run.stderr_encoding,
+        stdout_bytes=run.stdout_bytes,
+        stderr_bytes=run.stderr_bytes,
         exit_code=exit_code,
         run_id=run.run_id,
         state=run.state,
@@ -1809,9 +1795,11 @@ def _decode_run_record(wire: Run) -> RunRecord:
     """Project a wire run record into :class:`RunRecord`, decoding
     ``stdout``/``stderr`` to bytes."""
     fields = dataclasses.asdict(wire)
-    fields["stdout"] = _decode_bytes(wire.stdout, wire.stdout_encoding)
-    fields["stderr"] = _decode_bytes(wire.stderr, wire.stderr_encoding)
-    return RunRecord(**fields)
+    stdout_bytes = _decode_bytes(wire.stdout, wire.stdout_encoding)
+    stderr_bytes = _decode_bytes(wire.stderr, wire.stderr_encoding)
+    fields["stdout"] = _as_text(stdout_bytes)
+    fields["stderr"] = _as_text(stderr_bytes)
+    return RunRecord(**fields, stdout_bytes=stdout_bytes, stderr_bytes=stderr_bytes)
 
 
 def _org_runs_response(payload: dict[str, Any]) -> ListOrgRunsResponse:
