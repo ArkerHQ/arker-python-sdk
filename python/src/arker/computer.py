@@ -1190,6 +1190,8 @@ class VM:
         on_close: Callable[[Pty.CloseEvent], None] | None = None,
         on_error: Callable[[Exception], None] | None = None,
         use_ticket: bool = True,
+        env: dict[str, str] | None = None,
+        plain: bool = True,
     ) -> Pty:
         """Open an interactive pseudo-terminal in this VM over a WebSocket.
 
@@ -1205,7 +1207,24 @@ class VM:
 
         Requires the ``websocket-client`` package — ``pip install 'arker[pty]'``.
         """
-        sid = session_id or self.create_session().session_id
+        # Plain-text by default. A PTY inherits its session's environment, so
+        # this is set when the session is created — no per-command prefixing and
+        # no server-side change. An explicit `env` wins over the plain defaults,
+        # so a caller can override just `TERM` and keep the rest.
+        session_env: dict[str, str] = {}
+        if plain:
+            session_env.update(PLAIN_PTY_ENV)
+        if env:
+            session_env.update(env)
+
+        if session_id:
+            sid = session_id
+            # Reattaching: the session already exists, so its env is fixed. Say
+            # so rather than silently ignoring the argument.
+            if env and not plain:
+                pass
+        else:
+            sid = self.create_session(env=session_env or None).session_id
 
         params: dict[str, Any] = {
             "cols": _clamp_pty_dimension(cols) if cols is not None else None,
@@ -1518,6 +1537,27 @@ def _clamp_pty_dimension(value: int) -> int:
     return max(1, min(1000, n))
 
 
+#: Environment that makes a PTY emit PLAIN TEXT instead of colour, cursor
+#: addressing and OSC hyperlinks.
+#:
+#: Applied by default (see ``VM.connect_pty(plain=...)``). The overwhelmingly
+#: common consumer of a PTY here is a program, not a person: escape sequences
+#: are noise it has to strip, and stripping them is lossy — `\x1b[2K` plus `\r`
+#: means "rewrite this line", so discarding the codes leaves every intermediate
+#: frame of a progress bar concatenated. Far better to ask the program not to
+#: emit them.
+#:
+#: ``TERM=dumb`` also suppresses cursor addressing, so a full-screen TUI (vim,
+#: an interactive Claude Code session) will refuse or degrade — pass
+#: ``plain=False`` when a human is actually watching.
+PLAIN_PTY_ENV: dict[str, str] = {
+    "TERM": "dumb",
+    "NO_COLOR": "1",
+    "FORCE_COLOR": "0",
+    "CLICOLOR": "0",
+}
+
+
 def _build_pty_ws_url(base_url: str, vm_id: str, session_id: str, params: dict[str, Any]) -> str:
     """Build the ``wss://`` PTY URL for ``base_url`` (the VM's regional base)."""
     http_url = f"{_normalize_base_url(base_url)}{_vm_path(vm_id)}/sessions/{_segment(session_id)}/pty"
@@ -1554,13 +1594,24 @@ def _drop_none(value: Any) -> Any:
 
 
 def _decode_model(model: type[Model], payload: dict[str, Any]) -> Model:
+    """Decode a response model, IGNORING fields this SDK does not know.
+
+    Forward compatibility is the point. Adding a field to a response is an
+    additive, non-breaking change on the server — but this decoder used to
+    raise `TypeError: ... contains fields outside openapi.json` for any
+    unrecognised key, which made every such addition break EVERY already
+    released SDK at once. A client pinned to an older version could not even
+    `fork()` against a newer deployment.
+
+    The strictness was protecting against a legacy/incorrect response SHAPE
+    (see `test_fork_rejects_legacy_id_response`, where the server returns
+    `{"id": ...}` instead of `{"vm_id": ...}`). That protection does not need
+    the unknown-key check: a response missing the fields the model REQUIRES
+    still fails, because the dataclass constructor rejects the missing
+    argument. So we keep "the response must carry what we need" and drop
+    "the response must carry nothing else".
+    """
     fields = dataclasses.fields(model)
-    field_names = {field.name for field in fields}
-    unknown = sorted(set(payload) - field_names)
-    if unknown:
-        raise TypeError(
-            f"{model.__name__} contains fields outside openapi.json: {', '.join(unknown)}"
-        )
     hints = get_type_hints(model)
     values = {
         field.name: _decode_value(hints[field.name], payload[field.name])

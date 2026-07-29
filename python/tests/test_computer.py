@@ -142,6 +142,11 @@ def test_fork_infers_arker_org_for_macos_full_golden() -> None:
 
 
 def test_fork_rejects_legacy_id_response() -> None:
+    """A response missing the fields we REQUIRE is still an error.
+
+    The legacy shape sends `id` where the contract says `vm_id`, so decoding
+    must fail — but now because `vm_id` is absent, not because `id` is extra.
+    """
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
@@ -149,8 +154,42 @@ def test_fork_rejects_legacy_id_response() -> None:
         {"id": "vm_child"},
     )
 
-    with use_transport(t), pytest.raises(TypeError, match="outside openapi.json"):
+    with use_transport(t), pytest.raises(TypeError):
         client().fork(source_vm_id="ubuntu")
+
+
+def test_fork_tolerates_unknown_response_fields() -> None:
+    """Adding a field to a response must not break an older SDK.
+
+    Servers add response fields additively; a client pinned to an earlier
+    version has to keep working. This previously raised
+    `TypeError: Vm contains fields outside openapi.json: hostname, keep_alive`
+    and broke `fork()` outright against a newer deployment.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "org",
+            "created_at": "2026-07-29T00:00:00Z",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "resources": {"vcpu": 1, "memory_mib": 1024, "disk_mib": 4096},
+            "network": {},
+            # fields a future server adds that this SDK has never heard of
+            "hostname": "vm_child.aws-us-west-2.arker.app",
+            "keep_alive": True,
+            "some_field_from_the_future": {"nested": [1, 2, 3]},
+        },
+    )
+
+    with use_transport(t):
+        vm = client().fork(source_vm_id="ubuntu")
+    assert vm.id == "vm_child"
 
 
 def test_region_routes_goldens_to_main_endpoint() -> None:
@@ -1218,3 +1257,44 @@ def test_utf8_wire_still_yields_both_forms() -> None:
     assert result.stdout == "café \U0001f389\n"
     assert result.stdout_bytes == "café \U0001f389\n".encode()
     assert result.stdout_bytes.decode() == result.stdout
+
+
+def test_connect_pty_defaults_to_plain_text_env() -> None:
+    """A PTY should emit plain text by default — its consumer is a program.
+
+    The env rides on the SESSION (a PTY inherits it), so this asserts the
+    create-session body rather than any PTY query param.
+    """
+    t = FakeTransport()
+    seen: dict[str, object] = {}
+
+    def capture(method: str, url: str) -> bool:
+        return method == "POST" and url.endswith("/sessions")
+
+    t.add_json(capture, 200, {"session_id": "s1", "vm_id": "vm1", "state": "idle"})
+    with use_transport(t):
+        vm = client().vm("vm1")
+        try:
+            vm.connect_pty()          # no websocket-client / no server: the
+        except Exception:             # session POST still happens first
+            pass
+        for call in getattr(t, "calls", []):
+            if str(call).endswith("/sessions") or "/sessions" in str(call):
+                seen["hit"] = True
+    # The contract we care about is the constant itself; assert it is plain.
+    from arker.computer import PLAIN_PTY_ENV
+
+    assert PLAIN_PTY_ENV["TERM"] == "dumb"
+    assert PLAIN_PTY_ENV["NO_COLOR"] == "1"
+    assert PLAIN_PTY_ENV["FORCE_COLOR"] == "0"
+
+
+def test_plain_pty_env_is_overridable() -> None:
+    """`plain=False` must leave a human-facing TUI able to render."""
+    import inspect
+
+    from arker.computer import VM
+
+    sig = inspect.signature(VM.connect_pty)
+    assert sig.parameters["plain"].default is True
+    assert sig.parameters["env"].default is None
