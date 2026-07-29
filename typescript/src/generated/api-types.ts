@@ -127,12 +127,12 @@ export interface paths {
         };
         /**
          * Get a VM network policy
-         * @description Return the VM's network policy together with its derived inbound exposure and enforcement metadata.
+         * @description Return the VM's network policy together with its derived inbound exposure and enforcement metadata. The base application hostname is nullable; non-default ports use `<vm>-<port>.<region>.arker.app`.
          */
         get: operations["getVmPolicies"];
         /**
          * Replace a VM network policy
-         * @description Replace the VM's complete network policy and apply it to the running VM.
+         * @description Replace the complete network policy of a mutable VM owned by the authenticated caller and apply it to the running VM. Golden templates are immutable.
          */
         put: operations["putVmPolicies"];
         post?: never;
@@ -512,9 +512,9 @@ export interface components {
          * @enum {string}
          */
         Provider: "aws" | "azure" | "runpod" | "mac";
-        /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. */
+        /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {
-            /** @description Ordered network policy rules. An empty list selects the default posture: allow outbound traffic and require Arker authentication for inbound traffic. */
+            /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
             policies?: components["schemas"]["PolicyEntry"][];
             /** @description Named secret values referenced by `${secret:NAME}` in rewrite actions. Values are encrypted at rest and masked in subsequent policy responses. */
             secrets?: {
@@ -523,13 +523,13 @@ export interface components {
         };
         /** @description A VM's current network policy and its derived inbound exposure metadata. */
         PolicyDoc: {
-            /** @description Ordered network policy rules. An empty list selects the default posture: allow outbound traffic and require Arker authentication for inbound traffic. */
+            /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
             policies?: components["schemas"]["PolicyEntry"][];
             /** @description Named secrets referenced by `${secret:NAME}` in rewrite actions. Stored values are represented as `***`; supply the original value when replacing a policy that uses it. */
             secrets?: {
                 [key: string]: string;
             };
-            /** @description The VM's inbound application hostname when inbound access is available. */
+            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 80. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present. */
             readonly hostname?: string | null;
             /** @description Domains whose matching traffic is evaluated by the request-level policy engine. */
             readonly mitm_domains?: string[];
@@ -546,16 +546,16 @@ export interface components {
             match?: components["schemas"]["PolicyMatch"];
             action: components["schemas"]["PolicyAction"];
             /**
-             * @description Authentication for an inbound allow rule. `open` exposes the port publicly; `arker` requires an API key for the caller's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. Inbound port matches must use individual ports rather than ranges.
+             * @description Authentication for an inbound allow rule. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. All inbound allow rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges.
              * @enum {string}
              */
             auth?: "open" | "arker";
         };
-        /** @description Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive. Port, IP, and host rules operate at the connection layer. Method, path, header, and body rules operate at the request layer. */
+        /** @description Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive, and inbound rules cannot use `hosts`. Port, IP, and host rules operate at the connection layer. Method, path, header, and body rules operate at the request layer. */
         PolicyMatch: {
-            /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. */
+            /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. Inbound allow rules require one or more individual ports and reject ranges. */
             ports?: (number | number[])[];
-            /** @description IPs or CIDRs. */
+            /** @description IPs or CIDRs. Outbound rules match destination IPs; inbound rules match the caller source IP. */
             ips?: string[];
             /** @description Label-boundary suffix match on the request host: `github.com` matches `api.github.com`, not `evilgithub.com`. */
             hosts?: string[];
@@ -658,7 +658,7 @@ export interface components {
             platforms?: string[] | null;
             /** @description State to inherit from the source VM. Omit this field or pass `["disk", "memory"]` for a warm fork that resumes the source's filesystem and running processes. Pass `["disk"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`. */
             layers?: ("disk" | "memory")[] | null;
-            /** @description Network policy for the new VM. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
+            /** @description Network policy stored and enforced before the new VM first runs. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. A non-empty document denies unmatched outbound traffic, so include outbound rules needed during setup. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
             /** @description Resource shape for the new VM. */
             resources?: components["schemas"]["VmResources"] | null;
@@ -727,7 +727,7 @@ export interface components {
             provider?: components["schemas"]["Provider"] | null;
             /** @description RFC 3339 timestamp when execution or the session started. */
             started_at?: string | null;
-            /** @description The VM's network object — SSH keys only. Inbound reachability and per-port tunnels are derived from `policies` and surface on the policies GET/PUT response, not here. */
+            /** @description The VM's network object — SSH keys only. Inbound reachability and per-port exposure are derived from `policies`, not from this object. */
             network: components["schemas"]["VmNetwork"];
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
             max_vcpus?: number | null;
@@ -820,7 +820,7 @@ export interface components {
              * @enum {string|null}
              */
             signal?: "SIGINT" | "SIGTERM" | "SIGKILL" | "SIGHUP" | null;
-            /** @description Network policy applied to the VM before this run and retained afterward. A non-empty document replaces the persisted policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to use the current policy unchanged. If the policy cannot be stored and applied, the command does not run. */
+            /** @description Complete network policy replacement applied to the VM before this run and retained afterward. A non-empty document replaces the persisted policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to use the current policy unchanged. If the policy cannot be stored and applied, the command does not run. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
@@ -1346,7 +1346,7 @@ export interface components {
             resources?: components["schemas"]["VmResources"] | null;
             /** @description SSH access configuration for the VM. */
             network?: components["schemas"]["NetworkInput"] | null;
-            /** @description Network policy for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
+            /** @description Complete network policy replacement for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
         };
     };
@@ -1647,7 +1647,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The VM's policy document (empty when none is set), plus its derived inbound exposure (reachability + per-port tunnels). */
+            /** @description The VM's policy document (empty when none is set), plus its derived inbound exposure metadata. */
             200: {
                 headers: {
                     [name: string]: unknown;
