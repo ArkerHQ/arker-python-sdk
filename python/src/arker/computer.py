@@ -701,7 +701,7 @@ class VM:
 
         ``time_to_background`` is the HTTP sync window in seconds: how long the call
         blocks inline before backgrounding the run and returning a pollable
-        ``run_id``. ``None`` (default) = 30. It does not bound command
+        ``run_id``. ``None`` (default) = 120. It does not bound command
         runtime — that is ``timeout``.
         """
         if network is not None:
