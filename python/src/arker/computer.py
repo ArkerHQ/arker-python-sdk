@@ -131,6 +131,9 @@ DEFAULT_RUN_TIMEOUT_S = 3600
 # "cancelled") minus the sole non-terminal "running".
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
 PRESIGNED_PUT_TIMEOUT_S = 600
+# Must exceed the server's 120s sync window, or the request is given up on just
+# as the background ack arrives and run() never gets to poll.
+REQUEST_TIMEOUT_S = 300
 RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {
     "unavailable",
@@ -1474,7 +1477,7 @@ atexit.register(_http_client.close)
 
 
 def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) -> tuple[int, bytes]:
-    response = _http_client.request(method, url, headers=headers, content=data, timeout=120)
+    response = _http_client.request(method, url, headers=headers, content=data, timeout=REQUEST_TIMEOUT_S)
     return response.status_code, response.content
 
 
