@@ -1937,8 +1937,9 @@ function loadHttp2(): Promise<Http2Module | null> {
   })());
 }
 
-// Matches the 120s ceiling the Python client and the fetch paths use.
-const HTTP2_REQUEST_TIMEOUT_MS = 120_000;
+// Must exceed the server's 120s sync window, or the request is torn down just
+// as the background ack arrives and run() never gets to poll.
+const HTTP2_REQUEST_TIMEOUT_MS = 300_000;
 
 // One HTTP/2 session per origin; concurrent requests multiplex over it as streams.
 // `confirmed` flips on the first response so the caller can fall back to fetch if the
