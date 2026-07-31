@@ -31,6 +31,9 @@ vm.delete()
 ## Core API
 
 ```python
+from arker import Arker, discover_regions
+
+catalog = discover_regions()                 # public; no API key or placement required
 ar = Arker(provider="aws", region=..., api_key=None, base_url=None, retry=None)
 
 # VMs
@@ -59,7 +62,7 @@ vm.list_syncs()
 vm.delete_sync(sync_id)
 ```
 
-`api_key` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `Arker(provider="gcp", region="us-central1")`. GCP currently supports fork, run, and sync. Inspect `ar.list_regions()` before using optional features. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
+`api_key` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `Arker(provider="gcp", region="us-central1")`. GCP currently supports fork, run, and sync. Inspect `discover_regions()` before client setup or `ar.list_regions()` afterward before using optional features. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
 
 ## Interactive terminal (PTY)
 

@@ -27,7 +27,13 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
-import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
+import {
+  Arker,
+  ArkerError,
+  ARKER_ORG_ID,
+  COMPUTE_PROVIDERS,
+  discoverRegions,
+} from "./index.js";
 import { bridgePty } from "./cli-pty.js";
 import type {
   ComputeProvider,
@@ -68,7 +74,7 @@ type OptionSpecs = Record<string, OptionSpec>;
 const GLOBAL_OPTIONS: OptionSpecs = {
   help: { type: "boolean" },
   json: { type: "boolean" },
-  provider: { type: "string", values: ["aws", "gcp"] },
+  provider: { type: "string", values: COMPUTE_PROVIDERS },
   region: { type: "string" },
 };
 
@@ -150,6 +156,10 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   policies: {
     ...GLOBAL_OPTIONS,
     file: { type: "string" },
+  },
+  regions: {
+    help: { type: "boolean" },
+    json: { type: "boolean" },
   },
   sync: GLOBAL_OPTIONS,
   syncs: {
@@ -385,15 +395,19 @@ function clientFromArgs(args: ParsedArgs): Arker {
   const controlBaseUrl =
     process.env.ARKER_CONTROL_BASE_URL ??
     file.controlBaseUrl;
+  const provider = (args.flags.provider as ComputeProvider | undefined) ??
+    (process.env.ARKER_PROVIDER as ComputeProvider | undefined) ??
+    file.provider;
+  const configuredRegion = explicitRegion ?? file.region;
+  if (provider && provider !== "aws" && !configuredRegion && !baseUrl) {
+    die(`Region is required for provider ${provider}. Run 'arker regions' to list placements.`);
+  }
   // Region: explicit flag/env, then the saved config, then a default of
   // us-west-2 so the CLI works out of the box. If a base URL is already
   // resolved (explicit or from config) it drives the endpoint and region
   // can stay unset.
   const region =
-    explicitRegion ?? file.region ?? (baseUrl ? undefined : DEFAULT_REGION);
-  const provider = (args.flags.provider as ComputeProvider | undefined) ??
-    (process.env.ARKER_PROVIDER as ComputeProvider | undefined) ??
-    file.provider;
+    configuredRegion ?? (baseUrl ? undefined : DEFAULT_REGION);
   if (!apiKey) {
     die("Missing API key. Set ARKER_API_KEY or add apiKey to ~/.arker/config.json.");
   }
@@ -429,6 +443,21 @@ function fmtVm(vm: VM | Vm): string {
 }
 
 // ── Resources ──────────────────────────────────────────────────────
+
+async function cmdRegions(args: ParsedArgs): Promise<void> {
+  const file = readFileConfig();
+  const response = await discoverRegions({
+    controlBaseUrl: process.env.ARKER_CONTROL_BASE_URL ?? file.controlBaseUrl,
+  });
+  if (args.flags.json) return out(response);
+  for (const placement of response.regions) {
+    const capabilities = Object.entries(placement.capabilities)
+      .filter(([, enabled]) => enabled)
+      .map(([name]) => name)
+      .join(",");
+    out(`${placement.provider}-${placement.region}\t${placement.status}\t${capabilities}`);
+  }
+}
 
 async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
   const sub = args.positional[0];
@@ -1016,6 +1045,7 @@ function usage(_command?: string): void {
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "",
       "Resources:",
+      "  arker regions                                  list public placements and capabilities",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
       "  arker runs        <ls|get|rm> <vm_id> ...",
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
@@ -1079,6 +1109,7 @@ async function main(): Promise<void> {
   const { command: cmd, args } = invocation;
 
   try {
+    if (cmd === "regions") return await cmdRegions(args);
     const client = clientFromArgs(args);
     switch (cmd) {
       // Shortcuts.

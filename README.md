@@ -58,7 +58,25 @@ if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
 
 ### GCP
 
-Select GCP with both the provider and region:
+Read the public placement catalog before you configure a client. Discovery does not require an API key:
+
+```python
+from arker import discover_regions
+
+catalog = discover_regions()
+```
+
+```ts
+import { discoverRegions } from "@arker-ai/sdk";
+
+const catalog = await discoverRegions();
+```
+
+```bash
+arker regions
+```
+
+Then select GCP with both the provider and region:
 
 ```python
 ar = Arker(provider="gcp", region="us-central1")
@@ -72,7 +90,7 @@ const ar = new Arker({ provider: "gcp", region: "us-central1" });
 arker fork ubuntu-full --provider gcp --region us-central1
 ```
 
-Use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript to read the public placement catalog. GCP `us-central1` supports fork, run, and sync. It does not currently support encrypted network policies, SSH, shared directories, macOS VMs, desktop ingress, or cross-platform restore. Unsupported operations return `unsupported_operation`.
+You can also use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript after client setup. GCP `us-central1` supports fork, run, and sync. It does not currently support encrypted network policies, SSH, shared directories, macOS VMs, desktop ingress, or cross-platform restore. Unsupported operations return `unsupported_operation`.
 
 ### CLI
 

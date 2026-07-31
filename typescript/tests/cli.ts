@@ -266,13 +266,6 @@ async function testGcpProviderFlagIsAccepted(): Promise<void> {
   );
   assert.equal(gcp.code, 0, gcp.stderr);
 
-  const routed = await runCli(
-    undefined,
-    ["--provider", "gcp", "--region", "us-west-2", "ls"],
-  );
-  assert.equal(routed.code, 1);
-  assert.match(routed.stderr, /GCP currently supports only us-central1/);
-
   const invalid = await runCli(
     undefined,
     ["--provider", "azure", "--help"],
@@ -280,6 +273,59 @@ async function testGcpProviderFlagIsAccepted(): Promise<void> {
   );
   assert.equal(invalid.code, 1);
   assert.match(invalid.stderr, /aws, gcp/);
+}
+
+async function testNonAwsProviderRequiresAnExplicitRegion(): Promise<void> {
+  const result = await runCli(
+    undefined,
+    ["update", "vm_1", "--provider", "gcp"],
+  );
+
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /region is required for provider gcp/i);
+  assert.match(result.stderr, /arker regions/);
+}
+
+async function testRegionsDiscoveryNeedsNoCredentialsOrPlacement(): Promise<void> {
+  const placement = {
+    provider: "gcp",
+    region: "us-central1",
+    status: "available",
+    capabilities: {
+      fork: true,
+      run: true,
+      sync: true,
+      policy_encryption: false,
+      ssh: false,
+      shared_dirs: false,
+      mac_vms: false,
+      desktop_ingress: false,
+      cross_platform_restore: false,
+    },
+  };
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { regions: [placement] }),
+    async (baseUrl, requests) => {
+      const human = await runCli(baseUrl, ["regions"], {
+        authenticated: false,
+      });
+      assert.equal(human.code, 0, human.stderr);
+      assert.match(stdoutText(human), /gcp-us-central1\s+available\s+fork,run,sync/);
+
+      const json = await runCli(baseUrl, ["regions", "--json"], {
+        authenticated: false,
+      });
+      assert.equal(json.code, 0, json.stderr);
+      assert.deepEqual(JSON.parse(stdoutText(json)), { regions: [placement] });
+      assert.deepEqual(
+        requests.map((request) => [request.method, request.url]),
+        [
+          ["GET", "/api/v1/regions"],
+          ["GET", "/api/v1/regions"],
+        ],
+      );
+    },
+  );
 }
 
 async function testRemovedSecretAndUrlFlagsFailLocally(): Promise<void> {
@@ -690,6 +736,8 @@ await testInvalidNumbersFailBeforeRequest();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
 await testGcpProviderFlagIsAccepted();
+await testNonAwsProviderRequiresAnExplicitRegion();
+await testRegionsDiscoveryNeedsNoCredentialsOrPlacement();
 await testRemovedSecretAndUrlFlagsFailLocally();
 await testHelpMatchesSupportedSurface();
 await testRunJsonIncludesMemoryMetadata();

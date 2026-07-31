@@ -270,6 +270,26 @@ class ArkerError(Exception):
 # ── Client ──────────────────────────────────────────────────────────
 
 
+def discover_regions(
+    *,
+    control_base_url: str | None = None,
+    retry: RetryOptions | dict[str, Any] | bool | None = None,
+) -> ListRegionsResponse:
+    """Read the public placement catalog without configuring compute or auth."""
+    base_url = _normalize_base_url(
+        control_base_url
+        or _env("ARKER_CONTROL_BASE_URL")
+        or DEFAULT_CONTROL_BASE_URL
+    )
+    payload = _request_json(
+        "GET",
+        "/v1/regions",
+        base_url=base_url,
+        retry=_normalize_retry(retry),
+    )
+    return _decode_model(ListRegionsResponse, payload)
+
+
 class Arker:
     def __init__(
         self,
@@ -605,57 +625,18 @@ class Arker:
         base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        url = (base_url or self._base_url) + path
-        headers = {"authorization": f"Bearer {self._api_key}"}
-        if extra_headers:
-            for key, value in extra_headers.items():
-                if value is not None:
-                    headers[key] = value
-        data = None
-
-        if body is not None:
-            headers["content-type"] = "application/json"
-            data = json.dumps(_drop_none(body)).encode("utf-8")
-
-        last_status = 0
-        last_text = ""
-        last_error: dict[str, str] | None = None
-
-        for attempt in range(self._retry.attempts):
-            try:
-                status, raw = _http(method, url, headers, data)
-            except httpx.RequestError as error:
-                if attempt < self._retry.attempts - 1:
-                    time.sleep(self._retry_delay(attempt))
-                    continue
-                raise ArkerError("unavailable", str(error), 0) from error
-
-            text = raw.decode("utf-8", "replace")
-            payload = _parse_json(text)
-            parsed_error = _extract_error(payload)
-            last_status = status
-            last_text = text
-            last_error = parsed_error
-
-            if _is_retryable(status, parsed_error) and attempt < self._retry.attempts - 1:
-                time.sleep(self._retry_delay(attempt))
-                continue
-
-            if parsed_error:
-                raise ArkerError(parsed_error["code"], parsed_error["message"], status)
-            if status >= 400:
-                raise ArkerError("internal", last_text[:300] or f"HTTP {status}", status)
-            if not isinstance(payload, dict):
-                raise ArkerError("internal", "response must be a JSON object", status)
-            return payload
-
-        if last_error:
-            raise ArkerError(last_error["code"], last_error["message"], last_status)
-        raise ArkerError("internal", last_text[:300] or f"HTTP {last_status}", last_status)
+        return _request_json(
+            method,
+            path,
+            body,
+            base_url=base_url or self._base_url,
+            retry=self._retry,
+            api_key=self._api_key,
+            extra_headers=extra_headers,
+        )
 
     def _retry_delay(self, attempt: int) -> float:
-        base = min(self._retry.max_delay_s, self._retry.base_delay_s * (2 ** attempt))
-        return base + secrets.randbelow(max(1, int(self._retry.jitter_s * 1000) + 1)) / 1000.0
+        return _retry_delay(self._retry, attempt)
 
     def _base_url_for(
         self,
@@ -1497,6 +1478,71 @@ def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) ->
     return response.status_code, response.content
 
 
+def _request_json(
+    method: str,
+    path: str,
+    body: object | None = None,
+    *,
+    base_url: str,
+    retry: RetryOptions,
+    api_key: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    url = base_url + path
+    headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
+    if extra_headers:
+        for key, value in extra_headers.items():
+            if value is not None:
+                headers[key] = value
+    data = None
+
+    if body is not None:
+        headers["content-type"] = "application/json"
+        data = json.dumps(_drop_none(body)).encode("utf-8")
+
+    last_status = 0
+    last_text = ""
+    last_error: dict[str, str] | None = None
+
+    for attempt in range(retry.attempts):
+        try:
+            status, raw = _http(method, url, headers, data)
+        except httpx.RequestError as error:
+            if attempt < retry.attempts - 1:
+                time.sleep(_retry_delay(retry, attempt))
+                continue
+            raise ArkerError("unavailable", str(error), 0) from error
+
+        text = raw.decode("utf-8", "replace")
+        payload = _parse_json(text)
+        parsed_error = _extract_error(payload)
+        last_status = status
+        last_text = text
+        last_error = parsed_error
+
+        if _is_retryable(status, parsed_error) and attempt < retry.attempts - 1:
+            time.sleep(_retry_delay(retry, attempt))
+            continue
+
+        if parsed_error:
+            raise ArkerError(parsed_error["code"], parsed_error["message"], status)
+        if status >= 400:
+            raise ArkerError("internal", last_text[:300] or f"HTTP {status}", status)
+        if not isinstance(payload, dict):
+            raise ArkerError("internal", "response must be a JSON object", status)
+        return payload
+
+    if last_error:
+        raise ArkerError(last_error["code"], last_error["message"], last_status)
+    raise ArkerError("internal", last_text[:300] or f"HTTP {last_status}", last_status)
+
+
+def _retry_delay(retry: RetryOptions, attempt: int) -> float:
+    base = min(retry.max_delay_s, retry.base_delay_s * (2 ** attempt))
+    jitter_range = max(1, int(retry.jitter_s * 1000) + 1)
+    return base + secrets.randbelow(jitter_range) / 1000.0
+
+
 def _build_query(
     path: str,
     parameters: object,
@@ -1543,7 +1589,6 @@ def _compute_base_url(provider: str, region: str) -> str:
     the compute subdomains, drop ``/api`` here.
     """
     normalized = _normalize_region(region)
-    _validate_placement(provider, normalized)
     return f"https://{provider}-{normalized}.arker.ai/api"
 
 
@@ -1576,11 +1621,6 @@ def _split_region(value: str | None) -> tuple[str | None, str | None]:
         if normalized.startswith(prefix):
             return normalized[len(prefix):], provider
     return normalized, None
-
-
-def _validate_placement(provider: str, region: str) -> None:
-    if provider == "gcp" and region != "us-central1":
-        raise ValueError(f"GCP currently supports only us-central1, got {region!r}")
 
 
 def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> RetryOptions:

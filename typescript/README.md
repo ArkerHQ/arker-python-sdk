@@ -53,6 +53,9 @@ pty.close(); // detach; the session is not deleted
 ## Core API
 
 ```ts
+import { Arker, discoverRegions } from "@arker-ai/sdk";
+
+const catalog = await discoverRegions();     // public; no API key or placement required
 const ar = new Arker({ provider: "aws", region, apiKey?, baseUrl?, retry? });
 
 // VMs
@@ -82,7 +85,7 @@ await vm.listSyncs();
 await vm.deleteSync(syncId);
 ```
 
-`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `new Arker({ provider: "gcp", region: "us-central1" })`. GCP currently supports fork, run, and sync. Inspect `await ar.listRegions()` before using optional features. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
+`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `new Arker({ provider: "gcp", region: "us-central1" })`. GCP currently supports fork, run, and sync. Inspect `await discoverRegions()` before client setup or `await ar.listRegions()` afterward before using optional features. The CLI equivalent is `arker regions`. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
 
 ## Durability
 

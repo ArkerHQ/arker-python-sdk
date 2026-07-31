@@ -100,11 +100,20 @@ def test_gcp_combined_region_builds_gcp_endpoint() -> None:
     assert arker.base_url == "https://gcp-us-central1.arker.ai/api"
 
 
-def test_invalid_provider_and_gcp_region_fail_closed() -> None:
+def test_invalid_provider_fails_closed() -> None:
     with pytest.raises(ValueError, match="provider"):
         sdk.Arker(api_key="ark_live_test", provider="unknown", region="us-central1")
-    with pytest.raises(ValueError, match="us-central1"):
-        sdk.Arker(api_key="ark_live_test", provider="gcp", region="us-west-2")
+
+
+def test_gcp_region_is_not_hard_coded_in_the_client() -> None:
+    arker = sdk.Arker(
+        api_key="ark_live_test",
+        provider="gcp",
+        region="europe-west1",
+        retry=False,
+    )
+
+    assert arker.base_url == "https://gcp-europe-west1.arker.ai/api"
 
 
 def test_explicit_gcp_vm_handle_uses_placement_endpoint() -> None:
@@ -145,6 +154,25 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
     assert regions.regions[0].provider == "gcp"
     assert regions.regions[0].capabilities.run is True
     assert regions.regions[0].capabilities.ssh is False
+
+
+def test_discover_regions_requires_no_configured_client() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "GET"
+        and url == "https://control.invalid/api/v1/regions",
+        200,
+        {"regions": []},
+    )
+
+    with use_transport(t):
+        regions = sdk.discover_regions(
+            control_base_url="https://control.invalid/api",
+            retry=False,
+        )
+
+    assert regions.regions == []
+    assert "authorization" not in t.calls[0]["headers"]
 
 
 def test_fork_posts_directly_to_source_vm() -> None:

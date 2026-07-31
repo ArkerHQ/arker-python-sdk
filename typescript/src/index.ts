@@ -110,6 +110,11 @@ export interface ArkerOptions {
   retry?: RetryOptions | false;
 }
 
+export type RegionDiscoveryOptions = Pick<
+  ArkerOptions,
+  "controlBaseUrl" | "fetch" | "retry"
+>;
+
 export interface VmPlacement {
   provider: ComputeProvider;
   region: string;
@@ -123,6 +128,26 @@ export type ErrorCode = ApiSchema<"ErrorCode">;
 export type RegionCapabilities = ApiSchema<"RegionCapabilities">;
 export type RegionPlacement = ApiSchema<"RegionPlacement">;
 export type ListRegionsResponse = ApiSchema<"ListRegionsResponse">;
+
+/** Read the public placement catalog without configuring compute or auth. */
+export async function discoverRegions(
+  opts: RegionDiscoveryOptions = {},
+): Promise<ListRegionsResponse> {
+  const fetchImpl = opts.fetch ?? globalThis.fetch;
+  if (!fetchImpl) throw new Error("fetch is required in this runtime");
+  const controlBaseUrl = normalizeBaseUrl(
+    opts.controlBaseUrl ?? env("ARKER_CONTROL_BASE_URL") ?? DEFAULT_CONTROL_BASE_URL,
+  );
+  return requestJson(
+    "GET",
+    `${controlBaseUrl}/v1/regions`,
+    undefined,
+    {},
+    fetchImpl,
+    opts.fetch === undefined,
+    normalizeRetry(opts.retry),
+  );
+}
 
 // ── Core resources ─────────────────────────────────────────────────
 /** @deprecated Network topology is no longer a public policy input. */
@@ -602,7 +627,7 @@ export class Arker {
       platforms: src.platforms,
       resources,
       // Omit to inherit the source's policy; pass a document to replace it.
-      policies: src.policies ?? null,
+      policies: src.policies,
     };
     const body: ForkRequest = src.sourceVmId
       ? {
@@ -719,50 +744,15 @@ export class Arker {
         if (value !== undefined) headers[key] = value;
       }
     }
-    let requestBody: string | undefined;
-    if (body !== undefined) {
-      headers["content-type"] = "application/json";
-      requestBody = JSON.stringify(withoutUndefined(body));
-    }
-
-    let lastStatus = 0;
-    let lastText = "";
-    let lastError: ParsedError | undefined;
-
-    for (let attempt = 0; attempt < this.retry.attempts; attempt++) {
-      try {
-        const { status, ok, text } = await sendRequest(url, { method, headers, body: requestBody }, this.fetchImpl, this.http2);
-        const payload = parseJson(text);
-        const parsedError = extractError(payload);
-
-        lastStatus = status;
-        lastText = text;
-        lastError = parsedError;
-
-        if (isRetryable(status, parsedError) && attempt < this.retry.attempts - 1) {
-          await sleep(retryDelay(this.retry, attempt));
-          continue;
-        }
-
-        if (parsedError) throw new ArkerError(parsedError.code, parsedError.message, status);
-        if (!ok) {
-          throw new ArkerError("internal", lastText.slice(0, 300) || `HTTP ${status}`, status);
-        }
-
-        return payload as T;
-      } catch (error) {
-        if (error instanceof ArkerError) throw error;
-        if (attempt < this.retry.attempts - 1) {
-          await sleep(retryDelay(this.retry, attempt));
-          continue;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new ArkerError("unavailable", message, 0);
-      }
-    }
-
-    if (lastError) throw new ArkerError(lastError.code, lastError.message, lastStatus);
-    throw new ArkerError("internal", lastText.slice(0, 300) || `HTTP ${lastStatus}`, lastStatus);
+    return requestJson(
+      method,
+      url,
+      body,
+      headers,
+      this.fetchImpl,
+      this.http2,
+      this.retry,
+    );
   }
 
   /** @internal */
@@ -1655,7 +1645,6 @@ function computeBaseUrl(provider: ComputeProvider, region: string): string {
   // `/api`. When DNS is split to bypass the worker on the compute
   // subdomain, drop `/api` here.
   const normalized = normalizeRegion(region);
-  validatePlacement(provider, normalized);
   return `https://${provider}-${normalized}.arker.ai/api`;
 }
 
@@ -1688,12 +1677,6 @@ function splitRegion(value: string | undefined): { region?: string; providerFrom
     }
   }
   return { region: normalized };
-}
-
-function validatePlacement(provider: ComputeProvider, region: string): void {
-  if (provider === "gcp" && region !== "us-central1") {
-    throw new Error(`GCP currently supports only us-central1, got ${JSON.stringify(region)}`);
-  }
 }
 
 function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {
@@ -1817,6 +1800,79 @@ function runToCompletedResult(run: RunRecord): CompletedRunResult {
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
     failReason: run.fail_reason ?? null,
   };
+}
+
+async function requestJson<T>(
+  method: HttpMethod,
+  url: string,
+  body: unknown,
+  requestHeaders: Record<string, string>,
+  fetchImpl: FetchLike,
+  http2: boolean,
+  retry: RetryConfig,
+): Promise<T> {
+  const headers = { ...requestHeaders };
+  let requestBody: string | undefined;
+  if (body !== undefined) {
+    headers["content-type"] = "application/json";
+    requestBody = JSON.stringify(withoutUndefined(body));
+  }
+
+  let lastStatus = 0;
+  let lastText = "";
+  let lastError: ParsedError | undefined;
+
+  for (let attempt = 0; attempt < retry.attempts; attempt++) {
+    try {
+      const { status, ok, text } = await sendRequest(
+        url,
+        { method, headers, body: requestBody },
+        fetchImpl,
+        http2,
+      );
+      const payload = parseJson(text);
+      const parsedError = extractError(payload);
+
+      lastStatus = status;
+      lastText = text;
+      lastError = parsedError;
+
+      if (isRetryable(status, parsedError) && attempt < retry.attempts - 1) {
+        await sleep(retryDelay(retry, attempt));
+        continue;
+      }
+
+      if (parsedError) {
+        throw new ArkerError(parsedError.code, parsedError.message, status);
+      }
+      if (!ok) {
+        throw new ArkerError(
+          "internal",
+          lastText.slice(0, 300) || `HTTP ${status}`,
+          status,
+        );
+      }
+
+      return payload as T;
+    } catch (error) {
+      if (error instanceof ArkerError) throw error;
+      if (attempt < retry.attempts - 1) {
+        await sleep(retryDelay(retry, attempt));
+        continue;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ArkerError("unavailable", message, 0);
+    }
+  }
+
+  if (lastError) {
+    throw new ArkerError(lastError.code, lastError.message, lastStatus);
+  }
+  throw new ArkerError(
+    "internal",
+    lastText.slice(0, 300) || `HTTP ${lastStatus}`,
+    lastStatus,
+  );
 }
 
 function parseJson(text: string): unknown {
