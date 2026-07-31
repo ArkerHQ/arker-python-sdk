@@ -502,8 +502,6 @@ export interface components {
             ssh: boolean;
             /** @description Whether the placement supports shared directories. */
             shared_dirs: boolean;
-            /** @description Whether the placement can host macOS VMs. */
-            mac_vms: boolean;
             /** @description Whether the placement supports desktop ingress. */
             desktop_ingress: boolean;
             /** @description Whether the placement supports restoring a VM across platforms. */

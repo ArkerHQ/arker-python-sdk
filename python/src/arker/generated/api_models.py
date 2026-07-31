@@ -21,7 +21,6 @@ class RegionCapabilities:
     policy_encryption: bool
     ssh: bool
     shared_dirs: bool
-    mac_vms: bool
     desktop_ingress: bool
     cross_platform_restore: bool
 

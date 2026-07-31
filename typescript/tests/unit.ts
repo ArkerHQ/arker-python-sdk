@@ -440,7 +440,6 @@ async function testListRegionsUsesPublicControlPlaneCatalog(): Promise<void> {
       policy_encryption: false,
       ssh: false,
       shared_dirs: false,
-      mac_vms: false,
       desktop_ingress: false,
       cross_platform_restore: false,
     },

@@ -1608,7 +1608,6 @@
           "policy_encryption",
           "ssh",
           "shared_dirs",
-          "mac_vms",
           "desktop_ingress",
           "cross_platform_restore"
         ],
@@ -1620,7 +1619,6 @@
           "policy_encryption": { "type": "boolean", "description": "Whether the placement supports encrypted network policies." },
           "ssh": { "type": "boolean", "description": "Whether the placement supports SSH access." },
           "shared_dirs": { "type": "boolean", "description": "Whether the placement supports shared directories." },
-          "mac_vms": { "type": "boolean", "description": "Whether the placement can host macOS VMs." },
           "desktop_ingress": { "type": "boolean", "description": "Whether the placement supports desktop ingress." },
           "cross_platform_restore": { "type": "boolean", "description": "Whether the placement supports restoring a VM across platforms." }
         },

@@ -136,7 +136,6 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
             "policy_encryption": False,
             "ssh": False,
             "shared_dirs": False,
-            "mac_vms": False,
             "desktop_ingress": False,
             "cross_platform_restore": False,
         },
