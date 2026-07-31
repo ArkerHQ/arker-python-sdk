@@ -105,13 +105,13 @@ def test_fork_posts_directly_to_source_vm() -> None:
 
     assert vm.id == "vm_child"
     body = json.loads(t.calls[0]["body"])
-    # Computer.fork passes source_vm_id; disk defaults to True.
+    # Computer.fork passes source_vm_id; `disk` is omitted unless the caller
+    # sets it, so the server derives it from the source (nodisk goldens reject true).
     assert body == {
         "name": "demo",
         "description": "CI runner",
         "ssh_public_keys": ["ssh-ed25519 AAAA test@example.com"],
         "source_vm_id": "ubuntu",
-        "disk": True,
     }
 
 
@@ -138,7 +138,7 @@ def test_fork_infers_arker_org_for_macos_full_golden() -> None:
 
     assert vm.id == "vm_macos"
     body = json.loads(t.calls[0]["body"])
-    assert body == {"source_vm_name": "macos-full", "source_org_id": "ArkerHQ", "disk": True}
+    assert body == {"source_vm_name": "macos-full", "source_org_id": "ArkerHQ"}
 
 
 def test_fork_rejects_legacy_id_response() -> None:
@@ -772,11 +772,10 @@ def test_fork_sends_durable_flag() -> None:
             policies={"policies": []},
         )
 
-    # Computer.fork auto-fills source_vm_id; disk defaults to True.
+    # Computer.fork auto-fills source_vm_id; `disk` is omitted unless set.
     assert json.loads(t.calls[0]["body"]) == {
         "durable": True,
         "source_vm_id": "ubuntu",
-        "disk": True,
         "ssh_public_keys": ["ssh-ed25519 AAAA test@example"],
         "policies": {"policies": []},
     }
@@ -805,11 +804,10 @@ def test_fork_sends_disk_only_layers() -> None:
     with use_transport(t):
         client().fork(source_vm_id="ubuntu", layers=["disk"])
 
-    # Computer.fork auto-fills source_vm_id; disk defaults to True.
+    # Computer.fork auto-fills source_vm_id; `disk` is omitted unless set.
     assert json.loads(t.calls[0]["body"]) == {
         "layers": ["disk"],
         "source_vm_id": "ubuntu",
-        "disk": True,
     }
 
 
@@ -1298,3 +1296,142 @@ def test_plain_pty_env_is_overridable() -> None:
     sig = inspect.signature(VM.connect_pty)
     assert sig.parameters["plain"].default is True
     assert sig.parameters["env"].default is None
+
+
+def test_fork_sends_gpu_resources() -> None:
+    """GPU sizing rides the same `resources` object as vcpu/memory/disk.
+
+    The contract folds every resource into one `VmResources`, so a GPU request
+    must not introduce a second shape — it is `resources.gpu_vram_mib` /
+    `resources.gpu_sms` alongside the CPU fields, and unset fields are pruned.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().fork(
+            source_vm_id="ubuntu-gpu-small",
+            platforms=["x86_64-l40s"],
+            gpu_vram_mib=24576,
+            gpu_sms=8,
+        )
+
+    assert json.loads(t.calls[0]["body"]) == {
+        "source_vm_id": "ubuntu-gpu-small",
+        "platforms": ["x86_64-l40s"],
+        "resources": {"gpu_vram_mib": 24576, "gpu_sms": 8},
+    }
+
+
+def test_fork_mixes_gpu_and_cpu_resources() -> None:
+    """CPU and GPU fields coexist in the single resources object."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().fork(source_vm_id="ubuntu-gpu-small", vcpu_count=4, gpu_vram_mib=8192)
+
+    assert json.loads(t.calls[0]["body"]) == {
+        "source_vm_id": "ubuntu-gpu-small",
+        "resources": {"vcpu": 4, "gpu_vram_mib": 8192},
+    }
+
+
+def test_fork_omits_resources_when_no_sizing_requested() -> None:
+    """No sizing of any kind ⇒ no `resources` key at all (not an empty object).
+
+    Guards the `any(...)` gate: adding GPU fields must not make every fork
+    start sending a resources object it did not send before.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().fork(source_vm_id="ubuntu")
+
+    assert "resources" not in json.loads(t.calls[0]["body"])
+
+
+def test_fork_omits_disk_so_nodisk_sources_work() -> None:
+    """`disk` must not be defaulted client-side.
+
+    Every GPU golden is a nodisk source, and arkerd rejects a disk-backed fork
+    from one with "cannot create a disk-backed fork from a nodisk source". The
+    SDK used to send `disk: true` on every fork, which made those goldens
+    unforkable. Omitting it is explicitly supported and yields an identical VM
+    for disk-backed sources (verified against prod: disk_mib=4096 either way).
+    """
+    t = FakeTransport()
+    for _ in range(3):
+        t.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+            200,
+            {
+                "vm_id": "vm_child",
+                "owner_org_id": "owner",
+                "created_at": "now",
+                "description": None,
+                "public": False,
+                "state": "idle",
+                "sessions": [],
+                "network": {},
+                "resources": {},
+            },
+        )
+
+    with use_transport(t):
+        client().fork(source_vm_name="ubuntu-gpu-small")
+
+    body = json.loads(t.calls[0]["body"])
+    assert "disk" not in body
+
+    # An explicit choice is still honoured in both directions.
+    with use_transport(t):
+        client().fork(source_vm_name="ubuntu-gpu-small", disk=False)
+    assert json.loads(t.calls[1]["body"])["disk"] is False
+
+    with use_transport(t):
+        client().fork(source_vm_name="ubuntu", disk=True)
+    assert json.loads(t.calls[2]["body"])["disk"] is True

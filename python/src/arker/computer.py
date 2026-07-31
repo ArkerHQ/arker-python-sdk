@@ -340,6 +340,8 @@ class Arker:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        gpu_vram_mib: int | None = None,
+        gpu_sms: int | None = None,
         durable: bool | None = None,
         platforms: list[str] | None = None,
         layers: list[str] | None = None,
@@ -402,13 +404,20 @@ class Arker:
         # irrelevant when forking by id.
         if source_vm_name and source_org_id is None and source_vm_name in GOLDEN_NAMES:
             source_org_id = ARKER_ORG_ID
-        # The contract folds vcpu/memory/disk into a single `resources` object.
+        # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
+        # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
+        # platform's max is a 400 from the server, not a silent clamp.
         resources: VmResources | None = None
-        if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
+        if any(
+            v is not None
+            for v in (vcpu_count, memory_mib, disk_mib, gpu_vram_mib, gpu_sms)
+        ):
             resources = VmResources(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
+                gpu_vram_mib=gpu_vram_mib,
+                gpu_sms=gpu_sms,
             )
         policy_doc = (
             policies
@@ -423,7 +432,14 @@ class Arker:
             description=description,
             public=public,
             ssh_public_keys=ssh_public_keys,
-            disk=disk if disk is not None else True,
+            # Do NOT default `disk` to True. A nodisk source (every GPU golden,
+            # ubuntu-nodisk, ubuntu-nonet-nodisk) rejects a disk-backed fork with
+            # "cannot create a disk-backed fork from a nodisk source", so forcing
+            # true here made those goldens unforkable from the SDK entirely.
+            # Omitting it is explicitly supported and the server derives the right
+            # default from the source: a disk-backed golden yields an identical VM
+            # either way (verified against prod: disk_mib=4096 in both cases).
+            disk=disk,
             durable=durable,
             platforms=platforms,
             layers=layers,
