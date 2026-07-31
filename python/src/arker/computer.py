@@ -21,7 +21,7 @@ import threading
 import time
 import types
 import urllib.parse
-from typing import TYPE_CHECKING, Any, Callable, TypeVar, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, get_args, get_origin, get_type_hints
 
 import httpx
 
@@ -43,6 +43,7 @@ from .generated.api_models import (
     ListFilesystemsParameters,
     ListOrgRunsResponse,
     ListOrgRunsParameters,
+    ListRegionsResponse,
     ListRunsResponse,
     ListRunsParameters,
     ListSessionsResponse,
@@ -58,6 +59,8 @@ from .generated.api_models import (
     PatchVmRequest,
     PolicyDoc,
     PtyTicketResponse,
+    RegionCapabilities,
+    RegionPlacement,
     Run,
     RunRequest,
     RunResponse,
@@ -138,7 +141,9 @@ TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "Thrott
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_REGION_ENV = "ARKER_REGION"
 DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
-DEFAULT_PROVIDER = "aws"
+ComputeProvider = Literal["aws", "gcp"]
+COMPUTE_PROVIDERS = frozenset({"aws", "gcp"})
+DEFAULT_PROVIDER: ComputeProvider = "aws"
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
 
 # Public golden VM names owned by the Arker org. Forking one of these by name
@@ -272,15 +277,20 @@ class Arker:
         base_url: str | None = None,
         control_base_url: str | None = None,
         region: str | None = None,
-        provider: str | None = None,
+        provider: ComputeProvider | None = None,
         retry: RetryOptions | dict[str, Any] | bool | None = None,
     ) -> None:
         resolved_api_key = api_key or _env("ARKER_API_KEY") or _env("AUTH_KEY")
         explicit_base_url = base_url or _env("ARKER_BASE_URL")
         raw_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
-        raw_provider = provider or _env(DEFAULT_PROVIDER_ENV) or DEFAULT_PROVIDER
+        configured_provider = provider or _env(DEFAULT_PROVIDER_ENV)
+        raw_provider = configured_provider or DEFAULT_PROVIDER
         provider_value = _parse_provider(raw_provider)
         resolved_region, provider_from_region = _split_region(raw_region)
+        if configured_provider and provider_from_region and provider_from_region != provider_value:
+            raise ValueError(
+                f"provider {provider_value} conflicts with region prefix {provider_from_region}"
+            )
         effective_provider = provider_from_region or provider_value
 
         resolved_base_url = explicit_base_url or (
@@ -317,11 +327,17 @@ class Arker:
         return self._region
 
     @property
-    def provider(self) -> str:
+    def provider(self) -> ComputeProvider:
         return self._provider
 
-    def vm(self, vm_id: str) -> "VM":
-        return VM(self, vm_id, self._base_url_for(vm_id))
+    def vm(
+        self,
+        vm_id: str,
+        *,
+        provider: ComputeProvider | None = None,
+        region: str | None = None,
+    ) -> "VM":
+        return VM(self, vm_id, self._base_url_for(vm_id, provider=provider, region=region))
 
     def fork(
         self,
@@ -451,7 +467,7 @@ class Arker:
             if source_vm_id is not None
             else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )
-        base_url = self._base_url
+        base_url = source.base_url if isinstance(source, VM) else self._base_url
         payload = self._request("POST", "/v1/fork", body, base_url=base_url)
         info = _vm_info(payload)
         # Child lives on the host the fork was posted to.
@@ -485,7 +501,12 @@ class Arker:
         vms = []
         for item in payload.get("vms", []):
             info = _vm_info(item)
-            vms.append(VM(self, info.vm_id, self._base_url_for(info.vm_id), info))
+            vms.append(VM(
+                self,
+                info.vm_id,
+                self._base_url_for(info.vm_id, provider=info.provider, region=info.region),
+                info,
+            ))
         return VmList(vms=vms, next_cursor=_optional_str(payload.get("next_cursor")))
 
     def list_runs(
@@ -535,9 +556,21 @@ class Arker:
         payload = self._request("GET", path, base_url=self._control_base_url)
         return _org_runs_response(payload)
 
-    def get_vm(self, vm_id: str) -> VM:
-        info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=self._base_url_for(vm_id)))
-        return VM(self, vm_id, self._base_url_for(vm_id), info)
+    def list_regions(self) -> ListRegionsResponse:
+        """List public provider and region placements with their capabilities."""
+        payload = self._request("GET", "/v1/regions", base_url=self._control_base_url)
+        return _decode_model(ListRegionsResponse, payload)
+
+    def get_vm(
+        self,
+        vm_id: str,
+        *,
+        provider: ComputeProvider | None = None,
+        region: str | None = None,
+    ) -> VM:
+        base_url = self._base_url_for(vm_id, provider=provider, region=region)
+        info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=base_url))
+        return VM(self, vm_id, base_url, info)
 
     # ── Filesystems (org-scoped, control-plane) ─────────────────────────
     def list_filesystems(self, *, cursor: str | None = None, limit: int | None = None, name_prefix: str | None = None) -> ListFilesystemsResponse:
@@ -624,7 +657,16 @@ class Arker:
         base = min(self._retry.max_delay_s, self._retry.base_delay_s * (2 ** attempt))
         return base + secrets.randbelow(max(1, int(self._retry.jitter_s * 1000) + 1)) / 1000.0
 
-    def _base_url_for(self, ref: str) -> str:
+    def _base_url_for(
+        self,
+        ref: str,
+        *,
+        provider: object = None,
+        region: str | None = None,
+    ) -> str:
+        placement_provider = _optional_compute_provider(provider)
+        if placement_provider and region and region.strip():
+            return _compute_base_url(placement_provider, region)
         return self._base_url
 
 
@@ -1501,13 +1543,25 @@ def _compute_base_url(provider: str, region: str) -> str:
     the compute subdomains, drop ``/api`` here.
     """
     normalized = _normalize_region(region)
+    _validate_placement(provider, normalized)
     return f"https://{provider}-{normalized}.arker.ai/api"
 
 
-def _parse_provider(value: str | None) -> str:
+def _optional_compute_provider(value: object) -> ComputeProvider | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in COMPUTE_PROVIDERS else None  # type: ignore[return-value]
+
+
+def _parse_provider(value: str | None) -> ComputeProvider:
     if not value:
         return DEFAULT_PROVIDER
-    return "aws"
+    provider = _optional_compute_provider(value)
+    if provider is None:
+        expected = " or ".join(sorted(COMPUTE_PROVIDERS))
+        raise ValueError(f"unknown provider {value!r}; expected {expected}")
+    return provider
 
 
 def _split_region(value: str | None) -> tuple[str | None, str | None]:
@@ -1517,9 +1571,16 @@ def _split_region(value: str | None) -> tuple[str | None, str | None]:
     if not value:
         return None, None
     normalized = value.strip().lower()
-    if normalized.startswith("aws-"):
-        return normalized[len("aws-"):], "aws"
+    for provider in sorted(COMPUTE_PROVIDERS):
+        prefix = f"{provider}-"
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):], provider
     return normalized, None
+
+
+def _validate_placement(provider: str, region: str) -> None:
+    if provider == "gcp" and region != "us-central1":
+        raise ValueError(f"GCP currently supports only us-central1, got {region!r}")
 
 
 def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> RetryOptions:

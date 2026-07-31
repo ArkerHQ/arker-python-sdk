@@ -354,6 +354,127 @@ async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   assert.equal(vm.baseUrl, "https://aws-us-west-2.arker.ai/api");
 }
 
+function testGcpProviderBuildsGcpEndpoint(): void {
+  const arker = new Arker({
+    apiKey: "ark_live_test",
+    provider: "gcp",
+    region: "us-central1",
+    retry: false,
+  });
+
+  assert.equal(arker.provider, "gcp");
+  assert.equal(arker.region, "us-central1");
+  assert.equal(arker.baseUrl, "https://gcp-us-central1.arker.ai/api");
+}
+
+function testGcpCombinedRegionBuildsGcpEndpoint(): void {
+  const arker = new Arker({
+    apiKey: "ark_live_test",
+    region: "gcp-us-central1",
+    retry: false,
+  });
+
+  assert.equal(arker.provider, "gcp");
+  assert.equal(arker.region, "us-central1");
+  assert.equal(arker.baseUrl, "https://gcp-us-central1.arker.ai/api");
+}
+
+function testInvalidProviderAndGcpRegionFailClosed(): void {
+  assert.throws(
+    () => new Arker({ apiKey: "ark_live_test", provider: "unknown" as never, region: "us-central1" }),
+    /provider/i,
+  );
+  assert.throws(
+    () => new Arker({ apiKey: "ark_live_test", provider: "gcp", region: "us-west-2" }),
+    /us-central1/i,
+  );
+}
+
+async function testListRegionsUsesPublicControlPlaneCatalog(): Promise<void> {
+  const fetch = new FakeFetch();
+  const placement = {
+    provider: "gcp" as const,
+    region: "us-central1",
+    status: "available" as const,
+    capabilities: {
+      fork: true,
+      run: true,
+      sync: true,
+      policy_encryption: false,
+      ssh: false,
+      shared_dirs: false,
+      mac_vms: false,
+      desktop_ingress: false,
+      cross_platform_restore: false,
+    },
+  };
+  fetch.addJson(
+    (method, url) =>
+      method === "GET" && url === "https://control.invalid/api/v1/regions",
+    200,
+    { regions: [placement] },
+  );
+  const arker = new Arker({
+    apiKey: "ark_live_test",
+    region: "us-west-2",
+    controlBaseUrl: "https://control.invalid/api",
+    fetch: fetch.fetch,
+    retry: false,
+  });
+
+  assert.deepEqual(await arker.listRegions(), { regions: [placement] });
+}
+
+async function testListedGcpVmUsesItsPlacementEndpoint(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms",
+    200,
+    {
+      vms: [{
+        vm_id: "vm_gcp",
+        owner_org_id: "org_1",
+        created_at: "now",
+        region: "us-central1",
+        provider: "gcp",
+      }],
+    },
+  );
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://gcp-us-central1.arker.ai/api/v1/vms/vm_gcp/runs",
+    200,
+    {
+      run_id: "run_gcp",
+      state: "completed",
+      stdout: "ok\n",
+      stdout_encoding: "utf-8",
+      stderr: "",
+      stderr_encoding: "utf-8",
+      exit_code: 0,
+    },
+  );
+
+  const arker = new Arker({
+    apiKey: "ark_live_test",
+    region: "us-west-2",
+    fetch: fetch.fetch,
+    retry: false,
+  });
+  const { vms } = await arker.listVms();
+  assert.equal(vms[0]?.baseUrl, "https://gcp-us-central1.arker.ai/api");
+  await vms[0]!.run("printf ok");
+}
+
+function testExplicitGcpVmHandleUsesPlacementEndpoint(): void {
+  const arker = new Arker({
+    apiKey: "ark_live_test",
+    region: "us-west-2",
+    retry: false,
+  });
+  const vm = arker.vm("vm_gcp", { provider: "gcp", region: "us-central1" });
+  assert.equal(vm.baseUrl, "https://gcp-us-central1.arker.ai/api");
+}
+
 async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -792,6 +913,12 @@ await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();
 await testBackgroundTrueReturnsAckWithoutPolling();
 await testRegionRoutesGoldensToMainEndpoint();
+testGcpProviderBuildsGcpEndpoint();
+testGcpCombinedRegionBuildsGcpEndpoint();
+testInvalidProviderAndGcpRegionFailClosed();
+await testListRegionsUsesPublicControlPlaneCatalog();
+await testListedGcpVmUsesItsPlacementEndpoint();
+testExplicitGcpVmHandleUsesPlacementEndpoint();
 await testListRunsUsesControlPlaneAndFilters();
 await testListVmsPreservesForkLimitFields();
 await testForkSendsDurableFlag();

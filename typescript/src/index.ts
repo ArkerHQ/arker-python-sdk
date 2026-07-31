@@ -66,7 +66,10 @@ const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
 const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
-const DEFAULT_PROVIDER = "aws" as const;
+export const COMPUTE_PROVIDERS = ["aws", "gcp"] as const;
+export type ComputeProvider = (typeof COMPUTE_PROVIDERS)[number];
+const COMPUTE_PROVIDER_SET = new Set<string>(COMPUTE_PROVIDERS);
+const DEFAULT_PROVIDER: ComputeProvider = "aws";
 const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
 
 type FetchLike = typeof fetch;
@@ -94,8 +97,8 @@ export interface ArkerOptions {
    * compute endpoint. Back-compat: accepts the legacy combined form
    * `"aws-us-west-2"`. */
   region?: string;
-  /** Provider for compute calls. Defaults to `"aws"` (arkerd-managed VMs). */
-  provider?: "aws";
+  /** Provider for compute calls. Defaults to `"aws"`. */
+  provider?: ComputeProvider;
   /** Override the compute base URL (e.g. for internal / dev targets).
    * If set, `provider` + `region` are ignored for compute. */
   baseUrl?: string;
@@ -107,11 +110,19 @@ export interface ArkerOptions {
   retry?: RetryOptions | false;
 }
 
+export interface VmPlacement {
+  provider: ComputeProvider;
+  region: string;
+}
+
 // ── State enums ────────────────────────────────────────────────────
 export type VmState = ApiSchema<"VmState">;
 export type SessionState = ApiSchema<"SessionState">;
 export type RunState = ApiSchema<"RunState">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
+export type RegionCapabilities = ApiSchema<"RegionCapabilities">;
+export type RegionPlacement = ApiSchema<"RegionPlacement">;
+export type ListRegionsResponse = ApiSchema<"ListRegionsResponse">;
 
 // ── Core resources ─────────────────────────────────────────────────
 /** @deprecated Network topology is no longer a public policy input. */
@@ -467,7 +478,7 @@ export class Arker {
    * like list-VMs and filesystems. */
   readonly controlBaseUrl: string;
   readonly region?: string;
-  readonly provider: "aws";
+  readonly provider: ComputeProvider;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly http2: boolean;
@@ -477,9 +488,12 @@ export class Arker {
     const apiKey = opts.apiKey ?? env("ARKER_API_KEY") ?? env("AUTH_KEY");
     const explicitBaseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
     const rawRegion = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
-    const rawProvider = (opts.provider as string | undefined) ?? env(DEFAULT_PROVIDER_ENV) ?? DEFAULT_PROVIDER;
-    const provider = parseProvider(rawProvider);
+    const configuredProvider = (opts.provider as string | undefined) ?? env(DEFAULT_PROVIDER_ENV);
+    const provider = parseProvider(configuredProvider ?? DEFAULT_PROVIDER);
     const { region, providerFromRegion } = splitRegion(rawRegion);
+    if (configuredProvider && providerFromRegion && providerFromRegion !== provider) {
+      throw new Error(`provider ${provider} conflicts with region prefix ${providerFromRegion}`);
+    }
     const effectiveProvider = providerFromRegion ?? provider;
 
     const baseUrl = explicitBaseUrl ?? (region ? computeBaseUrl(effectiveProvider, region) : undefined);
@@ -505,8 +519,8 @@ export class Arker {
    * Address an existing VM. Doesn't make any network calls; returns a
    * lightweight handle.
    */
-  vm(vmId: string): VM {
-    return new VM(this, vmId, this._baseUrlFor(vmId));
+  vm(vmId: string, placement?: VmPlacement): VM {
+    return new VM(this, vmId, this._baseUrlFor(vmId, placement));
   }
 
   /**
@@ -601,7 +615,7 @@ export class Arker {
           source_vm_id: null,
           source_vm_name: src.sourceVmName!,
         };
-    const baseUrl = this.baseUrl;
+    const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
     const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
@@ -619,9 +633,14 @@ export class Arker {
     const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", query), undefined, this.controlBaseUrl);
     const vms = (resp.vms ?? []).map((v) => {
       const id = v.vm_id;
-      return new VM(this, id, this._baseUrlFor(id), v);
+      return new VM(this, id, this._baseUrlFor(id, v), v);
     });
     return { vms, nextCursor: resp.next_cursor ?? null };
+  }
+
+  /** List public provider and region placements with their capabilities. */
+  async listRegions(): Promise<ListRegionsResponse> {
+    return this._request("GET", "/v1/regions", undefined, this.controlBaseUrl);
   }
 
   /**
@@ -654,9 +673,10 @@ export class Arker {
 
   /** Compute call — goes direct to the backend hosting this VM (no
    * control-plane hop). Returns a fully-populated VM handle. */
-  async getVm(vmId: string): Promise<VM> {
-    const data = await this._request<Vm>("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
-    return new VM(this, vmId, this._baseUrlFor(vmId), data);
+  async getVm(vmId: string, placement?: VmPlacement): Promise<VM> {
+    const baseUrl = this._baseUrlFor(vmId, placement);
+    const data = await this._request<Vm>("GET", vmPath(vmId), undefined, baseUrl);
+    return new VM(this, vmId, baseUrl, data);
   }
 
   // ── Filesystems (region-scoped, served by arkerd directly) ──────────
@@ -766,7 +786,13 @@ export class Arker {
   }
 
   /** @internal */
-  _baseUrlFor(ref: string): string {
+  _baseUrlFor(
+    ref: string,
+    placement?: { provider?: unknown; region?: string | null },
+  ): string {
+    const provider = optionalComputeProvider(placement?.provider);
+    const region = placement?.region?.trim();
+    if (provider && region) return computeBaseUrl(provider, region);
     return this.baseUrl;
   }
 }
@@ -1622,29 +1648,52 @@ function normalizeRegion(region: string): string {
   return trimmed;
 }
 
-function computeBaseUrl(provider: "aws", region: string): string {
+function computeBaseUrl(provider: ComputeProvider, region: string): string {
   // The subdomain encodes provider+region — `https://aws-us-west-2.arker.ai`
   // routes to arkerd in us-west-2. Today the subdomain still resolves through
   // the CF Worker (which dispatches based on hostname), so the path includes
   // `/api`. When DNS is split to bypass the worker on the compute
   // subdomain, drop `/api` here.
   const normalized = normalizeRegion(region);
+  validatePlacement(provider, normalized);
   return `https://${provider}-${normalized}.arker.ai/api`;
 }
 
-function parseProvider(_value: string | undefined | null): "aws" {
-  return DEFAULT_PROVIDER;
+function optionalComputeProvider(value: unknown): ComputeProvider | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return COMPUTE_PROVIDER_SET.has(normalized)
+    ? (normalized as ComputeProvider)
+    : null;
+}
+
+function parseProvider(value: string | undefined | null): ComputeProvider {
+  if (!value) return DEFAULT_PROVIDER;
+  const provider = optionalComputeProvider(value);
+  if (!provider) {
+    throw new Error(`unknown provider ${JSON.stringify(value)}; expected ${COMPUTE_PROVIDERS.join(" or ")}`);
+  }
+  return provider;
 }
 
 /** Accept both the new `region`-only form ("us-west-2") and the legacy
  * combined form ("aws-us-west-2"). */
-function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: "aws" } {
+function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: ComputeProvider } {
   if (!value) return {};
   const normalized = value.trim().toLowerCase();
-  if (normalized.startsWith("aws-")) {
-    return { region: normalized.slice("aws-".length), providerFromRegion: "aws" };
+  for (const provider of COMPUTE_PROVIDERS) {
+    const prefix = `${provider}-`;
+    if (normalized.startsWith(prefix)) {
+      return { region: normalized.slice(prefix.length), providerFromRegion: provider };
+    }
   }
   return { region: normalized };
+}
+
+function validatePlacement(provider: ComputeProvider, region: string): void {
+  if (provider === "gcp" && region !== "us-central1") {
+    throw new Error(`GCP currently supports only us-central1, got ${JSON.stringify(region)}`);
+  }
 }
 
 function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {

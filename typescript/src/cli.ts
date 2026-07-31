@@ -30,6 +30,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
 import { bridgePty } from "./cli-pty.js";
 import type {
+  ComputeProvider,
   PolicyDoc,
   RunRecord,
   VM,
@@ -67,7 +68,7 @@ type OptionSpecs = Record<string, OptionSpec>;
 const GLOBAL_OPTIONS: OptionSpecs = {
   help: { type: "boolean" },
   json: { type: "boolean" },
-  provider: { type: "string", values: ["aws"] },
+  provider: { type: "string", values: ["aws", "gcp"] },
   region: { type: "string" },
 };
 
@@ -351,7 +352,7 @@ interface CliConfig {
   apiKey?: string;
   baseUrl?: string;
   region?: string;
-  provider?: "aws";
+  provider?: ComputeProvider;
   controlBaseUrl?: string;
 }
 
@@ -390,8 +391,8 @@ function clientFromArgs(args: ParsedArgs): Arker {
   // can stay unset.
   const region =
     explicitRegion ?? file.region ?? (baseUrl ? undefined : DEFAULT_REGION);
-  const provider = (args.flags.provider as "aws" | undefined) ??
-    (process.env.ARKER_PROVIDER as "aws" | undefined) ??
+  const provider = (args.flags.provider as ComputeProvider | undefined) ??
+    (process.env.ARKER_PROVIDER as ComputeProvider | undefined) ??
     file.provider;
   if (!apiKey) {
     die("Missing API key. Set ARKER_API_KEY or add apiKey to ~/.arker/config.json.");
@@ -1024,7 +1025,7 @@ function usage(_command?: string): void {
       "",
       "Flags:",
       "  --region <region>          (or env ARKER_REGION; e.g. us-west-2)",
-      "  --provider <provider>      aws (or env ARKER_PROVIDER)",
+      "  --provider <provider>      aws or gcp (or env ARKER_PROVIDER)",
       "  --json                     emit JSON instead of tabular output",
       "  -h, --help                 show help without connecting",
       "  -v, --version              show version without connecting",

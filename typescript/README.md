@@ -53,14 +53,15 @@ pty.close(); // detach; the session is not deleted
 ## Core API
 
 ```ts
-const ar = new Arker({ region, apiKey?, baseUrl?, retry? });
+const ar = new Arker({ provider: "aws", region, apiKey?, baseUrl?, retry? });
 
 // VMs
 await ar.fork("ubuntu-full");                 // public golden by name (org inferred)
 await ar.fork(vm, { name: "child" });         // an existing VM (uses its id)
 await ar.fork({ sourceVmName, sourceOrgId, name?, durable? });
 await ar.listVms({ state? });
-ar.vm(vmId);                                  // bare handle
+await ar.listRegions();                       // public placement capabilities
+ar.vm(vmId, { provider, region });            // placement-aware bare handle
 await ar.vm(vmId).run(command, options?);
 await ar.vm(vmId).connectPty({ sessionId?, cols?, rows?, command?, persist? });
 await ar.vm(vmId).update({ resources: { vcpu, memory_mib, disk_mib } });
@@ -81,7 +82,7 @@ await vm.listSyncs();
 await vm.deleteSync(syncId);
 ```
 
-`apiKey` falls back to `ARKER_API_KEY`; `region` to `ARKER_REGION`. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
+`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `new Arker({ provider: "gcp", region: "us-central1" })`. GCP currently supports fork, run, and sync. Inspect `await ar.listRegions()` before using optional features. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
 
 ## Durability
 

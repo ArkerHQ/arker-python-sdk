@@ -31,14 +31,15 @@ vm.delete()
 ## Core API
 
 ```python
-ar = Arker(region=..., api_key=None, base_url=None, retry=None)
+ar = Arker(provider="aws", region=..., api_key=None, base_url=None, retry=None)
 
 # VMs
 ar.fork("ubuntu-full")                        # public golden by name (org inferred)
 ar.fork(vm, name="child")                     # an existing VM (uses its id)
 ar.fork(source_vm_name=..., source_org_id=..., name=None, durable=False)
 ar.list_vms(state=None)
-ar.vm(vm_id)                                  # bare handle
+ar.list_regions()                             # public placement capabilities
+ar.vm(vm_id, provider=..., region=...)        # placement-aware bare handle
 ar.vm(vm_id).run(command, **options)
 ar.vm(vm_id).resize(vcpu_count=..., memory_mib=...)
 ar.vm(vm_id).delete()
@@ -58,7 +59,7 @@ vm.list_syncs()
 vm.delete_sync(sync_id)
 ```
 
-`api_key` falls back to `ARKER_API_KEY`; `region` to `ARKER_REGION`. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
+`api_key` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `Arker(provider="gcp", region="us-central1")`. GCP currently supports fork, run, and sync. Inspect `ar.list_regions()` before using optional features. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
 
 ## Interactive terminal (PTY)
 

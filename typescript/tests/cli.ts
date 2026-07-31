@@ -258,6 +258,30 @@ async function testHelpAndVersionAreLocalSuccesses(): Promise<void> {
   }
 }
 
+async function testGcpProviderFlagIsAccepted(): Promise<void> {
+  const gcp = await runCli(
+    undefined,
+    ["--provider", "gcp", "--region", "us-central1", "--help"],
+    { authenticated: false },
+  );
+  assert.equal(gcp.code, 0, gcp.stderr);
+
+  const routed = await runCli(
+    undefined,
+    ["--provider", "gcp", "--region", "us-west-2", "ls"],
+  );
+  assert.equal(routed.code, 1);
+  assert.match(routed.stderr, /GCP currently supports only us-central1/);
+
+  const invalid = await runCli(
+    undefined,
+    ["--provider", "azure", "--help"],
+    { authenticated: false },
+  );
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /aws, gcp/);
+}
+
 async function testRemovedSecretAndUrlFlagsFailLocally(): Promise<void> {
   for (const args of [
     ["--api-key", "secret", "ls"],
@@ -665,6 +689,7 @@ await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
+await testGcpProviderFlagIsAccepted();
 await testRemovedSecretAndUrlFlagsFailLocally();
 await testHelpMatchesSupportedSurface();
 await testRunJsonIncludesMemoryMetadata();

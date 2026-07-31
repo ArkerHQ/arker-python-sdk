@@ -56,6 +56,24 @@ const run = await vm.run("node -e 'console.log(2 + 2)'");
 if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
 ```
 
+### GCP
+
+Select GCP with both the provider and region:
+
+```python
+ar = Arker(provider="gcp", region="us-central1")
+```
+
+```ts
+const ar = new Arker({ provider: "gcp", region: "us-central1" });
+```
+
+```bash
+arker fork ubuntu-full --provider gcp --region us-central1
+```
+
+Use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript to read the public placement catalog. GCP `us-central1` supports fork, run, and sync. It does not currently support encrypted network policies, SSH, shared directories, macOS VMs, desktop ingress, or cross-platform restore. Unsupported operations return `unsupported_operation`.
+
 ### CLI
 
 ```bash
