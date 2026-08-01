@@ -62,7 +62,7 @@ vm.list_syncs()
 vm.delete_sync(sync_id)
 ```
 
-`api_key` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `Arker(provider="gcp", region="us-central1")`. The region catalog contains only `provider` and `region`; every listed placement supports fork, run, and sync. GCP optional features can return `unsupported_operation` from its regional backend. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
+`api_key` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `Arker(provider="gcp", region="us-central1")`. The region catalog contains only `provider` and `region`; every listed placement supports fork, run, and sync. GCP optional features can return `unsupported_operation` from its regional API. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
 
 ## Interactive terminal (PTY)
 
