@@ -1667,8 +1667,10 @@
         "enum": [
           "aws",
           "azure",
+          "arker",
           "runpod",
-          "mac"
+          "mac",
+          "gcp"
         ],
         "description": "Infrastructure provider currently hosting the resource."
       },
@@ -1690,6 +1692,30 @@
               "type": "string"
             },
             "description": "Named secret values referenced by `${secret:NAME}` in rewrite actions. Values are encrypted at rest and masked in subsequent policy responses."
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "readOnly": true,
+            "description": "Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+          },
+          "mitm_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "readOnly": true,
+            "description": "Server-derived; accepted and ignored on write so a client can PUT back a document it read."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "readOnly": true,
+            "description": "Server-derived; accepted and ignored on write so a client can PUT back a document it read."
           }
         }
       },
@@ -1718,7 +1744,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 80. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
           },
           "mitm_domains": {
             "type": "array",
@@ -2154,7 +2180,7 @@
             "type": "string"
           },
           "session_idx": {
-            "description": "Zero-based session index within the VM.",
+            "description": "Zero-based session index within the VM. Index 0 is the default shell a `/run` targets when it specifies neither `session_id` nor `session_idx`.",
             "type": "integer",
             "minimum": 0,
             "default": 0
@@ -2266,6 +2292,10 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "keep_alive": {
+            "description": "True when this VM is pinned as always-running (see RunRequest.keep_alive): eager-pause and idle-suspend are inhibited so detached children keep making progress.",
+            "type": "boolean"
+          },
           "vm_id": {
             "description": "Unique VM identifier.",
             "type": "string"
@@ -2292,6 +2322,14 @@
             ],
             "maxLength": 255,
             "description": "Short optional description owned by this VM."
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "readOnly": true,
+            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
           },
           "public": {
             "type": "boolean",
@@ -2341,7 +2379,7 @@
           },
           "network": {
             "$ref": "#/components/schemas/VmNetwork",
-            "description": "The VM's network object — SSH keys only. Inbound reachability and per-port exposure are derived from `policies`, not from this object."
+            "description": "The VM's network object \u2014 SSH keys only. Inbound reachability and per-port exposure are derived from `policies`, not from this object."
           },
           "max_vcpus": {
             "type": [
@@ -2376,6 +2414,16 @@
             ],
             "minimum": 0,
             "description": "Non-hotpluggable base memory (MiB)."
+          },
+          "gpu_platforms": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/GpuPlatformLimits"
+            },
+            "description": "GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A golden is GPU-agnostic and may be offered on several GPUs at once, so this is a list \u2014 clients pick the entry matching the platform they intend to request."
           },
           "min_disk_mib": {
             "type": [
@@ -2500,15 +2548,22 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
+          "keep_alive": {
+            "description": "Pin the VM as always-running: do not eager-pause or idle-suspend it. A run can leave detached children the platform cannot see (setsid nohup, a cron, a background server); idle detection does not count those, so the VM looks idle and gets frozen, silently stopping the child. Tri-state: true pins, false releases, omitted leaves unchanged. A drain or scale-down still overrides the pin, and a pinned VM is billed as running.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "session_id": {
-            "description": "Unique session identifier.",
+            "description": "Target an EXISTING session by id. A session that no longer exists is a 404 \u2014 unlike `session_idx`, this never creates one. Takes precedence over `session_idx` when both are sent.",
             "type": [
               "string",
               "null"
             ]
           },
           "session_idx": {
-            "description": "Zero-based session index within the VM.",
+            "description": "Zero-based session index within the VM. Selects a shell SLOT on the VM, FIND-OR-CREATE: if no session occupies this index one is created. Use distinct indexes to run commands CONCURRENTLY on one VM \u2014 a per-session lock means two runs targeting the same session serialise. Omitting BOTH `session_id` and `session_idx` targets index 0, the VM's default shell, so unrelated callers that both omit them share one shell and therefore one working directory, environment, and lock.",
             "type": [
               "integer",
               "null"
@@ -2533,7 +2588,7 @@
             "minimum": 0
           },
           "time_to_background": {
-            "description": "Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime — that is timeout.",
+            "description": "Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime \u2014 that is timeout.",
             "type": [
               "integer",
               "null"
@@ -2652,7 +2707,10 @@
           },
           "stdout_encoding": {
             "type": "string",
-            "enum": ["utf-8", "base64"],
+            "enum": [
+              "utf-8",
+              "base64"
+            ],
             "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
@@ -2661,7 +2719,10 @@
           },
           "stderr_encoding": {
             "type": "string",
-            "enum": ["utf-8", "base64"],
+            "enum": [
+              "utf-8",
+              "base64"
+            ],
             "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "exit_code": {
@@ -2778,7 +2839,10 @@
           },
           "stdout_encoding": {
             "type": "string",
-            "enum": ["utf-8", "base64"],
+            "enum": [
+              "utf-8",
+              "base64"
+            ],
             "description": "Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "stderr": {
@@ -2787,7 +2851,10 @@
           },
           "stderr_encoding": {
             "type": "string",
-            "enum": ["utf-8", "base64"],
+            "enum": [
+              "utf-8",
+              "base64"
+            ],
             "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "retry_count": {
@@ -3527,7 +3594,7 @@
             "minimum": 0
           },
           "end": {
-            "description": "Inclusive ending byte offset.",
+            "description": "EXCLUSIVE ending byte offset \u2014 the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`.",
             "type": "integer",
             "minimum": 0
           },
@@ -3914,7 +3981,7 @@
             "minimum": 0
           },
           "end": {
-            "description": "Inclusive ending byte offset.",
+            "description": "EXCLUSIVE ending byte offset \u2014 the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`.",
             "type": "integer",
             "minimum": 0
           }
@@ -4078,7 +4145,7 @@
               "null"
             ],
             "minimum": 1,
-            "description": "Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-a40`. Omit to use the platform default."
+            "description": "Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default."
           },
           "gpu_vram_mib": {
             "type": [
@@ -4180,6 +4247,60 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "GpuResourceBand": {
+        "type": "object",
+        "description": "A {min, max, default} band for one GPU resource on one platform. `default` is what a fork that omits the field receives.",
+        "required": [
+          "min",
+          "max",
+          "default"
+        ],
+        "properties": {
+          "min": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Smallest value accepted."
+          },
+          "max": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Largest value accepted \u2014 the whole physical GPU. Requests above this return 400 rather than being clamped."
+          },
+          "default": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Value applied when the field is omitted on fork."
+          }
+        }
+      },
+      "GpuPlatformLimits": {
+        "type": "object",
+        "description": "GPU sizing bounds for one platform a VM can be forked onto, from the goldens.toml `[[gpu_platform]]` catalog.",
+        "required": [
+          "platform",
+          "vram_mib",
+          "sms"
+        ],
+        "properties": {
+          "platform": {
+            "type": "string",
+            "description": "Platform label to request in `platforms` to land on this GPU, e.g. `x86_64-l40s`."
+          },
+          "gpu": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable GPU model for display, e.g. `NVIDIA L40S`. Never parse this for sizing \u2014 use the bands."
+          },
+          "vram_mib": {
+            "$ref": "#/components/schemas/GpuResourceBand"
+          },
+          "sms": {
+            "$ref": "#/components/schemas/GpuResourceBand"
           }
         }
       }

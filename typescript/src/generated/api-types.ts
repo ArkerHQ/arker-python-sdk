@@ -511,7 +511,7 @@ export interface components {
          * @description Infrastructure provider currently hosting the resource.
          * @enum {string}
          */
-        Provider: "aws" | "azure" | "runpod" | "mac";
+        Provider: "aws" | "azure" | "arker" | "runpod" | "mac" | "gcp";
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {
             /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
@@ -520,6 +520,12 @@ export interface components {
             secrets?: {
                 [key: string]: string;
             };
+            /** @description Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present. */
+            readonly hostname?: string | null;
+            /** @description Server-derived; accepted and ignored on write so a client can PUT back a document it read. */
+            readonly mitm_domains?: string[];
+            /** @description Server-derived; accepted and ignored on write so a client can PUT back a document it read. */
+            readonly warnings?: string[];
         };
         /** @description A VM's current network policy and its derived inbound exposure metadata. */
         PolicyDoc: {
@@ -529,7 +535,7 @@ export interface components {
             secrets?: {
                 [key: string]: string;
             };
-            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 80. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present. */
+            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present. */
             readonly hostname?: string | null;
             /** @description Domains whose matching traffic is evaluated by the request-level policy engine. */
             readonly mitm_domains?: string[];
@@ -673,7 +679,7 @@ export interface components {
             /** @description Unique session identifier. */
             session_id: string;
             /**
-             * @description Zero-based session index within the VM.
+             * @description Zero-based session index within the VM. Index 0 is the default shell a `/run` targets when it specifies neither `session_id` nor `session_idx`.
              * @default 0
              */
             session_idx?: number;
@@ -704,6 +710,8 @@ export interface components {
             next_cursor?: string | null;
         };
         Vm: {
+            /** @description True when this VM is pinned as always-running (see RunRequest.keep_alive): eager-pause and idle-suspend are inhibited so detached children keep making progress. */
+            keep_alive?: boolean;
             /** @description Unique VM identifier. */
             vm_id: string;
             /** @description Org that owns this VM. */
@@ -714,6 +722,8 @@ export interface components {
             name?: string | null;
             /** @description Short optional description owned by this VM. */
             description: string | null;
+            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present. */
+            readonly hostname?: string | null;
             /** @description When `true`, other orgs can fork this VM (but cannot run on it). */
             public: boolean;
             /** @description ID of the root (deepest-ancestor) source VM, if this VM was created by a chain of forks. None for VMs forked directly from an image. */
@@ -737,6 +747,8 @@ export interface components {
             max_memory_mib?: number | null;
             /** @description Non-hotpluggable base memory (MiB). */
             min_memory_mib?: number | null;
+            /** @description GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A golden is GPU-agnostic and may be offered on several GPUs at once, so this is a list — clients pick the entry matching the platform they intend to request. */
+            gpu_platforms?: components["schemas"]["GpuPlatformLimits"][] | null;
             /** @description Smallest disk size (MiB) accepted for this VM. `0` means nodisk. */
             min_disk_mib?: number | null;
             /** @description Largest disk size (MiB) accepted for this VM. `0` means nodisk. */
@@ -775,9 +787,11 @@ export interface components {
             session_id: string;
         };
         RunRequest: {
-            /** @description Unique session identifier. */
+            /** @description Pin the VM as always-running: do not eager-pause or idle-suspend it. A run can leave detached children the platform cannot see (setsid nohup, a cron, a background server); idle detection does not count those, so the VM looks idle and gets frozen, silently stopping the child. Tri-state: true pins, false releases, omitted leaves unchanged. A drain or scale-down still overrides the pin, and a pinned VM is billed as running. */
+            keep_alive?: boolean | null;
+            /** @description Target an EXISTING session by id. A session that no longer exists is a 404 — unlike `session_idx`, this never creates one. Takes precedence over `session_idx` when both are sent. */
             session_id?: string | null;
-            /** @description Zero-based session index within the VM. */
+            /** @description Zero-based session index within the VM. Selects a shell SLOT on the VM, FIND-OR-CREATE: if no session occupies this index one is created. Use distinct indexes to run commands CONCURRENTLY on one VM — a per-session lock means two runs targeting the same session serialise. Omitting BOTH `session_id` and `session_idx` targets index 0, the VM's default shell, so unrelated callers that both omit them share one shell and therefore one working directory, environment, and lock. */
             session_idx?: number | null;
             /** @description Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op). */
             command?: string;
@@ -1130,7 +1144,7 @@ export interface components {
             content: string;
             /** @description Inclusive starting byte offset. */
             start: number;
-            /** @description Inclusive ending byte offset. */
+            /** @description EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`. */
             end: number;
             /** @description Lowercase hexadecimal SHA-256 digest used to verify file content. */
             sha256?: string | null;
@@ -1266,7 +1280,7 @@ export interface components {
         SyncByteRange: {
             /** @description Inclusive starting byte offset. */
             start: number;
-            /** @description Inclusive ending byte offset. */
+            /** @description EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`. */
             end: number;
         };
         SyncEntryError: {
@@ -1318,7 +1332,7 @@ export interface components {
             memory_mib?: number | null;
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
-            /** @description Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-a40`. Omit to use the platform default. */
+            /** @description Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default. */
             gpu_sms?: number | null;
             /** @description GPU memory available to the VM, in MiB. Only valid for GPU platforms. Omit to use the platform default. */
             gpu_vram_mib?: number | null;
@@ -1348,6 +1362,24 @@ export interface components {
             network?: components["schemas"]["NetworkInput"] | null;
             /** @description Complete network policy replacement for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
+        };
+        /** @description A {min, max, default} band for one GPU resource on one platform. `default` is what a fork that omits the field receives. */
+        GpuResourceBand: {
+            /** @description Smallest value accepted. */
+            min: number;
+            /** @description Largest value accepted — the whole physical GPU. Requests above this return 400 rather than being clamped. */
+            max: number;
+            /** @description Value applied when the field is omitted on fork. */
+            default: number;
+        };
+        /** @description GPU sizing bounds for one platform a VM can be forked onto, from the goldens.toml `[[gpu_platform]]` catalog. */
+        GpuPlatformLimits: {
+            /** @description Platform label to request in `platforms` to land on this GPU, e.g. `x86_64-l40s`. */
+            platform: string;
+            /** @description Human-readable GPU model for display, e.g. `NVIDIA L40S`. Never parse this for sizing — use the bands. */
+            gpu?: string | null;
+            vram_mib: components["schemas"]["GpuResourceBand"];
+            sms: components["schemas"]["GpuResourceBand"];
         };
     };
     responses: {
