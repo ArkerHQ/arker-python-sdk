@@ -128,17 +128,6 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
     placement = {
         "provider": "gcp",
         "region": "us-central1",
-        "status": "available",
-        "capabilities": {
-            "fork": True,
-            "run": True,
-            "sync": True,
-            "policy_encryption": False,
-            "ssh": False,
-            "shared_dirs": False,
-            "desktop_ingress": False,
-            "cross_platform_restore": False,
-        },
     }
     t.add_json(
         lambda method, url: method == "GET"
@@ -151,8 +140,7 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
         regions = client().list_regions()
 
     assert regions.regions[0].provider == "gcp"
-    assert regions.regions[0].capabilities.run is True
-    assert regions.regions[0].capabilities.ssh is False
+    assert regions.regions[0].region == "us-central1"
 
 
 def test_discover_regions_requires_no_configured_client() -> None:

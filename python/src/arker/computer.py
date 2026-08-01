@@ -59,7 +59,6 @@ from .generated.api_models import (
     PatchVmRequest,
     PolicyDoc,
     PtyTicketResponse,
-    RegionCapabilities,
     RegionPlacement,
     Run,
     RunRequest,
@@ -580,7 +579,7 @@ class Arker:
         return _org_runs_response(payload)
 
     def list_regions(self) -> ListRegionsResponse:
-        """List public provider and region placements with their capabilities."""
+        """List available public provider and region placements."""
         payload = self._request("GET", "/v1/regions", base_url=self._control_base_url)
         return _decode_model(ListRegionsResponse, payload)
 

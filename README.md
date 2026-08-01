@@ -90,7 +90,7 @@ const ar = new Arker({ provider: "gcp", region: "us-central1" });
 arker fork ubuntu-full --provider gcp --region us-central1
 ```
 
-You can also use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript after client setup. GCP `us-central1` supports fork, run, and sync. It does not currently support encrypted network policies, SSH, shared directories, desktop ingress, or cross-platform restore. Unsupported operations return `unsupported_operation`.
+You can also use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript after client setup. The catalog returns only `provider` and `region`, and every listed placement supports fork, run, and sync. GCP `us-central1` does not currently support encrypted network policies, SSH, shared directories, desktop ingress, or cross-platform restore. Its regional backend returns `unsupported_operation` for these optional operations.
 
 ### CLI
 

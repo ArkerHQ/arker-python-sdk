@@ -125,7 +125,6 @@ export type VmState = ApiSchema<"VmState">;
 export type SessionState = ApiSchema<"SessionState">;
 export type RunState = ApiSchema<"RunState">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
-export type RegionCapabilities = ApiSchema<"RegionCapabilities">;
 export type RegionPlacement = ApiSchema<"RegionPlacement">;
 export type ListRegionsResponse = ApiSchema<"ListRegionsResponse">;
 
@@ -663,7 +662,7 @@ export class Arker {
     return { vms, nextCursor: resp.next_cursor ?? null };
   }
 
-  /** List public provider and region placements with their capabilities. */
+  /** List available public provider and region placements. */
   async listRegions(): Promise<ListRegionsResponse> {
     return this._request("GET", "/v1/regions", undefined, this.controlBaseUrl);
   }

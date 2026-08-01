@@ -13,18 +13,6 @@ class HealthResponse:
     timestamp: str
 
 
-@dataclass(frozen=True)
-class RegionCapabilities:
-    fork: bool
-    run: bool
-    sync: bool
-    policy_encryption: bool
-    ssh: bool
-    shared_dirs: bool
-    desktop_ingress: bool
-    cross_platform_restore: bool
-
-
 ErrorCode: TypeAlias = Literal[
     'unsupported_operation',
     'bad_request',
@@ -659,8 +647,6 @@ class DeleteFilesystemParameters:
 class RegionPlacement:
     provider: Provider
     region: str
-    status: Literal['available']
-    capabilities: RegionCapabilities
 
 
 @dataclass(frozen=True)

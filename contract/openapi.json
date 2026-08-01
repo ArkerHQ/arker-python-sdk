@@ -114,7 +114,7 @@
         "security": [],
         "responses": {
           "200": {
-            "description": "Available provider and region placements with their current capabilities.",
+            "description": "Available provider and region placements.",
             "content": {
               "application/json": {
                 "schema": {
@@ -127,7 +127,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Public placement catalog. Use a returned provider and region to select a regional API endpoint. A false capability means that operations requiring that capability return `unsupported_operation`."
+        "description": "Public placement catalog. Use a returned provider and region to select a regional API endpoint. Every listed placement accepts fork, run, and sync requests. Unavailable placements are omitted."
       }
     },
     "/v1/fork": {
@@ -1599,38 +1599,11 @@
           }
         }
       },
-      "RegionCapabilities": {
-        "type": "object",
-        "required": [
-          "fork",
-          "run",
-          "sync",
-          "policy_encryption",
-          "ssh",
-          "shared_dirs",
-          "desktop_ingress",
-          "cross_platform_restore"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "fork": { "type": "boolean", "description": "Whether the placement can fork a VM." },
-          "run": { "type": "boolean", "description": "Whether the placement can run commands in a VM." },
-          "sync": { "type": "boolean", "description": "Whether the placement can read and write VM files." },
-          "policy_encryption": { "type": "boolean", "description": "Whether the placement supports encrypted network policies." },
-          "ssh": { "type": "boolean", "description": "Whether the placement supports SSH access." },
-          "shared_dirs": { "type": "boolean", "description": "Whether the placement supports shared directories." },
-          "desktop_ingress": { "type": "boolean", "description": "Whether the placement supports desktop ingress." },
-          "cross_platform_restore": { "type": "boolean", "description": "Whether the placement supports restoring a VM across platforms." }
-        },
-        "description": "Feature availability for a provider and region placement."
-      },
       "RegionPlacement": {
         "type": "object",
         "required": [
           "provider",
-          "region",
-          "status",
-          "capabilities"
+          "region"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1638,14 +1611,6 @@
           "region": {
             "type": "string",
             "description": "Provider region identifier."
-          },
-          "status": {
-            "type": "string",
-            "enum": ["available"],
-            "description": "Whether the placement accepts new API requests."
-          },
-          "capabilities": {
-            "$ref": "#/components/schemas/RegionCapabilities"
           }
         }
       },

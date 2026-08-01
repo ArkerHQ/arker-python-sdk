@@ -451,11 +451,7 @@ async function cmdRegions(args: ParsedArgs): Promise<void> {
   });
   if (args.flags.json) return out(response);
   for (const placement of response.regions) {
-    const capabilities = Object.entries(placement.capabilities)
-      .filter(([, enabled]) => enabled)
-      .map(([name]) => name)
-      .join(",");
-    out(`${placement.provider}-${placement.region}\t${placement.status}\t${capabilities}`);
+    out(`${placement.provider}-${placement.region}`);
   }
 }
 
@@ -1045,7 +1041,7 @@ function usage(_command?: string): void {
       "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
       "",
       "Resources:",
-      "  arker regions                                  list public placements and capabilities",
+      "  arker regions                                  list available public placements",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
       "  arker runs        <ls|get|rm> <vm_id> ...",
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",

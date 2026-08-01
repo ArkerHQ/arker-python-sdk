@@ -33,7 +33,7 @@ export interface paths {
         };
         /**
          * List available provider regions
-         * @description Public placement catalog. Use a returned provider and region to select a regional API endpoint. A false capability means that operations requiring that capability return `unsupported_operation`.
+         * @description Public placement catalog. Use a returned provider and region to select a regional API endpoint. Every listed placement accepts fork, run, and sync requests. Unavailable placements are omitted.
          */
         get: operations["listRegions"];
         put?: never;
@@ -488,35 +488,10 @@ export interface components {
              */
             timestamp: string;
         };
-        /** @description Feature availability for a provider and region placement. */
-        RegionCapabilities: {
-            /** @description Whether the placement can fork a VM. */
-            fork: boolean;
-            /** @description Whether the placement can run commands in a VM. */
-            run: boolean;
-            /** @description Whether the placement can read and write VM files. */
-            sync: boolean;
-            /** @description Whether the placement supports encrypted network policies. */
-            policy_encryption: boolean;
-            /** @description Whether the placement supports SSH access. */
-            ssh: boolean;
-            /** @description Whether the placement supports shared directories. */
-            shared_dirs: boolean;
-            /** @description Whether the placement supports desktop ingress. */
-            desktop_ingress: boolean;
-            /** @description Whether the placement supports restoring a VM across platforms. */
-            cross_platform_restore: boolean;
-        };
         RegionPlacement: {
             provider: components["schemas"]["Provider"];
             /** @description Provider region identifier. */
             region: string;
-            /**
-             * @description Whether the placement accepts new API requests.
-             * @enum {string}
-             */
-            status: "available";
-            capabilities: components["schemas"]["RegionCapabilities"];
         };
         ListRegionsResponse: {
             /** @description Provider and region placements that accept public API requests. */
@@ -1534,7 +1509,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Available provider and region placements with their current capabilities. */
+            /** @description Available provider and region placements. */
             200: {
                 headers: {
                     [name: string]: unknown;

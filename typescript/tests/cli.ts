@@ -290,17 +290,6 @@ async function testRegionsDiscoveryNeedsNoCredentialsOrPlacement(): Promise<void
   const placement = {
     provider: "gcp",
     region: "us-central1",
-    status: "available",
-    capabilities: {
-      fork: true,
-      run: true,
-      sync: true,
-      policy_encryption: false,
-      ssh: false,
-      shared_dirs: false,
-      desktop_ingress: false,
-      cross_platform_restore: false,
-    },
   };
   await withCapturedServer(
     (_request, res) => jsonResponse(res, { regions: [placement] }),
@@ -309,7 +298,7 @@ async function testRegionsDiscoveryNeedsNoCredentialsOrPlacement(): Promise<void
         authenticated: false,
       });
       assert.equal(human.code, 0, human.stderr);
-      assert.match(stdoutText(human), /gcp-us-central1\s+available\s+fork,run,sync/);
+      assert.equal(stdoutText(human), "gcp-us-central1\n");
 
       const json = await runCli(baseUrl, ["regions", "--json"], {
         authenticated: false,

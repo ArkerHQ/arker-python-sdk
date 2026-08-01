@@ -432,17 +432,6 @@ async function testListRegionsUsesPublicControlPlaneCatalog(): Promise<void> {
   const placement = {
     provider: "gcp" as const,
     region: "us-central1",
-    status: "available" as const,
-    capabilities: {
-      fork: true,
-      run: true,
-      sync: true,
-      policy_encryption: false,
-      ssh: false,
-      shared_dirs: false,
-      desktop_ingress: false,
-      cross_platform_restore: false,
-    },
   };
   fetch.addJson(
     (method, url) =>
