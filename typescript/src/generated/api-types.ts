@@ -489,7 +489,11 @@ export interface components {
             timestamp: string;
         };
         RegionPlacement: {
-            provider: components["schemas"]["Provider"];
+            /**
+             * @description Public compute provider for the placement.
+             * @enum {string}
+             */
+            provider: "aws" | "gcp";
             /** @description Provider region identifier. */
             region: string;
         };

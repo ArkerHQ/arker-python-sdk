@@ -1607,7 +1607,11 @@
         ],
         "additionalProperties": false,
         "properties": {
-          "provider": { "$ref": "#/components/schemas/Provider" },
+          "provider": {
+            "type": "string",
+            "enum": ["aws", "gcp"],
+            "description": "Public compute provider for the placement."
+          },
           "region": {
             "type": "string",
             "description": "Provider region identifier."

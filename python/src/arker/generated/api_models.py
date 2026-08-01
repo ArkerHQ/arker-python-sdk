@@ -13,6 +13,17 @@ class HealthResponse:
     timestamp: str
 
 
+@dataclass(frozen=True)
+class RegionPlacement:
+    provider: Literal['aws', 'gcp']
+    region: str
+
+
+@dataclass(frozen=True)
+class ListRegionsResponse:
+    regions: list[RegionPlacement]
+
+
 ErrorCode: TypeAlias = Literal[
     'unsupported_operation',
     'bad_request',
@@ -641,17 +652,6 @@ class GetFilesystemParameters:
 @dataclass(frozen=True)
 class DeleteFilesystemParameters:
     filesystem_id: str
-
-
-@dataclass(frozen=True)
-class RegionPlacement:
-    provider: Provider
-    region: str
-
-
-@dataclass(frozen=True)
-class ListRegionsResponse:
-    regions: list[RegionPlacement]
 
 
 @dataclass(frozen=True)
