@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import gzip
 import hashlib
 import json
 import os
@@ -31,6 +32,10 @@ CHUNK_SIZE = 4 * 1024 * 1024
 # Kept well under the server's ~100 MiB request cap to leave room for base64
 # expansion (~1.33x) and JSON overhead.
 SYNC_DIR_BATCH_BYTES = 5 * 1024 * 1024
+
+# Gzip a sync-write request body once it clears this size. Below it, gzip's CPU +
+# framing overhead outweighs the wire savings on a fast link.
+_GZIP_MIN_BYTES = 16 * 1024
 
 # Org id for the "Arker" org — the org that owns the public golden VMs
 # (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
@@ -591,6 +596,7 @@ class Arker:
         *,
         base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        gzip_body: bool = False,
     ) -> dict[str, Any]:
         url = (base_url or self._base_url) + path
         headers = {"authorization": f"Bearer {self._api_key}"}
@@ -603,6 +609,14 @@ class Arker:
         if body is not None:
             headers["content-type"] = "application/json"
             data = json.dumps(_drop_none(body)).encode("utf-8")
+            # gzip the request body on write-heavy sync calls: a JSON body of
+            # base64 file content compresses ~1.3x for incompressible (recovering
+            # base64's +33%) and much more for source, so the wire carries ~raw
+            # bytes in one hop. Only the /sync route decodes content-encoding, so
+            # callers opt in; below the threshold gzip's overhead isn't worth it.
+            if gzip_body and len(data) >= _GZIP_MIN_BYTES:
+                data = gzip.compress(data, 6)
+                headers["content-encoding"] = "gzip"
 
         last_status = 0
         last_text = ""
@@ -826,6 +840,7 @@ class VM:
             payload = self._client._request(
                 "POST", f"{_vm_path(self.id)}/sync",
                 {"op": "write", "writes": [entry]}, base_url=self.base_url,
+                gzip_body=True,
             )
             results = payload.get("results")
             if not isinstance(results, list) or not results:
@@ -986,6 +1001,7 @@ class VM:
         payload = self._client._request(
             "POST", f"{_vm_path(self.id)}/sync",
             {"op": "write", "writes": entries}, base_url=self.base_url,
+            gzip_body=True,
         )
         results = payload.get("results")
         if not isinstance(results, list) or len(results) != len(entries):

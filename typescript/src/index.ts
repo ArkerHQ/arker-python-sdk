@@ -40,6 +40,16 @@ const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES = new Set(["routing_unavailable", "unavailable", "temporarily_unavailable"]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+// Gzip a sync-write body once it clears this size; below it gzip's overhead
+// outweighs the wire savings on a fast link.
+const GZIP_MIN_BYTES = 16 * 1024;
+
+async function gzipBytes(bytes: Uint8Array): Promise<ArrayBuffer> {
+  const stream = new Response(
+    new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream("gzip")),
+  );
+  return stream.arrayBuffer();
+}
 const DEFAULT_REGION_ENV = "ARKER_REGION";
 const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
 const DEFAULT_PROVIDER: "aws" | "aws-burst" = "aws";
@@ -567,6 +577,7 @@ export class Arker {
     body?: unknown,
     baseUrl = this.baseUrl,
     extraHeaders?: Record<string, string | undefined>,
+    gzipBody = false,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -581,7 +592,22 @@ export class Arker {
 
     if (body !== undefined) {
       headers["content-type"] = "application/json";
-      init.body = JSON.stringify(withoutUndefined(body));
+      const json = JSON.stringify(withoutUndefined(body));
+      // gzip write-heavy sync bodies: a JSON body of base64 file content
+      // compresses ~1.3x for incompressible (recovering base64's +33%) and much
+      // more for source, so the wire carries ~raw bytes in one hop. Only the
+      // /sync route decodes content-encoding, so callers opt in; below the
+      // threshold gzip's overhead isn't worth it.
+      if (
+        gzipBody &&
+        json.length >= GZIP_MIN_BYTES &&
+        typeof CompressionStream !== "undefined"
+      ) {
+        init.body = await gzipBytes(new TextEncoder().encode(json));
+        headers["content-encoding"] = "gzip";
+      } else {
+        init.body = json;
+      }
     }
 
     let lastStatus = 0;
@@ -824,7 +850,7 @@ export class VM {
       const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, {
         op: "write",
         writes: [entry],
-      }, this.baseUrl);
+      }, this.baseUrl, undefined, true);
       const result = response.results[0];
       if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
       const error = result.error ?? undefined;
