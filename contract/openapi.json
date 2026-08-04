@@ -1650,6 +1650,7 @@
           "rate_limited",
           "budget_exceeded",
           "concurrency_limit_exceeded",
+          "regional_concurrency_limit_exceeded",
           "resource_pressure",
           "internal",
           "unavailable",
@@ -1657,7 +1658,7 @@
           "stale_route",
           "unrecoverable"
         ],
-        "description": "Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit. `resource_pressure` means the serving infrastructure is temporarily at capacity."
+        "description": "Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity."
       },
       "ErrorBody": {
         "type": "object",

@@ -1,6 +1,6 @@
 {
   "repository": "ArkerHQ/arker-app",
-  "ref": "codex/gcp-public-interfaces",
-  "commit": "2120a964f33c9aad437006682d0f33c6323555c3",
-  "sha256": "5059ead32a55273a3a16101e31e8cde846e7d91c03b2f91f40af6cce880d8ee0"
+  "ref": "main",
+  "commit": "c0236ce29d07ab21c5cac4a7cb955f4a377ab6b1",
+  "sha256": "938a732e05db7a069bf63acadd4fdc9b3e09e8fb45820f6398ad9f4e2c3986d8"
 }

@@ -42,6 +42,7 @@ ErrorCode: TypeAlias = Literal[
     'rate_limited',
     'budget_exceeded',
     'concurrency_limit_exceeded',
+    'regional_concurrency_limit_exceeded',
     'resource_pressure',
     'internal',
     'unavailable',
