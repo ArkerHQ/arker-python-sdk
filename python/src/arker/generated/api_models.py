@@ -13,6 +13,17 @@ class HealthResponse:
     timestamp: str
 
 
+@dataclass(frozen=True)
+class RegionPlacement:
+    provider: Literal['aws', 'gcp']
+    region: str
+
+
+@dataclass(frozen=True)
+class ListRegionsResponse:
+    regions: list[RegionPlacement]
+
+
 ErrorCode: TypeAlias = Literal[
     'unsupported_operation',
     'bad_request',
@@ -31,6 +42,7 @@ ErrorCode: TypeAlias = Literal[
     'rate_limited',
     'budget_exceeded',
     'concurrency_limit_exceeded',
+    'regional_concurrency_limit_exceeded',
     'resource_pressure',
     'internal',
     'unavailable',
@@ -66,7 +78,7 @@ SessionState: TypeAlias = VmState
 RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
 
 
-Provider: TypeAlias = Literal['aws', 'azure', 'runpod', 'mac']
+Provider: TypeAlias = Literal['aws', 'azure', 'arker', 'runpod', 'mac', 'gcp']
 
 
 Port: TypeAlias = int
@@ -228,6 +240,7 @@ class OrgRunListRow:
     vm_id: str
     session_id: str
     region: str
+    provider: Provider
     status: int
     total_ms: float
     queue_ms: float
@@ -449,6 +462,21 @@ class VmNetwork:
 
 
 @dataclass(frozen=True)
+class GpuResourceBand:
+    min: int
+    max: int
+    default: int
+
+
+@dataclass(frozen=True)
+class GpuPlatformLimits:
+    platform: str
+    vram_mib: GpuResourceBand
+    sms: GpuResourceBand
+    gpu: str | None = None
+
+
+@dataclass(frozen=True)
 class ListVmsParameters:
     cursor: str | None = None
     limit: int | None = None
@@ -652,7 +680,9 @@ class Vm:
     network: VmNetwork
     sessions: list[Session]
     resources: VmResources
+    keep_alive: bool | None = None
     name: str | None = None
+    hostname: str | None = None
     root_source_vm_id: str | None = None
     root_source_vm_name: str | None = None
     region: str | None = None
@@ -662,6 +692,7 @@ class Vm:
     min_vcpus: int | None = None
     max_memory_mib: int | None = None
     min_memory_mib: int | None = None
+    gpu_platforms: list[GpuPlatformLimits] | None = None
     min_disk_mib: int | None = None
     max_disk_mib: int | None = None
 
@@ -744,6 +775,9 @@ SyncWriteResult: TypeAlias = (
 class PolicyWriteRequest:
     policies: list[PolicyEntry] | None = None
     secrets: dict[str, str] | None = None
+    hostname: str | None = None
+    mitm_domains: list[str] | None = None
+    warnings: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -798,6 +832,7 @@ ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2
 
 @dataclass(frozen=True)
 class RunRequest:
+    keep_alive: bool | None = None
     session_id: str | None = None
     session_idx: int | None = None
     command: str | None = None
@@ -893,6 +928,16 @@ class HealthOperation(TypedDict):
     request: None
     success: HealthResponse
     errors: HealthResponse | ErrorResponse
+
+
+class ListRegionsOperation(TypedDict):
+    operation_id: Literal['listRegions']
+    method: Literal['GET']
+    path: Literal['/v1/regions']
+    parameters: None
+    request: None
+    success: ListRegionsResponse
+    errors: ErrorResponse
 
 
 class ListOrgRunsOperation(TypedDict):
@@ -1122,6 +1167,7 @@ ApiOperation: TypeAlias = (
     DeleteFilesystemOperation |
     ForkOperation |
     HealthOperation |
+    ListRegionsOperation |
     ListOrgRunsOperation |
     ListVmsOperation |
     GetVmOperation |

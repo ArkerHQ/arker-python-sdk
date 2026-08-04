@@ -16,23 +16,29 @@ export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
  * Org id for the "Arker" org — the org that owns the public golden VMs
- * (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
+ * (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
  * `sourceOrgId` to fork a public golden:
  *
- *     arker.fork({ sourceVmName: "ubuntu-full", sourceOrgId: ARKER_ORG_ID })
+ *     arker.fork({ sourceVmName: "ubuntu-dev", sourceOrgId: ARKER_ORG_ID })
  */
 export const ARKER_ORG_ID = "ArkerHQ";
 
 /** Public golden VM names owned by the Arker org. Forking one of these by
  * name auto-fills `sourceOrgId = ARKER_ORG_ID` (see `Arker.fork`). */
 const GOLDEN_NAMES = new Set<string>([
-  "arkuntu",
-  "ubuntu", "ubuntu-small", "ubuntu-nodisk", "ubuntu-nonet-nodisk",
-  "ubuntu-full", "ubuntu-full-32",
+  // Canonical
+  "ubuntu-base", "ubuntu-node-small", "ubuntu-systemd", "ubuntu-nonet-nodisk",
+  "ubuntu-dev", "ubuntu-dev-8", "ubuntu-dev-32", "ubuntu-dev-desktop",
   "ubuntu-py-repl", "ubuntu-js-repl",
   "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
-  "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
-  "macos-full",
+  "ubuntu-gpu", "ubuntu-gpu-small",
+  "windows", "android", "macos", "macos-ios",
+  // Deprecated aliases (still forkable)
+  "ubuntu", "ubuntu-small", "ubuntu-full", "ubuntu-full-8", "ubuntu-full-32",
+  "ubuntu-desktop-vnc", "ubuntu-gpu-full",
+  // Legacy names kept for back-compat
+  "arkuntu", "ubuntu-nodisk", "ubuntu-servo-js-repl",
+  "ubuntu-chromium-js-repl", "macos-full",
 ]);
 
 const DEFAULT_RETRY_ATTEMPTS = 4;
@@ -66,7 +72,10 @@ const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
 const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
-const DEFAULT_PROVIDER = "aws" as const;
+export const COMPUTE_PROVIDERS = ["aws", "gcp"] as const;
+export type ComputeProvider = (typeof COMPUTE_PROVIDERS)[number];
+const COMPUTE_PROVIDER_SET = new Set<string>(COMPUTE_PROVIDERS);
+const DEFAULT_PROVIDER: ComputeProvider = "aws";
 const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
 
 type FetchLike = typeof fetch;
@@ -94,8 +103,8 @@ export interface ArkerOptions {
    * compute endpoint. Back-compat: accepts the legacy combined form
    * `"aws-us-west-2"`. */
   region?: string;
-  /** Provider for compute calls. Defaults to `"aws"` (arkerd-managed VMs). */
-  provider?: "aws";
+  /** Provider for compute calls. Defaults to `"aws"`. */
+  provider?: ComputeProvider;
   /** Override the compute base URL (e.g. for internal / dev targets).
    * If set, `provider` + `region` are ignored for compute. */
   baseUrl?: string;
@@ -107,11 +116,43 @@ export interface ArkerOptions {
   retry?: RetryOptions | false;
 }
 
+export type RegionDiscoveryOptions = Pick<
+  ArkerOptions,
+  "controlBaseUrl" | "fetch" | "retry"
+>;
+
+export interface VmPlacement {
+  provider: ComputeProvider;
+  region: string;
+}
+
 // ── State enums ────────────────────────────────────────────────────
 export type VmState = ApiSchema<"VmState">;
 export type SessionState = ApiSchema<"SessionState">;
 export type RunState = ApiSchema<"RunState">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
+export type RegionPlacement = ApiSchema<"RegionPlacement">;
+export type ListRegionsResponse = ApiSchema<"ListRegionsResponse">;
+
+/** Read the public placement catalog without configuring compute or auth. */
+export async function discoverRegions(
+  opts: RegionDiscoveryOptions = {},
+): Promise<ListRegionsResponse> {
+  const fetchImpl = opts.fetch ?? globalThis.fetch;
+  if (!fetchImpl) throw new Error("fetch is required in this runtime");
+  const controlBaseUrl = normalizeBaseUrl(
+    opts.controlBaseUrl ?? env("ARKER_CONTROL_BASE_URL") ?? DEFAULT_CONTROL_BASE_URL,
+  );
+  return requestJson(
+    "GET",
+    `${controlBaseUrl}/v1/regions`,
+    undefined,
+    {},
+    fetchImpl,
+    opts.fetch === undefined,
+    normalizeRetry(opts.retry),
+  );
+}
 
 // ── Core resources ─────────────────────────────────────────────────
 /** @deprecated Network topology is no longer a public policy input. */
@@ -467,7 +508,7 @@ export class Arker {
    * like list-VMs and filesystems. */
   readonly controlBaseUrl: string;
   readonly region?: string;
-  readonly provider: "aws";
+  readonly provider: ComputeProvider;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly http2: boolean;
@@ -477,9 +518,12 @@ export class Arker {
     const apiKey = opts.apiKey ?? env("ARKER_API_KEY") ?? env("AUTH_KEY");
     const explicitBaseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
     const rawRegion = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
-    const rawProvider = (opts.provider as string | undefined) ?? env(DEFAULT_PROVIDER_ENV) ?? DEFAULT_PROVIDER;
-    const provider = parseProvider(rawProvider);
+    const configuredProvider = (opts.provider as string | undefined) ?? env(DEFAULT_PROVIDER_ENV);
+    const provider = parseProvider(configuredProvider ?? DEFAULT_PROVIDER);
     const { region, providerFromRegion } = splitRegion(rawRegion);
+    if (configuredProvider && providerFromRegion && providerFromRegion !== provider) {
+      throw new Error(`provider ${provider} conflicts with region prefix ${providerFromRegion}`);
+    }
     const effectiveProvider = providerFromRegion ?? provider;
 
     const baseUrl = explicitBaseUrl ?? (region ? computeBaseUrl(effectiveProvider, region) : undefined);
@@ -505,14 +549,14 @@ export class Arker {
    * Address an existing VM. Doesn't make any network calls; returns a
    * lightweight handle.
    */
-  vm(vmId: string): VM {
-    return new VM(this, vmId, this._baseUrlFor(vmId));
+  vm(vmId: string, placement?: VmPlacement): VM {
+    return new VM(this, vmId, this._baseUrlFor(vmId, placement));
   }
 
   /**
    * Create a new VM by forking from a source.
    *
-   *     fork("ubuntu-full")                       // public golden by name
+   *     fork("ubuntu-dev")                       // public golden by name
    *     fork("base")                              // a VM by name in your org
    *     fork(vm)                                  // an existing VM (uses its id)
    *     fork({ sourceVmId: "vm_abc..." })
@@ -588,7 +632,7 @@ export class Arker {
       platforms: src.platforms,
       resources,
       // Omit to inherit the source's policy; pass a document to replace it.
-      policies: src.policies ?? null,
+      policies: src.policies,
     };
     const body: ForkRequest = src.sourceVmId
       ? {
@@ -601,7 +645,7 @@ export class Arker {
           source_vm_id: null,
           source_vm_name: src.sourceVmName!,
         };
-    const baseUrl = this.baseUrl;
+    const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
     const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
@@ -619,9 +663,14 @@ export class Arker {
     const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", query), undefined, this.controlBaseUrl);
     const vms = (resp.vms ?? []).map((v) => {
       const id = v.vm_id;
-      return new VM(this, id, this._baseUrlFor(id), v);
+      return new VM(this, id, this._baseUrlFor(id, v), v);
     });
     return { vms, nextCursor: resp.next_cursor ?? null };
+  }
+
+  /** List available public provider and region placements. */
+  async listRegions(): Promise<ListRegionsResponse> {
+    return this._request("GET", "/v1/regions", undefined, this.controlBaseUrl);
   }
 
   /**
@@ -654,9 +703,10 @@ export class Arker {
 
   /** Compute call — goes direct to the backend hosting this VM (no
    * control-plane hop). Returns a fully-populated VM handle. */
-  async getVm(vmId: string): Promise<VM> {
-    const data = await this._request<Vm>("GET", vmPath(vmId), undefined, this._baseUrlFor(vmId));
-    return new VM(this, vmId, this._baseUrlFor(vmId), data);
+  async getVm(vmId: string, placement?: VmPlacement): Promise<VM> {
+    const baseUrl = this._baseUrlFor(vmId, placement);
+    const data = await this._request<Vm>("GET", vmPath(vmId), undefined, baseUrl);
+    return new VM(this, vmId, baseUrl, data);
   }
 
   // ── Filesystems (region-scoped, served by arkerd directly) ──────────
@@ -699,50 +749,15 @@ export class Arker {
         if (value !== undefined) headers[key] = value;
       }
     }
-    let requestBody: string | undefined;
-    if (body !== undefined) {
-      headers["content-type"] = "application/json";
-      requestBody = JSON.stringify(withoutUndefined(body));
-    }
-
-    let lastStatus = 0;
-    let lastText = "";
-    let lastError: ParsedError | undefined;
-
-    for (let attempt = 0; attempt < this.retry.attempts; attempt++) {
-      try {
-        const { status, ok, text } = await sendRequest(url, { method, headers, body: requestBody }, this.fetchImpl, this.http2);
-        const payload = parseJson(text);
-        const parsedError = extractError(payload);
-
-        lastStatus = status;
-        lastText = text;
-        lastError = parsedError;
-
-        if (isRetryable(status, parsedError) && attempt < this.retry.attempts - 1) {
-          await sleep(retryDelay(this.retry, attempt));
-          continue;
-        }
-
-        if (parsedError) throw new ArkerError(parsedError.code, parsedError.message, status);
-        if (!ok) {
-          throw new ArkerError("internal", lastText.slice(0, 300) || `HTTP ${status}`, status);
-        }
-
-        return payload as T;
-      } catch (error) {
-        if (error instanceof ArkerError) throw error;
-        if (attempt < this.retry.attempts - 1) {
-          await sleep(retryDelay(this.retry, attempt));
-          continue;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new ArkerError("unavailable", message, 0);
-      }
-    }
-
-    if (lastError) throw new ArkerError(lastError.code, lastError.message, lastStatus);
-    throw new ArkerError("internal", lastText.slice(0, 300) || `HTTP ${lastStatus}`, lastStatus);
+    return requestJson(
+      method,
+      url,
+      body,
+      headers,
+      this.fetchImpl,
+      this.http2,
+      this.retry,
+    );
   }
 
   /** @internal */
@@ -766,7 +781,13 @@ export class Arker {
   }
 
   /** @internal */
-  _baseUrlFor(ref: string): string {
+  _baseUrlFor(
+    ref: string,
+    placement?: { provider?: unknown; region?: string | null },
+  ): string {
+    const provider = optionalComputeProvider(placement?.provider);
+    const region = placement?.region?.trim();
+    if (provider && region) return computeBaseUrl(provider, region);
     return this.baseUrl;
   }
 }
@@ -1622,7 +1643,7 @@ function normalizeRegion(region: string): string {
   return trimmed;
 }
 
-function computeBaseUrl(provider: "aws", region: string): string {
+function computeBaseUrl(provider: ComputeProvider, region: string): string {
   // The subdomain encodes provider+region — `https://aws-us-west-2.arker.ai`
   // routes to arkerd in us-west-2. Today the subdomain still resolves through
   // the CF Worker (which dispatches based on hostname), so the path includes
@@ -1632,17 +1653,33 @@ function computeBaseUrl(provider: "aws", region: string): string {
   return `https://${provider}-${normalized}.arker.ai/api`;
 }
 
-function parseProvider(_value: string | undefined | null): "aws" {
-  return DEFAULT_PROVIDER;
+function optionalComputeProvider(value: unknown): ComputeProvider | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return COMPUTE_PROVIDER_SET.has(normalized)
+    ? (normalized as ComputeProvider)
+    : null;
+}
+
+function parseProvider(value: string | undefined | null): ComputeProvider {
+  if (!value) return DEFAULT_PROVIDER;
+  const provider = optionalComputeProvider(value);
+  if (!provider) {
+    throw new Error(`unknown provider ${JSON.stringify(value)}; expected ${COMPUTE_PROVIDERS.join(" or ")}`);
+  }
+  return provider;
 }
 
 /** Accept both the new `region`-only form ("us-west-2") and the legacy
  * combined form ("aws-us-west-2"). */
-function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: "aws" } {
+function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: ComputeProvider } {
   if (!value) return {};
   const normalized = value.trim().toLowerCase();
-  if (normalized.startsWith("aws-")) {
-    return { region: normalized.slice("aws-".length), providerFromRegion: "aws" };
+  for (const provider of COMPUTE_PROVIDERS) {
+    const prefix = `${provider}-`;
+    if (normalized.startsWith(prefix)) {
+      return { region: normalized.slice(prefix.length), providerFromRegion: provider };
+    }
   }
   return { region: normalized };
 }
@@ -1768,6 +1805,79 @@ function runToCompletedResult(run: RunRecord): CompletedRunResult {
     exitCode: run.exit_code ?? (run.state === "completed" ? 0 : 1),
     failReason: run.fail_reason ?? null,
   };
+}
+
+async function requestJson<T>(
+  method: HttpMethod,
+  url: string,
+  body: unknown,
+  requestHeaders: Record<string, string>,
+  fetchImpl: FetchLike,
+  http2: boolean,
+  retry: RetryConfig,
+): Promise<T> {
+  const headers = { ...requestHeaders };
+  let requestBody: string | undefined;
+  if (body !== undefined) {
+    headers["content-type"] = "application/json";
+    requestBody = JSON.stringify(withoutUndefined(body));
+  }
+
+  let lastStatus = 0;
+  let lastText = "";
+  let lastError: ParsedError | undefined;
+
+  for (let attempt = 0; attempt < retry.attempts; attempt++) {
+    try {
+      const { status, ok, text } = await sendRequest(
+        url,
+        { method, headers, body: requestBody },
+        fetchImpl,
+        http2,
+      );
+      const payload = parseJson(text);
+      const parsedError = extractError(payload);
+
+      lastStatus = status;
+      lastText = text;
+      lastError = parsedError;
+
+      if (isRetryable(status, parsedError) && attempt < retry.attempts - 1) {
+        await sleep(retryDelay(retry, attempt));
+        continue;
+      }
+
+      if (parsedError) {
+        throw new ArkerError(parsedError.code, parsedError.message, status);
+      }
+      if (!ok) {
+        throw new ArkerError(
+          "internal",
+          lastText.slice(0, 300) || `HTTP ${status}`,
+          status,
+        );
+      }
+
+      return payload as T;
+    } catch (error) {
+      if (error instanceof ArkerError) throw error;
+      if (attempt < retry.attempts - 1) {
+        await sleep(retryDelay(retry, attempt));
+        continue;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ArkerError("unavailable", message, 0);
+    }
+  }
+
+  if (lastError) {
+    throw new ArkerError(lastError.code, lastError.message, lastStatus);
+  }
+  throw new ArkerError(
+    "internal",
+    lastText.slice(0, 300) || `HTTP ${lastStatus}`,
+    lastStatus,
+  );
 }
 
 function parseJson(text: string): unknown {

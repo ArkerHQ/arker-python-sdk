@@ -14,9 +14,9 @@ export ARKER_API_KEY="${ARKER_API_KEY:-ark_live_...}"   # TODO: set your Arker A
 REGION="${ARKER_REGION:-us-west-2}"
 BASE="https://aws-${REGION}.arker.ai/api"
 
-# ubuntu-desktop-vnc ships the desktop but no browser; add Chromium (arm64 build
+# ubuntu-dev-desktop ships the desktop but no browser; add Chromium (arm64 build
 # from the xtradeb PPA).
-VM=$(arker fork ubuntu-desktop-vnc | jq -r .vm_id)
+VM=$(arker fork ubuntu-dev-desktop | jq -r .vm_id)
 echo "forked $VM"
 trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
 arker run --timeout 480000 "$VM" "export DEBIAN_FRONTEND=noninteractive; apt-get install -y -qq software-properties-common && add-apt-repository -y ppa:xtradeb/apps && apt-get update -qq && apt-get install -y -qq chromium" >/dev/null 2>&1 || true

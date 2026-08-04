@@ -18,7 +18,7 @@ import { Arker } from "@arker-ai/sdk";
 const ar = new Arker({ region: "us-west-2" });
 
 // Fork a public golden, run a command, read/write a file.
-const vm = await ar.fork("ubuntu-full"); // public golden — org inferred
+const vm = await ar.fork("ubuntu-dev"); // public golden — org inferred
 
 const run = await vm.run("python3 -c 'print(2 + 2)'");
 if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
@@ -53,14 +53,18 @@ pty.close(); // detach; the session is not deleted
 ## Core API
 
 ```ts
-const ar = new Arker({ region, apiKey?, baseUrl?, retry? });
+import { Arker, discoverRegions } from "@arker-ai/sdk";
+
+const catalog = await discoverRegions();     // public; no API key or placement required
+const ar = new Arker({ provider: "aws", region, apiKey?, baseUrl?, retry? });
 
 // VMs
-await ar.fork("ubuntu-full");                 // public golden by name (org inferred)
+await ar.fork("ubuntu-dev");                 // public golden by name (org inferred)
 await ar.fork(vm, { name: "child" });         // an existing VM (uses its id)
 await ar.fork({ sourceVmName, sourceOrgId, name?, durable? });
 await ar.listVms({ state? });
-ar.vm(vmId);                                  // bare handle
+await ar.listRegions();                       // available public placements
+ar.vm(vmId, { provider, region });            // placement-aware bare handle
 await ar.vm(vmId).run(command, options?);
 await ar.vm(vmId).connectPty({ sessionId?, cols?, rows?, command?, persist? });
 await ar.vm(vmId).update({ resources: { vcpu, memory_mib, disk_mib } });
@@ -81,14 +85,14 @@ await vm.listSyncs();
 await vm.deleteSync(syncId);
 ```
 
-`apiKey` falls back to `ARKER_API_KEY`; `region` to `ARKER_REGION`. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
+`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `new Arker({ provider: "gcp", region: "us-central1" })`. The region catalog contains only `provider` and `region`; every listed placement supports fork, run, and sync. GCP optional features can return `unsupported_operation` from its regional API. The CLI equivalent is `arker regions`. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
 
 ## Durability
 
 For long-running or non-idempotent work, fork with `durable: true` and pass an idempotency key when retrying a run:
 
 ```ts
-const vm = await ar.fork("ubuntu-full", { durable: true });
+const vm = await ar.fork("ubuntu-dev", { durable: true });
 await vm.run("python3 train.py", { background: true, idempotencyKey: crypto.randomUUID() });
 ```
 

@@ -37,7 +37,7 @@ pip install arker
 from arker import Arker
 
 ar = Arker(region="us-west-2")  # key from ARKER_API_KEY
-vm = ar.fork("ubuntu-full")     # public golden — org inferred
+vm = ar.fork("ubuntu-dev")     # public golden — org inferred
 print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
 ```
 
@@ -51,10 +51,46 @@ bun add @arker-ai/sdk
 import { Arker } from "@arker-ai/sdk";
 
 const ar = new Arker({ region: "us-west-2" }); // key from ARKER_API_KEY
-const vm = await ar.fork("ubuntu-full");        // public golden — org inferred
+const vm = await ar.fork("ubuntu-dev");        // public golden — org inferred
 const run = await vm.run("node -e 'console.log(2 + 2)'");
 if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
 ```
+
+### GCP
+
+Read the public placement catalog before you configure a client. Discovery does not require an API key:
+
+```python
+from arker import discover_regions
+
+catalog = discover_regions()
+```
+
+```ts
+import { discoverRegions } from "@arker-ai/sdk";
+
+const catalog = await discoverRegions();
+```
+
+```bash
+arker regions
+```
+
+Then select GCP with both the provider and region:
+
+```python
+ar = Arker(provider="gcp", region="us-central1")
+```
+
+```ts
+const ar = new Arker({ provider: "gcp", region: "us-central1" });
+```
+
+```bash
+arker fork ubuntu-dev --provider gcp --region us-central1
+```
+
+You can also use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript after client setup. The catalog returns only `provider` and `region`, and every listed placement supports fork, run, and sync. GCP `us-central1` does not currently support encrypted network policies, SSH, shared directories, desktop ingress, or cross-platform restore. Its regional API returns `unsupported_operation` for these optional operations.
 
 ### CLI
 
@@ -64,7 +100,7 @@ bun add --global @arker-ai/sdk
 
 ```bash
 export ARKER_API_KEY=ark_live_...
-VM=$(arker fork ubuntu-full | jq -r .vm_id)   # public golden — org inferred
+VM=$(arker fork ubuntu-dev | jq -r .vm_id)   # public golden — org inferred
 arker run "$VM" "python3 -c 'print(2 + 2)'"
 arker rm "$VM"
 ```

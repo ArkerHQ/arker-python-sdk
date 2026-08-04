@@ -18,7 +18,7 @@ from arker import Arker
 ar = Arker(region="us-west-2")
 
 # Fork a public golden, run a command, read/write a file.
-vm = ar.fork("ubuntu-full")  # public golden — org inferred
+vm = ar.fork("ubuntu-dev")  # public golden — org inferred
 
 print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
 
@@ -31,14 +31,18 @@ vm.delete()
 ## Core API
 
 ```python
-ar = Arker(region=..., api_key=None, base_url=None, retry=None)
+from arker import Arker, discover_regions
+
+catalog = discover_regions()                 # public; no API key or placement required
+ar = Arker(provider="aws", region=..., api_key=None, base_url=None, retry=None)
 
 # VMs
-ar.fork("ubuntu-full")                        # public golden by name (org inferred)
+ar.fork("ubuntu-dev")                        # public golden by name (org inferred)
 ar.fork(vm, name="child")                     # an existing VM (uses its id)
 ar.fork(source_vm_name=..., source_org_id=..., name=None, durable=False)
 ar.list_vms(state=None)
-ar.vm(vm_id)                                  # bare handle
+ar.list_regions()                             # available public placements
+ar.vm(vm_id, provider=..., region=...)        # placement-aware bare handle
 ar.vm(vm_id).run(command, **options)
 ar.vm(vm_id).resize(vcpu_count=..., memory_mib=...)
 ar.vm(vm_id).delete()
@@ -58,7 +62,7 @@ vm.list_syncs()
 vm.delete_sync(sync_id)
 ```
 
-`api_key` falls back to `ARKER_API_KEY`; `region` to `ARKER_REGION`. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
+`api_key` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `Arker(provider="gcp", region="us-central1")`. The region catalog contains only `provider` and `region`; every listed placement supports fork, run, and sync. GCP optional features can return `unsupported_operation` from its regional API. Pass `base_url` for dev targets. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
 
 ## Interactive terminal (PTY)
 
@@ -73,7 +77,7 @@ Install the optional WebSocket dependency: `pip install 'arker[pty]'`.
 ```python
 import sys
 
-vm = ar.fork("ubuntu-full")
+vm = ar.fork("ubuntu-dev")
 
 # on_data is called from a background reader thread with raw output bytes.
 pty = vm.connect_pty(
@@ -101,7 +105,7 @@ For long-running or non-idempotent work, fork with `durable=True` and pass an id
 ```python
 import uuid
 
-vm = ar.fork("ubuntu-full", durable=True)
+vm = ar.fork("ubuntu-dev", durable=True)
 vm.run("python3 train.py", background=True, idempotency_key=str(uuid.uuid4()))
 ```
 

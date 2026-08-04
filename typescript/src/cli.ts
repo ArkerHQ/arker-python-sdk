@@ -27,9 +27,16 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
-import { Arker, ArkerError, ARKER_ORG_ID } from "./index.js";
+import {
+  Arker,
+  ArkerError,
+  ARKER_ORG_ID,
+  COMPUTE_PROVIDERS,
+  discoverRegions,
+} from "./index.js";
 import { bridgePty } from "./cli-pty.js";
 import type {
+  ComputeProvider,
   PolicyDoc,
   RunRecord,
   VM,
@@ -67,7 +74,7 @@ type OptionSpecs = Record<string, OptionSpec>;
 const GLOBAL_OPTIONS: OptionSpecs = {
   help: { type: "boolean" },
   json: { type: "boolean" },
-  provider: { type: "string", values: ["aws"] },
+  provider: { type: "string", values: COMPUTE_PROVIDERS },
   region: { type: "string" },
 };
 
@@ -149,6 +156,10 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   policies: {
     ...GLOBAL_OPTIONS,
     file: { type: "string" },
+  },
+  regions: {
+    help: { type: "boolean" },
+    json: { type: "boolean" },
   },
   sync: GLOBAL_OPTIONS,
   syncs: {
@@ -351,7 +362,7 @@ interface CliConfig {
   apiKey?: string;
   baseUrl?: string;
   region?: string;
-  provider?: "aws";
+  provider?: ComputeProvider;
   controlBaseUrl?: string;
 }
 
@@ -384,15 +395,19 @@ function clientFromArgs(args: ParsedArgs): Arker {
   const controlBaseUrl =
     process.env.ARKER_CONTROL_BASE_URL ??
     file.controlBaseUrl;
+  const provider = (args.flags.provider as ComputeProvider | undefined) ??
+    (process.env.ARKER_PROVIDER as ComputeProvider | undefined) ??
+    file.provider;
+  const configuredRegion = explicitRegion ?? file.region;
+  if (provider && provider !== "aws" && !configuredRegion && !baseUrl) {
+    die(`Region is required for provider ${provider}. Run 'arker regions' to list placements.`);
+  }
   // Region: explicit flag/env, then the saved config, then a default of
   // us-west-2 so the CLI works out of the box. If a base URL is already
   // resolved (explicit or from config) it drives the endpoint and region
   // can stay unset.
   const region =
-    explicitRegion ?? file.region ?? (baseUrl ? undefined : DEFAULT_REGION);
-  const provider = (args.flags.provider as "aws" | undefined) ??
-    (process.env.ARKER_PROVIDER as "aws" | undefined) ??
-    file.provider;
+    configuredRegion ?? (baseUrl ? undefined : DEFAULT_REGION);
   if (!apiKey) {
     die("Missing API key. Set ARKER_API_KEY or add apiKey to ~/.arker/config.json.");
   }
@@ -428,6 +443,17 @@ function fmtVm(vm: VM | Vm): string {
 }
 
 // ── Resources ──────────────────────────────────────────────────────
+
+async function cmdRegions(args: ParsedArgs): Promise<void> {
+  const file = readFileConfig();
+  const response = await discoverRegions({
+    controlBaseUrl: process.env.ARKER_CONTROL_BASE_URL ?? file.controlBaseUrl,
+  });
+  if (args.flags.json) return out(response);
+  for (const placement of response.regions) {
+    out(`${placement.provider}-${placement.region}`);
+  }
+}
 
 async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
   const sub = args.positional[0];
@@ -494,7 +520,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   let sourceOrgId: string | undefined = srcOrgIdFlag;
 
   if (!sourceVmId && !sourceVmName && refPositional) {
-    // Shortcut: `arker fork ubuntu-full` → source-vm-name. Org defaulting
+    // Shortcut: `arker fork ubuntu-dev` → source-vm-name. Org defaulting
     // (known golden → Arker org, otherwise your own org) is handled by the
     // SDK's fork(); pass --source-org-id to override.
     sourceVmName = refPositional;
@@ -899,7 +925,7 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
 
 async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   // Attach to an explicit VM by id (--vm-id or a positional vm id), otherwise
-  // fork a fresh one from a source name in the Arker org (default: ubuntu-full).
+  // fork a fresh one from a source name in the Arker org (default: ubuntu-dev).
   let computer: VM;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
   const explicitSessionId = args.flags["session-id"] as string | undefined;
@@ -910,7 +936,7 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
     computer = await client.vm(vmIdArg).refresh();
   } else {
     const sourceVmName =
-      (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-full";
+      (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-dev";
     computer = await client.fork({
       sourceVmName,
       sourceOrgId: ARKER_ORG_ID,
@@ -1012,9 +1038,10 @@ function usage(_command?: string): void {
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
-      "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
+      "  arker shell [vm_id]                            native PTY shell (forks ubuntu-dev if no vm)",
       "",
       "Resources:",
+      "  arker regions                                  list available public placements",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
       "  arker runs        <ls|get|rm> <vm_id> ...",
       "  arker sessions    <ls|get|create|rm> <vm_id> ...",
@@ -1024,7 +1051,7 @@ function usage(_command?: string): void {
       "",
       "Flags:",
       "  --region <region>          (or env ARKER_REGION; e.g. us-west-2)",
-      "  --provider <provider>      aws (or env ARKER_PROVIDER)",
+      "  --provider <provider>      aws or gcp (or env ARKER_PROVIDER)",
       "  --json                     emit JSON instead of tabular output",
       "  -h, --help                 show help without connecting",
       "  -v, --version              show version without connecting",
@@ -1078,6 +1105,7 @@ async function main(): Promise<void> {
   const { command: cmd, args } = invocation;
 
   try {
+    if (cmd === "regions") return await cmdRegions(args);
     const client = clientFromArgs(args);
     switch (cmd) {
       // Shortcuts.

@@ -110,7 +110,7 @@ def test_daytona_official_surface(monkeypatch) -> None:
         assert alias.result == "Hello, World!\n"
         sandbox.delete()
 
-    assert json.loads(t.calls[0]["body"])["source_vm_name"] == "ubuntu-full"
+    assert json.loads(t.calls[0]["body"])["source_vm_name"] == "ubuntu-dev"
 
 
 def test_arker_shim_config_customizes_source_without_forwarding_to_client(monkeypatch) -> None:

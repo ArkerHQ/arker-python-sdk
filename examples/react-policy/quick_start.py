@@ -51,12 +51,12 @@ def main() -> None:
     vm = None
 
     try:
-        print("1. Forking ubuntu-full")
+        print("1. Forking ubuntu-dev")
         print("   Build policy: allow registry.npmjs.org:443")
-        print("   $ arker fork ubuntu-full")
+        print("   $ arker fork ubuntu-dev")
         print("   $ arker policies set $VM  # allow registry.npmjs.org:443")
         vm = arker.fork(
-            "ubuntu-full",
+            "ubuntu-dev",
             name="react-policy-demo",
             policies=BUILD_POLICY,
         )

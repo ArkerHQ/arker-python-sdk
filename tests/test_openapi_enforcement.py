@@ -51,13 +51,11 @@ def test_source_metadata_matches_contract() -> None:
     metadata = source_metadata()
     contract = (REPO_ROOT / "contract/openapi.json").read_bytes()
 
-    assert metadata == {
-        "repository": "ArkerHQ/arker-app",
-        "ref": "main",
-        "commit": metadata["commit"],
-        "sha256": hashlib.sha256(contract).hexdigest(),
-    }
+    assert set(metadata) == {"repository", "ref", "commit", "sha256"}
+    assert metadata["repository"] == "ArkerHQ/arker-app"
+    assert metadata["sha256"] == hashlib.sha256(contract).hexdigest()
     assert len(metadata["commit"]) == 40
+    assert metadata["ref"].strip()
     assert all(character in "0123456789abcdef" for character in metadata["commit"])
 
 
@@ -217,6 +215,8 @@ def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
             "contract/openapi.json",
             "--source-commit",
             source_metadata()["commit"],
+            "--source-ref",
+            source_metadata()["ref"],
             "--output-root",
             output_directory,
         )

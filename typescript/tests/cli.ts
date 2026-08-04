@@ -258,6 +258,64 @@ async function testHelpAndVersionAreLocalSuccesses(): Promise<void> {
   }
 }
 
+async function testGcpProviderFlagIsAccepted(): Promise<void> {
+  const gcp = await runCli(
+    undefined,
+    ["--provider", "gcp", "--region", "us-central1", "--help"],
+    { authenticated: false },
+  );
+  assert.equal(gcp.code, 0, gcp.stderr);
+
+  const invalid = await runCli(
+    undefined,
+    ["--provider", "azure", "--help"],
+    { authenticated: false },
+  );
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stderr, /aws, gcp/);
+}
+
+async function testNonAwsProviderRequiresAnExplicitRegion(): Promise<void> {
+  const result = await runCli(
+    undefined,
+    ["update", "vm_1", "--provider", "gcp"],
+  );
+
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /region is required for provider gcp/i);
+  assert.match(result.stderr, /arker regions/);
+}
+
+async function testRegionsDiscoveryNeedsNoCredentialsOrPlacement(): Promise<void> {
+  const placement = {
+    provider: "gcp",
+    region: "us-central1",
+  };
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { regions: [placement] }),
+    async (baseUrl, requests) => {
+      const human = await runCli(baseUrl, ["regions"], {
+        authenticated: false,
+      });
+      assert.equal(human.code, 0, human.stderr);
+      assert.equal(stdoutText(human), "gcp-us-central1\n");
+
+      const json = await runCli(baseUrl, ["regions", "--json"], {
+        authenticated: false,
+      });
+      assert.equal(json.code, 0, json.stderr);
+      assert.deepEqual(JSON.parse(stdoutText(json)), { regions: [placement] });
+      assert.deepEqual(
+        requests.map((request) => [request.method, request.url]),
+        [
+          ["GET", "/api/v1/regions"],
+          ["GET", "/api/v1/regions"],
+        ],
+      );
+    },
+  );
+}
+
 async function testRemovedSecretAndUrlFlagsFailLocally(): Promise<void> {
   for (const args of [
     ["--api-key", "secret", "ls"],
@@ -665,6 +723,9 @@ await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
+await testGcpProviderFlagIsAccepted();
+await testNonAwsProviderRequiresAnExplicitRegion();
+await testRegionsDiscoveryNeedsNoCredentialsOrPlacement();
 await testRemovedSecretAndUrlFlagsFailLocally();
 await testHelpMatchesSupportedSurface();
 await testRunJsonIncludesMemoryMetadata();

@@ -16,7 +16,7 @@ async function main() {
   const ar = new Arker(); // reads ARKER_API_KEY + ARKER_REGION/ARKER_BASE_URL
 
   const arg = process.argv[2];
-  const vm = arg ? await ar.vm(arg).refresh() : await ar.fork("ubuntu-full");
+  const vm = arg ? await ar.vm(arg).refresh() : await ar.fork("ubuntu-dev");
   if (!arg) console.error(`forked ${vm.id}`);
 
   const stdin = process.stdin;

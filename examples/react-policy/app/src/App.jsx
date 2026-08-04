@@ -3,7 +3,7 @@ export ARKER_API_KEY=ark_live_...
 export ARKER_REGION=us-west-2
 
 # 2. Fork an Ubuntu VM
-VM=$(arker fork ubuntu-full | jq -r .vm_id)
+VM=$(arker fork ubuntu-dev | jq -r .vm_id)
 
 # 3. Allow npm during the build
 arker policies set "$VM" >/dev/null <<'JSON'
