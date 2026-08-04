@@ -2,7 +2,7 @@
 #
 # Policies as code — quick start (host-enforced egress policy)
 #
-# Forks ubuntu-full and attaches an ordered, first-match-wins list of outbound
+# Forks ubuntu-dev and attaches an ordered, first-match-wins list of outbound
 # rules (allow / deny / rewrite / gate), enforced in the host network path so a
 # process in the VM can't escape it. The CLI has no policy verb, so we PUT the
 # document to the API.
@@ -15,7 +15,7 @@ export ARKER_API_KEY="${ARKER_API_KEY:-ark_live_...}"   # TODO: set your Arker A
 REGION="${ARKER_REGION:-us-west-2}"
 BASE="https://aws-${REGION}.arker.ai/api"
 
-VM=$(arker fork ubuntu-full | jq -r .vm_id)
+VM=$(arker fork ubuntu-dev | jq -r .vm_id)
 echo "forked $VM"
 trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
 

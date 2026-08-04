@@ -16,23 +16,29 @@ export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
  * Org id for the "Arker" org — the org that owns the public golden VMs
- * (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
+ * (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
  * `sourceOrgId` to fork a public golden:
  *
- *     arker.fork({ sourceVmName: "ubuntu-full", sourceOrgId: ARKER_ORG_ID })
+ *     arker.fork({ sourceVmName: "ubuntu-dev", sourceOrgId: ARKER_ORG_ID })
  */
 export const ARKER_ORG_ID = "ArkerHQ";
 
 /** Public golden VM names owned by the Arker org. Forking one of these by
  * name auto-fills `sourceOrgId = ARKER_ORG_ID` (see `Arker.fork`). */
 const GOLDEN_NAMES = new Set<string>([
-  "arkuntu",
-  "ubuntu", "ubuntu-small", "ubuntu-nodisk", "ubuntu-nonet-nodisk",
-  "ubuntu-full", "ubuntu-full-32",
+  // Canonical
+  "ubuntu-base", "ubuntu-node-small", "ubuntu-systemd", "ubuntu-nonet-nodisk",
+  "ubuntu-dev", "ubuntu-dev-8", "ubuntu-dev-32", "ubuntu-dev-desktop",
   "ubuntu-py-repl", "ubuntu-js-repl",
   "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
-  "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
-  "macos-full",
+  "ubuntu-gpu", "ubuntu-gpu-small",
+  "windows", "android", "macos", "macos-ios",
+  // Deprecated aliases (still forkable)
+  "ubuntu", "ubuntu-small", "ubuntu-full", "ubuntu-full-8", "ubuntu-full-32",
+  "ubuntu-desktop-vnc", "ubuntu-gpu-full",
+  // Legacy names kept for back-compat
+  "arkuntu", "ubuntu-nodisk", "ubuntu-servo-js-repl",
+  "ubuntu-chromium-js-repl", "macos-full",
 ]);
 
 const DEFAULT_RETRY_ATTEMPTS = 4;
@@ -550,7 +556,7 @@ export class Arker {
   /**
    * Create a new VM by forking from a source.
    *
-   *     fork("ubuntu-full")                       // public golden by name
+   *     fork("ubuntu-dev")                       // public golden by name
    *     fork("base")                              // a VM by name in your org
    *     fork(vm)                                  // an existing VM (uses its id)
    *     fork({ sourceVmId: "vm_abc..." })

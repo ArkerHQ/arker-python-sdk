@@ -2,7 +2,7 @@
 #
 # Firmware app-factory — quick start (a coding agent edits firmware, runs it on QEMU)
 #
-# Forks ubuntu-full, installs the Cursor agent + an embedded toolchain + QEMU,
+# Forks ubuntu-dev, installs the Cursor agent + an embedded toolchain + QEMU,
 # seeds a Cortex-M3 firmware, has the agent add a feature, then forks a checkpoint
 # and has it add another — building on the first.
 #
@@ -52,9 +52,9 @@ run() {
 }
 show() { arker run "$1" "{ set +x; } 2>/dev/null; cat $2" 2>&1 | grep -vaE '^\+\+? ' || true; }
 
-VM=$(arker fork ubuntu-full | jq -r .vm_id); echo "# forked $VM"
+VM=$(arker fork ubuntu-dev | jq -r .vm_id); echo "# forked $VM"
 
-# cursor-agent is already baked into the ubuntu-full golden. Only the embedded ARM
+# cursor-agent is already baked into the ubuntu-dev golden. Only the embedded ARM
 # toolchain (gcc-arm-none-eabi + qemu-system-arm) isn't, so that's all we install.
 echo "# install ARM toolchain, seed firmware"
 run "$VM" "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends gcc-arm-none-eabi qemu-system-arm >/dev/null"

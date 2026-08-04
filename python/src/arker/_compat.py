@@ -9,7 +9,7 @@ from typing import Any
 from .computer import Arker, ArkerError, CompletedRunResult, VM
 
 DEFAULT_REGION = "aws-us-east-1"
-DEFAULT_SOURCE = "ubuntu-full"
+DEFAULT_SOURCE = "ubuntu-dev"
 ARKER_CLIENT_KEYS = {"api_key", "base_url", "control_base_url", "region", "provider", "retry"}
 
 

@@ -103,10 +103,10 @@ _EXPLICIT_NULL = _ExplicitNullType()
 CHUNK_SIZE = 4 * 1024 * 1024
 
 # Org id for the "Arker" org — the org that owns the public golden VMs
-# (`arkuntu`, `ubuntu`, `ubuntu-full`, `ubuntu-py-repl`, …). Pass it as
+# (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
 # ``source_org_id`` to fork a public golden:
 #
-#     arker.fork(source_vm_name="ubuntu-full", source_org_id=ARKER_ORG_ID)
+#     arker.fork(source_vm_name="ubuntu-dev", source_org_id=ARKER_ORG_ID)
 ARKER_ORG_ID = "ArkerHQ"
 
 DEFAULT_RETRY_ATTEMPTS = 4
@@ -149,15 +149,23 @@ DEFAULT_PROVIDER: ComputeProvider = "aws"
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
 
 # Public golden VM names owned by the Arker org. Forking one of these by name
-# auto-fills source_org_id = ARKER_ORG_ID (see Arker.fork).
+# auto-fills source_org_id = ARKER_ORG_ID (see Arker.fork). Canonical names
+# plus the deprecated pre-rename aliases (ubuntu, ubuntu-full*, ubuntu-small,
+# ubuntu-desktop-vnc, ubuntu-gpu-full), which still fork for back-compat.
 GOLDEN_NAMES = frozenset({
-    "arkuntu",
-    "ubuntu", "ubuntu-small", "ubuntu-nodisk", "ubuntu-nonet-nodisk",
-    "ubuntu-full", "ubuntu-full-32",
+    # Canonical
+    "ubuntu-base", "ubuntu-node-small", "ubuntu-systemd", "ubuntu-nonet-nodisk",
+    "ubuntu-dev", "ubuntu-dev-8", "ubuntu-dev-32", "ubuntu-dev-desktop",
     "ubuntu-py-repl", "ubuntu-js-repl",
     "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
-    "ubuntu-servo-js-repl", "ubuntu-chromium-js-repl",
-    "macos-full",
+    "ubuntu-gpu", "ubuntu-gpu-small",
+    "windows", "android", "macos", "macos-ios",
+    # Deprecated aliases (still forkable)
+    "ubuntu", "ubuntu-small", "ubuntu-full", "ubuntu-full-8", "ubuntu-full-32",
+    "ubuntu-desktop-vnc", "ubuntu-gpu-full",
+    # Legacy names kept for back-compat
+    "arkuntu", "ubuntu-nodisk", "ubuntu-servo-js-repl",
+    "ubuntu-chromium-js-repl", "macos-full",
 })
 
 
@@ -389,7 +397,7 @@ class Arker:
 
         The source can be passed positionally or by keyword:
 
-        - ``fork("ubuntu-full")`` — fork a public golden by name (the Arker
+        - ``fork("ubuntu-dev")`` — fork a public golden by name (the Arker
           org is filled in automatically for known goldens).
         - ``fork("base")`` — fork a VM by name in your own org.
         - ``fork(vm)`` — fork an existing ``VM`` (uses its id).

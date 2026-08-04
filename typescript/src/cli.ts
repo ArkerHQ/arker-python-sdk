@@ -520,7 +520,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   let sourceOrgId: string | undefined = srcOrgIdFlag;
 
   if (!sourceVmId && !sourceVmName && refPositional) {
-    // Shortcut: `arker fork ubuntu-full` → source-vm-name. Org defaulting
+    // Shortcut: `arker fork ubuntu-dev` → source-vm-name. Org defaulting
     // (known golden → Arker org, otherwise your own org) is handled by the
     // SDK's fork(); pass --source-org-id to override.
     sourceVmName = refPositional;
@@ -925,7 +925,7 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
 
 async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   // Attach to an explicit VM by id (--vm-id or a positional vm id), otherwise
-  // fork a fresh one from a source name in the Arker org (default: ubuntu-full).
+  // fork a fresh one from a source name in the Arker org (default: ubuntu-dev).
   let computer: VM;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
   const explicitSessionId = args.flags["session-id"] as string | undefined;
@@ -936,7 +936,7 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
     computer = await client.vm(vmIdArg).refresh();
   } else {
     const sourceVmName =
-      (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-full";
+      (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-dev";
     computer = await client.fork({
       sourceVmName,
       sourceOrgId: ARKER_ORG_ID,
@@ -1038,7 +1038,7 @@ function usage(_command?: string): void {
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
-      "  arker shell [vm_id]                            native PTY shell (forks ubuntu-full if no vm)",
+      "  arker shell [vm_id]                            native PTY shell (forks ubuntu-dev if no vm)",
       "",
       "Resources:",
       "  arker regions                                  list available public placements",

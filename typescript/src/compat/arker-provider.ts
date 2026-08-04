@@ -19,7 +19,7 @@ import {
 import { emitFinalOutput, shellQuote } from "./common.js";
 
 const DEFAULT_REGION = "aws-us-east-1";
-const DEFAULT_SOURCE = "ubuntu-full";
+const DEFAULT_SOURCE = "ubuntu-dev";
 
 export interface ArkerComputeProviderConfig extends ArkerOptions {
   source?: string;

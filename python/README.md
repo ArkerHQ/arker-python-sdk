@@ -18,7 +18,7 @@ from arker import Arker
 ar = Arker(region="us-west-2")
 
 # Fork a public golden, run a command, read/write a file.
-vm = ar.fork("ubuntu-full")  # public golden — org inferred
+vm = ar.fork("ubuntu-dev")  # public golden — org inferred
 
 print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
 
@@ -37,7 +37,7 @@ catalog = discover_regions()                 # public; no API key or placement r
 ar = Arker(provider="aws", region=..., api_key=None, base_url=None, retry=None)
 
 # VMs
-ar.fork("ubuntu-full")                        # public golden by name (org inferred)
+ar.fork("ubuntu-dev")                        # public golden by name (org inferred)
 ar.fork(vm, name="child")                     # an existing VM (uses its id)
 ar.fork(source_vm_name=..., source_org_id=..., name=None, durable=False)
 ar.list_vms(state=None)
@@ -77,7 +77,7 @@ Install the optional WebSocket dependency: `pip install 'arker[pty]'`.
 ```python
 import sys
 
-vm = ar.fork("ubuntu-full")
+vm = ar.fork("ubuntu-dev")
 
 # on_data is called from a background reader thread with raw output bytes.
 pty = vm.connect_pty(
@@ -105,7 +105,7 @@ For long-running or non-idempotent work, fork with `durable=True` and pass an id
 ```python
 import uuid
 
-vm = ar.fork("ubuntu-full", durable=True)
+vm = ar.fork("ubuntu-dev", durable=True)
 vm.run("python3 train.py", background=True, idempotency_key=str(uuid.uuid4()))
 ```
 
