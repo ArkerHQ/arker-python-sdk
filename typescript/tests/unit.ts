@@ -1297,4 +1297,48 @@ await testRunAndGetRunAgreeOnBinaryOutput();
 await testEveryByteValueRoundTrips();
 await testUtf8WireStillYieldsBothForms();
 
+// ── syncDir tarball compression ──────────────────────────────────────
+// syncDir packs changed files into ONE tarball and uploads it in a single
+// request whose cost the host pays again on commit. Uncompressed, a large tree
+// blew the sync budget and failed outright (a Linux checkout is 319 MB raw,
+// 70 MB gzipped). gzip is therefore load-bearing, not an optimization.
+
+async function testSyncDirUploadsAGzippedTarball(): Promise<void> {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-gz-"));
+  for (let i = 0; i < 40; i++) {
+    fs.writeFileSync(nodePath.join(dir, `f${i}.ts`), `export const v${i} = ${i};\n`.repeat(60));
+  }
+
+  const fetch = new FakeFetch();
+  // 1. remote manifest -> empty, so every file counts as changed
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, { ok: true, op: "manifest", entries: [] });
+  // 2. the tarball write (small enough to go inline)
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+    ok: true, op: "write",
+    results: [{ path: "/tmp/t.tar.gz", complete: true, written: true, ranges: [], received: 0 }],
+  });
+  // 3. the in-guest extract
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/runs"), 200, {
+    run_id: "r1", state: "completed", exit_code: 0, stdout: "", stderr: "",
+    stdout_encoding: "utf-8", stderr_encoding: "utf-8",
+  });
+
+  await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p");
+
+  const write = fetch.calls.find(
+    (c) => c.url.endsWith("/sync") && (c.body ?? "").includes('"op":"write"'),
+  );
+  assert.ok(write, "syncDir must upload the tarball");
+  const entry = JSON.parse(write!.body!).writes[0];
+  const tarball = Buffer.from(entry.content, "base64");
+  assert.equal(tarball[0], 0x1f, "tarball must be gzipped (magic byte 0)");
+  assert.equal(tarball[1], 0x8b, "tarball must be gzipped (magic byte 1)");
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+await testSyncDirUploadsAGzippedTarball();
+
 console.log("PASS unit");

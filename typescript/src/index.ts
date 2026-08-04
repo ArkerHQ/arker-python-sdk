@@ -1046,7 +1046,11 @@ export class VM {
 
     // 1. Authoritative remote manifest: rel_path -> sha256. A directory that
     //    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
+    const clock = () => Number(process.hrtime.bigint() / 1000n) / 1000;
+    const tManifest0 = clock();
     const remote = await this.remoteManifest(remoteRoot);
+    const manifestMs = clock() - tManifest0;
+    const tWalk0 = clock();
 
     // 2. Enumerate local regular files (skip symlinks — the manifest lists
     //    regular files only, so a symlink would always look "missing").
@@ -1064,6 +1068,8 @@ export class VM {
     };
     await walk(localRoot);
     localFiles.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    const walkMs = clock() - tWalk0;
+    const tHash0 = clock();
 
     // 3. Diff local vs the REMOTE manifest -> the set to transfer.
     const cache = options.cache;
@@ -1084,10 +1090,20 @@ export class VM {
       result.bytesSent += file.size;
     }
 
+    const hashMs = clock() - tHash0;
+    const tUpload0 = clock();
+
     // 4. Ship the changed files as ONE tarball and extract it in the guest. The
     //    extract's exit is checked, so a failure surfaces (never a silent partial);
     //    the manifest also fails safe — any omitted file is re-sent next call.
     if (changed.length > 0) await this.uploadAndExtractTarball(changed, localRoot, remoteRoot, fsp);
+    const round = (v: number) => Math.round(v * 10) / 10;
+    result.timings = {
+      manifestMs: round(manifestMs),
+      walkMs: round(walkMs),
+      hashMs: round(hashMs),
+      uploadMs: round(clock() - tUpload0),
+    };
     return result;
   }
 
@@ -1123,9 +1139,17 @@ export class VM {
     const os = await import("node:os");
     const nodePath = await import("node:path");
 
-    const localTar = nodePath.join(os.tmpdir(), `arker-sync-${ulid()}.tar`);
+    const localTar = nodePath.join(os.tmpdir(), `arker-sync-${ulid()}.tar.gz`);
     try {
-      await tar.create({ file: localTar, cwd: localRoot }, changed.map((entry) => entry.rel));
+      // gzip: source trees compress ~4:1 (a Linux checkout goes 319 MB -> 70 MB),
+      // and this tarball is uploaded as ONE request whose cost the host pays
+      // again on commit. Uncompressed, a large tree exceeded the sync budget and
+      // failed outright. `tar -xf` on the guest sniffs compression, so the
+      // extract side needs no change and older guests stay compatible.
+      await tar.create(
+        { file: localTar, cwd: localRoot, gzip: true },
+        changed.map((entry) => entry.rel),
+      );
       const data = await fsp.readFile(localTar);
 
       const remoteTar = `/tmp/.arker-sync-${ulid()}.tar`;
@@ -2016,6 +2040,10 @@ export interface SyncDirResult {
   skipped: number;
   /** Total uncompressed bytes of the uploaded files. */
   bytesSent: number;
+  /** Wall-clock ms per phase. Useful when a sync is slower than expected:
+   * `hash` dominating means the caller is not reusing a `cache`, since an
+   * uncached call re-reads and re-hashes every file in the tree. */
+  timings?: { manifestMs: number; walkMs: number; hashMs: number; uploadMs: number };
 }
 
 /** Options for {@link VM.syncDir}. */
