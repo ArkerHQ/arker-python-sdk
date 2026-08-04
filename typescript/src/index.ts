@@ -863,6 +863,119 @@ export class VM {
   }
 
   /**
+   * Recursively sync a local directory INTO this VM at `remoteDir`, rsync-style:
+   * fetch the VM's file manifest (per-file sha256) in ONE request, diff it against
+   * the local tree, and upload ONLY new/changed files — packed into ONE
+   * gzip-probed tarball that the guest untars. The guest does the writes (always
+   * consistent with its own filesystem), and a compressible codebase ships a
+   * fraction of its bytes (e.g. a 50 MB source tree as ~5 MB). Node-only — reads
+   * the local filesystem.
+   *
+   *     await vm.syncDir("./my-app", "root/app");
+   *
+   * `cache` (a Map you own and reuse across calls) is a pure accelerator: it skips
+   * re-hashing local files whose (size, mtime) are unchanged. It never decides
+   * remote state, so it can never cause a stale or missing upload. Returns
+   * `{ sent, skipped, bytesSent }`.
+   */
+  async syncDir(
+    localDir: string,
+    remoteDir: string,
+    opts: { cache?: Map<string, [number, number, string]> } = {},
+  ): Promise<SyncDirResult> {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const localRoot = path.resolve(localDir);
+    const remoteRoot = "/" + remoteDir.replace(/^\/+|\/+$/g, "");
+
+    // 1. Authoritative remote manifest: rel -> sha256 (empty dir => {} => send all).
+    const remote = await this.remoteManifest(remoteRoot);
+
+    // 2. Enumerate local regular files (skip symlinks — the manifest lists regular
+    //    files only, so a symlink would always look "missing").
+    const localFiles: Array<{ rel: string; abs: string; size: number; mtimeMs: number }> = [];
+    const walk = async (dir: string): Promise<void> => {
+      for (const ent of await fs.readdir(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, ent.name);
+        if (ent.isSymbolicLink()) continue;
+        if (ent.isDirectory()) { await walk(abs); continue; }
+        if (!ent.isFile()) continue;
+        const st = await fs.stat(abs);
+        const rel = path.relative(localRoot, abs).split(path.sep).join("/");
+        localFiles.push({ rel, abs, size: st.size, mtimeMs: st.mtimeMs });
+      }
+    };
+    await walk(localRoot);
+
+    // 3. Diff -> the set of new/changed files. When the remote is empty (a cold
+    //    sync), every local file is new — skip hashing entirely.
+    const result: SyncDirResult = { sent: 0, skipped: 0, bytesSent: 0 };
+    const changed: Array<{ rel: string; abs: string }> = [];
+    const remoteEmpty = Object.keys(remote).length === 0;
+    for (const f of localFiles.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))) {
+      if (!remoteEmpty) {
+        const hash = await fileHashCached(fs, f.abs, f.size, f.mtimeMs, opts.cache);
+        if (remote[f.rel] === hash) { result.skipped++; continue; }
+      }
+      changed.push({ rel: f.rel, abs: f.abs });
+      result.sent++;
+      result.bytesSent += f.size;
+    }
+
+    // 4. Ship the changed files as ONE gzip-probed tarball; the guest untars it.
+    if (changed.length) await this.uploadAndExtractTarball(fs, changed, remoteRoot);
+    return result;
+  }
+
+  private async remoteManifest(path: string): Promise<Record<string, string>> {
+    const payload = await this._client._request<{ entries?: Array<{ path?: string; hash?: string }> }>(
+      "POST", `${vmPath(this.id)}/sync`, { op: "manifest", path }, this.baseUrl,
+    );
+    const out: Record<string, string> = {};
+    for (const e of payload.entries ?? []) {
+      if (e && typeof e.path === "string" && typeof e.hash === "string") out[e.path] = e.hash;
+    }
+    return out;
+  }
+
+  private async uploadAndExtractTarball(
+    fs: typeof import("node:fs/promises"),
+    changed: Array<{ rel: string; abs: string }>,
+    remoteRoot: string,
+  ): Promise<void> {
+    const entries: Array<{ path: string; data: Uint8Array }> = [];
+    for (const { rel, abs } of changed) entries.push({ path: rel, data: new Uint8Array(await fs.readFile(abs)) });
+    const tar = buildTar(entries);
+
+    // gzip-probe: compress the tarball only when it actually helps (a source tree
+    // ~5-10x, so a 50 MB codebase ships as ~5 MB and often drops under the inline
+    // threshold); incompressible data is stored raw. The presigned path uploads
+    // raw bytes, so without this a large compressible tree would ship uncompressed
+    // — this is where the cold-sync win lands.
+    const sampleLen = Math.min(tar.length, 256 * 1024);
+    const sample = await gzipToBytes(tar.subarray(0, sampleLen));
+    const gz = sampleLen / Math.max(1, sample.length) >= 1.3;
+    const payload = gz ? await gzipToBytes(tar) : tar;
+
+    const remoteTar = `/tmp/.arker-sync-${ulid()}.tar${gz ? ".gz" : ""}`;
+    if (payload.length > CHUNK_SIZE) await this.syncWritePresigned(remoteTar, payload);
+    else await this.syncWriteInline(remoteTar, payload);
+
+    const q = shellQuote;
+    const cmd =
+      `set -e; mkdir -p ${q(remoteRoot)}; ` +
+      `tar -x${gz ? "z" : ""}f ${q(remoteTar)} -C ${q(remoteRoot)}; rm -f ${q(remoteTar)}`;
+    const res = await this.run(cmd);
+    const state = (res as CompletedRunResult).state;
+    const exitCode = (res as CompletedRunResult).exitCode;
+    if (state === "failed" || (typeof exitCode === "number" && exitCode !== 0)) {
+      const stderr = (res as CompletedRunResult).stderr;
+      const msg = stderr ? new TextDecoder().decode(stderr).slice(0, 300) : "";
+      throw new ArkerError("internal", `syncDir tar extract failed (exit=${exitCode}, state=${state}): ${msg}`, 200);
+    }
+  }
+
+  /**
    * Update this VM's resource allocation and/or network settings via
    * `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
    *
@@ -1425,4 +1538,119 @@ function base64ToBytes(text: string): Uint8Array {
 
 function bufferConstructor(): BufferConstructorLike | undefined {
   return (globalThis as unknown as { Buffer?: BufferConstructorLike }).Buffer;
+}
+
+/** Result of {@link VM.syncDir}: files uploaded / skipped and bytes sent. */
+export interface SyncDirResult {
+  sent: number;
+  skipped: number;
+  bytesSent: number;
+}
+
+// ── Directory sync helpers (buildTar / gzip-probe / content hashing) ──────────
+const TAR_BLOCK = 512;
+
+/** gzip → Uint8Array (the platform CompressionStream). */
+async function gzipToBytes(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Response(
+    new Blob([bytes as BlobPart]).stream().pipeThrough(new CompressionStream("gzip")),
+  );
+  return new Uint8Array(await stream.arrayBuffer());
+}
+
+/** Hash a local file's content (SHA-256 hex — matches the server manifest's
+ *  per-file hash), reusing `cache` when (size, mtime) are unchanged. Uses Node's
+ *  sync `createHash`, which is far faster than WebCrypto for many small files. */
+async function fileHashCached(
+  fs: typeof import("node:fs/promises"),
+  abs: string,
+  size: number,
+  mtimeMs: number,
+  cache?: Map<string, [number, number, string]>,
+): Promise<string> {
+  const cached = cache?.get(abs);
+  if (cached && cached[0] === size && cached[1] === mtimeMs) return cached[2];
+  const { createHash } = await import("node:crypto");
+  const data = await fs.readFile(abs);
+  const hash = createHash("sha256").update(data).digest("hex");
+  cache?.set(abs, [size, mtimeMs, hash]);
+  return hash;
+}
+
+/**
+ * Build an uncompressed USTAR archive from `files`. Paths are stored relative to
+ * the archive root with any leading slash stripped. Throws for a path that does
+ * not fit the USTAR name (100) + prefix (155) split.
+ */
+function buildTar(files: Array<{ path: string; data: Uint8Array }>): Uint8Array {
+  const blocks: Uint8Array[] = [];
+  for (const f of files) {
+    const rel = f.path.replace(/^\/+/, "");
+    blocks.push(tarHeader(rel, f.data.length));
+    blocks.push(f.data);
+    const rem = f.data.length % TAR_BLOCK;
+    if (rem !== 0) blocks.push(new Uint8Array(TAR_BLOCK - rem));
+  }
+  blocks.push(new Uint8Array(TAR_BLOCK * 2)); // two zero blocks terminate the archive
+  return tarConcat(blocks);
+}
+
+function tarHeader(path: string, size: number): Uint8Array {
+  const header = new Uint8Array(TAR_BLOCK);
+  const { name, prefix } = splitUstarPath(path);
+  tarWriteAscii(header, name, 0, 100);
+  tarWriteOctal(header, 0o644, 100, 8); // mode
+  tarWriteOctal(header, 0, 108, 8); // uid
+  tarWriteOctal(header, 0, 116, 8); // gid
+  tarWriteOctal(header, size, 124, 12); // size
+  tarWriteOctal(header, 0, 136, 12); // mtime (fixed for determinism)
+  header[156] = 0x30; // typeflag '0' = regular file
+  tarWriteAscii(header, "ustar\0", 257, 6); // magic
+  header[263] = 0x30; // version "00"
+  header[264] = 0x30;
+  tarWriteAscii(header, prefix, 345, 155);
+  for (let i = 148; i < 156; i++) header[i] = 0x20; // checksum field = 8 spaces
+  let sum = 0;
+  for (let i = 0; i < TAR_BLOCK; i++) sum += header[i]!;
+  tarWriteAscii(header, sum.toString(8).padStart(6, "0"), 148, 6);
+  header[154] = 0;
+  header[155] = 0x20;
+  return header;
+}
+
+function splitUstarPath(path: string): { name: string; prefix: string } {
+  if (new TextEncoder().encode(path).length <= 100) return { name: path, prefix: "" };
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i] !== "/") continue;
+    const prefix = path.slice(0, i);
+    const name = path.slice(i + 1);
+    if (new TextEncoder().encode(prefix).length <= 155 && new TextEncoder().encode(name).length <= 100) {
+      return { name, prefix };
+    }
+  }
+  throw new ArkerError("bad_request", `path too long for tar (max 100 name / 155 prefix): ${path}`, 400);
+}
+
+function tarWriteAscii(buf: Uint8Array, text: string, offset: number, max: number): void {
+  const bytes = new TextEncoder().encode(text);
+  const n = Math.min(bytes.length, max);
+  for (let i = 0; i < n; i++) buf[offset + i] = bytes[i]!;
+}
+
+function tarWriteOctal(buf: Uint8Array, value: number, offset: number, width: number): void {
+  tarWriteAscii(buf, value.toString(8).padStart(width - 1, "0"), offset, width - 1);
+  buf[offset + width - 1] = 0;
+}
+
+function tarConcat(chunks: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
+}
+
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }

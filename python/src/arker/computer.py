@@ -906,11 +906,13 @@ class VM:
         # 3. Diff → the set of new/changed files (relative paths).
         result = SyncDirResult()
         changed: list[tuple[str, str]] = []  # (rel, abs_path)
+        remote_empty = not remote  # cold sync → every local file is new, skip hashing
         for rel, (abs_path, size, mtime_ns) in sorted(local_files.items()):
-            local_hash = _file_hash_cached(abs_path, size, mtime_ns, cache)
-            if remote.get(rel) == local_hash:
-                result.skipped += 1
-                continue
+            if not remote_empty:
+                local_hash = _file_hash_cached(abs_path, size, mtime_ns, cache)
+                if remote.get(rel) == local_hash:
+                    result.skipped += 1
+                    continue
             changed.append((rel, abs_path))
             result.sent += 1
             result.bytes_sent += size
@@ -945,18 +947,29 @@ class VM:
             except OSError:
                 pass
 
-        remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar"
-        if len(data) > CHUNK_SIZE:
-            self._sync_write_presigned(remote_tar, data)
+        # gzip-probe: only compress the tarball when it actually helps. A source
+        # tree compresses ~5-10x (so a 50 MB codebase ships as ~5 MB and often
+        # drops under the inline threshold entirely); already-compressed or
+        # incompressible data is stored raw so we never waste CPU or inflate. The
+        # presigned path uploads raw bytes, so without this a large compressible
+        # tree would be sent uncompressed — this is where the win lands.
+        sample = gzip.compress(data[: 256 * 1024], 6)
+        gz = (min(len(data), 256 * 1024) / max(1, len(sample))) >= 1.3
+        payload = gzip.compress(data, 6) if gz else data
+
+        remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar" + (".gz" if gz else "")
+        if len(payload) > CHUNK_SIZE:
+            self._sync_write_presigned(remote_tar, payload)
         else:
-            self._sync_write_inline(remote_tar, data)
+            self._sync_write_inline(remote_tar, payload)
 
         q = shlex.quote
         # `set -e` + explicit rm: any extract failure exits non-zero; the tarball
         # is removed on success. Missing parent dirs are created by tar -x.
         cmd = (
             f"set -e; mkdir -p {q(remote_root)}; "
-            f"tar -xf {q(remote_tar)} -C {q(remote_root)}; rm -f {q(remote_tar)}"
+            f"tar -x{'z' if gz else ''}f {q(remote_tar)} -C {q(remote_root)}; "
+            f"rm -f {q(remote_tar)}"
         )
         res = self.run(cmd)
         code = getattr(res, "exit_code", None)
