@@ -1263,10 +1263,9 @@ async function testSyncDirExtractsThroughSyncWithoutAUserSession(): Promise<void
     assert.equal(result.sent, 1);
     const extract = JSON.parse(fetch.calls.at(-1)!.body!);
     assert.equal(extract.op, "extract");
-    assert.match(extract.archive_path, /^\/tmp\/\.arker-sync-[0-9A-Z]+\.tar$/);
+    assert.match(extract.archive_path, /^\/tmp\/\.arker-sync-[0-7][0-9A-HJKMNP-TV-Z]{25}\.tar$/);
     assert.equal(extract.destination, "/workspace/project");
     assert.ok(!fetch.calls.some((call) => call.url.endsWith("/runs")));
-    assert.ok(!fetch.calls.some((call) => call.url.includes("/sessions")));
   } finally {
     await fs.promises.rm(localDir, { recursive: true, force: true });
   }

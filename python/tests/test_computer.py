@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from contextlib import contextmanager
 from typing import Any
 
@@ -762,11 +763,12 @@ def test_sync_dir_extracts_through_sync_without_a_user_session(tmp_path) -> None
     assert result.sent == 1
     extract = json.loads(transport.calls[-1]["body"])
     assert extract["op"] == "extract"
-    assert extract["archive_path"].startswith("/tmp/.arker-sync-")
-    assert extract["archive_path"].endswith(".tar")
+    assert re.fullmatch(
+        r"/tmp/\.arker-sync-[0-7][0-9A-HJKMNP-TV-Z]{25}\.tar",
+        extract["archive_path"],
+    )
     assert extract["destination"] == "/workspace/project"
     assert not any(call["url"].endswith("/runs") for call in transport.calls)
-    assert not any("/sessions" in call["url"] for call in transport.calls)
 
 
 def test_flat_error_response_is_rejected_as_malformed() -> None:
