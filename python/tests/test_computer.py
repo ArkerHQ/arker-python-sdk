@@ -761,12 +761,15 @@ def test_sync_dir_extracts_through_sync_without_a_user_session(tmp_path) -> None
         result = client().vm("vm_1").sync_dir(str(tmp_path), "/workspace/project")
 
     assert result.sent == 1
+    upload = json.loads(transport.calls[-2]["body"])
     extract = json.loads(transport.calls[-1]["body"])
+    assert upload["op"] == "write"
     assert extract["op"] == "extract"
     assert re.fullmatch(
         r"/tmp/\.arker-sync-[0-7][0-9A-HJKMNP-TV-Z]{25}\.tar",
         extract["archive_path"],
     )
+    assert upload["writes"][0]["path"] == extract["archive_path"]
     assert extract["destination"] == "/workspace/project"
     assert not any(call["url"].endswith("/runs") for call in transport.calls)
 
