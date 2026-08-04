@@ -333,6 +333,19 @@ class SyncManifestOperationRequest:
 
 
 @dataclass(frozen=True)
+class SyncExtractOperationRequest:
+    op: Literal['extract']
+    archive_path: str
+    destination: str
+
+
+@dataclass(frozen=True)
+class SyncExtractResponse:
+    ok: Literal[True]
+    op: Literal['extract']
+
+
+@dataclass(frozen=True)
 class ManifestEntry:
     path: str
     size: int
@@ -762,7 +775,10 @@ class SyncWriteOperationRequest:
 
 
 SyncRequest: TypeAlias = (
-    SyncReadOperationRequest | SyncWriteOperationRequest | SyncManifestOperationRequest
+    SyncReadOperationRequest
+    | SyncWriteOperationRequest
+    | SyncManifestOperationRequest
+    | SyncExtractOperationRequest
 )
 
 
@@ -864,7 +880,9 @@ class PatchVmRequest:
     policies: PolicyWriteRequest | None = None
 
 
-SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse | SyncManifestResponse
+SyncResponse: TypeAlias = (
+    SyncReadResponse | SyncWriteResponse | SyncManifestResponse | SyncExtractResponse
+)
 
 from typing import TypedDict
 

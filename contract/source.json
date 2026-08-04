@@ -1,6 +1,6 @@
 {
   "repository": "ArkerHQ/arker-app",
-  "ref": "main",
-  "commit": "c0236ce29d07ab21c5cac4a7cb955f4a377ab6b1",
-  "sha256": "938a732e05db7a069bf63acadd4fdc9b3e09e8fb45820f6398ad9f4e2c3986d8"
+  "ref": "codex/ark-266-sync-dir-extract-v2",
+  "commit": "7425078266a87d3cfa82745e0aacf05ff7eedcf9",
+  "sha256": "1c8d6439c427cd2de7e3dbe3b9a2c9e4287ed2d135175174c3b9812130721508"
 }

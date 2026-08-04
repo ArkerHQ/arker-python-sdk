@@ -201,6 +201,8 @@ export type DeleteSyncResponse = ApiSchema<"DeleteSyncResponse">;
 export type SyncCreateRequest = ApiSchema<"SyncCreateRequest">;
 export type SyncReadOperationRequest = ApiSchema<"SyncReadOperationRequest">;
 export type SyncWriteOperationRequest = ApiSchema<"SyncWriteOperationRequest">;
+export type SyncExtractOperationRequest = ApiSchema<"SyncExtractOperationRequest">;
+export type SyncExtractResponse = ApiSchema<"SyncExtractResponse">;
 export type SyncWriteEntry = ApiSchema<"SyncWriteEntry">;
 export type SyncChunkWrite = ApiSchema<"SyncChunkWrite">;
 export type SyncPresignedWriteRequest = ApiSchema<"SyncPresignedWriteRequest">;
@@ -1105,8 +1107,8 @@ export class VM {
   }
 
   /** Pack the changed files (paths relative to `localRoot`) into one tar and
-   * extract it in the guest with `tar -x`. Uses node-tar, which reads the files
-   * from disk preserving mode (exec bits) + mtime. */
+   * ask the sync endpoint to extract it with a one-shot guest operation. Uses
+   * node-tar, which reads the files from disk preserving mode + mtime. */
   private async uploadAndExtractTarball(
     changed: Array<{ rel: string; abs: string }>,
     localRoot: string,
@@ -1124,22 +1126,17 @@ export class VM {
 
       const remoteTar = `/tmp/.arker-sync-${ulid()}.tar`;
       await this.sync(remoteTar, data); // inline for small tarballs, presigned for large
-
-      // `set -e` + explicit rm: any extract failure exits non-zero; the tarball
-      // is removed on success. Missing parent dirs are created by mkdir/tar.
-      const q = shellQuoteSingle;
-      const cmd =
-        `set -e; mkdir -p ${q(remoteRoot)}; ` +
-        `tar -xf ${q(remoteTar)} -C ${q(remoteRoot)}; rm -f ${q(remoteTar)}`;
-      const res = await this.run(cmd);
-      if (res.state === "failed" || res.exitCode !== 0) {
-        const stderr = (res.stderr ?? "").slice(0, 300);
-        throw new ArkerError(
-          "internal",
-          `syncDir tar extract failed (exit=${res.exitCode}, state=${res.state}): ${stderr}`,
-          200,
-        );
-      }
+      const request: SyncExtractOperationRequest = {
+        op: "extract",
+        archive_path: remoteTar,
+        destination: remoteRoot,
+      };
+      await this._client._request<SyncExtractResponse>(
+        "POST",
+        `${vmPath(this.id)}/sync`,
+        request,
+        this.baseUrl,
+      );
     } finally {
       await fsp.unlink(localTar).catch(() => {});
     }
@@ -2000,11 +1997,6 @@ export interface SyncDirOptions {
    * Reused across calls it skips re-hashing files whose (size, mtime) are
    * unchanged. Pure optimization — it never affects which files are sent. */
   cache?: Map<string, { size: number; mtimeMs: number; hash: string }>;
-}
-
-/** POSIX-single-quote a string so it is safe inside a `/bin/sh` command. */
-function shellQuoteSingle(value: string): string {
-  return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
 function base64ToBytes(text: string): Uint8Array {

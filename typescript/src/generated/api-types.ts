@@ -410,7 +410,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Read or write VM files
+         * Read, write, list, or extract VM files
          * @description Read or write files in the VM filesystem. Op-discriminated:
          *     `{op:"read",path}` reads a file (inline content for small files, a
          *     presigned GET URL for large ones); `{op:"write",writes:[...]}` writes,
@@ -1142,6 +1142,29 @@ export interface components {
             /** @description Non-root directory inside the VM to list recursively. */
             path: string;
         };
+        SyncExtractOperationRequest: {
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
+            op: "extract";
+            /** @description SDK-reserved tar archive path in /tmp with a canonical ULID. */
+            archive_path: string;
+            /** @description Absolute directory inside the VM where the archive is extracted. */
+            destination: string;
+        };
+        SyncExtractResponse: {
+            /**
+             * @description Indicates that the archive was extracted successfully.
+             * @constant
+             */
+            ok: true;
+            /**
+             * @description Sync operation performed.
+             * @constant
+             */
+            op: "extract";
+        };
         ManifestEntry: {
             /** @description File path relative to the requested manifest root, without a leading slash. */
             path: string;
@@ -1165,8 +1188,8 @@ export interface components {
             /** @description True when the result reached the entry limit. Request manifests for narrower subdirectories to retrieve the remaining files. */
             truncated: boolean;
         };
-        SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"] | components["schemas"]["SyncManifestOperationRequest"];
-        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncManifestResponse"];
+        SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"] | components["schemas"]["SyncManifestOperationRequest"] | components["schemas"]["SyncExtractOperationRequest"];
+        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncManifestResponse"] | components["schemas"]["SyncExtractResponse"];
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
             /** @description Path inside the VM. */
@@ -2219,7 +2242,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Read or write result, matching the request op. */
+            /** @description Result matching the requested read, write, manifest, or extract operation. */
             200: {
                 headers: {
                     [name: string]: unknown;

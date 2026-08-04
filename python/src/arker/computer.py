@@ -14,7 +14,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import tarfile
 import tempfile
 import threading
@@ -68,6 +67,8 @@ from .generated.api_models import (
     Sync,
     SyncChunkWrite,
     SyncCreateRequest,
+    SyncExtractOperationRequest,
+    SyncExtractResponse,
     SyncManifestOperationRequest,
     SyncManifestResponse,
     SyncPresignedWriteCommit,
@@ -1069,9 +1070,9 @@ class VM:
         self, changed: list[tuple[str, str]], remote_root: str
     ) -> None:
         """Pack the changed files (arcname = path relative to ``remote_root``)
-        into ONE tar, upload it in a single write, and extract it in the guest
-        with `tar -x` (which preserves mode/exec bits and creates missing parent
-        dirs). The extract's exit is checked so any failure surfaces."""
+        into ONE tar, upload it in a single write, and ask the sync endpoint to
+        extract it with a one-shot guest operation. The extract preserves mode
+        and exec bits, creates missing parent directories, and reports failures."""
         with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tf:
             tar_local = tf.name
         try:
@@ -1083,27 +1084,18 @@ class VM:
 
             remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar"
             self.sync(remote_tar, data)  # inline for small tarballs, presigned for large
-
-            q = shlex.quote
-            # `set -e` + explicit rm: any extract failure exits non-zero; the
-            # tarball is removed on success. Missing parent dirs are created by
-            # mkdir/tar.
-            cmd = (
-                f"set -e; mkdir -p {q(remote_root)}; "
-                f"tar -xf {q(remote_tar)} -C {q(remote_root)}; rm -f {q(remote_tar)}"
+            request = SyncExtractOperationRequest(
+                op="extract",
+                archive_path=remote_tar,
+                destination=remote_root,
             )
-            res = self.run(cmd)
-            code = getattr(res, "exit_code", None)
-            state = getattr(res, "state", None)
-            if (code not in (0, None)) or state == "failed":
-                stderr = getattr(res, "stderr", b"")
-                if isinstance(stderr, (bytes, bytearray)):
-                    stderr = stderr.decode("utf-8", "replace")
-                raise ArkerError(
-                    "internal",
-                    f"sync_dir tar extract failed (exit={code}, state={state}): {stderr[:300]}",
-                    200,
-                )
+            payload = self._client._request(
+                "POST",
+                f"{_vm_path(self.id)}/sync",
+                request,
+                base_url=self.base_url,
+            )
+            _decode_model(SyncExtractResponse, payload)
         finally:
             try:
                 os.unlink(tar_local)

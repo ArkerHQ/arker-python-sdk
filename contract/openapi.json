@@ -1258,7 +1258,7 @@
         "tags": [
           "Sync"
         ],
-        "summary": "Read or write VM files",
+        "summary": "Read, write, list, or extract VM files",
         "requestBody": {
           "required": true,
           "content": {
@@ -1271,7 +1271,7 @@
         },
         "responses": {
           "200": {
-            "description": "Read or write result, matching the request op.",
+            "description": "Result matching the requested read, write, manifest, or extract operation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3534,6 +3534,52 @@
           }
         }
       },
+      "SyncExtractOperationRequest": {
+        "type": "object",
+        "required": [
+          "op",
+          "archive_path",
+          "destination"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "op": {
+            "description": "Sync operation performed.",
+            "type": "string",
+            "const": "extract"
+          },
+          "archive_path": {
+            "description": "SDK-reserved tar archive path in /tmp with a canonical ULID.",
+            "type": "string",
+            "pattern": "^/tmp/\\.arker-sync-[0-7][0-9A-HJKMNP-TV-Z]{25}\\.tar$"
+          },
+          "destination": {
+            "description": "Absolute directory inside the VM where the archive is extracted.",
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "SyncExtractResponse": {
+        "type": "object",
+        "required": [
+          "ok",
+          "op"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "description": "Indicates that the archive was extracted successfully.",
+            "type": "boolean",
+            "const": true
+          },
+          "op": {
+            "description": "Sync operation performed.",
+            "type": "string",
+            "const": "extract"
+          }
+        }
+      },
       "ManifestEntry": {
         "type": "object",
         "required": [
@@ -3610,6 +3656,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncManifestOperationRequest"
+          },
+          {
+            "$ref": "#/components/schemas/SyncExtractOperationRequest"
           }
         ]
       },
@@ -3623,6 +3672,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncManifestResponse"
+          },
+          {
+            "$ref": "#/components/schemas/SyncExtractResponse"
           }
         ]
       },
