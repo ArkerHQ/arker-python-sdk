@@ -723,6 +723,52 @@ def test_background_run_response() -> None:
     assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "background": True}
 
 
+def test_sync_dir_extracts_through_sync_without_a_user_session(tmp_path) -> None:
+    (tmp_path / "hello.txt").write_text("hello\n")
+    sync_path = "https://test.invalid/api/v1/vms/vm_1/sync"
+    is_sync = lambda method, url: method == "POST" and url == sync_path
+    transport = FakeTransport()
+    transport.add_json(
+        is_sync,
+        200,
+        {
+            "root": "/workspace/project",
+            "hash_algo": "sha256",
+            "entries": [],
+            "truncated": False,
+        },
+    )
+    transport.add_json(
+        is_sync,
+        200,
+        {
+            "ok": True,
+            "op": "write",
+            "results": [
+                {
+                    "path": "/tmp/archive.tar",
+                    "size": 10240,
+                    "complete": True,
+                    "written": True,
+                }
+            ],
+        },
+    )
+    transport.add_json(is_sync, 200, {"ok": True, "op": "extract"})
+
+    with use_transport(transport):
+        result = client().vm("vm_1").sync_dir(str(tmp_path), "/workspace/project")
+
+    assert result.sent == 1
+    extract = json.loads(transport.calls[-1]["body"])
+    assert extract["op"] == "extract"
+    assert extract["archive_path"].startswith("/tmp/.arker-sync-")
+    assert extract["archive_path"].endswith(".tar")
+    assert extract["destination"] == "/workspace/project"
+    assert not any(call["url"].endswith("/runs") for call in transport.calls)
+    assert not any("/sessions" in call["url"] for call in transport.calls)
+
+
 def test_flat_error_response_is_rejected_as_malformed() -> None:
     t = FakeTransport()
     t.add_json(lambda _method, _url: True, 404, {"code": "not_found", "message": "missing"})

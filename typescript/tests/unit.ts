@@ -1235,6 +1235,44 @@ async function testUtf8WireStillYieldsBothForms(): Promise<void> {
 }
 
 
+async function testSyncDirExtractsThroughSyncWithoutAUserSession(): Promise<void> {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const localDir = await fs.promises.mkdtemp(nodePath.join(os.tmpdir(), "arker-sync-dir-test-"));
+  await fs.promises.writeFile(nodePath.join(localDir, "hello.txt"), "hello\n");
+
+  const fetch = new FakeFetch();
+  const syncPath = "https://test.invalid/api/v1/vms/vm_1/sync";
+  const isSync = (method: string, url: string): boolean => method === "POST" && url === syncPath;
+  fetch.addJson(isSync, 200, {
+    root: "/workspace/project",
+    hash_algo: "sha256",
+    entries: [],
+    truncated: false,
+  });
+  fetch.addJson(isSync, 200, {
+    ok: true,
+    op: "write",
+    results: [{ path: "/tmp/archive.tar", size: 10240, complete: true, written: true }],
+  });
+  fetch.addJson(isSync, 200, { ok: true, op: "extract" });
+
+  try {
+    const result = await client(fetch).vm("vm_1").syncDir(localDir, "/workspace/project");
+    assert.equal(result.sent, 1);
+    const extract = JSON.parse(fetch.calls.at(-1)!.body!);
+    assert.equal(extract.op, "extract");
+    assert.match(extract.archive_path, /^\/tmp\/\.arker-sync-[0-9A-Z]+\.tar$/);
+    assert.equal(extract.destination, "/workspace/project");
+    assert.ok(!fetch.calls.some((call) => call.url.endsWith("/runs")));
+    assert.ok(!fetch.calls.some((call) => call.url.includes("/sessions")));
+  } finally {
+    await fs.promises.rm(localDir, { recursive: true, force: true });
+  }
+}
+
+
 await testConnectPtyCreatesSessionAndUsesBearerHeader();
 await testConnectPtyUsesTicketForBrowserWebSocket();
 await testConnectPtyPassesCancelTtlSecs();
@@ -1256,5 +1294,6 @@ await testGetRunReturnsImageBytesIntact();
 await testRunAndGetRunAgreeOnBinaryOutput();
 await testEveryByteValueRoundTrips();
 await testUtf8WireStillYieldsBothForms();
+await testSyncDirExtractsThroughSyncWithoutAUserSession();
 
 console.log("PASS unit");
