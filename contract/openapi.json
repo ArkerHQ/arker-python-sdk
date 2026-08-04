@@ -3549,7 +3549,7 @@
             "const": "extract"
           },
           "archive_path": {
-            "description": "SDK-reserved tar archive path in /tmp with a canonical ULID.",
+            "description": "Canonical temporary sync archive path with a ULID.",
             "type": "string",
             "pattern": "^/tmp/\\.arker-sync-[0-7][0-9A-HJKMNP-TV-Z]{25}\\.tar$"
           },

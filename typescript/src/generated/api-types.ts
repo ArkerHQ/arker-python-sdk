@@ -1148,7 +1148,7 @@ export interface components {
              * @constant
              */
             op: "extract";
-            /** @description SDK-reserved tar archive path in /tmp with a canonical ULID. */
+            /** @description Canonical temporary sync archive path with a ULID. */
             archive_path: string;
             /** @description Absolute directory inside the VM where the archive is extracted. */
             destination: string;
