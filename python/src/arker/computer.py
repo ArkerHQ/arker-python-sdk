@@ -1073,6 +1073,12 @@ class VM:
         if n <= DIRECT_MAX_FILES and direct_cost <= extract_cost:
             self._sync_direct_write(changed, remote_root, nested)
         else:
+            # Many files → ONE round-trip: gzip tar + server-side guest untar. A
+            # single `tar -x` batches the writes/fsync in one guest process, which
+            # is at parity with E2B's batched write_files (both ~500-600 ms for
+            # ~2000 incompressible files) and beat a per-file batched-binary
+            # endpoint in testing — the in-guest agent serializes per-file writes,
+            # so `tar`'s single-process untar is the more efficient guest path.
             self._upload_and_extract_tarball(changed, remote_root)
 
     _SYNC_DIRECT_PARALLELISM = 16
