@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "kind": "command-migration",
+  "description": "Declarative recipes for COMMAND MIGRATION: move a running command (identified by PID) into an Arker VM, transparently, without CRIU. The mechanism is general — sync the command's working directory + its resumable session state, then re-invoke the command's own resume entrypoint in the VM. It applies to any command that (a) persists its session to an on-disk transcript and (b) can resume from it. Coding agents (Claude Code / Codex / pi / cursor-agent / aider) are the first-class case; the same recipe shape covers any resumable CLI. Loaded identically by the Python, TypeScript, and CLI SDKs, so adding a command is a config entry here, not code in three languages.",
+  "recipe_schema": {
+    "detect": "how to recognize the command from /proc/<pid>/cmdline: {argv_contains: str} or {argv_regex: str}",
+    "session": "how to find the resumable transcript: {glob: path-with-placeholders, pick: 'newest_mtime', id: 'stem'|'session_path'|{regex: str}}",
+    "requires": "optional VM preconditions, e.g. {node_min_major: 20}",
+    "install": "shell to ensure the command exists in the VM (idempotent)",
+    "place": "where to write the transcript in the VM: a path template, or {verbatim_under, from_host_root} to copy a tree verbatim",
+    "extra_files": "optional {vm_path: {json: obj}} config files the command needs (e.g. onboarding-accepted)",
+    "env": "optional {NAME: value} process env for the resumed command",
+    "resume": "shell that resumes the command from the placed transcript; ${probe} is an optional first prompt to verify context carried",
+    "keys": "which of the caller's environment API keys to forward (from /proc/<pid>/environ)"
+  },
+  "placeholders": {
+    "cwd": "the running command's working directory (/proc/<pid>/cwd)",
+    "cwd_key": "cwd with every non-alphanumeric char replaced by '-' (commands that key session dirs by project path)",
+    "session_id": "the session identifier extracted per session.id",
+    "probe": "optional first prompt sent to the resumed command to verify state carried"
+  },
+  "quiesce": {
+    "note": "Before migrating, wait until the transcript stops growing (the in-flight turn has flushed to disk). The ONLY state at risk is the current unflushed turn — completed turns transfer. Optionally SIGSTOP the local command (freeze, so it can't diverge) and SIGTERM it (hand off).",
+    "stable_secs": 2.0,
+    "timeout_secs": 30
+  },
+  "commands": {
+    "claude-code": {
+      "detect": { "argv_contains": "claude" },
+      "session": { "glob": "~/.claude/projects/${cwd_key}/*.jsonl", "pick": "newest_mtime", "id": "stem" },
+      "install": "command -v claude >/dev/null 2>&1 || npm i -g @anthropic-ai/claude-code >/dev/null 2>&1",
+      "place": "/root/.claude/projects/${cwd_key}/${session_id}.jsonl",
+      "extra_files": { "/root/.claude.json": { "json": { "hasCompletedOnboarding": true, "projects": { "${cwd}": { "hasTrustDialogAccepted": true } } } } },
+      "resume": "cd ${cwd} && claude -p --resume ${session_id} ${probe} 2>&1",
+      "keys": ["ANTHROPIC_API_KEY"]
+    },
+    "codex": {
+      "detect": { "argv_contains": "codex" },
+      "session": { "glob": "~/.codex/sessions/**/rollout-*.jsonl", "pick": "newest_mtime", "id": { "regex": "rollout-.*?-([0-9a-fA-F-]{36})\\.jsonl$" } },
+      "install": "command -v codex >/dev/null 2>&1 || npm i -g @openai/codex >/dev/null 2>&1",
+      "place": { "verbatim_under": "/root/.codex/sessions", "from_host_root": "~/.codex/sessions" },
+      "resume": "cd ${cwd} && codex exec resume ${session_id} --skip-git-repo-check ${probe} 2>&1",
+      "keys": ["OPENAI_API_KEY"]
+    },
+    "pi": {
+      "detect": { "argv_regex": "(^|/|\\s)pi(\\s|$)" },
+      "session": { "glob": "~/.pi/agent/sessions/**/*.jsonl", "pick": "newest_mtime", "id": "session_path" },
+      "requires": { "node_min_major": 20 },
+      "install": "node -v | grep -qE 'v(2[0-9]|[3-9])' || (curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs); npm i -g @mariozechner/pi-coding-agent >/dev/null 2>&1",
+      "place": "/root/.pi/agent/sessions/migrated.jsonl",
+      "env": { "PI_CODING_AGENT_SESSION_DIR": "/root/.pi/agent/sessions" },
+      "resume": "cd ${cwd} && pi --provider anthropic --session /root/.pi/agent/sessions/migrated.jsonl -p ${probe} 2>&1",
+      "keys": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+    },
+    "cursor-agent": {
+      "detect": { "argv_contains": "cursor-agent" },
+      "session": { "glob": "~/.cursor/agent/chats/**/*.json", "pick": "newest_mtime", "id": "stem" },
+      "install": "command -v cursor-agent >/dev/null 2>&1 || curl https://cursor.com/install -fsS | bash",
+      "place": "/root/.cursor/agent/chats/${session_id}.json",
+      "resume": "cd ${cwd} && cursor-agent --resume ${session_id} -p ${probe} 2>&1",
+      "keys": ["CURSOR_API_KEY", "ANTHROPIC_API_KEY"]
+    }
+  }
+}
