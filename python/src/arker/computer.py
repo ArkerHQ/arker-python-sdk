@@ -815,6 +815,43 @@ class VM:
         result = self._send_one_write({"path": path, "size": len(data), "upload_id": upload_id})
         _assert_write_complete(result, "presigned write commit")
 
+    def _sync_write_stream(self, path: str, data: bytes) -> None:
+        """Pipelined raw streaming write to a LIVE VM: POST the raw file bytes to
+        `/vms/{id}/sync-stream`; arkerd streams them to the guest over vsock AS
+        THEY ARRIVE (one apparent hop, no base64, no S3 round-trip). Fastest path
+        for a large write — the upload and the guest write fully overlap, so it
+        matches/beats a host-side writer. Raises ArkerError(status=404) on an
+        arkerd that predates the endpoint, so callers can fall back."""
+        import hashlib
+        from urllib.parse import quote
+
+        sha = hashlib.sha256(data).hexdigest()
+        url = (
+            f"{self.base_url}{_vm_path(self.id)}/sync-stream"
+            f"?path={quote(path)}&size={len(data)}&sha256={sha}"
+        )
+        headers = {
+            "authorization": f"Bearer {self._client._api_key}",
+            "content-type": "application/octet-stream",
+        }
+        for attempt in range(self._client._retry.attempts):
+            try:
+                req = urllib.request.Request(url, method="POST", data=data, headers=headers)
+                with urllib.request.urlopen(req, timeout=PRESIGNED_PUT_TIMEOUT_S) as response:
+                    if response.status < 400:
+                        return
+                    status = response.status
+            except urllib.error.HTTPError as error:
+                status = error.code
+            except urllib.error.URLError as error:
+                if attempt == self._client._retry.attempts - 1:
+                    raise ArkerError("network_error", f"stream write failed: {error}", 0) from error
+                time.sleep(self._client._retry_delay(attempt))
+                continue
+            if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
+                raise ArkerError("internal", f"stream write failed: {status}", status)
+            time.sleep(self._client._retry_delay(attempt))
+
     def _put_presigned(self, url: str, data: bytes) -> None:
         for attempt in range(self._client._retry.attempts):
             try:
@@ -959,7 +996,16 @@ class VM:
 
         remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar" + (".gz" if gz else "")
         if len(payload) > CHUNK_SIZE:
-            self._sync_write_presigned(remote_tar, payload)
+            # Large tarball → pipelined streaming write (fastest: overlaps the
+            # upload with the guest write). Fall back to presigned on an arkerd
+            # that predates /sync-stream.
+            try:
+                self._sync_write_stream(remote_tar, payload)
+            except ArkerError as e:
+                if e.status == 404:
+                    self._sync_write_presigned(remote_tar, payload)
+                else:
+                    raise
         else:
             self._sync_write_inline(remote_tar, payload)
 
