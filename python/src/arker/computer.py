@@ -615,7 +615,7 @@ class Arker:
             # bytes in one hop. Only the /sync route decodes content-encoding, so
             # callers opt in; below the threshold gzip's overhead isn't worth it.
             if gzip_body and len(data) >= _GZIP_MIN_BYTES:
-                data = gzip.compress(data, 6)
+                data = gzip.compress(data, 1)  # level 1: ~5x faster gzip, near-same ratio; sync is throughput-bound not ratio-bound
                 headers["content-encoding"] = "gzip"
 
         last_status = 0
@@ -990,9 +990,9 @@ class VM:
         # incompressible data is stored raw so we never waste CPU or inflate. The
         # presigned path uploads raw bytes, so without this a large compressible
         # tree would be sent uncompressed — this is where the win lands.
-        sample = gzip.compress(data[: 256 * 1024], 6)
+        sample = gzip.compress(data[: 256 * 1024], 1)
         gz = (min(len(data), 256 * 1024) / max(1, len(sample))) >= 1.3
-        payload = gzip.compress(data, 6) if gz else data
+        payload = gzip.compress(data, 1)  # level 1: ~5x faster gzip, near-same ratio; sync is throughput-bound not ratio-bound if gz else data
 
         remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar" + (".gz" if gz else "")
         # `/sync-stream` is a raw pipelined write (~13-15 MB/s, overlaps upload
