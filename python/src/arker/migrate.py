@@ -55,7 +55,10 @@ def _find_session(spec: dict, vars: dict[str, str]) -> tuple[Optional[str], Opti
     matches = sorted(_glob.glob(pattern, recursive=True), key=os.path.getmtime)
     if not matches:
         return None, None
-    path = matches[-1] if spec.get("pick", "newest_mtime") == "newest_mtime" else matches[-1]
+    # matches is sorted by mtime ascending; newest_mtime (default) is the last,
+    # oldest_mtime the first. (Previously both branches returned matches[-1], so
+    # `pick` was silently a no-op.)
+    path = matches[0] if spec.get("pick", "newest_mtime") == "oldest_mtime" else matches[-1]
     idspec = spec.get("id", "stem")
     if idspec == "stem":
         sid = Path(path).stem
