@@ -173,7 +173,9 @@ GOLDEN_NAMES = frozenset({
 class RetryOptions:
     attempts: int = DEFAULT_RETRY_ATTEMPTS
     base_delay_s: float = DEFAULT_RETRY_BASE_DELAY_S
-    max_delay_s: float = DEFAULT_RETRY_MAX_DELAY_S
+    # Caps backoff delays; when set explicitly, also caps a server retry_after
+    # hint. None = the default backoff cap, which does not bound the hint.
+    max_delay_s: float | None = None
     jitter_s: float = DEFAULT_RETRY_JITTER_S
 
 
@@ -1512,7 +1514,7 @@ def _request_json(
 
     last_status = 0
     last_text = ""
-    last_error: dict[str, str] | None = None
+    last_error: dict[str, Any] | None = None
 
     for attempt in range(retry.attempts):
         try:
@@ -1531,7 +1533,7 @@ def _request_json(
         last_error = parsed_error
 
         if _is_retryable(status, parsed_error) and attempt < retry.attempts - 1:
-            time.sleep(_retry_delay(retry, attempt))
+            time.sleep(_retry_delay(retry, attempt, parsed_error))
             continue
 
         if parsed_error:
@@ -1547,10 +1549,25 @@ def _request_json(
     raise ArkerError("internal", last_text[:300] or f"HTTP {last_status}", last_status)
 
 
-def _retry_delay(retry: RetryOptions, attempt: int) -> float:
-    base = min(retry.max_delay_s, retry.base_delay_s * (2 ** attempt))
+def _retry_delay(
+    retry: RetryOptions, attempt: int, error: dict[str, Any] | None = None
+) -> float:
+    """Wait before the next attempt.
+
+    The server's hint beats backoff, bounded by an explicitly configured
+    max_delay_s — the caller's latency budget outranks the server. The default
+    max only shapes backoff; applying it here would neuter real capacity waits.
+    """
     jitter_range = max(1, int(retry.jitter_s * 1000) + 1)
-    return base + secrets.randbelow(jitter_range) / 1000.0
+    jitter = secrets.randbelow(jitter_range) / 1000.0
+    hint = (error or {}).get("retry_after")
+    if hint is not None:
+        if retry.max_delay_s is not None:
+            hint = min(float(hint), retry.max_delay_s)
+        return float(hint) + jitter
+    max_delay = DEFAULT_RETRY_MAX_DELAY_S if retry.max_delay_s is None else retry.max_delay_s
+    base = min(max_delay, retry.base_delay_s * (2 ** attempt))
+    return base + jitter
 
 
 def _build_query(
@@ -1642,7 +1659,7 @@ def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> Retr
         return RetryOptions(
             attempts=max(1, int(retry.get("attempts", DEFAULT_RETRY_ATTEMPTS))),
             base_delay_s=max(0.0, float(retry.get("base_delay_s", DEFAULT_RETRY_BASE_DELAY_S))),
-            max_delay_s=max(0.0, float(retry.get("max_delay_s", DEFAULT_RETRY_MAX_DELAY_S))),
+            max_delay_s=max(0.0, float(retry["max_delay_s"])) if "max_delay_s" in retry else None,
             jitter_s=max(0.0, float(retry.get("jitter_s", DEFAULT_RETRY_JITTER_S))),
         )
     return RetryOptions()
@@ -1809,17 +1826,33 @@ def _parse_json(text: str) -> Any:
         return None
 
 
-def _extract_error(payload: Any) -> dict[str, str] | None:
+def _extract_error(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     try:
         response = _decode_model(ErrorResponse, payload)
     except (KeyError, TypeError):
         return None
-    return {"code": response.error.code, "message": response.error.message}
+    return {
+        "code": response.error.code,
+        "message": response.error.message,
+        "retry_after": _wire_retry_after(response.error.retry_after),
+    }
 
 
-def _is_retryable(status: int, error: dict[str, str] | None) -> bool:
+def _wire_retry_after(value: Any) -> float | None:
+    """Seconds the server asked us to wait, or None if it did not say usefully.
+
+    The response decoder passes scalars through without checking them against
+    the model, so this is where a non-numeric or non-positive value has to be
+    rejected — past here it is a number or absent.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if value > 0 else None
+
+
+def _is_retryable(status: int, error: dict[str, Any] | None) -> bool:
     if status in RETRYABLE_HTTP:
         return True
     if not error:

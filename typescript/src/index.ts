@@ -93,6 +93,7 @@ interface BufferConstructorLike {
 export interface RetryOptions {
   attempts?: number;
   baseDelayMs?: number;
+  /** Caps backoff delays; when set explicitly, also caps a server `retry_after` hint. */
   maxDelayMs?: number;
   jitterMs?: number;
 }
@@ -452,11 +453,15 @@ interface RetryConfig {
   baseDelayMs: number;
   maxDelayMs: number;
   jitterMs: number;
+  /** Set only when the caller configured maxDelayMs themselves. */
+  hintCapMs?: number;
 }
 
 interface ParsedError {
   code: string;
   message: string;
+  /** Seconds the server asked us to wait, if it said. */
+  retryAfterS?: number;
 }
 
 export class ArkerError extends Error {
@@ -771,8 +776,8 @@ export class Arker {
   }
 
   /** @internal */
-  _retryDelay(attempt: number): number {
-    return retryDelay(this.retry, attempt);
+  _retryDelay(attempt: number, error?: ParsedError): number {
+    return retryDelay(this.retry, attempt, error);
   }
 
   /** @internal */
@@ -1693,6 +1698,7 @@ function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {
     baseDelayMs: Math.max(0, retry?.baseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS),
     maxDelayMs: Math.max(0, retry?.maxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS),
     jitterMs: Math.max(0, retry?.jitterMs ?? DEFAULT_RETRY_JITTER_MS),
+    hintCapMs: retry?.maxDelayMs !== undefined ? Math.max(0, retry.maxDelayMs) : undefined,
   };
 }
 
@@ -1843,7 +1849,7 @@ async function requestJson<T>(
       lastError = parsedError;
 
       if (isRetryable(status, parsedError) && attempt < retry.attempts - 1) {
-        await sleep(retryDelay(retry, attempt));
+        await sleep(retryDelay(retry, attempt, parsedError));
         continue;
       }
 
@@ -1894,10 +1900,20 @@ function extractError(payload: unknown): ParsedError | undefined {
       typeof error.message === "string" &&
       typeof error.timestamp === "string"
     ) {
-      return { code: error.code, message: error.message };
+      return {
+        code: error.code,
+        message: error.message,
+        retryAfterS: wireRetryAfter(error.retry_after),
+      };
     }
   }
   return undefined;
+}
+
+/** Seconds the server asked us to wait, or undefined if it did not say usefully. */
+function wireRetryAfter(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return value;
 }
 
 function isRetryable(status: number, error?: ParsedError): boolean {
@@ -1908,7 +1924,14 @@ function isRetryable(status: number, error?: ParsedError): boolean {
   return TRANSIENT_HINTS.some((hint) => error.message.includes(hint));
 }
 
-function retryDelay(retry: RetryConfig, attempt: number): number {
+function retryDelay(retry: RetryConfig, attempt: number, error?: ParsedError): number {
+  // The server's hint beats backoff, bounded by an explicitly configured
+  // maxDelayMs — the caller's latency budget outranks the server. The DEFAULT
+  // max only shapes backoff; applying it here would neuter real capacity waits.
+  const hint = error?.retryAfterS;
+  if (hint !== undefined) {
+    return Math.min(hint * 1000, retry.hintCapMs ?? Number.POSITIVE_INFINITY) + jitter(retry.jitterMs);
+  }
   const base = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** attempt);
   return base + jitter(retry.jitterMs);
 }
