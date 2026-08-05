@@ -815,13 +815,17 @@ class VM:
         result = self._send_one_write({"path": path, "size": len(data), "upload_id": upload_id})
         _assert_write_complete(result, "presigned write commit")
 
-    def _sync_write_stream(self, path: str, data: bytes) -> None:
+    def _sync_write_stream(self, path: str, data: bytes, extract: str | None = None) -> None:
         """Pipelined raw streaming write to a LIVE VM: POST the raw file bytes to
         `/vms/{id}/sync-stream`; arkerd streams them to the guest over vsock AS
         THEY ARRIVE (one apparent hop, no base64, no S3 round-trip). Fastest path
         for a large write — the upload and the guest write fully overlap, so it
         matches/beats a host-side writer. Raises ArkerError(status=404) on an
-        arkerd that predates the endpoint, so callers can fall back."""
+        arkerd that predates the endpoint, so callers can fall back.
+
+        When ``extract`` is set (``tar.gz``) the body is a gzip tar and ``path``
+        is the destination DIRECTORY: arkerd untars it server-side in ONE round
+        trip (the many-files win)."""
         import hashlib
         from urllib.parse import quote
 
@@ -829,6 +833,7 @@ class VM:
         url = (
             f"{self.base_url}{_vm_path(self.id)}/sync-stream"
             f"?path={quote(path)}&size={len(data)}&sha256={sha}"
+            + (f"&extract={extract}" if extract else "")
         )
         headers = {
             "authorization": f"Bearer {self._client._api_key}",
@@ -839,7 +844,10 @@ class VM:
                 req = urllib.request.Request(url, method="POST", data=data, headers=headers)
                 with urllib.request.urlopen(req, timeout=PRESIGNED_PUT_TIMEOUT_S) as response:
                     if response.status < 400:
-                        return
+                        try:
+                            return json.loads(response.read())
+                        except Exception:
+                            return {}
                     status = response.status
             except urllib.error.HTTPError as error:
                 status = error.code
@@ -926,7 +934,12 @@ class VM:
 
         # 1. Authoritative remote manifest: rel_path -> sha256. A directory that
         #    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
+        #    Time this round-trip as an RTT estimate for the sync cost model
+        #    below (real client->arkerd hop; a slow host-side manifest read only
+        #    biases toward the batched extract path, which is the safe direction).
+        _t_manifest = time.time()
         remote = self._remote_manifest(remote_root)
+        rtt_s = max(0.0, time.time() - _t_manifest)
 
         # 2. Enumerate local regular files (skip symlinks — the manifest lists
         #    regular files only, so a symlink would always look "missing").
@@ -962,8 +975,70 @@ class VM:
         #    a silent partial (the manifest also fails safe: any omitted file is
         #    re-sent next call).
         if changed:
-            self._upload_and_extract_tarball(changed, remote_root)
+            self._sync_changed(changed, remote_root, rtt_s)
         return result
+
+    def _sync_changed(
+        self, changed: list[tuple[str, str]], remote_root: str, rtt_s: float
+    ) -> None:
+        """Pick the cheapest way to ship ``changed`` from a concrete cost model,
+        so we win at any RTT and file count.
+
+        Two strategies, each a real measured cost:
+          - DIRECT: one streamed raw write per file (no tar, no guest untar). Cost
+            ≈ N round-trips + bytes/BW. Best for FEW files — a single tiny file is
+            ~3 ms here vs ~60-460 ms through the extract path's guest untar
+            cold-start (which has no work to amortize it).
+          - EXTRACT: one gzip tar streamed + untarred server-side in ONE round
+            trip. Cost ≈ 1 round-trip + bytes/BW + N*untar + a fixed untar
+            overhead. Best for MANY files — batches N writes into one hop.
+
+        The crossover is data-driven: co-located (RTT≈0) DIRECT wins up to ~tens
+        of files; over a 27 ms WAN it flips to EXTRACT after just a few. """
+        sizes = [sz for _, _, sz in ((r, a, os.path.getsize(a)) for r, a in changed)]
+        n = len(changed)
+        total = sum(sizes)
+        nested = any("/" in rel.strip("/") for rel, _ in changed)
+        BW = 15e6              # bytes/s streamed write throughput (measured ~13-15 MB/s)
+        UNTAR_PER_FILE = 7e-5  # ~0.07 ms/file (measured: 2000 files untar ~140 ms)
+        EXTRACT_OVERHEAD = 0.06  # guest.exec untar spawn/cold-start (conservative)
+        # DIRECT does one mkdir round-trip + one write per file = N+1 hops.
+        direct_cost = (n + 1) * rtt_s + total / BW
+        extract_cost = rtt_s + total / BW + n * UNTAR_PER_FILE + EXTRACT_OVERHEAD
+        if direct_cost <= extract_cost:
+            self._sync_direct_write(changed, remote_root, nested)
+        else:
+            self._upload_and_extract_tarball(changed, remote_root)
+
+    def _sync_direct_write(
+        self, changed: list[tuple[str, str]], remote_root: str, nested: bool
+    ) -> None:
+        """Write each changed file straight to remote_root/rel via the pipelined
+        stream endpoint (no tar, no guest untar). Creates any parent dirs in one
+        batched run first when the set is nested."""
+        if nested:
+            dirs = sorted({
+                os.path.dirname(f"{remote_root}/{rel}")
+                for rel, _ in changed
+                if os.path.dirname(rel.strip("/"))
+            })
+            if dirs:
+                self.run("mkdir -p " + " ".join(shlex.quote(d) for d in dirs))
+        else:
+            self.run("mkdir -p " + shlex.quote(remote_root))
+        for rel, abs_path in changed:
+            with open(abs_path, "rb") as fh:
+                data = fh.read()
+            dest = f"{remote_root}/{rel}"
+            try:
+                self._sync_write_stream(dest, data)
+            except ArkerError as e:
+                if e.status != 404:
+                    raise
+                if len(data) > CHUNK_SIZE:
+                    self._sync_write_presigned(dest, data)
+                else:
+                    self._sync_write_inline(dest, data)
 
     def _upload_and_extract_tarball(
         self, changed: list[tuple[str, str]], remote_root: str
@@ -984,45 +1059,41 @@ class VM:
             except OSError:
                 pass
 
-        # gzip-probe: only compress the tarball when it actually helps. A source
-        # tree compresses ~5-10x (so a 50 MB codebase ships as ~5 MB and often
-        # drops under the inline threshold entirely); already-compressed or
-        # incompressible data is stored raw so we never waste CPU or inflate. The
-        # presigned path uploads raw bytes, so without this a large compressible
-        # tree would be sent uncompressed — this is where the win lands.
-        sample = gzip.compress(data[: 256 * 1024], 1)
-        gz = (min(len(data), 256 * 1024) / max(1, len(sample))) >= 1.3
-        payload = gzip.compress(data, 1)  # level 1: ~5x faster gzip, near-same ratio; sync is throughput-bound not ratio-bound if gz else data
+        # Always gzip for the 1-round-trip extract endpoint (level 1: ~5x faster
+        # gzip, near-same ratio; sync is throughput-bound not ratio-bound).
+        payload = gzip.compress(data, 1)
 
-        remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar" + (".gz" if gz else "")
-        # `/sync-stream` is a raw pipelined write (~13-15 MB/s, overlaps upload
-        # with the guest write); the inline op:write is base64 + JSON + one-shot
-        # (~1.5 MB/s). So stream anything but the smallest payloads: a 2000-tiny-
-        # file tarball (gzips to ~1 MB) drops from ~900 ms inline to ~70 ms
-        # streamed. Only truly tiny payloads stay inline, where /sync-stream's
-        # setup would dominate. Fall back to presigned (>CHUNK_SIZE) or inline on
-        # an arkerd that predates /sync-stream (404).
-        stream_min = 128 * 1024
-        if len(payload) > stream_min:
-            try:
-                self._sync_write_stream(remote_tar, payload)
-            except ArkerError as e:
-                if e.status == 404:
-                    if len(payload) > CHUNK_SIZE:
-                        self._sync_write_presigned(remote_tar, payload)
-                    else:
-                        self._sync_write_inline(remote_tar, payload)
-                else:
-                    raise
+        # 1 ROUND-TRIP: stream the gzip tar and extract it server-side straight
+        # into remote_root. Same round-trip count as E2B's batched write_files,
+        # but gzip'd bytes + a faster co-located untar — the many-files win.
+        try:
+            resp = self._sync_write_stream(remote_root, payload, extract="tar.gz")
+            if isinstance(resp, dict) and resp.get("op") == "extract_stream":
+                return
+            # Server has /sync-stream but ignored `extract` (arkerd predating the
+            # extract param): the gzip tar landed AT remote_root as a file —
+            # recover it into the directory (one extra guest op, old servers only).
+            q = shlex.quote
+            self.run(
+                f'set -e; d={q(remote_root)}; t="$d.__arksync.tgz"; '
+                f'mv "$d" "$t"; mkdir -p "$d"; tar -xzf "$t" -C "$d"; rm -f "$t"'
+            )
+            return
+        except ArkerError as e:
+            if e.status != 404:
+                raise
+            # No /sync-stream endpoint at all: fall through to the legacy
+            # temp-write + guest-untar path below.
+
+        remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar.gz"
+        if len(payload) > CHUNK_SIZE:
+            self._sync_write_presigned(remote_tar, payload)
         else:
             self._sync_write_inline(remote_tar, payload)
-
         q = shlex.quote
-        # `set -e` + explicit rm: any extract failure exits non-zero; the tarball
-        # is removed on success. Missing parent dirs are created by tar -x.
         cmd = (
             f"set -e; mkdir -p {q(remote_root)}; "
-            f"tar -x{'z' if gz else ''}f {q(remote_tar)} -C {q(remote_root)}; "
+            f"tar -xzf {q(remote_tar)} -C {q(remote_root)}; "
             f"rm -f {q(remote_tar)}"
         )
         res = self.run(cmd)
