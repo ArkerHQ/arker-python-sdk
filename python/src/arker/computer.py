@@ -995,15 +995,23 @@ class VM:
         payload = gzip.compress(data, 6) if gz else data
 
         remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar" + (".gz" if gz else "")
-        if len(payload) > CHUNK_SIZE:
-            # Large tarball → pipelined streaming write (fastest: overlaps the
-            # upload with the guest write). Fall back to presigned on an arkerd
-            # that predates /sync-stream.
+        # `/sync-stream` is a raw pipelined write (~13-15 MB/s, overlaps upload
+        # with the guest write); the inline op:write is base64 + JSON + one-shot
+        # (~1.5 MB/s). So stream anything but the smallest payloads: a 2000-tiny-
+        # file tarball (gzips to ~1 MB) drops from ~900 ms inline to ~70 ms
+        # streamed. Only truly tiny payloads stay inline, where /sync-stream's
+        # setup would dominate. Fall back to presigned (>CHUNK_SIZE) or inline on
+        # an arkerd that predates /sync-stream (404).
+        stream_min = 128 * 1024
+        if len(payload) > stream_min:
             try:
                 self._sync_write_stream(remote_tar, payload)
             except ArkerError as e:
                 if e.status == 404:
-                    self._sync_write_presigned(remote_tar, payload)
+                    if len(payload) > CHUNK_SIZE:
+                        self._sync_write_presigned(remote_tar, payload)
+                    else:
+                        self._sync_write_inline(remote_tar, payload)
                 else:
                     raise
         else:
