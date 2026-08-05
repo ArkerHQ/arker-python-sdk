@@ -932,14 +932,24 @@ class VM:
         local_root = os.path.abspath(local_dir)
         remote_root = "/" + remote_dir.strip("/")
 
-        # 1. Authoritative remote manifest: rel_path -> sha256. A directory that
-        #    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
-        #    Time this round-trip as an RTT estimate for the sync cost model
-        #    below (real client->arkerd hop; a slow host-side manifest read only
-        #    biases toward the batched extract path, which is the safe direction).
-        _t_manifest = time.time()
-        remote = self._remote_manifest(remote_root)
-        rtt_s = max(0.0, time.time() - _t_manifest)
+        # 1. Authoritative remote manifest: rel_path -> sha256, for DELTA re-sync.
+        #    SKIP it on the FIRST sync to a given remote_root: there is nothing to
+        #    diff against (every local file is new), so the manifest round-trip +
+        #    its host-side rootfs open is pure overhead on the common
+        #    fork -> sync-workspace path. sync_dir is additive (never deletes
+        #    remote files), so sending everything is identical to diffing against
+        #    an empty remote. Subsequent syncs to the same remote do the manifest
+        #    for a true delta. Time the manifest round-trip as the cost model's
+        #    RTT estimate; on the skipped first sync use a small default.
+        synced = getattr(self, "_synced_remotes", None)
+        if synced is None:
+            synced = self._synced_remotes = set()
+        if remote_root in synced:
+            remote = self._remote_manifest(remote_root)
+        else:
+            remote = {}
+        synced.add(remote_root)
+        rtt_s = self._sync_rtt_estimate()
 
         # 2. Enumerate local regular files (skip symlinks — the manifest lists
         #    regular files only, so a symlink would always look "missing").
@@ -978,6 +988,25 @@ class VM:
             self._sync_changed(changed, remote_root, rtt_s)
         return result
 
+    def _sync_rtt_estimate(self) -> float:
+        """Cached client->arkerd round-trip estimate for the sync cost model. One
+        1-byte streamed write (a real hop through arkerd to the guest); ~3-5 ms
+        co-located, ~30 ms over WAN. Cached per computer instance so it costs one
+        round-trip total, not one per sync. Distinguishes co-located (parallel
+        direct wins many files) from WAN (batched extract wins)."""
+        r = getattr(self, "_rtt_cache", None)
+        if r is not None:
+            return r
+        r = 0.01
+        try:
+            t0 = time.time()
+            self._sync_write_stream(f"/tmp/.arker-rtt-{_ulid()}", b"x")
+            r = max(3e-4, time.time() - t0)
+        except Exception:
+            pass
+        self._rtt_cache = r
+        return r
+
     def _sync_changed(
         self, changed: list[tuple[str, str]], remote_root: str, rtt_s: float
     ) -> None:
@@ -995,38 +1024,44 @@ class VM:
 
         The crossover is data-driven: co-located (RTT≈0) DIRECT wins up to ~tens
         of files; over a 27 ms WAN it flips to EXTRACT after just a few. """
-        sizes = [sz for _, _, sz in ((r, a, os.path.getsize(a)) for r, a in changed)]
+        import math
         n = len(changed)
-        total = sum(sizes)
+        total = sum(os.path.getsize(a) for _, a in changed)
         nested = any("/" in rel.strip("/") for rel, _ in changed)
         BW = 15e6              # bytes/s streamed write throughput (measured ~13-15 MB/s)
         UNTAR_PER_FILE = 7e-5  # ~0.07 ms/file (measured: 2000 files untar ~140 ms)
-        EXTRACT_OVERHEAD = 0.06  # guest.exec untar spawn/cold-start (conservative)
-        # DIRECT does one mkdir round-trip + one write per file = N+1 hops.
-        direct_cost = (n + 1) * rtt_s + total / BW
-        extract_cost = rtt_s + total / BW + n * UNTAR_PER_FILE + EXTRACT_OVERHEAD
+        EXTRACT_OVERHEAD = 0.18  # gzip + guest.exec untar spawn/cold-start (measured)
+        P = self._SYNC_DIRECT_PARALLELISM
+        # Estimate the extract path's upload size by probing compressibility on a
+        # small sample — for code this shrinks the upload a lot (extract wins on
+        # bytes); for incompressible blobs it's ~1.0 (extract only adds untar
+        # overhead, so parallel direct wins).
+        probe = b"".join(open(a, "rb").read(4096) for _, a in changed[:12])
+        gz_ratio = len(gzip.compress(probe, 1)) / max(1, len(probe)) if probe else 1.0
+        total_gz = int(total * min(1.0, gz_ratio))
+        # DIRECT: parallel raw writes, no untar → ceil(N/P) waves of RTT.
+        direct_cost = math.ceil(n / P) * rtt_s + total / BW
+        # EXTRACT: one round-trip, gzip'd upload + server untar + fixed overhead.
+        extract_cost = rtt_s + total_gz / BW + n * UNTAR_PER_FILE + EXTRACT_OVERHEAD
         if direct_cost <= extract_cost:
             self._sync_direct_write(changed, remote_root, nested)
         else:
             self._upload_and_extract_tarball(changed, remote_root)
 
+    _SYNC_DIRECT_PARALLELISM = 16
+
     def _sync_direct_write(
         self, changed: list[tuple[str, str]], remote_root: str, nested: bool
     ) -> None:
         """Write each changed file straight to remote_root/rel via the pipelined
-        stream endpoint (no tar, no guest untar). Creates any parent dirs in one
-        batched run first when the set is nested."""
-        if nested:
-            dirs = sorted({
-                os.path.dirname(f"{remote_root}/{rel}")
-                for rel, _ in changed
-                if os.path.dirname(rel.strip("/"))
-            })
-            if dirs:
-                self.run("mkdir -p " + " ".join(shlex.quote(d) for d in dirs))
-        else:
-            self.run("mkdir -p " + shlex.quote(remote_root))
-        for rel, abs_path in changed:
+        stream endpoint (no tar, no guest untar), fanned out concurrently. The
+        stream write creates missing parent directories, so there is NO separate
+        mkdir round-trip. E2B batches N files into one request; we instead
+        parallelize N raw single-file streams, so wall time is bandwidth-bound
+        (not N×RTT) and there is no untar/gzip overhead — the win for many small
+        or incompressible files. A single tiny file is one ~3 ms hop."""
+        def _one(item: tuple[str, str]) -> None:
+            rel, abs_path = item
             with open(abs_path, "rb") as fh:
                 data = fh.read()
             dest = f"{remote_root}/{rel}"
@@ -1039,6 +1074,16 @@ class VM:
                     self._sync_write_presigned(dest, data)
                 else:
                     self._sync_write_inline(dest, data)
+
+        if len(changed) <= 1:
+            for item in changed:
+                _one(item)
+            return
+        import concurrent.futures
+        workers = min(self._SYNC_DIRECT_PARALLELISM, len(changed))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            for _ in ex.map(_one, changed):
+                pass
 
     def _upload_and_extract_tarball(
         self, changed: list[tuple[str, str]], remote_root: str
