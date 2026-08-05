@@ -10,6 +10,7 @@ import base64
 import dataclasses
 import gzip
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -989,18 +990,22 @@ class VM:
         return result
 
     def _sync_rtt_estimate(self) -> float:
-        """Cached client->arkerd round-trip estimate for the sync cost model. One
-        1-byte streamed write (a real hop through arkerd to the guest); ~3-5 ms
-        co-located, ~30 ms over WAN. Cached per computer instance so it costs one
-        round-trip total, not one per sync. Distinguishes co-located (parallel
-        direct wins many files) from WAN (batched extract wins)."""
+        """Cached client->arkerd round-trip estimate for the sync cost model:
+        ~<1 ms co-located, ~30 ms over WAN. Distinguishes co-located (parallel
+        direct wins for few files) from WAN (batched extract wins).
+
+        Probes with a GET on the VM's OWN metadata endpoint — a pure arkerd hop
+        that never touches the guest. The old probe wrote a byte through to the
+        guest, which measured guest exec cold-start (~60 ms on a freshly booted
+        VM), not network RTT: it both mis-sized the cost model AND wasted ~60 ms
+        of real time on every first sync. Cached per computer instance."""
         r = getattr(self, "_rtt_cache", None)
         if r is not None:
             return r
         r = 0.01
         try:
             t0 = time.time()
-            self._sync_write_stream(f"/tmp/.arker-rtt-{_ulid()}", b"x")
+            self._client._request("GET", _vm_path(self.id), base_url=self.base_url)
             r = max(3e-4, time.time() - t0)
         except Exception:
             pass
@@ -1029,21 +1034,43 @@ class VM:
         total = sum(os.path.getsize(a) for _, a in changed)
         nested = any("/" in rel.strip("/") for rel, _ in changed)
         BW = 15e6              # bytes/s streamed write throughput (measured ~13-15 MB/s)
-        UNTAR_PER_FILE = 7e-5  # ~0.07 ms/file (measured: 2000 files untar ~140 ms)
-        EXTRACT_OVERHEAD = 0.18  # gzip + guest.exec untar spawn/cold-start (measured)
+        # DIRECT's per-file cost is NOT just network: each keep-alive connection
+        # serializes request→response (HTTP/1.1, no pipelining), so every write
+        # also pays the server's per-request handling (parse+sha+guest write). This
+        # ~5 ms/req dominates when RTT≈0 (co-located) and is why direct grows with
+        # N (measured ~5-7 ms/req on loopback: 600→~250 ms, 2000→~650 ms).
+        REQ_PROC = 5e-3        # server-side handling per serialized keep-alive write
+        # EXTRACT is one guest `tar -x`: a fixed spawn/cold-start plus a per-file
+        # cost that AMORTIZES with batch size (the untar streams). A flat per-file
+        # term badly over-charges large N; the real curve is sub-linear. Measured
+        # clean (status-checked, correctness-verified): n=1→~90 ms, 600→~336 ms,
+        # 2000→~557 ms — an almost exact 0.080 s + 0.0104·√n fit.
+        EXTRACT_FLOOR = 0.080  # guest.exec untar spawn/cold-start
+        EXTRACT_SQRT = 0.0104  # per-√file streamed-untar cost (batch amortized)
         P = self._SYNC_DIRECT_PARALLELISM
         # Estimate the extract path's upload size by probing compressibility on a
         # small sample — for code this shrinks the upload a lot (extract wins on
         # bytes); for incompressible blobs it's ~1.0 (extract only adds untar
-        # overhead, so parallel direct wins).
+        # overhead, so parallel direct wins for small/moderate N).
         probe = b"".join(open(a, "rb").read(4096) for _, a in changed[:12])
         gz_ratio = len(gzip.compress(probe, 1)) / max(1, len(probe)) if probe else 1.0
         total_gz = int(total * min(1.0, gz_ratio))
-        # DIRECT: parallel raw writes, no untar → ceil(N/P) waves of RTT.
-        direct_cost = math.ceil(n / P) * rtt_s + total / BW
-        # EXTRACT: one round-trip, gzip'd upload + server untar + fixed overhead.
-        extract_cost = rtt_s + total_gz / BW + n * UNTAR_PER_FILE + EXTRACT_OVERHEAD
-        if direct_cost <= extract_cost:
+        # DIRECT: parallel raw writes, no untar → ceil(N/P) serialized waves, each
+        # paying one RTT plus the server's per-request handling.
+        direct_cost = math.ceil(n / P) * (rtt_s + REQ_PROC) + total / BW
+        # EXTRACT: one round-trip, gzip'd upload + server untar (floor + √n).
+        extract_cost = (
+            rtt_s + total_gz / BW + EXTRACT_FLOOR + EXTRACT_SQRT * math.sqrt(n)
+        )
+        # ROBUSTNESS CAP: direct issues N per-file requests, and arkerd's
+        # per-request handling degrades with host load / VM count — a many-file
+        # direct sync that clocks ~250 ms in isolation was measured ~2 s on a busy
+        # host, whereas extract (ONE request, ONE guest untar) stays flat. So above
+        # a modest file count we take the single-request path even if the clean
+        # cost model marginally prefers direct: bounded worst case beats a slightly
+        # better best case. Below the cap, direct is 1-few waves and low-risk.
+        DIRECT_MAX_FILES = 256
+        if n <= DIRECT_MAX_FILES and direct_cost <= extract_cost:
             self._sync_direct_write(changed, remote_root, nested)
         else:
             self._upload_and_extract_tarball(changed, remote_root)
@@ -1054,55 +1081,115 @@ class VM:
         self, changed: list[tuple[str, str]], remote_root: str, nested: bool
     ) -> None:
         """Write each changed file straight to remote_root/rel via the pipelined
-        stream endpoint (no tar, no guest untar), fanned out concurrently. The
-        stream write creates missing parent directories, so there is NO separate
-        mkdir round-trip. E2B batches N files into one request; we instead
-        parallelize N raw single-file streams, so wall time is bandwidth-bound
-        (not N×RTT) and there is no untar/gzip overhead — the win for many small
-        or incompressible files. A single tiny file is one ~3 ms hop."""
+        stream endpoint (no tar, no guest untar), fanned out concurrently over a
+        POOL of keep-alive connections. The stream write creates missing parent
+        directories, so there is NO separate mkdir round-trip.
+
+        E2B batches N files into one request; we instead parallelize N raw
+        single-file streams, each reusing a persistent HTTP/1.1 connection (one
+        per worker thread, NOT one per file — that per-write connection setup was
+        the whole remaining gap). Wall time becomes bandwidth-bound, with no
+        untar/gzip overhead — the win for many small or incompressible files."""
+        import concurrent.futures
+        import hashlib
+        import http.client
+        import threading as _threading
+        from urllib.parse import quote, urlsplit
+
+        sp = urlsplit(self.base_url)
+        is_https = sp.scheme == "https"
+        host = sp.hostname
+        port = sp.port or (443 if is_https else 80)
+        base_path = sp.path.rstrip("/")
+        vm_path = _vm_path(self.id)
+        api_key = self._client._api_key
+        tls = _threading.local()
+        conns: list[http.client.HTTPConnection] = []
+        conns_lock = _threading.Lock()
+
+        def _conn() -> "http.client.HTTPConnection":
+            c = getattr(tls, "conn", None)
+            if c is None:
+                cls = http.client.HTTPSConnection if is_https else http.client.HTTPConnection
+                c = cls(host, port, timeout=PRESIGNED_PUT_TIMEOUT_S)
+                tls.conn = c
+                with conns_lock:
+                    conns.append(c)
+            return c
+
         def _one(item: tuple[str, str]) -> None:
             rel, abs_path = item
             with open(abs_path, "rb") as fh:
                 data = fh.read()
             dest = f"{remote_root}/{rel}"
-            try:
-                self._sync_write_stream(dest, data)
-            except ArkerError as e:
-                if e.status != 404:
-                    raise
-                if len(data) > CHUNK_SIZE:
-                    self._sync_write_presigned(dest, data)
-                else:
-                    self._sync_write_inline(dest, data)
+            sha = hashlib.sha256(data).hexdigest()
+            path = (
+                f"{base_path}{vm_path}/sync-stream"
+                f"?path={quote(dest)}&size={len(data)}&sha256={sha}"
+            )
+            headers = {
+                "authorization": f"Bearer {api_key}",
+                "content-type": "application/octet-stream",
+                "content-length": str(len(data)),
+            }
+            for attempt in range(self._client._retry.attempts):
+                try:
+                    conn = _conn()
+                    conn.request("POST", path, body=data, headers=headers)
+                    resp = conn.getresponse()
+                    status = resp.status
+                    resp.read()  # drain so the connection can be reused
+                    if status < 400:
+                        return
+                    if status == 404:
+                        # arkerd predates /sync-stream: inline/presigned fallback.
+                        if len(data) > CHUNK_SIZE:
+                            self._sync_write_presigned(dest, data)
+                        else:
+                            self._sync_write_inline(dest, data)
+                        return
+                    if status in RETRYABLE_HTTP and attempt < self._client._retry.attempts - 1:
+                        tls.conn = None  # drop a poisoned connection, reconnect
+                        time.sleep(self._client._retry_delay(attempt))
+                        continue
+                    raise ArkerError("internal", f"direct write failed: {status}", status)
+                except (http.client.HTTPException, OSError) as error:
+                    tls.conn = None  # connection died; force a fresh one
+                    if attempt == self._client._retry.attempts - 1:
+                        raise ArkerError(
+                            "network_error", f"direct write failed: {error}", 0
+                        ) from error
+                    time.sleep(self._client._retry_delay(attempt))
 
-        if len(changed) <= 1:
-            for item in changed:
-                _one(item)
-            return
-        import concurrent.futures
-        workers = min(self._SYNC_DIRECT_PARALLELISM, len(changed))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            for _ in ex.map(_one, changed):
-                pass
+        try:
+            if len(changed) <= 1:
+                for item in changed:
+                    _one(item)
+            else:
+                workers = min(self._SYNC_DIRECT_PARALLELISM, len(changed))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                    for _ in ex.map(_one, changed):
+                        pass
+        finally:
+            for c in conns:
+                try:
+                    c.close()
+                except Exception:
+                    pass
 
     def _upload_and_extract_tarball(
         self, changed: list[tuple[str, str]], remote_root: str
     ) -> None:
         """Tar the changed files (paths relative to ``remote_root``), upload the
         tarball in one write, and extract it in the guest with `tar -x`."""
-        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tf:
-            tar_local = tf.name
-        try:
-            with tarfile.open(tar_local, "w") as tar:
-                for rel, abs_path in changed:
-                    tar.add(abs_path, arcname=rel, recursive=False)
-            with open(tar_local, "rb") as fh:
-                data = fh.read()
-        finally:
-            try:
-                os.unlink(tar_local)
-            except OSError:
-                pass
+        # Build the tar entirely IN MEMORY — no temp file. A temp file adds a
+        # write+read of the whole payload (tens of ms on the hot path) for no
+        # benefit; the tar is already bounded by the changed-set we chose to batch.
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for rel, abs_path in changed:
+                tar.add(abs_path, arcname=rel, recursive=False)
+        data = buf.getvalue()
 
         # Always gzip for the 1-round-trip extract endpoint (level 1: ~5x faster
         # gzip, near-same ratio; sync is throughput-bound not ratio-bound).
