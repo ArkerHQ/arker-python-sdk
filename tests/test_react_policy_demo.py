@@ -128,7 +128,7 @@ def test_python_demo_runs_the_documented_sdk_flow(
     vm = arker.vm
 
     assert arker.forks == [
-        ("ubuntu-full", {"name": "react-policy-demo", "policies": BUILD_POLICY})
+        ("ubuntu-dev", {"name": "react-policy-demo", "policies": BUILD_POLICY})
     ]
     assert vm.syncs == [(str(DEMO_DIR / "app"), "/workspace/react-policy")]
 

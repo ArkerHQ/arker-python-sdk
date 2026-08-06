@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANAGED_PATHS = (
     Path("contract/openapi.json"),
-    Path("contract/source.json"),
     Path("typescript/src/generated/api-types.ts"),
     Path("python/src/arker/generated/api_models.py"),
 )
+TYPESCRIPT_PATH = MANAGED_PATHS[1]
+PYTHON_PATH = MANAGED_PATHS[2]
 
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -27,10 +28,6 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-
-
-def source_metadata() -> dict[str, str]:
-    return json.loads((REPO_ROOT / "contract/source.json").read_text())
 
 
 def annotations(source: str, class_name: str) -> dict[str, str]:
@@ -47,18 +44,6 @@ def annotations(source: str, class_name: str) -> dict[str, str]:
     }
 
 
-def test_source_metadata_matches_contract() -> None:
-    metadata = source_metadata()
-    contract = (REPO_ROOT / "contract/openapi.json").read_bytes()
-
-    assert set(metadata) == {"repository", "ref", "commit", "sha256"}
-    assert metadata["repository"] == "ArkerHQ/arker-app"
-    assert metadata["sha256"] == hashlib.sha256(contract).hexdigest()
-    assert len(metadata["commit"]) == 40
-    assert metadata["ref"].strip()
-    assert all(character in "0123456789abcdef" for character in metadata["commit"])
-
-
 def test_generation_is_deterministic_for_both_languages() -> None:
     with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
         for output in (first, second):
@@ -70,13 +55,13 @@ def test_generation_is_deterministic_for_both_languages() -> None:
                 output,
             )
 
-        for relative_path in MANAGED_PATHS[2:]:
+        for relative_path in (TYPESCRIPT_PATH, PYTHON_PATH):
             first_bytes = (Path(first) / relative_path).read_bytes()
             second_bytes = (Path(second) / relative_path).read_bytes()
             assert first_bytes == second_bytes
 
-        typescript = (Path(first) / MANAGED_PATHS[2]).read_text()
-        python = (Path(first) / MANAGED_PATHS[3]).read_text()
+        typescript = (Path(first) / TYPESCRIPT_PATH).read_text()
+        python = (Path(first) / PYTHON_PATH).read_text()
         assert "export interface operations" in typescript
         assert "@dataclass(frozen=True)\nclass ForkRequest" in python
         assert "class ForkRequest" in python
@@ -121,14 +106,8 @@ def test_generation_is_deterministic_for_both_languages() -> None:
             annotations(python, "CreateSessionOperation")["request"]
             == "CreateSessionRequest"
         )
-        assert (
-            annotations(python, "SyncOperation")["request"]
-            == "SyncRequest"
-        )
-        assert (
-            annotations(python, "SyncOperation")["success"]
-            == "SyncResponse"
-        )
+        assert annotations(python, "SyncOperation")["request"] == "SyncRequest"
+        assert annotations(python, "SyncOperation")["success"] == "SyncResponse"
 
 
 def test_public_wire_types_are_generated() -> None:
@@ -153,8 +132,7 @@ def test_public_wire_types_are_generated() -> None:
         schemas & handwritten_classes
     )
     assert any(
-        isinstance(node, ast.ImportFrom)
-        and node.module == "generated.api_models"
+        isinstance(node, ast.ImportFrom) and node.module == "generated.api_models"
         for node in python_module.body
     )
 
@@ -166,7 +144,7 @@ def test_public_wire_types_are_generated() -> None:
         )
     )
     assert handwritten_typescript_wire_interfaces == {"TransportResponse"}
-    assert 'import type { components, operations }' in typescript
+    assert "import type { components, operations }" in typescript
 
     called_python_models = {
         node.func.id
@@ -213,10 +191,6 @@ def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
             "./scripts/sync-openapi",
             "--source-file",
             "contract/openapi.json",
-            "--source-commit",
-            source_metadata()["commit"],
-            "--source-ref",
-            source_metadata()["ref"],
             "--output-root",
             output_directory,
         )
@@ -227,8 +201,14 @@ def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
             ).read_bytes()
 
 
+def test_sync_requires_an_explicit_local_contract() -> None:
+    result = run("./scripts/sync-openapi", check=False)
+
+    assert result.returncode == 2
+    assert "--source-file" in result.stderr
+
+
 def test_check_detects_generated_drift() -> None:
-    metadata = source_metadata()
     with tempfile.TemporaryDirectory() as candidate_directory:
         candidate = Path(candidate_directory)
         for relative_path in MANAGED_PATHS:
@@ -242,7 +222,7 @@ def test_check_detects_generated_drift() -> None:
             str(candidate),
         )
 
-        generated_python = candidate / MANAGED_PATHS[3]
+        generated_python = candidate / PYTHON_PATH
         generated_python.write_text(generated_python.read_text() + "# drift\n")
         result = run(
             "./scripts/check-openapi",
@@ -251,102 +231,76 @@ def test_check_detects_generated_drift() -> None:
             check=False,
         )
         assert result.returncode == 1
-        assert str(MANAGED_PATHS[3]) in result.stderr
-        assert metadata["commit"] in (candidate / MANAGED_PATHS[1]).read_text()
+        assert str(PYTHON_PATH) in result.stderr
 
 
-def test_freshness_check_detects_arker_app_main_drift() -> None:
-    metadata = source_metadata()
-    with tempfile.TemporaryDirectory() as directory:
-        temporary = Path(directory)
-        source = temporary / "source-openapi.json"
-        candidate = temporary / "candidate-openapi.json"
-        source.write_bytes((REPO_ROOT / MANAGED_PATHS[0]).read_bytes())
-        candidate.write_bytes(source.read_bytes())
+def test_contract_tooling_is_repository_local() -> None:
+    assert not (REPO_ROOT / ".github/workflows/openapi-freshness.yml").exists()
+    assert not (REPO_ROOT / "scripts/check-openapi-freshness").exists()
+    assert not (REPO_ROOT / "contract/source.json").exists()
 
-        current = run(
-            "./scripts/check-openapi-freshness",
-            "--candidate-contract",
-            str(candidate),
-            "--source-file",
-            str(source),
-            "--source-commit",
-            metadata["commit"],
-            check=False,
-        )
-        assert current.returncode == 0, current.stderr
-
-        document = json.loads(candidate.read_text())
-        document["info"]["version"] = "stale-sdk-contract"
-        candidate.write_text(json.dumps(document, indent=2) + "\n")
-
-        stale = run(
-            "./scripts/check-openapi-freshness",
-            "--candidate-contract",
-            str(candidate),
-            "--source-file",
-            str(source),
-            "--source-commit",
-            metadata["commit"],
-            check=False,
-        )
-        assert stale.returncode == 1
-        assert "contract/openapi.json is stale" in stale.stderr
-        assert "./scripts/sync-openapi" in stale.stderr
+    contract_paths = [
+        REPO_ROOT / "scripts/openapi_contract.py",
+        REPO_ROOT / "scripts/sync-openapi",
+        REPO_ROOT / "scripts/check-openapi",
+        REPO_ROOT / "scripts/check-local",
+        REPO_ROOT / "contract/README.md",
+    ]
+    checked_source = "\n".join(path.read_text() for path in contract_paths)
+    for forbidden in (
+        '"gh"',
+        "api.github.com",
+        "pull_request_target:",
+        "secrets.",
+    ):
+        assert forbidden not in checked_source
 
 
-def test_freshness_workflow_uses_trusted_code_and_an_explicit_status() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/openapi-freshness.yml").read_text()
+def test_pre_push_hook_runs_fast_local_contract_checks() -> None:
+    hook = (REPO_ROOT / ".githooks/pre-push").read_text()
+    installer = (REPO_ROOT / "scripts/install-hooks").read_text()
 
-    assert "pull_request_target:" in workflow
-    assert "statuses: write" in workflow
-    assert "ARKER_APP_OPENAPI_READ_TOKEN" in workflow
-    assert "run: ./scripts/check-openapi-freshness" in workflow
-    assert "context=openapi-freshness" in workflow
-    assert "ref: ${{ github.event.repository.default_branch }}" in workflow
-    assert "ref: ${{ github.event.pull_request.head" not in workflow
-    assert "github.event_name == 'pull_request_target'" not in workflow
+    assert "scripts/check-openapi" in hook
+    assert "tests/test_openapi_enforcement.py --fast" in hook
+    assert "bun run typecheck" in hook
+    assert "core.hooksPath .githooks" in installer
 
 
-def test_pull_request_ci_checks_all_generated_surfaces() -> None:
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+def test_full_local_check_covers_all_generated_surfaces() -> None:
+    check = (REPO_ROOT / "scripts/check-local").read_text()
 
-    assert "pull_request:" in workflow
-    assert "pull_request_target:" not in workflow
-    assert "run: ./scripts/check-openapi" in workflow
-    assert "python tests/test_openapi_enforcement.py" in workflow
-    assert "bun run check:api-types" in workflow
-    assert "python -m pytest" in workflow
-    assert "bun run test" in workflow
+    assert "./scripts/check-openapi" in check
+    assert "python3 tests/test_openapi_enforcement.py" in check
+    assert "python -m pytest" in check
+    assert "bun run typecheck" in check
+    assert "bun run test" in check
 
 
-def test_contract_ci_requires_no_cross_repository_write_credentials() -> None:
-    workflows = "\n".join(
-        path.read_text() for path in (REPO_ROOT / ".github/workflows").glob("*.yml")
-    )
-    freshness = (REPO_ROOT / ".github/workflows/openapi-freshness.yml").read_text()
-
+def test_contract_checks_do_not_use_hosted_ci() -> None:
+    assert not (REPO_ROOT / ".github/workflows/ci.yml").exists()
     assert not (REPO_ROOT / ".github/workflows/openapi-contract.yml").exists()
-    assert "ARKER_CONTRACT_APP_ID" not in workflows
-    assert "ARKER_CONTRACT_APP_PRIVATE_KEY" not in workflows
-    assert "ARKER_APP_OPENAPI_READ_TOKEN" in freshness
-    assert "contents: write" not in freshness
-    assert "pull-requests: write" not in freshness
+
+
+FAST_TESTS = (
+    test_public_wire_types_are_generated,
+    test_sdk_runtime_uses_only_current_public_error_codes,
+    test_contract_tooling_is_repository_local,
+)
+
+ALL_TESTS = (
+    test_generation_is_deterministic_for_both_languages,
+    *FAST_TESTS,
+    test_sync_from_local_contract_regenerates_all_managed_files,
+    test_sync_requires_an_explicit_local_contract,
+    test_check_detects_generated_drift,
+    test_pre_push_hook_runs_fast_local_contract_checks,
+    test_full_local_check_covers_all_generated_surfaces,
+    test_contract_checks_do_not_use_hosted_ci,
+)
 
 
 if __name__ == "__main__":
-    tests = (
-        test_source_metadata_matches_contract,
-        test_generation_is_deterministic_for_both_languages,
-        test_public_wire_types_are_generated,
-        test_sdk_runtime_uses_only_current_public_error_codes,
-        test_sync_from_local_contract_regenerates_all_managed_files,
-        test_check_detects_generated_drift,
-        test_freshness_check_detects_arker_app_main_drift,
-        test_freshness_workflow_uses_trusted_code_and_an_explicit_status,
-        test_pull_request_ci_checks_all_generated_surfaces,
-        test_contract_ci_requires_no_cross_repository_write_credentials,
-    )
+    tests = FAST_TESTS if "--fast" in sys.argv[1:] else ALL_TESTS
     for test in tests:
         test()
     print("PASS openapi enforcement")

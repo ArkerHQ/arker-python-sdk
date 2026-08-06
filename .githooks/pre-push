@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HOOK_DIR/.." && pwd)"
+
+cd "$REPO_ROOT"
+
+./scripts/check-openapi
+python3 tests/test_openapi_enforcement.py --fast
+(
+  cd typescript
+  bun run typecheck
+)
