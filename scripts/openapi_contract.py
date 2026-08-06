@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import hashlib
 import json
 import os
 import re
@@ -13,14 +12,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPOSITORY = "ArkerHQ/arker-app"
-REF = "main"
 CONTRACT_PATH = Path("contract/openapi.json")
-METADATA_PATH = Path("contract/source.json")
 TYPESCRIPT_PATH = Path("typescript/src/generated/api-types.ts")
 PYTHON_PATH = Path("python/src/arker/generated/api_models.py")
-MANAGED_PATHS = (CONTRACT_PATH, METADATA_PATH, TYPESCRIPT_PATH, PYTHON_PATH)
-COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+MANAGED_PATHS = (CONTRACT_PATH, TYPESCRIPT_PATH, PYTHON_PATH)
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head", "trace")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,21 +28,12 @@ def run(
     command: list[str],
     *,
     cwd: Path = REPO_ROOT,
-    capture_bytes: bool = False,
-    strip_tokens: bool = False,
-) -> str | bytes:
-    environment = os.environ.copy()
-    if strip_tokens:
-        environment.pop("GH_TOKEN", None)
-        environment.pop("GITHUB_TOKEN", None)
+) -> None:
     try:
-        result = subprocess.run(
+        subprocess.run(
             command,
             cwd=cwd,
-            env=environment,
             check=True,
-            stdout=subprocess.PIPE if capture_bytes else None,
-            stderr=None,
         )
     except FileNotFoundError as error:
         raise ContractError(f"required command not found: {command[0]}") from error
@@ -55,23 +41,6 @@ def run(
         raise ContractError(
             f"command failed with exit code {error.returncode}: {' '.join(command)}"
         ) from error
-
-    if not capture_bytes:
-        return ""
-    return result.stdout
-
-
-def capture_text(command: list[str]) -> str:
-    output = run(command, capture_bytes=True)
-    assert isinstance(output, bytes)
-    return output.decode().strip()
-
-
-def validate_commit(commit: str) -> str:
-    normalized = commit.strip().lower()
-    if not COMMIT_PATTERN.fullmatch(normalized):
-        raise ContractError(f"invalid source commit: {commit!r}")
-    return normalized
 
 
 def validate_contract(content: bytes) -> None:
@@ -81,43 +50,6 @@ def validate_contract(content: bytes) -> None:
         raise ContractError("source contract is not valid JSON") from error
     if not isinstance(document, dict) or not isinstance(document.get("openapi"), str):
         raise ContractError("source contract is not an OpenAPI document")
-
-
-def validate_ref(ref: str) -> str:
-    normalized = ref.strip()
-    if not normalized:
-        raise ContractError("source ref must not be empty")
-    return normalized
-
-
-def fetch_source(ref: str = REF) -> tuple[str, str, bytes]:
-    ref = validate_ref(ref)
-    commit = validate_commit(
-        capture_text(["gh", "api", f"repos/{REPOSITORY}/commits/{ref}", "--jq", ".sha"])
-    )
-    content = run(
-        [
-            "gh",
-            "api",
-            "-H",
-            "Accept: application/vnd.github.raw+json",
-            f"repos/{REPOSITORY}/contents/openapi.json?ref={commit}",
-        ],
-        capture_bytes=True,
-    )
-    assert isinstance(content, bytes)
-    validate_contract(content)
-    return ref, commit, content
-
-
-def metadata_bytes(ref: str, commit: str, contract: bytes) -> bytes:
-    document = {
-        "repository": REPOSITORY,
-        "ref": validate_ref(ref),
-        "commit": validate_commit(commit),
-        "sha256": hashlib.sha256(contract).hexdigest(),
-    }
-    return (json.dumps(document, indent=2) + "\n").encode()
 
 
 def resolve_reference(document: dict[str, object], reference: str) -> object:
@@ -336,7 +268,6 @@ def generate(contract: Path, output_root: Path) -> None:
             "-o",
             str(typescript_output),
         ],
-        strip_tokens=True,
     )
     run(
         [
@@ -368,17 +299,14 @@ def generate(contract: Path, output_root: Path) -> None:
             "--disable-timestamp",
             "--include-path-parameters",
         ],
-        strip_tokens=True,
     )
     append_operation_types(contract, python_output)
 
 
-def stage_contract(output_root: Path, ref: str, commit: str, contract: bytes) -> None:
+def stage_contract(output_root: Path, contract: bytes) -> None:
     contract_output = output_root / CONTRACT_PATH
-    metadata_output = output_root / METADATA_PATH
     contract_output.parent.mkdir(parents=True, exist_ok=True)
     contract_output.write_bytes(contract)
-    metadata_output.write_bytes(metadata_bytes(ref, commit, contract))
     generate(contract_output, output_root)
 
 
@@ -392,16 +320,13 @@ def copy_managed_files(source_root: Path, output_root: Path) -> None:
         os.replace(temporary, destination)
 
 
-def load_vendored_source() -> tuple[str, str, bytes]:
+def load_vendored_source() -> bytes:
     try:
-        metadata = json.loads((REPO_ROOT / METADATA_PATH).read_text())
-        ref = validate_ref(metadata["ref"])
-        commit = validate_commit(metadata["commit"])
         contract = (REPO_ROOT / CONTRACT_PATH).read_bytes()
-    except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError) as error:
-        raise ContractError("vendored source metadata is missing or invalid") from error
+    except FileNotFoundError as error:
+        raise ContractError(f"vendored contract is missing: {CONTRACT_PATH}") from error
     validate_contract(contract)
-    return ref, commit, contract
+    return contract
 
 
 def local_candidate(root: Path) -> dict[Path, bytes]:
@@ -435,46 +360,30 @@ def command_generate(args: argparse.Namespace) -> int:
     return 0
 
 
-def source_from_args(args: argparse.Namespace) -> tuple[str, str, bytes]:
-    source_file = getattr(args, "source_file", None)
-    source_commit = getattr(args, "source_commit", None)
-    source_ref = validate_ref(getattr(args, "source_ref", REF))
-    if source_file:
-        if not source_commit:
-            raise ContractError("--source-commit is required with --source-file")
-        commit = validate_commit(source_commit)
-        try:
-            contract = Path(source_file).read_bytes()
-        except FileNotFoundError as error:
-            raise ContractError(f"source contract not found: {source_file}") from error
-        validate_contract(contract)
-        return source_ref, commit, contract
-    if source_commit:
-        raise ContractError("--source-commit requires --source-file")
-    return fetch_source(source_ref)
-
-
 def command_sync(args: argparse.Namespace) -> int:
-    ref, commit, contract = source_from_args(args)
+    source = Path(args.source_file).resolve()
+    try:
+        contract = source.read_bytes()
+    except FileNotFoundError as error:
+        raise ContractError(f"source contract not found: {source}") from error
+    validate_contract(contract)
 
     output_root = Path(args.output_root).resolve()
     with tempfile.TemporaryDirectory(prefix="arker-openapi-sync-") as directory:
         stage = Path(directory)
-        stage_contract(stage, ref, commit, contract)
+        stage_contract(stage, contract)
         copy_managed_files(stage, output_root)
 
-    print(
-        f"synced {REPOSITORY}@{ref} ({commit}; {hashlib.sha256(contract).hexdigest()})"
-    )
+    print(f"synced {CONTRACT_PATH} from {source}")
     return 0
 
 
 def command_check(args: argparse.Namespace) -> int:
-    ref, commit, contract = load_vendored_source()
+    contract = load_vendored_source()
 
     with tempfile.TemporaryDirectory(prefix="arker-openapi-check-") as directory:
         expected_root = Path(directory)
-        stage_contract(expected_root, ref, commit, contract)
+        stage_contract(expected_root, contract)
         expected = {path: (expected_root / path).read_bytes() for path in MANAGED_PATHS}
 
     actual = local_candidate(Path(args.candidate_root or REPO_ROOT).resolve())
@@ -487,41 +396,7 @@ def command_check(args: argparse.Namespace) -> int:
     if drift:
         return 1
 
-    print(
-        "generated artifacts match contract/openapi.json "
-        f"(synchronized from {REPOSITORY}@{ref} at {commit})"
-    )
-    return 0
-
-
-def command_freshness(args: argparse.Namespace) -> int:
-    candidate_path = Path(args.candidate_contract).resolve()
-    try:
-        candidate = candidate_path.read_bytes()
-    except FileNotFoundError as error:
-        raise ContractError(
-            f"candidate contract not found: {candidate_path}"
-        ) from error
-    validate_contract(candidate)
-
-    ref, commit, source = source_from_args(args)
-    if candidate != source:
-        print(
-            "contract/openapi.json is stale; "
-            f"it does not match {REPOSITORY}@{ref} at {commit}",
-            file=sys.stderr,
-        )
-        print(
-            "run ./scripts/sync-openapi and include the regenerated SDK artifacts",
-            file=sys.stderr,
-        )
-        print_diff(CONTRACT_PATH, source, candidate)
-        return 1
-
-    print(
-        "contract/openapi.json matches "
-        f"{REPOSITORY}@{ref} at {commit} ({hashlib.sha256(source).hexdigest()})"
-    )
+    print("generated artifacts match contract/openapi.json")
     return 0
 
 
@@ -537,9 +412,7 @@ def parser() -> argparse.ArgumentParser:
     generate_parser.set_defaults(handler=command_generate)
 
     sync_parser = subcommands.add_parser("sync")
-    sync_parser.add_argument("--source-file")
-    sync_parser.add_argument("--source-commit")
-    sync_parser.add_argument("--source-ref", default=REF)
+    sync_parser.add_argument("--source-file", required=True)
     sync_parser.add_argument("--output-root", default=str(REPO_ROOT))
     sync_parser.set_defaults(handler=command_sync)
 
@@ -547,14 +420,6 @@ def parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--candidate-root")
     check_parser.set_defaults(handler=command_check)
 
-    freshness_parser = subcommands.add_parser("freshness")
-    freshness_parser.add_argument(
-        "--candidate-contract", default=str(REPO_ROOT / CONTRACT_PATH)
-    )
-    freshness_parser.add_argument("--source-file")
-    freshness_parser.add_argument("--source-commit")
-    freshness_parser.add_argument("--source-ref", default=REF)
-    freshness_parser.set_defaults(handler=command_freshness)
     return root
 
 

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+(
+  cd "$REPO_ROOT/typescript"
+  bun ci
+)
+uv sync --project "$REPO_ROOT/python" --locked --group dev --extra test
+
+cd "$REPO_ROOT"
+
+./scripts/check-openapi
+python3 tests/test_openapi_enforcement.py
+uv run --project python --locked --group dev --extra test python -m pytest
+(
+  cd typescript
+  bun run typecheck
+  bun run test
+)
