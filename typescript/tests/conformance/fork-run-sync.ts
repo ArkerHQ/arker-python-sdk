@@ -43,7 +43,7 @@ interface Client {
 
 const RETRY_ATTEMPTS = 3;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
-const RETRYABLE_CODES = new Set(["unavailable", "bad_gateway", "stale_route"]);
+const RETRYABLE_CODES = new Set(["resource_pressure", "unavailable", "bad_gateway", "stale_route"]);
 
 function targets(): SmokeTarget[] {
   const raw = process.env.ARKER_SMOKE_TARGETS;

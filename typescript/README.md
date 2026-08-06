@@ -98,6 +98,39 @@ await vm.run("python3 train.py", { background: true, idempotencyKey: crypto.rand
 
 If the host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Backends without durability return `ArkerError` code `unsupported_operation`.
 
+## Kernel browser API proxy
+
+Run official Kernel TypeScript or Python browser calls on Arker by pointing the SDK's REST base URL at the included compatibility proxy:
+
+```bash
+export ARKER_API_KEY=ark_live_...
+export KERNEL_PROXY_API_KEY='a-separate-random-proxy-key'
+export KERNEL_PROXY_SIGNING_SECRET='a-stable-random-signing-secret'
+
+# One-time: install and pin an awake CloakBrowser template.
+arker-kernel-proxy \
+  --arker-url https://aws-us-east-1.arker.ai/api \
+  --source ubuntu-full \
+  --prepare-source my-kernel-browser-source
+
+# Use the source_vm_id printed above. Disk+memory forks avoid reinstalling the
+# browser stack for every Kernel session.
+arker-kernel-proxy \
+  --arker-url https://aws-us-east-1.arker.ai/api \
+  --source-id vmh-... \
+  --source-layers disk,memory \
+  --state-dir /var/lib/arker-kernel-proxy
+
+export KERNEL_API_KEY="$KERNEL_PROXY_API_KEY"
+export KERNEL_BASE_URL=http://127.0.0.1:8787
+```
+
+Every Kernel browser becomes an isolated Arker VM configured by an editable CloakBrowser setup script. The proxy covers the official Kernel browser REST/SDK surface: lifecycle, CDP, WebDriver BiDi, process/PTY, filesystem and guest-originated watches, Playwright, Chrome-stack fetch, computer control, telemetry, extensions, followed logs, audio/video replays, profiles, custom proxies, and browser pools. Automatic CPU+memory standby is enabled after a five-second coalescing window; use `--keep-running` for the lowest hot latency.
+
+This is browser-platform compatibility, not a clone of Kernel's application platform. GPU browsers, Kernel-managed proxy capacity/auth, and apps/deployments/invocations/credentials/projects/API-key administration have no Arker equivalent and return explicit unsupported/not-found errors.
+
+See the [full setup guide, security notes, tested compatibility matrix, and known semantic differences](./docs/kernel-proxy.md).
+
 ## Compatibility imports
 
 The SDK includes limited compatibility layers for common Daytona, E2B, and Modal sandbox workflows. These entrypoints keep the original SDK-shaped calls, route through ComputeSDK, use Arker as the first provider, and fall back to the original provider when resolving an existing non-Arker sandbox ID.

@@ -144,6 +144,7 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
     name: "demo",
     description: "CI runner",
     ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
+    layers: ["disk"],
   });
 
   assert.equal(vm.id, "vm_child");
@@ -154,7 +155,7 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
       description: "CI runner",
       ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
       source_vm_id: "ubuntu",
-      disk: true,
+      layers: ["disk"],
     },
   );
 }
@@ -185,7 +186,7 @@ async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
   const body = JSON.parse(fetch.calls[0]!.body!);
   assert.equal(body.source_vm_name, "macos-full");
   assert.equal(body.source_org_id, "ArkerHQ");
-  assert.equal(body.disk, true);
+  assert.equal(body.disk, undefined);
   assert.equal(body.platforms, undefined);
   assert.deepEqual(body.ssh_public_keys, ["ssh-ed25519 AAAA test@example"]);
   assert.deepEqual(body.policies, { policies: [] });
@@ -659,7 +660,7 @@ async function testForkSendsDurableFlag(): Promise<void> {
 
   assert.deepEqual(
     JSON.parse(fetch.calls[0]!.body!),
-    { durable: true, source_vm_id: "ubuntu", disk: true },
+    { durable: true, source_vm_id: "ubuntu" },
   );
 }
 
@@ -721,6 +722,38 @@ async function testRetryOnRetryableStatusThenSucceeds(): Promise<void> {
   assert.equal(fetch.calls.length, 2, "should have retried exactly once after the 503");
 }
 
+async function testRetryableFlagOverridesUnknownCodeAndHttpStatus(): Promise<void> {
+  const retryable = new FakeFetch();
+  const match = (method: string, url: string) => method === "GET" && url === "https://arker.ai/api/v1/vms";
+  retryable.addJson(match, 400, {
+    error: {
+      code: "future_transient_error",
+      message: "safe to retry",
+      timestamp: "2026-08-05T00:00:00.000Z",
+      retry_after: 0,
+      retryable: true,
+    },
+  });
+  retryable.addJson(match, 200, { vms: [] });
+  assert.deepEqual((await clientWithRetry(retryable, 2).listVms()).vms, []);
+  assert.equal(retryable.calls.length, 2);
+
+  const final = new FakeFetch();
+  final.addJson(match, 503, {
+    error: {
+      code: "unavailable",
+      message: "do not repeat this request",
+      timestamp: "2026-08-05T00:00:00.000Z",
+      retryable: false,
+    },
+  });
+  await assert.rejects(
+    () => clientWithRetry(final, 2).listVms(),
+    (error) => error instanceof ArkerError && error.code === "unavailable",
+  );
+  assert.equal(final.calls.length, 1);
+}
+
 async function testRetryGivesUpAfterExhaustingAttempts(): Promise<void> {
   const fetch = new FakeFetch();
   const matchListVms = (method: string, url: string) => method === "GET" && url === "https://arker.ai/api/v1/vms";
@@ -754,6 +787,58 @@ async function testNonRetryableStatusFailsImmediately(): Promise<void> {
     (error) => error instanceof ArkerError && error.code === "invalid_request",
   );
   assert.equal(fetch.calls.length, 1, "a non-retryable status must not be retried");
+}
+
+async function testUnsafePostDoesNotRetryAmbiguousFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const matchFork = (method: string, url: string) => method === "POST" && url === "https://test.invalid/api/v1/fork";
+  fetch.addJson(matchFork, 503, RETRYABLE_ERROR_BODY);
+  fetch.addJson(matchFork, 200, {
+    vm_id: "vm_duplicate",
+    owner_org_id: "owner",
+    created_at: "now",
+    state: "idle",
+  });
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).fork("ubuntu-full", { name: "must-not-duplicate" }),
+    (error) => error instanceof ArkerError && error.code === "unavailable",
+  );
+  assert.equal(fetch.calls.length, 1, "an ambiguous fork POST must never be replayed without idempotency");
+}
+
+async function testIdempotentPostRetries(): Promise<void> {
+  const fetch = new FakeFetch();
+  const matchRun = (method: string, url: string) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/runs";
+  fetch.addJson(matchRun, 503, RETRYABLE_ERROR_BODY);
+  fetch.addJson(matchRun, 200, {
+    run_id: "run_retry",
+    state: "completed",
+    stdout: "ok",
+    stdout_encoding: "utf-8",
+    stderr: "",
+    stderr_encoding: "utf-8",
+    exit_code: 0,
+  });
+
+  const result = await clientWithRetry(fetch, 2).vm("vm_1").run("printf ok", { idempotencyKey: "retry-safe" });
+  assert.equal(result.type, "completed");
+  assert.equal(result.stdout, "ok");
+  assert.equal(fetch.calls.length, 2);
+  assert.equal(fetch.calls[0]!.headers["idempotency-key"], "retry-safe");
+}
+
+async function testSyncReadRetriesAsIdempotentPost(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_1/sync";
+  fetch.addJson(match, 502, RETRYABLE_ERROR_BODY);
+  fetch.addJson(match, 200, { content: Buffer.from("sync-ok").toString("base64"), encoding: "base64" });
+
+  const bytes = await clientWithRetry(fetch, 2).vm("vm_1").sync("/tmp/read-me");
+  assert.equal(decode(bytes), "sync-ok");
+  assert.equal(fetch.calls.length, 2);
+  assert(fetch.calls[0]!.headers["idempotency-key"]);
+  assert.equal(fetch.calls[1]!.headers["idempotency-key"], fetch.calls[0]!.headers["idempotency-key"]);
 }
 
 async function testGetAndSetPolicies(): Promise<void> {
@@ -1241,8 +1326,12 @@ await testConnectPtyPassesCancelTtlSecs();
 await testConnectPtyDeliversDataAndCloseEvents();
 testSurfaceStubClassificationUsesStructuredErrorCodes();
 await testRetryOnRetryableStatusThenSucceeds();
+await testRetryableFlagOverridesUnknownCodeAndHttpStatus();
 await testRetryGivesUpAfterExhaustingAttempts();
 await testNonRetryableStatusFailsImmediately();
+await testUnsafePostDoesNotRetryAmbiguousFailure();
+await testIdempotentPostRetries();
+await testSyncReadRetriesAsIdempotentPost();
 await testGetAndSetPolicies();
 await testCreateFilesystem();
 await testCancelRun();

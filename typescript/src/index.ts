@@ -64,6 +64,7 @@ const TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed",
 const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
+  "resource_pressure",
   "unavailable",
   "bad_gateway",
   "stale_route",
@@ -457,6 +458,8 @@ interface RetryConfig {
 interface ParsedError {
   code: string;
   message: string;
+  retryAfterSeconds?: number;
+  retryable?: boolean;
 }
 
 export class ArkerError extends Error {
@@ -627,8 +630,11 @@ export class Arker {
       description: src.description ?? null,
       public: src.public ?? null,
       ssh_public_keys: src.ssh_public_keys,
-      disk: src.disk ?? true,
+      // Omit by default so the server derives disk backing from the source.
+      // Forcing true makes nodisk and GPU goldens impossible to fork.
+      disk: src.disk,
       durable: src.durable ?? null,
+      layers: src.layers,
       platforms: src.platforms,
       resources,
       // Omit to inherit the source's policy; pass a document to replace it.
@@ -808,6 +814,7 @@ export class VM {
   // contract (`Vm`).
   readonly vm_id?: Vm["vm_id"];
   readonly name?: Vm["name"];
+  readonly hostname?: Vm["hostname"];
   readonly state?: Vm["state"];
   readonly owner_org_id?: Vm["owner_org_id"];
   readonly created_at?: Vm["created_at"];
@@ -854,7 +861,6 @@ export class VM {
     const merged: ForkRequest = {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
-      disk: request.disk ?? true,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
     const vmId = vm.vm_id;
@@ -1093,6 +1099,7 @@ export class VM {
       `${vmPath(this.id)}/sync`,
       { op: "manifest", path },
       this.baseUrl,
+      { "Idempotency-Key": ulid() },
     );
     const out = new Map<string, string>();
     if (!Array.isArray(payload.entries)) return out;
@@ -1152,6 +1159,7 @@ export class VM {
       `${vmPath(this.id)}/sync`,
       request,
       this.baseUrl,
+      { "Idempotency-Key": ulid() },
     );
     if ("content" in response) return decodeBytes(response.content, response.encoding);
     const signed = await this._client._fetch(response.presigned_url);
@@ -1213,12 +1221,19 @@ export class VM {
   private async sendOneWrite(entry: SyncWriteEntry): Promise<SyncWriteResult> {
     let lastError: SyncEntryError | undefined;
     const attempts = this._client._retryAttempts();
+    const idempotencyKey = ulid();
     for (let attempt = 0; attempt < attempts; attempt++) {
       const request: SyncWriteOperationRequest = {
         op: "write",
         writes: [entry],
       };
-      const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, request, this.baseUrl);
+      const response = await this._client._request<SyncWriteResponse>(
+        "POST",
+        `${vmPath(this.id)}/sync`,
+        request,
+        this.baseUrl,
+        { "Idempotency-Key": idempotencyKey },
+      );
       const result = response.results[0];
       if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
       const error = result.error ?? undefined;
@@ -1826,6 +1841,13 @@ async function requestJson<T>(
   let lastStatus = 0;
   let lastText = "";
   let lastError: ParsedError | undefined;
+  // A transport failure leaves an unsafe POST ambiguous: the server may have
+  // committed it before the response was lost. Retrying fork/create requests
+  // can therefore leak duplicate resources. Only retry an unsafe
+  // method when the caller supplied an idempotency key, or when a structured
+  // server response explicitly says that this request is safe to retry.
+  const idempotentRequest = method !== "POST"
+    || Object.keys(headers).some((name) => name.toLowerCase() === "idempotency-key");
 
   for (let attempt = 0; attempt < retry.attempts; attempt++) {
     try {
@@ -1842,8 +1864,9 @@ async function requestJson<T>(
       lastText = text;
       lastError = parsedError;
 
-      if (isRetryable(status, parsedError) && attempt < retry.attempts - 1) {
-        await sleep(retryDelay(retry, attempt));
+      const serverAuthorizedRetry = parsedError?.retryable === true;
+      if (isRetryable(status, parsedError) && (idempotentRequest || serverAuthorizedRetry) && attempt < retry.attempts - 1) {
+        await sleep(retryDelay(retry, attempt, parsedError?.retryAfterSeconds));
         continue;
       }
 
@@ -1861,7 +1884,7 @@ async function requestJson<T>(
       return payload as T;
     } catch (error) {
       if (error instanceof ArkerError) throw error;
-      if (attempt < retry.attempts - 1) {
+      if (idempotentRequest && attempt < retry.attempts - 1) {
         await sleep(retryDelay(retry, attempt));
         continue;
       }
@@ -1894,13 +1917,21 @@ function extractError(payload: unknown): ParsedError | undefined {
       typeof error.message === "string" &&
       typeof error.timestamp === "string"
     ) {
-      return { code: error.code, message: error.message };
+      return {
+        code: error.code,
+        message: error.message,
+        retryAfterSeconds: typeof error.retry_after === "number" && error.retry_after >= 0
+          ? error.retry_after
+          : undefined,
+        retryable: typeof error.retryable === "boolean" ? error.retryable : undefined,
+      };
     }
   }
   return undefined;
 }
 
 function isRetryable(status: number, error?: ParsedError): boolean {
+  if (error?.retryable !== undefined) return error.retryable;
   if (RETRYABLE_HTTP.has(status)) return true;
   if (!error) return false;
   if (RETRYABLE_CODES.has(error.code as ErrorCode)) return true;
@@ -1908,9 +1939,9 @@ function isRetryable(status: number, error?: ParsedError): boolean {
   return TRANSIENT_HINTS.some((hint) => error.message.includes(hint));
 }
 
-function retryDelay(retry: RetryConfig, attempt: number): number {
+function retryDelay(retry: RetryConfig, attempt: number, retryAfterSeconds?: number): number {
   const base = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** attempt);
-  return base + jitter(retry.jitterMs);
+  return Math.max(base + jitter(retry.jitterMs), (retryAfterSeconds ?? 0) * 1_000);
 }
 
 function jitter(maxMs: number): number { return Math.floor(Math.random() * (maxMs + 1)); }
@@ -2079,15 +2110,27 @@ class Http2Connection {
       let text = "";
       stream.setEncoding("utf8");
       // Bound the request so a stalled stream — e.g. a half-open session reused after
-      // an idle timeout — rejects instead of hanging the caller indefinitely.
-      stream.setTimeout(HTTP2_REQUEST_TIMEOUT_MS, () => stream.destroy(new Error("HTTP/2 request timed out")));
+      // an idle timeout — rejects instead of hanging the caller indefinitely. Use an
+      // explicit timer instead of ClientHttp2Stream.setTimeout(): Bun implements the
+      // latter by accumulating timeout listeners on the shared TLS socket, which emits
+      // MaxListenersExceededWarning under the proxy's command-heavy workload.
+      const timeout = setTimeout(() => stream.destroy(new Error("HTTP/2 request timed out")), HTTP2_REQUEST_TIMEOUT_MS);
+      timeout.unref?.();
+      const clearRequestTimeout = () => clearTimeout(timeout);
+      stream.once("close", clearRequestTimeout);
       stream.on("response", (responseHeaders) => {
         this.confirmed = true;
         status = Number(responseHeaders[":status"]) || 0;
       });
       stream.on("data", (chunk: string) => { text += chunk; });
-      stream.on("end", () => resolve({ status, ok: status >= 200 && status < 300, text }));
-      stream.on("error", reject);
+      stream.on("end", () => {
+        clearRequestTimeout();
+        resolve({ status, ok: status >= 200 && status < 300, text });
+      });
+      stream.on("error", (error) => {
+        clearRequestTimeout();
+        reject(error);
+      });
       stream.end(body);
     }).finally(() => {
       if (--this.streams === 0) this.session.unref();
