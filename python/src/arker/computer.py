@@ -1073,16 +1073,33 @@ class VM:
         if n <= DIRECT_MAX_FILES and direct_cost <= extract_cost:
             self._sync_direct_write(changed, remote_root, nested)
         else:
-            # Many files → ONE round-trip: tar + server-side guest untar. A single
-            # `tar -x` batches the writes/fsync in one guest process (beats a
-            # per-file batched-binary write — the in-guest agent serializes per-file
-            # writes). COMPRESS ONLY when the data is compressible: for
-            # incompressible data gzip is a double loss (no upload shrink + a guest
-            # gunzip ~3.4x slower than `tar -xf`), so send a raw tar. This is what
-            # wins many-incompressible-files vs E2B (measured ~171 ms untar+upload
-            # vs ~591 ms for the gzip path).
+            # Many files → ONE round-trip: tar + server-side guest untar (a single
+            # `tar -x` batches the writes/fsync in one guest process, beating a
+            # per-file batched write — the in-guest agent serializes writes).
+            #
+            # GZIP-vs-RAW is a grounded cost decision. gzip is a WIN when it shrinks
+            # the upload enough to pay for BOTH the client gzip AND the guest gunzip
+            # (measured ~104 ms/MB-of-gz); it's a LOSS when it can't shrink much —
+            # incompressible file data. But a tar also pads every file to 512-B
+            # blocks + a 512-B header (~768 B/file) that gzip removes, so MANY TINY
+            # files make even "incompressible" data a padding-dominated (compressible)
+            # tar. Model both effects:
+            #   raw_sz ≈ total + n*768        (data + tar padding/headers)
+            #   gz_sz  ≈ gz_ratio*total       (data compresses per probe; padding→0)
+            # Send RAW only when the extra padding-upload is cheaper than the gunzip
+            # it avoids — true for large incompressible files (bin blobs), false for
+            # many tiny files or compressible code.
+            GUNZIP_S_PER_MB = 0.104   # guest gunzip: ~294ms/2MB minus raw untar
+            GZIP_S_PER_MB = 0.022     # client gzip level 1: ~66ms/3MB
+            raw_sz = total + n * 768
+            gz_sz = max(int(gz_ratio * total), n * 24) + 512
+            raw_extra_upload = max(0, raw_sz - gz_sz) / BW
+            gunzip_avoided = (
+                GUNZIP_S_PER_MB * (gz_sz / 1e6) + GZIP_S_PER_MB * (raw_sz / 1e6)
+            )
+            use_raw = raw_extra_upload < gunzip_avoided
             self._upload_and_extract_tarball(
-                changed, remote_root, compress=(gz_ratio < 0.9)
+                changed, remote_root, compress=not use_raw
             )
 
     _SYNC_DIRECT_PARALLELISM = 16
