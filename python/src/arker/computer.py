@@ -1039,7 +1039,13 @@ class VM:
         # also pays the server's per-request handling (parse+sha+guest write). This
         # ~5 ms/req dominates when RTT≈0 (co-located) and is why direct grows with
         # N (measured ~5-7 ms/req on loopback: 600→~250 ms, 2000→~650 ms).
-        REQ_PROC = 5e-3        # server-side handling per serialized keep-alive write
+        # 2026-08-06: the isolated ~5-7ms/req badly understates the REAL cost — each
+        # /sync-stream re-pays arkerd's full per-request preamble (get_vm +
+        # require_mutable + lifecycle acquire_running + get_runtimes +
+        # find_guest_control + guest_agent_for_runtime + a FRESH vsock connect + a
+        # per-file sha256), which on a loaded host pushed a 200-file/1.8MB initial to
+        # ~1.6s vs ~300ms for the single-request path. Model the real serialized cost.
+        REQ_PROC = 14e-3       # server-side per-request preamble (VM/runtime resolve + vsock connect + sha)
         # EXTRACT is one guest `tar -x`: a fixed spawn/cold-start plus a per-file
         # cost that AMORTIZES with batch size (the untar streams). A flat per-file
         # term badly over-charges large N; the real curve is sub-linear. Measured
@@ -1069,7 +1075,14 @@ class VM:
         # a modest file count we take the single-request path even if the clean
         # cost model marginally prefers direct: bounded worst case beats a slightly
         # better best case. Below the cap, direct is 1-few waves and low-risk.
-        DIRECT_MAX_FILES = 256
+        # 2026-08-06: 256 was FAR too high — it let a ~200-file initial repo sync
+        # de-batch into ~200 per-file requests (~1.6s on a loaded host) instead of
+        # ONE round-trip (~300ms), a ~5x regression vs the prior always-tarball path
+        # and vs E2B. Cap at ~1 parallel wave (P): above a wave's worth of files the
+        # single-request extract (or /sync-batch) is both faster AND bounded, so we
+        # never de-batch a large/initial sync. Small deltas (≤P files) still take the
+        # low-latency direct path where it genuinely wins co-located.
+        DIRECT_MAX_FILES = P
         if n <= DIRECT_MAX_FILES and direct_cost <= extract_cost:
             self._sync_direct_write(changed, remote_root, nested)
         else:
