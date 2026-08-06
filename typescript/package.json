@@ -7,7 +7,8 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "arker": "./dist/cli.js"
+    "arker": "./dist/cli.js",
+    "arker-kernel-proxy": "./dist/kernel-proxy-cli.js"
   },
   "exports": {
     ".": {
@@ -29,10 +30,17 @@
       "types": "./dist/modal.d.ts",
       "import": "./dist/modal.js",
       "require": "./dist/modal.cjs"
+    },
+    "./kernel-proxy": {
+      "types": "./dist/kernel-proxy.d.ts",
+      "import": "./dist/kernel-proxy.js",
+      "require": "./dist/kernel-proxy.cjs"
     }
   },
   "files": [
     "dist",
+    "docs",
+    "scripts/kernel-proxy",
     "README.md",
     "LICENSE"
   ],
@@ -41,13 +49,20 @@
   },
   "packageManager": "bun@1.3.8",
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts src/daytona.ts src/e2b.ts src/modal.ts --format esm,cjs --dts --clean --target=node18",
+    "build": "tsup src/index.ts src/cli.ts src/daytona.ts src/e2b.ts src/modal.ts src/kernel-proxy.ts src/kernel-proxy-cli.ts --format esm,cjs --dts --clean --target=node18",
     "check:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts --check",
     "demo": "bun tests/demo.ts",
     "example:ios-qa": "bun examples/ios-qa.ts",
     "generate:api-types": "openapi-typescript ../contract/openapi.json --default-non-nullable false -o src/generated/api-types.ts",
     "smoke": "bun tests/conformance/fork-run-sync.ts",
-    "test": "bun tests/unit.ts && bun tests/compat.ts && bun run build && bun tests/cli.ts && bun tests/cli-pty.ts && bun tests/http2.ts",
+    "test": "bun tests/unit.ts && bun tests/compat.ts && bun tests/kernel-proxy.ts && bun run build && bun tests/cli.ts && bun tests/cli-pty.ts && bun tests/http2.ts",
+    "test:kernel-proxy": "bun tests/kernel-proxy.ts",
+    "test:kernel-proxy-live": "bun tests/kernel-proxy-live.ts",
+    "test:kernel-proxy-control-live": "bun tests/kernel-proxy-control-live.ts",
+    "test:kernel-proxy-standby-live": "bun tests/kernel-proxy-standby-live.ts",
+    "test:kernel-proxy-hybrid-live": "bun tests/kernel-proxy-hybrid-live.ts",
+    "benchmark:kernel-proxy": "bun tests/kernel-proxy-benchmark.ts",
+    "benchmark:kernel-production": "bun tests/kernel-production-benchmark.ts",
     "test:compat": "bun tests/compat.ts",
     "test:compat-live": "bun tests/compat-live.ts",
     "test:compat-fallback-live": "bun tests/compat-fallback-live.ts",
@@ -73,6 +88,7 @@
     "@computesdk/daytona": "^1.7.30",
     "@computesdk/e2b": "^1.7.51",
     "@computesdk/modal": "^1.9.3",
+    "@onkernel/sdk": "0.86.0",
     "@types/node": "^25.6.0",
     "@types/ws": "^8.18.1",
     "computesdk": "^4.1.3",
