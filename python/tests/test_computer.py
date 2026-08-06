@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from contextlib import contextmanager
 from typing import Any
 
@@ -1563,3 +1564,56 @@ def test_fork_omits_disk_so_nodisk_sources_work() -> None:
     with use_transport(t):
         client().fork(source_vm_name="ubuntu", disk=True)
     assert json.loads(t.calls[2]["body"])["disk"] is True
+
+
+def test_retry_delay_honours_server_retry_after() -> None:
+    # A hint beats backoff when the caller left max_delay_s at its default:
+    # the default exists to shape backoff, and capping the hint with it would
+    # neuter real capacity waits.
+    retry = sdk.RetryOptions(attempts=4, base_delay_s=0.2, jitter_s=0.0)
+    assert sdk._retry_delay(retry, 0, {"code": "unavailable", "retry_after": 30}) == 30.0
+
+    # Without a hint the existing backoff is untouched.
+    assert sdk._retry_delay(retry, 0) == pytest.approx(0.2)
+    assert sdk._retry_delay(retry, 2) == pytest.approx(0.8)
+    assert sdk._retry_delay(retry, 1, {"code": "unavailable", "retry_after": None}) == pytest.approx(0.4)
+
+    # An explicitly configured max_delay_s is the caller's latency budget, and
+    # it caps the hint too.
+    capped = sdk.RetryOptions(attempts=4, base_delay_s=0.2, max_delay_s=2.0, jitter_s=0.0)
+    assert sdk._retry_delay(capped, 0, {"code": "unavailable", "retry_after": 30}) == 2.0
+
+
+def test_wire_retry_after_rejects_what_the_decoder_lets_through() -> None:
+    # The response decoder passes scalars through unchecked, so anything the
+    # server sent lands here; a non-number must not reach the delay math.
+    for bad in (0, -5, True, "30", None):
+        assert sdk._wire_retry_after(bad) is None
+    assert sdk._wire_retry_after(30) == 30.0
+    assert sdk._wire_retry_after(1.5) == 1.5
+
+
+def test_retry_after_hint_drives_the_actual_sleep() -> None:
+    # The one test of the wiring: the request loop must hand the parsed error
+    # to the delay, or the hint silently never applies. Lower bound only.
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/v1/fork")
+    t.add_json(predicate, 503, {"error": {
+        "code": "unavailable", "message": "cold",
+        "retry_after": 0.05, "timestamp": "2026-01-01T00:00:00.000Z",
+    }})
+    t.add_json(predicate, 200, {
+        "vm_id": "vm_child", "owner_org_id": "owner", "created_at": "now",
+        "description": None, "public": False, "state": "idle",
+        "sessions": [session()], "network": {}, "resources": {},
+    })
+
+    started = time.monotonic()
+    with use_transport(t):
+        sdk.Arker(
+            api_key="ark_live_test",
+            base_url="https://test.invalid/api",
+            retry={"attempts": 2, "base_delay_s": 0.001, "jitter_s": 0.0},
+        ).fork(source_vm_name="ubuntu")
+    assert time.monotonic() - started >= 0.045
+    assert len(t.calls) == 2

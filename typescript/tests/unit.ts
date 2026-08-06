@@ -1253,6 +1253,47 @@ await testRunAndGetRunAgreeOnStateForKilledRun();
 
 await testRunReturnsImageBytesIntactAndTextIsLossy();
 await testGetRunReturnsImageBytesIntact();
+async function testRetryHonoursServerRetryAfter(): Promise<void> {
+  // A hint beats backoff when the caller left maxDelayMs at its default: the
+  // default exists to shape backoff, and capping the hint with it would
+  // neuter real capacity waits.
+  const client = new Arker({ apiKey: "k", baseUrl: "http://x", retry: { attempts: 4, baseDelayMs: 200, jitterMs: 0 } });
+  assert.equal(client._retryDelay(0, { code: "unavailable", message: "", retryAfterS: 30 }), 30_000);
+
+  // Without a hint the existing backoff is untouched.
+  assert.equal(client._retryDelay(0), 200);
+  assert.equal(client._retryDelay(2), 800);
+  assert.equal(client._retryDelay(1, { code: "unavailable", message: "" }), 400);
+
+  // An explicitly configured maxDelayMs is the caller's latency budget, and
+  // it caps the hint too.
+  const capped = new Arker({ apiKey: "k", baseUrl: "http://x", retry: { attempts: 4, baseDelayMs: 200, maxDelayMs: 2_000, jitterMs: 0 } });
+  assert.equal(capped._retryDelay(0, { code: "unavailable", message: "", retryAfterS: 30 }), 2_000);
+}
+
+async function testRetryAfterHintDrivesTheActualSleep(): Promise<void> {
+  // The one test of the wiring: the request loop must hand the parsed error
+  // to retryDelay, or the hint silently never applies. Lower bound only.
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson((m, u) => m === "POST" && u.includes("/fork"), 503, {
+    error: { code: "unavailable", message: "cold", retry_after: 0.05, timestamp: new Date().toISOString() },
+  });
+  fetchImpl.addJson((m, u) => m === "POST" && u.includes("/fork"), 200, { vm_id: "vm-1", state: "running" });
+  const client = new Arker({
+    apiKey: "k",
+    baseUrl: "http://x",
+    fetch: fetchImpl.fetch,
+    retry: { attempts: 2, baseDelayMs: 1, jitterMs: 0 },
+  });
+  const started = Date.now();
+  const vm = await client.fork("arkuntu");
+  assert.equal(vm.id, "vm-1");
+  assert.ok(Date.now() - started >= 45, "the 50ms hint must drive the sleep");
+  assert.equal(fetchImpl.calls.length, 2);
+}
+
+await testRetryHonoursServerRetryAfter();
+await testRetryAfterHintDrivesTheActualSleep();
 await testRunAndGetRunAgreeOnBinaryOutput();
 await testEveryByteValueRoundTrips();
 await testUtf8WireStillYieldsBothForms();
