@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { BlockList, connect as connectTcp, isIP, type AddressInfo, type Socket } from "node:net";
@@ -16,6 +17,7 @@ const METADATA_PREFIX = "arker-kernel-v1:";
 const METADATA_PATH = "/opt/arker-kernel/session.json";
 const DEFAULT_SOURCE = "ubuntu-full";
 const DEFAULT_BASE_URL = "https://aws-us-east-1.arker.ai/api";
+const DEFAULT_KERNEL_BASE_URL = "https://api.onkernel.com";
 const DEFAULT_SETUP_TIMEOUT_SECONDS = 1_800;
 const MAX_BODY_BYTES = 128 * 1024 * 1024;
 const MAX_PENDING_WEBSOCKET_BYTES = 16 * 1024 * 1024;
@@ -98,6 +100,25 @@ export interface KernelProxyOptions {
   standbyDelayMs?: number;
   /** Durable registry and blob directory for Kernel profiles, extensions, proxies, and pools. */
   stateDirectory?: string;
+  /** Optional session-affine traffic split between Kernel and Arker. */
+  hybridRouting?: KernelHybridRoutingOptions;
+}
+
+export interface KernelHybridRoutingOptions {
+  /** Kernel credential used only for upstream requests. Defaults to KERNEL_UPSTREAM_API_KEY. */
+  kernelApiKey?: string;
+  /** Kernel REST origin. Defaults to https://api.onkernel.com. */
+  kernelBaseUrl?: string;
+  /** Percentage of new browser sessions created by Kernel. The remainder are fresh Arker forks. */
+  kernelTrafficPercent?: number;
+  /** Fall back to Arker for explicit retryable Kernel create responses. Defaults to true. */
+  fallbackToArkerOnCreateError?: boolean;
+  /** Retry a browser-scoped request in Arker when Kernel returns 404. Defaults on when an upstream key is configured. */
+  fallbackToArkerOnNotFound?: boolean;
+  /** Also fall back after ambiguous Kernel network failures. Disabled by default to avoid duplicate creates. */
+  fallbackToArkerOnTransportError?: boolean;
+  /** Overall Kernel request timeout. Defaults to 30000 ms. */
+  kernelRequestTimeoutMs?: number;
 }
 
 interface BrowserMetadata {
@@ -218,12 +239,38 @@ interface StoredBrowserPool {
   leasedSessionIds: string[];
 }
 
+type BrowserProvider = "arker" | "kernel";
+
+interface StoredBrowserRoute {
+  sessionId: string;
+  name?: string;
+  provider: BrowserProvider;
+  updatedAt: string;
+}
+
 interface KernelProxyState {
   version: 1;
   profiles: StoredProfile[];
   extensions: StoredExtension[];
   proxies: StoredProxy[];
   browserPools: StoredBrowserPool[];
+  browserRoutes: StoredBrowserRoute[];
+}
+
+interface ResolvedKernelHybridRoutingOptions {
+  kernelApiKey?: string;
+  kernelBaseUrl: string;
+  kernelTrafficPercent: number;
+  fallbackToArkerOnCreateError: boolean;
+  fallbackToArkerOnNotFound: boolean;
+  fallbackToArkerOnTransportError: boolean;
+  kernelRequestTimeoutMs: number;
+}
+
+interface KernelUpstreamResponse {
+  response: Response;
+  cancelTimeout: () => void;
+  timedOut: () => boolean;
 }
 
 interface BrowserAssociations {
@@ -310,9 +357,40 @@ class KernelHttpError extends Error {
   }
 }
 
+const REQUEST_BODY_CACHE = new WeakMap<IncomingMessage, Buffer>();
+
 function env(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value || undefined;
+}
+
+function envBoolean(name: string, configured: boolean | undefined, fallback: boolean): boolean {
+  if (configured !== undefined) return configured;
+  const value = env(name);
+  if (value === undefined) return fallback;
+  if (/^(?:1|true|yes)$/i.test(value)) return true;
+  if (/^(?:0|false|no)$/i.test(value)) return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function httpOrigin(value: string, label: string): string {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("unsupported protocol");
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    throw new Error(`${label} must be a valid http or https URL`);
+  }
+}
+
+function isRetryableKernelCreateStatus(status: number): boolean {
+  return status === 404 || status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function isLikelyArkerBrowserReference(value: string): boolean {
+  return value.startsWith("vmh-")
+    || value.startsWith("vm_")
+    || /^[0-9A-HJKMNP-TV-Z]{26}_[A-Za-z0-9-]+$/i.test(value);
 }
 
 function shellQuote(value: string): string {
@@ -631,6 +709,11 @@ function contentType(req: IncomingMessage): string {
 }
 
 async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<Buffer> {
+  const cached = REQUEST_BODY_CACHE.get(req);
+  if (cached) {
+    if (cached.length > limit) throw new KernelHttpError(413, "payload_too_large", `request body exceeds ${limit} bytes`);
+    return cached;
+  }
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -639,7 +722,9 @@ async function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<B
     if (size > limit) throw new KernelHttpError(413, "payload_too_large", `request body exceeds ${limit} bytes`);
     chunks.push(buf);
   }
-  return Buffer.concat(chunks);
+  const body = Buffer.concat(chunks);
+  REQUEST_BODY_CACHE.set(req, body);
+  return body;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -809,6 +894,9 @@ export class KernelProxy {
   private readonly arker: Arker;
   private readonly forwardApiKey: string;
   private readonly signingSecret: string;
+  private readonly hybridRouting: ResolvedKernelHybridRoutingOptions;
+  private readonly browserProviders = new Map<string, BrowserProvider>();
+  private readonly browserRouteNames = new Map<string, string>();
   private readonly cache = new Map<string, BrowserRecord>();
   private readonly interactiveProcesses = new Map<string, InteractiveProcess>();
   private readonly detachedProcesses = new Map<string, DetachedProcess>();
@@ -869,6 +957,26 @@ export class KernelProxy {
     const arkerBaseUrl = options.arkerBaseUrl ?? env("ARKER_BASE_URL") ?? DEFAULT_BASE_URL;
     const apiKey = options.apiKey ?? env("KERNEL_PROXY_API_KEY");
     const signingSecret = options.signingSecret ?? env("KERNEL_PROXY_SIGNING_SECRET") ?? randomBytes(32).toString("base64url");
+    const hybrid = options.hybridRouting ?? {};
+    const kernelApiKey = hybrid.kernelApiKey ?? env("KERNEL_UPSTREAM_API_KEY");
+    const kernelBaseUrl = httpOrigin(hybrid.kernelBaseUrl ?? env("KERNEL_UPSTREAM_BASE_URL") ?? DEFAULT_KERNEL_BASE_URL, "Kernel upstream URL");
+    const kernelTrafficPercent = hybrid.kernelTrafficPercent ?? Number(env("KERNEL_PROXY_KERNEL_TRAFFIC_PERCENT") ?? "0");
+    const fallbackToArkerOnCreateError = envBoolean(
+      "KERNEL_PROXY_FALLBACK_TO_ARKER_ON_CREATE_ERROR",
+      hybrid.fallbackToArkerOnCreateError,
+      true,
+    );
+    const fallbackToArkerOnNotFound = envBoolean(
+      "KERNEL_PROXY_FALLBACK_TO_ARKER_ON_NOT_FOUND",
+      hybrid.fallbackToArkerOnNotFound,
+      kernelApiKey !== undefined,
+    );
+    const fallbackToArkerOnTransportError = envBoolean(
+      "KERNEL_PROXY_FALLBACK_TO_ARKER_ON_TRANSPORT_ERROR",
+      hybrid.fallbackToArkerOnTransportError,
+      false,
+    );
+    const kernelRequestTimeoutMs = hybrid.kernelRequestTimeoutMs ?? Number(env("KERNEL_PROXY_KERNEL_TIMEOUT_MS") ?? "30000");
     if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new Error("KERNEL proxy port must be an integer between 0 and 65535");
     if (typeof host !== "string" || !host) throw new Error("Kernel proxy host is required");
     if (typeof sourceVmName !== "string" || !sourceVmName) throw new Error("Arker source VM name is required");
@@ -900,6 +1008,15 @@ export class KernelProxy {
     if (!Number.isInteger(standbyDelayMs) || standbyDelayMs < 0 || standbyDelayMs > 60_000) {
       throw new Error("Kernel proxy standby delay must be an integer between 0 and 60000 ms");
     }
+    if (!Number.isFinite(kernelTrafficPercent) || kernelTrafficPercent < 0 || kernelTrafficPercent > 100) {
+      throw new Error("Kernel traffic percentage must be between 0 and 100");
+    }
+    if (!Number.isInteger(kernelRequestTimeoutMs) || kernelRequestTimeoutMs < 1 || kernelRequestTimeoutMs > MAX_TIMEOUT_MS) {
+      throw new Error(`Kernel upstream timeout must be an integer between 1 and ${MAX_TIMEOUT_MS} ms`);
+    }
+    if ((kernelTrafficPercent > 0 || fallbackToArkerOnNotFound) && !kernelApiKey) {
+      throw new Error("KERNEL_UPSTREAM_API_KEY is required when Kernel hybrid routing is enabled");
+    }
     if (!signingSecret) throw new Error("Kernel proxy signing secret must not be empty");
     if (options.publicBaseUrl) {
       try {
@@ -917,6 +1034,15 @@ export class KernelProxy {
     this.options = { ...options, host, port, sourceVmName, sourcePlatforms: normalizedSourcePlatforms, setupTimeoutSeconds, setupMemoryMib, runtimeMemoryMib, runtimeVcpu, createAttempts, automaticStandby, standbyDelayMs, stateDirectory, arkerApiKey, arkerBaseUrl, apiKey };
     this.forwardApiKey = arkerApiKey;
     this.signingSecret = signingSecret;
+    this.hybridRouting = {
+      kernelApiKey,
+      kernelBaseUrl,
+      kernelTrafficPercent,
+      fallbackToArkerOnCreateError,
+      fallbackToArkerOnNotFound,
+      fallbackToArkerOnTransportError,
+      kernelRequestTimeoutMs,
+    };
     this.arker = options.arker ?? new Arker({
       apiKey: arkerApiKey,
       baseUrl: arkerBaseUrl,
@@ -938,6 +1064,12 @@ export class KernelProxy {
         resolve();
       });
     });
+    try {
+      await this.loadBrowserRoutes();
+    } catch (error) {
+      await new Promise<void>((resolveClose) => this.server.close(() => resolveClose()));
+      throw error;
+    }
     this.sweepTimer = setInterval(() => void this.sweepExpired(), 5_000);
     this.sweepTimer.unref?.();
     const address = this.server.address() as AddressInfo;
@@ -979,6 +1111,7 @@ export class KernelProxy {
     await Promise.resolve();
     await Promise.all([...this.vmPinStateQueues.values()].map((pin) => pin.catch(() => undefined)));
     await this.flushScheduledStandby();
+    await this.stateQueue.catch(() => undefined);
     // Bun can omit the HTTP server's close callback after upgraded WebSocket
     // connections even once every tracked socket is gone. The listening socket
     // is already closed synchronously by server.close(); bound only the callback
@@ -1099,6 +1232,7 @@ export class KernelProxy {
 
   private forgetRecord(record: BrowserRecord): void {
     for (const [key, cached] of this.cache) if (cached.vm.id === record.vm.id) this.cache.delete(key);
+    void this.forgetBrowserProvider(record.vm.id);
     this.knownAwakeVms.delete(record.vm.id);
     this.vmPinCounts.delete(record.vm.id);
     const scheduled = this.vmStandbyTimers.get(record.vm.id);
@@ -1121,17 +1255,18 @@ export class KernelProxy {
   }
 
   private emptyState(): KernelProxyState {
-    return { version: STATE_VERSION, profiles: [], extensions: [], proxies: [], browserPools: [] };
+    return { version: STATE_VERSION, profiles: [], extensions: [], proxies: [], browserPools: [], browserRoutes: [] };
   }
 
   private async readState(): Promise<KernelProxyState> {
     try {
       const parsed = JSON.parse(await readFile(join(this.options.stateDirectory, "registry.json"), "utf8")) as Partial<KernelProxyState>;
       if (parsed.version !== STATE_VERSION || !Array.isArray(parsed.profiles) || !Array.isArray(parsed.extensions)
-        || !Array.isArray(parsed.proxies) || !Array.isArray(parsed.browserPools)) {
+        || !Array.isArray(parsed.proxies) || !Array.isArray(parsed.browserPools)
+        || (parsed.browserRoutes !== undefined && !Array.isArray(parsed.browserRoutes))) {
         throw new KernelHttpError(500, "state_corrupt", "Kernel proxy state registry has an unsupported or invalid shape");
       }
-      return parsed as KernelProxyState;
+      return { ...parsed, browserRoutes: parsed.browserRoutes ?? [] } as KernelProxyState;
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return this.emptyState();
       if (error instanceof KernelHttpError) throw error;
@@ -1162,6 +1297,72 @@ export class KernelProxy {
       return result;
     } finally {
       release();
+    }
+  }
+
+  private async loadBrowserRoutes(): Promise<void> {
+    const routes = await this.withState((state) => state.browserRoutes);
+    this.browserProviders.clear();
+    this.browserRouteNames.clear();
+    for (const route of routes) {
+      if (!route || typeof route.sessionId !== "string" || !route.sessionId
+        || (route.provider !== "arker" && route.provider !== "kernel")) continue;
+      this.browserProviders.set(route.sessionId, route.provider);
+      if (typeof route.name === "string" && route.name) {
+        this.browserProviders.set(route.name, route.provider);
+        this.browserRouteNames.set(route.sessionId, route.name);
+      }
+    }
+  }
+
+  private async rememberBrowserProvider(sessionId: string, provider: BrowserProvider, name?: string): Promise<void> {
+    this.browserProviders.set(sessionId, provider);
+    const previousName = this.browserRouteNames.get(sessionId);
+    if (previousName && previousName !== name) this.browserProviders.delete(previousName);
+    if (name) {
+      this.browserProviders.set(name, provider);
+      this.browserRouteNames.set(sessionId, name);
+    } else {
+      this.browserRouteNames.delete(sessionId);
+    }
+    try {
+      await this.withState((state) => {
+        state.browserRoutes = state.browserRoutes.filter((route) =>
+          route.sessionId !== sessionId && route.name !== sessionId
+          && (!name || (route.sessionId !== name && route.name !== name)));
+        state.browserRoutes.push({ sessionId, ...(name ? { name } : {}), provider, updatedAt: isoNow() });
+      }, true);
+    } catch (error) {
+      this.debugTiming("hybrid-route.persist-error", performance.now(), {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async forgetBrowserProvider(reference: string): Promise<void> {
+    let sessionId = reference;
+    for (const [candidate, name] of this.browserRouteNames) {
+      if (name === reference) {
+        sessionId = candidate;
+        break;
+      }
+    }
+    const name = this.browserRouteNames.get(sessionId);
+    this.browserProviders.delete(reference);
+    this.browserProviders.delete(sessionId);
+    if (name) this.browserProviders.delete(name);
+    this.browserRouteNames.delete(sessionId);
+    try {
+      await this.withState((state) => {
+        state.browserRoutes = state.browserRoutes.filter((route) =>
+          route.sessionId !== reference && route.name !== reference
+          && route.sessionId !== sessionId && route.name !== name);
+      }, true);
+    } catch (error) {
+      this.debugTiming("hybrid-route.delete-error", performance.now(), {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -2030,6 +2231,169 @@ export class KernelProxy {
     }
   }
 
+  private async fetchKernelUpstream(req: IncomingMessage, url: URL): Promise<KernelUpstreamResponse> {
+    const kernelApiKey = this.hybridRouting.kernelApiKey;
+    if (!kernelApiKey) throw new KernelHttpError(503, "kernel_upstream_unconfigured", "Kernel upstream routing is not configured");
+    const headers = new Headers();
+    const omitted = new Set([
+      "authorization", "connection", "content-length", "host", "keep-alive",
+      "proxy-authenticate", "proxy-authorization", "te", "trailer",
+      "transfer-encoding", "upgrade", "x-api-key", "x-kernel-api-key",
+    ]);
+    for (const name of String(req.headers.connection || "").split(",")) {
+      if (name.trim()) omitted.add(name.trim().toLowerCase());
+    }
+    for (const [name, rawValue] of Object.entries(req.headers)) {
+      if (omitted.has(name.toLowerCase()) || rawValue === undefined) continue;
+      if (Array.isArray(rawValue)) for (const value of rawValue) headers.append(name, value);
+      else headers.set(name, rawValue);
+    }
+    headers.set("authorization", `Bearer ${kernelApiKey}`);
+    // Node fetch transparently decompresses responses, so request identity
+    // encoding and relay a self-consistent body/header pair.
+    headers.set("accept-encoding", "identity");
+    const body = ["GET", "HEAD"].includes(req.method || "GET") ? undefined : await readBody(req);
+    const upstreamUrl = new URL(`${url.pathname.replace(/^\//, "")}${url.search}`, `${this.hybridRouting.kernelBaseUrl}/`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.hybridRouting.kernelRequestTimeoutMs);
+    timer.unref?.();
+    try {
+      const response = await fetch(upstreamUrl, {
+        method: req.method || "GET",
+        headers,
+        body: body && body.length > 0 ? body as unknown as BodyInit : undefined,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      return {
+        response,
+        cancelTimeout: () => clearTimeout(timer),
+        timedOut: () => controller.signal.aborted,
+      };
+    } catch (error) {
+      clearTimeout(timer);
+      if (controller.signal.aborted) {
+        throw new KernelHttpError(504, "kernel_upstream_timeout", `Kernel upstream exceeded ${this.hybridRouting.kernelRequestTimeoutMs} ms`);
+      }
+      throw new KernelHttpError(502, "kernel_upstream_unavailable", error instanceof Error ? error.message : "Kernel upstream request failed");
+    }
+  }
+
+  private async discardKernelResponse(upstream: KernelUpstreamResponse): Promise<void> {
+    upstream.cancelTimeout();
+    await upstream.response.body?.cancel().catch(() => undefined);
+  }
+
+  private async readKernelResponseBody(upstream: KernelUpstreamResponse): Promise<Buffer> {
+    try {
+      return Buffer.from(await upstream.response.arrayBuffer());
+    } catch (error) {
+      if (upstream.timedOut()) {
+        throw new KernelHttpError(504, "kernel_upstream_timeout", `Kernel upstream exceeded ${this.hybridRouting.kernelRequestTimeoutMs} ms`);
+      }
+      throw new KernelHttpError(502, "kernel_upstream_unavailable", error instanceof Error ? error.message : "Kernel upstream response failed");
+    } finally {
+      upstream.cancelTimeout();
+    }
+  }
+
+  private async relayKernelResponse(
+    req: IncomingMessage,
+    res: ServerResponse,
+    upstream: KernelUpstreamResponse,
+    bufferedBody?: Buffer,
+  ): Promise<void> {
+    const { response } = upstream;
+    const omitted = new Set(["connection", "content-encoding", "content-length", "keep-alive", "transfer-encoding", "upgrade"]);
+    for (const name of String(response.headers.get("connection") || "").split(",")) {
+      if (name.trim()) omitted.add(name.trim().toLowerCase());
+    }
+    response.headers.forEach((value, name) => {
+      if (!omitted.has(name.toLowerCase())) res.setHeader(name, value);
+    });
+    if (bufferedBody) res.setHeader("content-length", String(bufferedBody.length));
+    res.writeHead(response.status);
+    try {
+      if (req.method === "HEAD" || response.status === 204 || response.status === 304) {
+        res.end();
+        return;
+      }
+      if (bufferedBody) {
+        res.end(bufferedBody);
+        return;
+      }
+      if (!response.body) {
+        res.end();
+        return;
+      }
+      for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+        if (!res.write(Buffer.from(chunk))) await once(res, "drain");
+      }
+      res.end();
+    } finally {
+      upstream.cancelTimeout();
+    }
+  }
+
+  private async routeHybridBrowserRequest(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+    if (!this.hybridRouting.kernelApiKey) return false;
+    const method = req.method || "GET";
+    if (method === "POST" && url.pathname === "/browsers") {
+      if (this.hybridRouting.kernelTrafficPercent <= 0
+        || Math.random() * 100 >= this.hybridRouting.kernelTrafficPercent) return false;
+      try {
+        const upstream = await this.fetchKernelUpstream(req, url);
+        if (!upstream.response.ok
+          && this.hybridRouting.fallbackToArkerOnCreateError
+          && isRetryableKernelCreateStatus(upstream.response.status)) {
+          await this.discardKernelResponse(upstream);
+          return false;
+        }
+        const responseBody = await this.readKernelResponseBody(upstream);
+        if (upstream.response.ok) {
+          try {
+            const result = JSON.parse(responseBody.toString("utf8")) as { session_id?: unknown; name?: unknown };
+            const requestBody = JSON.parse((await readBody(req)).toString("utf8") || "{}") as { name?: unknown };
+            if (typeof result.session_id === "string" && result.session_id) {
+              const name = typeof result.name === "string" && result.name
+                ? result.name
+                : typeof requestBody.name === "string" && requestBody.name ? requestBody.name : undefined;
+              await this.rememberBrowserProvider(result.session_id, "kernel", name);
+            }
+          } catch {
+            // Preserve an otherwise valid upstream response even if a future
+            // Kernel response shape cannot be recorded for restart affinity.
+          }
+        }
+        await this.relayKernelResponse(req, res, upstream, responseBody);
+        return true;
+      } catch (error) {
+        if (this.hybridRouting.fallbackToArkerOnTransportError
+          && error instanceof KernelHttpError
+          && (error.code === "kernel_upstream_timeout" || error.code === "kernel_upstream_unavailable")) return false;
+        throw error;
+      }
+    }
+
+    const match = url.pathname.match(/^\/browsers\/([^/]+)(?:\/|$)/);
+    if (!match) return false;
+    const reference = decodeURIComponent(match[1]!);
+    const provider = this.browserProviders.get(reference);
+    if (provider === "arker" || (!provider && isLikelyArkerBrowserReference(reference))) return false;
+    if (provider !== "kernel" && !this.hybridRouting.fallbackToArkerOnNotFound) return false;
+
+    const upstream = await this.fetchKernelUpstream(req, url);
+    if (upstream.response.status === 404 && this.hybridRouting.fallbackToArkerOnNotFound) {
+      await this.discardKernelResponse(upstream);
+      await this.rememberBrowserProvider(reference, "arker");
+      return false;
+    }
+    if (upstream.response.ok && !provider) await this.rememberBrowserProvider(reference, "kernel");
+    if (method === "DELETE" && upstream.response.ok) await this.forgetBrowserProvider(reference);
+    await this.relayKernelResponse(req, res, upstream);
+    return true;
+  }
+
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
       const url = new URL(req.url || "/", this.publicBaseUrl(req));
@@ -2046,6 +2410,7 @@ export class KernelProxy {
         return;
       }
       this.authenticate(req);
+      if (await this.routeHybridBrowserRequest(req, res, url)) return;
       await this.route(req, res, url);
     } catch (error) {
       const mapped = mapError(error);
@@ -2581,6 +2946,7 @@ export class KernelProxy {
             creationReconciliation.keepVmId = vm!.id;
             this.debugTiming("browser-create.initialize", initializeStarted, { trace_id: traceId, vm_id: vm!.id });
             this.debugTiming("browser-create.total", createStarted, { trace_id: traceId, vm_id: vm!.id, attempt });
+            await this.rememberBrowserProvider(vm!.id, "arker", provisional.name);
             sendJson(res, 200, this.browserResponse(req, record));
           });
           return;
@@ -4768,6 +5134,54 @@ export async function startKernelProxy(options: KernelProxyOptions = {}): Promis
   const proxy = new KernelProxy(options);
   await proxy.listen();
   return proxy;
+}
+
+export type KernelLambdaProxyOptions = Omit<
+  KernelProxyOptions,
+  "host" | "port" | "publicBaseUrl" | "apiKey" | "stateDirectory"
+> & {
+  /** Local bearer key returned to the Kernel SDK. A random cold-start key is used by default. */
+  apiKey?: string;
+  /** Lambda-writable registry path. Defaults to /tmp/arker-kernel-proxy. */
+  stateDirectory?: string;
+};
+
+export interface KernelLambdaProxyHandle {
+  proxy: KernelProxy;
+  /** Pass this value to the official Kernel client's `baseURL` option. */
+  baseURL: string;
+  /** Pass this value to the official Kernel client's `apiKey` option. */
+  apiKey: string;
+}
+
+let lambdaKernelProxyPromise: Promise<KernelLambdaProxyHandle> | undefined;
+
+/**
+ * Start one loopback proxy per warm Lambda execution environment and reuse it
+ * across invocations. The listener is unref'd so it cannot keep an invocation
+ * open after the handler's promise resolves.
+ */
+export function getOrStartKernelProxyForLambda(
+  options: KernelLambdaProxyOptions = {},
+): Promise<KernelLambdaProxyHandle> {
+  if (lambdaKernelProxyPromise) return lambdaKernelProxyPromise;
+  const apiKey = options.apiKey?.trim() || env("KERNEL_PROXY_API_KEY") || randomBytes(32).toString("base64url");
+  lambdaKernelProxyPromise = (async () => {
+    const proxy = await startKernelProxy({
+      ...options,
+      apiKey,
+      host: "127.0.0.1",
+      port: 0,
+      stateDirectory: options.stateDirectory ?? "/tmp/arker-kernel-proxy",
+    });
+    proxy.server.unref();
+    const address = proxy.server.address() as AddressInfo;
+    return { proxy, baseURL: `http://127.0.0.1:${address.port}`, apiKey };
+  })();
+  void lambdaKernelProxyPromise.catch(() => {
+    lambdaKernelProxyPromise = undefined;
+  });
+  return lambdaKernelProxyPromise;
 }
 
 export async function prepareKernelProxySource(options: KernelProxyOptions = {}, name?: string): Promise<VM> {

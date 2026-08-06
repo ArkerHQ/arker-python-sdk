@@ -25,6 +25,11 @@ Options:
   --keep-running         Disable automatic standby for latency-sensitive sessions
   --standby-delay <ms>   Coalescing idle window before standby (default: 5000)
   --state-dir <path>     Durable profiles/extensions/proxies/pools registry
+  --kernel-percent <n>   Percent of new browsers created by Kernel (0-100)
+  --kernel-url <url>     Kernel upstream REST origin
+  --fallback-to-arker-on-create-error  Fall back on retryable Kernel create responses
+  --fallback-to-arker-on-not-found     Try Arker after a Kernel browser 404
+  --fallback-to-arker-on-transport-error  Permit fallback after ambiguous network failures
   --prepare-source <name>  Build a durable prepared source, print its VM ID, and exit
   --help                 Show this help
 
@@ -40,6 +45,13 @@ Environment:
   KERNEL_PROXY_SETUP_MEMORY_MIB Memory used while installing the browser
   KERNEL_PROXY_RUNTIME_MEMORY_MIB  Steady-state browser VM memory target
   KERNEL_PROXY_RUNTIME_VCPU     Steady-state browser VM vCPU target
+  KERNEL_UPSTREAM_API_KEY       Kernel credential used only for upstream routing
+  KERNEL_UPSTREAM_BASE_URL      Kernel REST origin (default: https://api.onkernel.com)
+  KERNEL_PROXY_KERNEL_TRAFFIC_PERCENT  Percent of new sessions sent to Kernel
+  KERNEL_PROXY_FALLBACK_TO_ARKER_ON_CREATE_ERROR  Retryable create fallback toggle
+  KERNEL_PROXY_FALLBACK_TO_ARKER_ON_NOT_FOUND     Browser-404 fallback toggle
+  KERNEL_PROXY_FALLBACK_TO_ARKER_ON_TRANSPORT_ERROR  Ambiguous transport fallback toggle
+  KERNEL_PROXY_KERNEL_TIMEOUT_MS  Kernel request timeout (default: 30000)
   KERNEL_PROXY_DEBUG_TIMING     Emit structured latency stages on stderr
   CLOAKBROWSER_LICENSE_KEY      Optional current CloakBrowser binary license
   CLOAKBROWSER_VERSION          Binary pin (default: 146.0.7680.177.5)
@@ -72,6 +84,11 @@ for (let index = 0; index < args.length; index += 1) {
   else if (arg === "--keep-running") options.automaticStandby = false;
   else if (arg === "--standby-delay") options.standbyDelayMs = Number(value());
   else if (arg === "--state-dir") options.stateDirectory = value();
+  else if (arg === "--kernel-percent") (options.hybridRouting ??= {}).kernelTrafficPercent = Number(value());
+  else if (arg === "--kernel-url") (options.hybridRouting ??= {}).kernelBaseUrl = value();
+  else if (arg === "--fallback-to-arker-on-create-error") (options.hybridRouting ??= {}).fallbackToArkerOnCreateError = true;
+  else if (arg === "--fallback-to-arker-on-not-found") (options.hybridRouting ??= {}).fallbackToArkerOnNotFound = true;
+  else if (arg === "--fallback-to-arker-on-transport-error") (options.hybridRouting ??= {}).fallbackToArkerOnTransportError = true;
   else if (arg === "--prepare-source") prepareSourceName = value();
   else usage();
 }

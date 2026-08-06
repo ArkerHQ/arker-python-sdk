@@ -60,6 +60,7 @@
     "test:kernel-proxy-live": "bun tests/kernel-proxy-live.ts",
     "test:kernel-proxy-control-live": "bun tests/kernel-proxy-control-live.ts",
     "test:kernel-proxy-standby-live": "bun tests/kernel-proxy-standby-live.ts",
+    "test:kernel-proxy-hybrid-live": "bun tests/kernel-proxy-hybrid-live.ts",
     "benchmark:kernel-proxy": "bun tests/kernel-proxy-benchmark.ts",
     "benchmark:kernel-production": "bun tests/kernel-production-benchmark.ts",
     "test:compat": "bun tests/compat.ts",

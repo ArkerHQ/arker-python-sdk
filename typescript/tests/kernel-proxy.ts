@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +10,7 @@ import Kernel from "@onkernel/sdk";
 import { WebSocket } from "ws";
 
 import { ArkerError, type Arker } from "../src/index.js";
-import { KernelProxy } from "../src/kernel-proxy.js";
+import { getOrStartKernelProxyForLambda, KernelProxy } from "../src/kernel-proxy.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -237,6 +239,270 @@ async function expectWebSocketRejected(url: string): Promise<void> {
   });
 }
 
+type FakeKernelMode = "ok" | "retryable" | "invalid" | "timeout";
+
+async function readIncomingBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function startFakeKernel(): Promise<{
+  url: string;
+  close: () => Promise<void>;
+  requests: Array<{ method: string; path: string; authorization?: string; xApiKey?: string; body: string }>;
+  setMode: (mode: FakeKernelMode) => void;
+}> {
+  let mode: FakeKernelMode = "ok";
+  const requests: Array<{ method: string; path: string; authorization?: string; xApiKey?: string; body: string }> = [];
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => void (async () => {
+    const body = await readIncomingBody(req);
+    requests.push({
+      method: req.method || "GET",
+      path: req.url || "/",
+      authorization: typeof req.headers.authorization === "string" ? req.headers.authorization : undefined,
+      xApiKey: typeof req.headers["x-api-key"] === "string" ? req.headers["x-api-key"] : undefined,
+      body,
+    });
+    if (req.method === "POST" && req.url === "/browsers") {
+      if (mode === "retryable") {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "temporarily_unavailable", message: "try later" } }));
+        return;
+      }
+      if (mode === "invalid") {
+        res.writeHead(422, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "validation_error", message: "invalid request" } }));
+        return;
+      }
+      if (mode === "timeout") {
+        setTimeout(() => {
+          if (res.destroyed) return;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ session_id: "kernel-timeout", name: "timeout-browser" }));
+        }, 100).unref?.();
+        return;
+      }
+      const request = body ? JSON.parse(body) as { name?: string } : {};
+      res.writeHead(200, { "content-type": "application/json", "x-kernel-test": "create" });
+      res.end(JSON.stringify({
+        session_id: "kernel-session-1",
+        name: request.name,
+        created_at: new Date().toISOString(),
+        cdp_ws_url: "wss://kernel.example.invalid/devtools/browser/test",
+        webdriver_ws_url: "wss://kernel.example.invalid/session/test",
+        base_url: "https://kernel.example.invalid/browser/direct/kernel-session-1",
+        jwt: "kernel-direct-token",
+        headless: true,
+        stealth: false,
+        timeout_seconds: 60,
+      }));
+      return;
+    }
+    if (req.url?.startsWith("/browsers/kernel-session-1")) {
+      if (req.method === "DELETE") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ session_id: "kernel-session-1", name: "kernel-canary" }));
+      return;
+    }
+    res.writeHead(404, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { code: "not_found", message: "browser id not found" } }));
+  })().catch((error) => {
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: String(error) }));
+  }));
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    requests,
+    setMode: (next) => { mode = next; },
+    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
+}
+
+async function testHybridRouting(): Promise<void> {
+  const upstream = await startFakeKernel();
+  const stateDirectory = await mkdtemp(join(tmpdir(), "arker-kernel-hybrid-test-"));
+  const arker = new FakeArker();
+  const options = {
+    arker: arker as unknown as Arker,
+    apiKey: "hybrid-proxy-key",
+    signingSecret: "hybrid-signing-secret",
+    host: "127.0.0.1",
+    port: 0,
+    skipSetup: true,
+    automaticStandby: false,
+    stateDirectory,
+    hybridRouting: {
+      kernelApiKey: "kernel-upstream-key",
+      kernelBaseUrl: upstream.url,
+      kernelTrafficPercent: 100,
+      fallbackToArkerOnCreateError: true,
+      fallbackToArkerOnNotFound: true,
+      kernelRequestTimeoutMs: 1_000,
+    },
+  } as const;
+  let proxy = new KernelProxy(options);
+  let url = (await proxy.listen()).url;
+  const request = (path: string, init: RequestInit = {}) => fetch(`${url}${path}`, {
+    ...init,
+    headers: { authorization: "Bearer hybrid-proxy-key", ...(init.headers ?? {}) },
+  });
+  try {
+    const created = await request("/browsers", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "must-not-reach-kernel" },
+      body: JSON.stringify({ name: "kernel-canary", headless: true }),
+    });
+    assert.equal(created.status, 200);
+    assert.equal(created.headers.get("x-kernel-test"), "create");
+    assert.equal((await json(created)).session_id, "kernel-session-1");
+    assert.equal(arker.forks.length, 0, "100% Kernel traffic must not fork Arker");
+    assert.equal(upstream.requests[0]?.authorization, "Bearer kernel-upstream-key");
+    assert.equal(upstream.requests[0]?.xApiKey, undefined);
+    await proxy.close();
+
+    // Provider affinity is persisted, so a restart still routes the existing
+    // Kernel browser upstream even when the new-session percentage becomes 0.
+    proxy = new KernelProxy({
+      ...options,
+      port: 0,
+      hybridRouting: { ...options.hybridRouting, kernelTrafficPercent: 0, fallbackToArkerOnNotFound: false },
+    });
+    url = (await proxy.listen()).url;
+    const retrieved = await request("/browsers/kernel-session-1");
+    assert.equal(retrieved.status, 200);
+    assert.equal((await json(retrieved)).session_id, "kernel-session-1");
+    assert.equal((await request("/browsers/kernel-session-1", { method: "DELETE" })).status, 204);
+    await proxy.close();
+
+    upstream.setMode("retryable");
+    const fallbackArker = new FakeArker();
+    proxy = new KernelProxy({ ...options, arker: fallbackArker as unknown as Arker, port: 0 });
+    url = (await proxy.listen()).url;
+    for (const name of ["arker-fallback-1", "arker-fallback-2"]) {
+      const response = await request("/browsers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, headless: true }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await json(response)).session_id, fallbackArker.vm.id);
+    }
+    assert.equal(fallbackArker.forks.length, 2, "every Arker-selected browser create must invoke a fresh fork");
+    await proxy.close();
+
+    upstream.setMode("invalid");
+    const invalidArker = new FakeArker();
+    proxy = new KernelProxy({ ...options, arker: invalidArker as unknown as Arker, port: 0 });
+    url = (await proxy.listen()).url;
+    const invalid = await request("/browsers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ headless: true }),
+    });
+    assert.equal(invalid.status, 422);
+    assert.equal(invalidArker.forks.length, 0, "validation failures must not create a second-provider browser");
+    await proxy.close();
+
+    upstream.setMode("timeout");
+    const conservativeArker = new FakeArker();
+    proxy = new KernelProxy({
+      ...options,
+      arker: conservativeArker as unknown as Arker,
+      port: 0,
+      hybridRouting: { ...options.hybridRouting, kernelRequestTimeoutMs: 20, fallbackToArkerOnTransportError: false },
+    });
+    url = (await proxy.listen()).url;
+    const timeout = await request("/browsers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ headless: true }),
+    });
+    assert.equal(timeout.status, 504);
+    assert.equal(conservativeArker.forks.length, 0, "ambiguous timeouts must not duplicate creates by default");
+    await proxy.close();
+
+    const transportFallbackArker = new FakeArker();
+    proxy = new KernelProxy({
+      ...options,
+      arker: transportFallbackArker as unknown as Arker,
+      port: 0,
+      hybridRouting: { ...options.hybridRouting, kernelRequestTimeoutMs: 20, fallbackToArkerOnTransportError: true },
+    });
+    url = (await proxy.listen()).url;
+    const transportFallback = await request("/browsers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "transport-fallback", headless: true }),
+    });
+    assert.equal(transportFallback.status, 200);
+    assert.equal(transportFallbackArker.forks.length, 1);
+    await proxy.close();
+
+    // An unrecorded name is tried against Kernel first. A precise 404 then
+    // falls through to the existing Arker VM without creating another VM.
+    upstream.setMode("ok");
+    const emptyRouteDirectory = await mkdtemp(join(tmpdir(), "arker-kernel-empty-routes-"));
+    proxy = new KernelProxy({
+      ...options,
+      arker: transportFallbackArker as unknown as Arker,
+      port: 0,
+      stateDirectory: emptyRouteDirectory,
+      hybridRouting: { ...options.hybridRouting, kernelTrafficPercent: 0, fallbackToArkerOnNotFound: true },
+    });
+    url = (await proxy.listen()).url;
+    const beforeNotFound = upstream.requests.length;
+    const recovered = await request("/browsers/transport-fallback");
+    assert.equal(recovered.status, 200);
+    assert.equal((await json(recovered)).session_id, transportFallbackArker.vm.id);
+    assert.equal(upstream.requests.length, beforeNotFound + 1);
+    assert.equal(transportFallbackArker.forks.length, 1, "404 recovery must not fork an existing Arker browser");
+    await proxy.close();
+    await rm(emptyRouteDirectory, { recursive: true, force: true });
+  } finally {
+    if (proxy.server.listening) await proxy.close();
+    await upstream.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}
+
+async function testLambdaBootstrap(): Promise<void> {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "arker-kernel-lambda-test-"));
+  const arker = new FakeArker();
+  const first = await getOrStartKernelProxyForLambda({
+    arker: arker as unknown as Arker,
+    apiKey: "lambda-local-key",
+    signingSecret: "lambda-signing-secret",
+    stateDirectory,
+    skipSetup: true,
+    automaticStandby: false,
+  });
+  const second = await getOrStartKernelProxyForLambda();
+  try {
+    assert.equal(second.proxy, first.proxy, "warm Lambda invocations must reuse one local proxy");
+    assert.equal(second.baseURL, first.baseURL);
+    assert.equal(first.apiKey, "lambda-local-key");
+    assert.match(first.baseURL, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.equal((await fetch(`${first.baseURL}/healthz`)).status, 200);
+    assert.equal((await fetch(`${first.baseURL}/browsers`)).status, 401);
+  } finally {
+    await first.proxy.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}
+
 async function main(): Promise<void> {
   const savedAutomaticStandby = process.env.KERNEL_PROXY_AUTOMATIC_STANDBY;
   const savedStandbyDelay = process.env.KERNEL_PROXY_STANDBY_DELAY_MS;
@@ -291,6 +557,27 @@ async function main(): Promise<void> {
   assert.throws(
     () => new KernelProxy({ arker: new FakeArker() as unknown as Arker, host: "0.0.0.0", port: 0 }),
     /KERNEL_PROXY_API_KEY is required/,
+  );
+  assert.throws(
+    () => new KernelProxy({
+      arker: new FakeArker() as unknown as Arker,
+      hybridRouting: { kernelApiKey: "upstream", kernelTrafficPercent: 101 },
+    }),
+    /traffic percentage must be between 0 and 100/,
+  );
+  assert.throws(
+    () => new KernelProxy({
+      arker: new FakeArker() as unknown as Arker,
+      hybridRouting: { kernelApiKey: "upstream", kernelBaseUrl: "file:\/\/kernel", kernelTrafficPercent: 10 },
+    }),
+    /upstream URL must be a valid http or https URL/,
+  );
+  assert.throws(
+    () => new KernelProxy({
+      arker: new FakeArker() as unknown as Arker,
+      hybridRouting: { kernelApiKey: "upstream", kernelRequestTimeoutMs: 0 },
+    }),
+    /upstream timeout must be an integer/,
   );
 
   const preparedArker = new FakeArker();
@@ -1121,6 +1408,9 @@ async function main(): Promise<void> {
     await rm(stateDirectory, { recursive: true, force: true });
   }
   assert(arker.vm.deletedSessions.length > deletedSessionsBeforeClose, "proxy close must release detached Arker sessions");
+
+  await testHybridRouting();
+  await testLambdaBootstrap();
 
   console.log("kernel proxy unit tests passed");
 }

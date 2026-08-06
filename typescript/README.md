@@ -127,6 +127,13 @@ export KERNEL_BASE_URL=http://127.0.0.1:8787
 
 Every Kernel browser becomes an isolated Arker VM configured by an editable CloakBrowser setup script. The proxy covers the official Kernel browser REST/SDK surface: lifecycle, CDP, WebDriver BiDi, process/PTY, filesystem and guest-originated watches, Playwright, Chrome-stack fetch, computer control, telemetry, extensions, followed logs, audio/video replays, profiles, custom proxies, and browser pools. Automatic CPU+memory standby is enabled after a five-second coalescing window; use `--keep-running` for the lowest hot latency.
 
+AWS Lambda can either call a hosted proxy with the same `baseURL` override or
+use `getOrStartKernelProxyForLambda()` from `@arker-ai/sdk/kernel-proxy` to
+reuse one unref'd loopback proxy per warm execution environment. Optional
+hybrid routing assigns a configurable percentage of new browser sessions to
+Kernel, persists provider affinity, and can fall back to Arker on retryable
+create responses or explicit browser-not-found responses.
+
 This is browser-platform compatibility, not a clone of Kernel's application platform. GPU browsers, Kernel-managed proxy capacity/auth, and apps/deployments/invocations/credentials/projects/API-key administration have no Arker equivalent and return explicit unsupported/not-found errors.
 
 See the [full setup guide, security notes, tested compatibility matrix, and known semantic differences](./docs/kernel-proxy.md).

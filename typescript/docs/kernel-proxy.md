@@ -91,6 +91,60 @@ const proxy = await startKernelProxy({
 });
 ```
 
+## Split new browsers between Kernel and Arker
+
+Hybrid routing is session-affine. The percentage is evaluated once for each
+`POST /browsers`; every browser-scoped REST call after that stays with the
+provider that created the session. An Arker-selected create always invokes a
+new Arker VM fork.
+
+```bash
+export KERNEL_UPSTREAM_API_KEY='your-existing-kernel-key'
+
+arker-kernel-proxy \
+  --kernel-percent 20 \
+  --fallback-to-arker-on-create-error \
+  --fallback-to-arker-on-not-found \
+  --source-id vmh-... \
+  --source-layers disk,memory
+```
+
+Here, 20% of new browsers are created by Kernel and 80% are fresh Arker forks.
+The upstream credential is separate from `KERNEL_PROXY_API_KEY` and is never
+returned to clients. Provider assignments are stored in `registry.json`, so
+existing sessions keep their route after a proxy restart even if the traffic
+percentage changes.
+
+The equivalent embedded options are:
+
+```ts
+const proxy = await startKernelProxy({
+  arkerApiKey: process.env.ARKER_API_KEY,
+  apiKey: process.env.KERNEL_PROXY_API_KEY,
+  sourceVmId: process.env.ARKER_KERNEL_SOURCE_ID,
+  sourceLayers: ["disk", "memory"],
+  hybridRouting: {
+    kernelApiKey: process.env.KERNEL_UPSTREAM_API_KEY,
+    kernelTrafficPercent: 20,
+    fallbackToArkerOnCreateError: true,
+    fallbackToArkerOnNotFound: true,
+    // Leave false unless duplicate creation is an acceptable failure mode.
+    fallbackToArkerOnTransportError: false,
+  },
+});
+```
+
+Create fallback applies to explicit retryable Kernel responses: 404, 408, 425,
+429, and 5xx. A validation or authentication error is returned unchanged.
+Network failure fallback is disabled by default because Kernel may have created
+the browser even if its response was lost; blindly retrying in Arker could then
+create two sessions.
+
+For an unrecorded browser reference, optional not-found fallback asks Kernel
+first and tries Arker only after an explicit 404. This recovers routing for an
+existing Arker browser; it cannot recreate lost Kernel browser state or retain
+a missing Kernel session ID.
+
 ## Point official Kernel SDKs at it
 
 Use the proxy key, not the Arker credential, as the Kernel SDK key:
@@ -133,6 +187,59 @@ kernel = Kernel(
 )
 browser = kernel.browsers.create(headless=True, stealth=True, timeout_seconds=900)
 ```
+
+## Use it from AWS Lambda
+
+The simplest production topology is a separately hosted proxy reachable from
+the Lambda function. The function uses the normal Kernel SDK and only changes
+its base URL and API key:
+
+```ts
+import Kernel from "@onkernel/sdk";
+
+const kernel = new Kernel({
+  apiKey: process.env.KERNEL_PROXY_API_KEY,
+  baseURL: process.env.KERNEL_PROXY_URL,
+});
+
+export const handler = async () => {
+  const browser = await kernel.browsers.create({ headless: true });
+  return { sessionId: browser.session_id };
+};
+```
+
+For self-contained functions, start one loopback proxy during a cold start and
+reuse it across warm invocations:
+
+```ts
+import Kernel from "@onkernel/sdk";
+import { getOrStartKernelProxyForLambda } from "@arker-ai/sdk/kernel-proxy";
+
+const proxyReady = getOrStartKernelProxyForLambda({
+  arkerApiKey: process.env.ARKER_API_KEY,
+  sourceVmId: process.env.ARKER_KERNEL_SOURCE_ID,
+  sourceLayers: ["disk", "memory"],
+  runtimeMemoryMib: 512,
+  runtimeVcpu: 1,
+});
+
+const kernelReady = proxyReady.then(({ baseURL, apiKey }) =>
+  new Kernel({ apiKey, baseURL }),
+);
+
+export const handler = async () => {
+  const kernel = await kernelReady;
+  const browser = await kernel.browsers.create({ headless: true });
+  return { sessionId: browser.session_id };
+};
+```
+
+The helper binds only to `127.0.0.1` on an OS-assigned port, uses Lambda's
+`/tmp` for its registry, unrefs the listener, and caches the startup promise at
+module scope. The Lambda still needs outbound HTTPS access to Arker and, when
+hybrid routing is enabled, Kernel. Use a hosted proxy when sessions or
+capability URLs must be shared across concurrent Lambda execution environments;
+each embedded environment has isolated `/tmp` state and signing keys.
 
 ## Customize browser setup
 
@@ -220,6 +327,8 @@ created by the test run.
 - In-flight streams and controllers belong to one proxy process; persisted
   browser metadata and control-resource records survive restart.
 - Run one active proxy process per state directory.
+- Hybrid percentages apply to new browser sessions, not individual requests;
+  switching a live browser between providers would lose its state.
 - A prepared source must stay running for warm process-preserving forks.
 - Runtime profile or proxy changes restart the browser; clients should use the
   refreshed connection URLs returned by the proxy.
