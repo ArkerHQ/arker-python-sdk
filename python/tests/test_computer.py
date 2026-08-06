@@ -840,8 +840,69 @@ def test_small_write_uses_inline_chunk() -> None:
     assert len(entry["upload_id"]) == 26
 
 
-def test_large_write_uses_presigned_bypass() -> None:
+def test_empty_write_sends_one_empty_chunk() -> None:
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/sync")
+    t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [{
+        "path": "/home/user/empty",
+        "size": 0,
+        "received_bytes": 0,
+        "ranges": [{"start": 0, "end": 0}],
+        "complete": True,
+        "written": True,
+    }]})
+
+    with use_transport(t):
+        client().vm("vm_1").sync("/home/user/empty", b"")
+
+    writes = json.loads(t.calls[0]["body"])["writes"]
+    assert len(writes) == 1
+    assert (writes[0]["start"], writes[0]["end"], writes[0]["size"]) == (0, 0, 0)
+    assert writes[0]["content"] == ""
+
+
+def test_mid_size_write_inlines_chunks_in_one_request() -> None:
     payload = b"A" * (sdk.CHUNK_SIZE + 1)
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/sync")
+    t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [
+        {
+            "path": "/home/user/big",
+            "size": len(payload),
+            "received_bytes": sdk.CHUNK_SIZE,
+            "ranges": [{"start": 0, "end": sdk.CHUNK_SIZE}],
+            "complete": False,
+            "written": False,
+        },
+        {
+            "path": "/home/user/big",
+            "size": len(payload),
+            "received_bytes": len(payload),
+            "ranges": [{"start": 0, "end": len(payload)}],
+            "complete": True,
+            "written": True,
+        },
+    ]})
+
+    with use_transport(t):
+        client().vm("vm_1").sync("/home/user/big", payload)
+
+    # One request, two chunks sharing an upload_id; only the final chunk
+    # reports completion.
+    assert [call["method"] for call in t.calls] == ["POST"]
+    writes = json.loads(t.calls[0]["body"])["writes"]
+    assert len(writes) == 2
+    assert writes[0]["upload_id"] == writes[1]["upload_id"]
+    assert (writes[0]["start"], writes[0]["end"]) == (0, sdk.CHUNK_SIZE)
+    assert (writes[1]["start"], writes[1]["end"]) == (sdk.CHUNK_SIZE, len(payload))
+    assert writes[0]["size"] == len(payload)
+    assert writes[1]["size"] == len(payload)
+    decoded = base64.b64decode(writes[0]["content"]) + base64.b64decode(writes[1]["content"])
+    assert decoded == payload
+
+
+def test_large_write_uses_presigned_bypass() -> None:
+    payload = b"A" * (sdk.INLINE_WRITE_LIMIT + 1)
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/sync")
     t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [{

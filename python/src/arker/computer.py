@@ -101,6 +101,11 @@ _UNSET = _UnsetType()
 _EXPLICIT_NULL = _ExplicitNullType()
 
 CHUNK_SIZE = 4 * 1024 * 1024
+# Max raw bytes written inline in ONE /sync request, as multiple CHUNK_SIZE
+# chunks sharing an upload_id. Server budgets: 5MB per chunk, 20MB decoded per
+# request — 16MB = 4 chunks, inside both. Files above this take the presigned
+# blob path, where resumable multipart genuinely earns its double transfer.
+INLINE_WRITE_LIMIT = 16 * 1024 * 1024
 
 # Org id for the "Arker" org — the org that owns the public golden VMs
 # (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
@@ -899,7 +904,7 @@ class VM:
         if data is None:
             return self._sync_read(path)
         payload = data.encode("utf-8") if isinstance(data, str) else data
-        if len(payload) <= CHUNK_SIZE:
+        if len(payload) <= INLINE_WRITE_LIMIT:
             self._sync_write_inline(path, payload)
         else:
             self._sync_write_presigned(path, payload)
@@ -921,16 +926,25 @@ class VM:
         return signed.content
 
     def _sync_write_inline(self, path: str, data: bytes) -> None:
-        entry = SyncChunkWrite(
-            path=path,
-            size=len(data),
-            upload_id=_ulid(),
-            content=base64.b64encode(data).decode("ascii"),
-            start=0,
-            end=len(data),
-        )
-        result = self._send_one_write(entry)
-        _assert_write_complete(result, "inline write")
+        upload_id = _ulid()
+        # `or [0]`: an empty file still needs its one (empty) chunk — zero
+        # chunks would send `writes: []` and never create the file.
+        starts = list(range(0, len(data), CHUNK_SIZE)) or [0]
+        entries = [
+            SyncChunkWrite(
+                path=path,
+                size=len(data),
+                upload_id=upload_id,
+                content=base64.b64encode(data[start : start + CHUNK_SIZE]).decode("ascii"),
+                start=start,
+                end=min(start + CHUNK_SIZE, len(data)),
+            )
+            for start in starts
+        ]
+        results = self._send_writes(entries)
+        # Chunks before the last legitimately report written=False; the final
+        # chunk's result carries file completion.
+        _assert_write_complete(results[-1], "inline write")
 
     def _sync_write_presigned(self, path: str, data: bytes) -> None:
         request = self._send_one_write(
@@ -965,20 +979,27 @@ class VM:
             time.sleep(self._client._retry_delay(attempt))
 
     def _send_one_write(self, entry: SyncWriteEntry) -> SyncWriteResult:
+        return self._send_writes([entry])[0]
+
+    def _send_writes(self, entries: list[SyncWriteEntry]) -> list[SyncWriteResult]:
+        # Chunk entries share one upload_id, so a retry resends the same byte
+        # ranges idempotently — the server's chunk ledger merges them.
         last_error: tuple[str, str] | None = None
         for attempt in range(self._client._retry.attempts):
-            request = SyncWriteOperationRequest(op="write", writes=[entry])
+            request = SyncWriteOperationRequest(op="write", writes=entries)
             payload = self._client._request(
                 "POST", f"{_vm_path(self.id)}/sync",
                 request, base_url=self.base_url,
             )
             response = _decode_model(SyncWriteResponse, payload)
-            if not response.results:
-                raise ArkerError("internal", "write response missing results[0]", 200)
-            result = response.results[0]
-            error = result.error
+            if len(response.results) != len(entries):
+                raise ArkerError("internal", "write response missing results", 200)
+            error = next(
+                (result.error for result in response.results if result.error is not None),
+                None,
+            )
             if error is None:
-                return result
+                return response.results
             last_error = (error.code, error.message)
             parsed_error = {"code": error.code, "message": error.message}
             if not _is_retryable(200, parsed_error) or attempt == self._client._retry.attempts - 1:
