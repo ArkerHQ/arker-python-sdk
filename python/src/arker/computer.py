@@ -1073,13 +1073,17 @@ class VM:
         if n <= DIRECT_MAX_FILES and direct_cost <= extract_cost:
             self._sync_direct_write(changed, remote_root, nested)
         else:
-            # Many files → ONE round-trip: gzip tar + server-side guest untar. A
-            # single `tar -x` batches the writes/fsync in one guest process, which
-            # is at parity with E2B's batched write_files (both ~500-600 ms for
-            # ~2000 incompressible files) and beat a per-file batched-binary
-            # endpoint in testing — the in-guest agent serializes per-file writes,
-            # so `tar`'s single-process untar is the more efficient guest path.
-            self._upload_and_extract_tarball(changed, remote_root)
+            # Many files → ONE round-trip: tar + server-side guest untar. A single
+            # `tar -x` batches the writes/fsync in one guest process (beats a
+            # per-file batched-binary write — the in-guest agent serializes per-file
+            # writes). COMPRESS ONLY when the data is compressible: for
+            # incompressible data gzip is a double loss (no upload shrink + a guest
+            # gunzip ~3.4x slower than `tar -xf`), so send a raw tar. This is what
+            # wins many-incompressible-files vs E2B (measured ~171 ms untar+upload
+            # vs ~591 ms for the gzip path).
+            self._upload_and_extract_tarball(
+                changed, remote_root, compress=(gz_ratio < 0.9)
+            )
 
     _SYNC_DIRECT_PARALLELISM = 16
 
@@ -1184,10 +1188,17 @@ class VM:
                     pass
 
     def _upload_and_extract_tarball(
-        self, changed: list[tuple[str, str]], remote_root: str
+        self, changed: list[tuple[str, str]], remote_root: str, compress: bool = True
     ) -> None:
         """Tar the changed files (paths relative to ``remote_root``), upload the
-        tarball in one write, and extract it in the guest with `tar -x`."""
+        tarball in one write, and extract it in the guest with `tar -x`.
+
+        ``compress`` gzips the tar. Gzip is a WIN for compressible data (the upload
+        shrinks a lot, esp. over WAN) but a DOUBLE LOSS for incompressible data: it
+        can't shrink the upload AND forces a guest gunzip that is ~3.4x slower than
+        a plain ``tar -xf`` (measured 294 ms vs 86 ms for 2000 files). The caller
+        passes ``compress=False`` for incompressible payloads — the win that closes
+        the many-incompressible-files gap vs E2B."""
         # Build the tar entirely IN MEMORY — no temp file. A temp file adds a
         # write+read of the whole payload (tens of ms on the hot path) for no
         # benefit; the tar is already bounded by the changed-set we chose to batch.
@@ -1197,24 +1208,30 @@ class VM:
                 tar.add(abs_path, arcname=rel, recursive=False)
         data = buf.getvalue()
 
-        # Always gzip for the 1-round-trip extract endpoint (level 1: ~5x faster
-        # gzip, near-same ratio; sync is throughput-bound not ratio-bound).
-        payload = gzip.compress(data, 1)
+        # gzip level 1 (~5x faster than default, near-same ratio) ONLY when the
+        # payload is compressible — otherwise send the raw tar and let the guest
+        # `tar -xf` skip the gunzip entirely.
+        if compress:
+            payload = gzip.compress(data, 1)
+            extract_fmt, tar_flag, suffix = "tar.gz", "-xzf", "tgz"
+        else:
+            payload = data
+            extract_fmt, tar_flag, suffix = "tar", "-xf", "tar"
 
-        # 1 ROUND-TRIP: stream the gzip tar and extract it server-side straight
-        # into remote_root. Same round-trip count as E2B's batched write_files,
-        # but gzip'd bytes + a faster co-located untar — the many-files win.
+        # 1 ROUND-TRIP: stream the tar and extract it server-side straight into
+        # remote_root. Same round-trip count as E2B's batched write_files, but a
+        # faster co-located untar (raw for incompressible) — the many-files win.
         try:
-            resp = self._sync_write_stream(remote_root, payload, extract="tar.gz")
+            resp = self._sync_write_stream(remote_root, payload, extract=extract_fmt)
             if isinstance(resp, dict) and resp.get("op") == "extract_stream":
                 return
             # Server has /sync-stream but ignored `extract` (arkerd predating the
-            # extract param): the gzip tar landed AT remote_root as a file —
-            # recover it into the directory (one extra guest op, old servers only).
+            # extract param): the tar landed AT remote_root as a file — recover it
+            # into the directory (one extra guest op, old servers only).
             q = shlex.quote
             self.run(
-                f'set -e; d={q(remote_root)}; t="$d.__arksync.tgz"; '
-                f'mv "$d" "$t"; mkdir -p "$d"; tar -xzf "$t" -C "$d"; rm -f "$t"'
+                f'set -e; d={q(remote_root)}; t="$d.__arksync.{suffix}"; '
+                f'mv "$d" "$t"; mkdir -p "$d"; tar {tar_flag} "$t" -C "$d"; rm -f "$t"'
             )
             return
         except ArkerError as e:
@@ -1223,7 +1240,7 @@ class VM:
             # No /sync-stream endpoint at all: fall through to the legacy
             # temp-write + guest-untar path below.
 
-        remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar.gz"
+        remote_tar = f"/tmp/.arker-sync-{_ulid()}.{suffix}"
         if len(payload) > CHUNK_SIZE:
             self._sync_write_presigned(remote_tar, payload)
         else:
@@ -1231,7 +1248,7 @@ class VM:
         q = shlex.quote
         cmd = (
             f"set -e; mkdir -p {q(remote_root)}; "
-            f"tar -xzf {q(remote_tar)} -C {q(remote_root)}; "
+            f"tar {tar_flag} {q(remote_tar)} -C {q(remote_root)}; "
             f"rm -f {q(remote_tar)}"
         )
         res = self.run(cmd)
