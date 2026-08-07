@@ -636,7 +636,7 @@ export interface components {
             match?: components["schemas"]["PolicyMatch"];
             action: components["schemas"]["PolicyAction"];
             /**
-             * @description Authentication for an inbound allow rule. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. All inbound allow rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges.
+             * @description Authentication for an inbound rule that exposes a port — `allow`, or a scaling-only action. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. All port-exposing inbound rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges.
              * @enum {string}
              */
             auth?: "open" | "arker";
@@ -666,13 +666,15 @@ export interface components {
             gate?: components["schemas"]["Gate"];
             scaling?: components["schemas"]["ScalingAction"];
         };
-        /** @description Auto-scaling behavior for matched outbound traffic (outbound rules only). May be narrowed by L7 criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and composes with `rewrite` / `gate` siblings. Prefer a `match.hosts` scope: a host-less scaling rule matches every flow it can see, which breaks certificate-pinning clients. */
+        /** @description Auto-scaling behavior for matched traffic. On an `outbound` rule it brackets the time the VM is blocked awaiting an upstream response; on an `inbound` rule it brackets the time the VM is idle between requests (scale to zero). Outbound rules may be narrowed by L7 criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and compose with `rewrite` / `gate` siblings. For outbound, prefer a `match.hosts` scope: a host-less scaling rule matches every flow it can see, which breaks certificate-pinning clients. */
         ScalingAction: {
             /**
-             * @description Suspend the VM while a matched upstream request is blocked, then resume it when the response arrives. The VM is not billed while it is suspended.
+             * @description Suspend the VM (snapshot and free CPU/RAM). On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped.
              * @default false
              */
             suspend?: boolean;
+            /** @description Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead — this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. (Deliberately declared with no JSON-Schema `default`: a schema default is MATERIALIZED by the generated wire types, which would stamp `wake` onto every scaling action including outbound ones — where the field is invalid — and would also emit it into every stored policy document, breaking older workers that reject unknown fields. The absent-means-wake semantic lives in this description and in the server's `ScalingAction::wakes()`.) */
+            wake?: boolean;
         };
         /** @description Mutate-and-forward. Host/path/header/body values support request-time `$`-token interpolation: `$domain`, `$path`, `$method`, `$vm_id`, `$body` (the request body as received, also `${…}`-braced), and `$$` for a literal `$`. Unknown/unresolved tokens pass through unchanged. */
         Rewrite: {
@@ -795,8 +797,6 @@ export interface components {
             next_cursor?: string | null;
         };
         Vm: {
-            /** @description True when this VM is pinned as always-running (see RunRequest.keep_alive): eager-pause and idle-suspend are inhibited so detached children keep making progress. */
-            keep_alive?: boolean;
             /** @description Unique VM identifier. */
             vm_id: string;
             /** @description Org that owns this VM. */
@@ -876,12 +876,6 @@ export interface components {
             session_id: string;
         };
         RunRequest: {
-            /**
-             * @description Pin the VM as always-running: do not eager-pause or idle-suspend it. Tri-state: true pins, false releases, omitted leaves unchanged. A drain or scale-down still overrides the pin, and a pinned VM is billed as running.
-             *
-             *     NOTE: a run now stays open until everything it started has exited, so a run that leaves a daemon behind (setsid nohup, a background server) holds its session until `timeout`. Later runs on the SAME session queue behind it. To keep a session usable while a daemon runs, start the daemon on its own `session_idx` and do the rest of your work on another.
-             */
-            keep_alive?: boolean | null;
             /** @description Target an EXISTING session by id. A session that no longer exists is a 404 — unlike `session_idx`, this never creates one. Takes precedence over `session_idx` when both are sent. */
             session_id?: string | null;
             /** @description Zero-based session index within the VM. Selects a shell SLOT on the VM, FIND-OR-CREATE: if no session occupies this index one is created. Use distinct indexes to run commands CONCURRENTLY on one VM — a per-session lock means two runs targeting the same session serialise. Omitting BOTH `session_id` and `session_idx` targets index 0, the VM's default shell, so unrelated callers that both omit them share one shell and therefore one working directory, environment, and lock. */
