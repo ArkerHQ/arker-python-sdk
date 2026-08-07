@@ -205,6 +205,7 @@ const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
   "unavailable",
   "bad_gateway",
   "stale_route",
+  "capacity_unavailable",
 ]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -803,6 +804,7 @@ export class Arker {
       resources,
       // Omit to inherit the source's policy; pass a document to replace it.
       policies: src.policies,
+      queueing_timeout: src.queueing_timeout,
     };
     const body: ForkRequest = src.sourceVmId
       ? {
@@ -816,7 +818,14 @@ export class Arker {
           source_vm_name: src.sourceVmName!,
         };
     const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
-    const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
+    const vm = await this._request<Vm>(
+      "POST",
+      "/v1/fork",
+      body,
+      baseUrl,
+      undefined,
+      src.queueing_timeout,
+    );
     const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
     return new VM(this, vmId, baseUrl, vm);
@@ -909,6 +918,7 @@ export class Arker {
     body?: unknown,
     baseUrl = this.baseUrl,
     extraHeaders?: Record<string, string | undefined>,
+    maxQueueingSecs?: number | null,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -927,6 +937,7 @@ export class Arker {
       this.fetchImpl,
       this.http2,
       this.retry,
+      maxQueueingSecs ?? undefined,
     );
   }
 
@@ -1036,7 +1047,14 @@ export class VM {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
     } as ForkRequest;
-    const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
+    const vm = await this._client._request<Vm>(
+      "POST",
+      "/v1/fork",
+      merged,
+      this.baseUrl,
+      undefined,
+      merged.queueing_timeout,
+    );
     const vmId = vm.vm_id;
     // The child is forked on the same compute host as the source, so it lives
     // on the same base URL (this.baseUrl) — not whatever the id alone implies.
@@ -1059,6 +1077,9 @@ export class VM {
    * Pass `background: true` to skip the wait entirely: run() returns the
    * running acknowledgement (`{ type: "background", runId }`) immediately and
    * you manage polling yourself via {@link getRun}.
+   *
+   * `queueing_timeout` (seconds) queues instead of failing fast: retries
+   * until the window elapses, then surfaces the error. Omitted/`0` = fail fast.
    */
   async run(command: string, options?: RunOptions & { background?: false | null }): Promise<CompletedRunResult>;
   async run(command: string, options: RunOptions & { background: true }): Promise<BackgroundRunResult>;
@@ -1074,6 +1095,7 @@ export class VM {
       request,
       this.baseUrl,
       headers,
+      options.queueing_timeout,
     );
     const result = parseRunResponse(response);
     // The server backgrounds a run that outlived its sync window. When the
@@ -2241,6 +2263,7 @@ async function requestJson<T>(
   fetchImpl: FetchLike,
   http2: boolean,
   retry: RetryConfig,
+  maxQueueingSecs?: number,
 ): Promise<T> {
   const headers = { ...requestHeaders };
   let requestBody: string | undefined;
@@ -2249,11 +2272,24 @@ async function requestJson<T>(
     requestBody = JSON.stringify(withoutUndefined(body));
   }
 
-  let lastStatus = 0;
-  let lastText = "";
-  let lastError: ParsedError | undefined;
+  // queueing_timeout swaps the retry budget from attempt count to wall-clock
+  // window; retry: false (attempts = 1) still means exactly one request.
+  const queueingDeadline =
+    maxQueueingSecs !== undefined && maxQueueingSecs > 0 && retry.attempts > 1
+      ? Date.now() + maxQueueingSecs * 1000
+      : undefined;
 
-  for (let attempt = 0; attempt < retry.attempts; attempt++) {
+  for (let attempt = 0; ; attempt++) {
+    if (queueingDeadline !== undefined && attempt > 0 && isObject(body)) {
+      // Retries re-send the remaining window.
+      const remainingSecs = Math.max(
+        1,
+        Math.ceil((queueingDeadline - Date.now()) / 1000),
+      );
+      requestBody = JSON.stringify(
+        withoutUndefined({ ...body, queueing_timeout: remainingSecs }),
+      );
+    }
     try {
       const { status, ok, text } = await sendRequest(
         url,
@@ -2264,13 +2300,12 @@ async function requestJson<T>(
       const payload = parseJson(text);
       const parsedError = extractError(payload);
 
-      lastStatus = status;
-      lastText = text;
-      lastError = parsedError;
-
-      if (isRetryable(status, parsedError) && attempt < retry.attempts - 1) {
-        await sleep(retryDelay(retry, attempt, parsedError));
-        continue;
+      if (isRetryable(status, parsedError)) {
+        const delay = retryDelay(retry, attempt, parsedError);
+        if (canRetryAgain(retry, attempt, queueingDeadline, delay)) {
+          await sleep(delay);
+          continue;
+        }
       }
 
       if (parsedError) {
@@ -2279,7 +2314,7 @@ async function requestJson<T>(
       if (!ok) {
         throw new ArkerError(
           "internal",
-          lastText.slice(0, 300) || `HTTP ${status}`,
+          text.slice(0, 300) || `HTTP ${status}`,
           status,
         );
       }
@@ -2287,23 +2322,27 @@ async function requestJson<T>(
       return payload as T;
     } catch (error) {
       if (error instanceof ArkerError) throw error;
-      if (attempt < retry.attempts - 1) {
-        await sleep(retryDelay(retry, attempt));
+      const delay = retryDelay(retry, attempt);
+      if (canRetryAgain(retry, attempt, queueingDeadline, delay)) {
+        await sleep(delay);
         continue;
       }
       const message = error instanceof Error ? error.message : String(error);
       throw new ArkerError("unavailable", message, 0);
     }
   }
+}
 
-  if (lastError) {
-    throw new ArkerError(lastError.code, lastError.message, lastStatus);
-  }
-  throw new ArkerError(
-    "internal",
-    lastText.slice(0, 300) || `HTTP ${lastStatus}`,
-    lastStatus,
-  );
+/** No window: the attempt count is the budget. With one: the retry's sleep
+ * must still land inside the window. */
+function canRetryAgain(
+  retry: RetryConfig,
+  attempt: number,
+  queueingDeadline: number | undefined,
+  delayMs: number,
+): boolean {
+  if (queueingDeadline !== undefined) return Date.now() + delayMs < queueingDeadline;
+  return attempt < retry.attempts - 1;
 }
 
 function parseJson(text: string): unknown {
