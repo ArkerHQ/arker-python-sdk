@@ -632,7 +632,9 @@ export class Arker {
       description: src.description ?? null,
       public: src.public ?? null,
       ssh_public_keys: src.ssh_public_keys,
-      disk: src.disk ?? true,
+      // Omit disk unless the caller chose it. The server derives the correct
+      // default from the source, including nodisk GPU goldens.
+      disk: src.disk,
       durable: src.durable ?? null,
       platforms: src.platforms,
       resources,
@@ -859,7 +861,6 @@ export class VM {
     const merged: ForkRequest = {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
-      disk: request.disk ?? true,
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
     const vmId = vm.vm_id;

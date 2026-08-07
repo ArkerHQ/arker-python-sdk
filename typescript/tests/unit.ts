@@ -154,7 +154,6 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
       description: "CI runner",
       ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
       source_vm_id: "ubuntu",
-      disk: true,
     },
   );
 }
@@ -185,7 +184,7 @@ async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
   const body = JSON.parse(fetch.calls[0]!.body!);
   assert.equal(body.source_vm_name, "macos-full");
   assert.equal(body.source_org_id, "ArkerHQ");
-  assert.equal(body.disk, true);
+  assert.equal(body.disk, undefined);
   assert.equal(body.platforms, undefined);
   assert.deepEqual(body.ssh_public_keys, ["ssh-ed25519 AAAA test@example"]);
   assert.deepEqual(body.policies, { policies: [] });
@@ -659,7 +658,7 @@ async function testForkSendsDurableFlag(): Promise<void> {
 
   assert.deepEqual(
     JSON.parse(fetch.calls[0]!.body!),
-    { durable: true, source_vm_id: "ubuntu", disk: true },
+    { durable: true, source_vm_id: "ubuntu" },
   );
 }
 

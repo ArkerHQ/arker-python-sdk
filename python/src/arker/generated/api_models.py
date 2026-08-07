@@ -44,6 +44,7 @@ ErrorCode: TypeAlias = Literal[
     'concurrency_limit_exceeded',
     'regional_concurrency_limit_exceeded',
     'resource_pressure',
+    'capacity_unavailable',
     'internal',
     'unavailable',
     'bad_gateway',
@@ -62,6 +63,14 @@ class ErrorBody:
     runtime: str | None = None
     provider: str | None = None
     retryable: bool | None = None
+    scope: Literal['global', 'regional'] | None = None
+    region: str | None = None
+    resource: str | None = None
+    current_usage: int | None = None
+    requested_increment: int | None = None
+    projected_usage: int | None = None
+    quota: int | None = None
+    action: Literal['settings_limits'] | None = None
 
 
 @dataclass(frozen=True)
@@ -349,6 +358,17 @@ class SyncManifestResponse:
 
 
 @dataclass(frozen=True)
+class SyncStreamResponse:
+    ok: bool
+    op: Literal['write_stream', 'extract_stream']
+    path: str
+    size: int
+    complete: bool
+    written: bool | None = None
+    extracted: bool | None = None
+
+
+@dataclass(frozen=True)
 class SyncChunkWrite:
     path: str
     size: int
@@ -459,6 +479,19 @@ class SshPublicKeyInfo:
 @dataclass(frozen=True)
 class VmNetwork:
     ssh_public_keys: list[SshPublicKeyInfo] | None = None
+
+
+@dataclass(frozen=True)
+class CompatiblePlatform:
+    id: str
+    display_name: str
+    architecture: str
+    min_vcpus: int | None = None
+    max_vcpus: int | None = None
+    min_memory_mib: int | None = None
+    max_memory_mib: int | None = None
+    min_disk_mib: int | None = None
+    max_disk_mib: int | None = None
 
 
 @dataclass(frozen=True)
@@ -639,6 +672,15 @@ class SyncParameters:
 
 
 @dataclass(frozen=True)
+class SyncStreamParameters:
+    path: str
+    size: int
+    id: str
+    sha256: str | None = None
+    extract: Literal['tar.gz', 'tgz', 'tar'] | None = None
+
+
+@dataclass(frozen=True)
 class ListFilesystemsParameters:
     cursor: str | None = None
     limit: int | None = None
@@ -659,14 +701,10 @@ class DeleteFilesystemParameters:
 class PolicyAction1:
     rewrite: Rewrite | None = None
     gate: Gate | None = None
+    scaling: ScalingAction | None = None
 
 
-@dataclass(frozen=True)
-class PolicyAction2:
-    scaling: ScalingAction
-
-
-PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1 | PolicyAction2
+PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1
 
 
 @dataclass(frozen=True)
@@ -695,6 +733,8 @@ class Vm:
     gpu_platforms: list[GpuPlatformLimits] | None = None
     min_disk_mib: int | None = None
     max_disk_mib: int | None = None
+    platform: str | None = None
+    compatible_platforms: list[CompatiblePlatform] | None = None
 
 
 @dataclass(frozen=True)
@@ -804,6 +844,7 @@ class ForkRequest1:
     egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
+    queueing_timeout: int | None = None
     policies: PolicyWriteRequest | None = None
     resources: VmResources | None = None
 
@@ -823,6 +864,7 @@ class ForkRequest2:
     egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
+    queueing_timeout: int | None = None
     policies: PolicyWriteRequest | None = None
     resources: VmResources | None = None
 
@@ -839,6 +881,7 @@ class RunRequest:
     background: bool | None = False
     timeout: int | None = None
     time_to_background: int | None = None
+    queueing_timeout: int | None = None
     end_symbol: str | None = 'auto'
     vcpu_count: int | None = None
     memory_mib: int | None = None
@@ -1130,6 +1173,16 @@ class SyncOperation(TypedDict):
     errors: ErrorResponse
 
 
+class SyncStreamOperation(TypedDict):
+    operation_id: Literal['syncStream']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/sync-stream']
+    parameters: SyncStreamParameters
+    request: None
+    success: SyncStreamResponse
+    errors: ErrorResponse
+
+
 class ListSyncsOperation(TypedDict):
     operation_id: Literal['listSyncs']
     method: Literal['GET']
@@ -1187,6 +1240,7 @@ ApiOperation: TypeAlias = (
     AttachSessionPtyOperation |
     MintSessionPtyTicketOperation |
     SyncOperation |
+    SyncStreamOperation |
     ListSyncsOperation |
     CreateSyncOperation |
     DeleteSyncOperation

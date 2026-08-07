@@ -424,6 +424,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vms/{id}/sync-stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description VM identifier. */
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stream a file or archive into the VM
+         * @description Stream RAW bytes straight into the VM over vsock as they arrive, so the
+         *     client upload and the guest write overlap into one apparent hop — no
+         *     base64 inflation on the client leg and no host temp file. With `extract`
+         *     set the body is a tar and `path` is the destination directory: arkerd
+         *     lands it at an internal guest temp path and untars it in the guest
+         *     before responding, collapsing a whole directory sync into a single
+         *     client round-trip.
+         */
+        post: operations["syncStream"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/filesystems": {
         parameters: {
             query?: never;
@@ -502,10 +531,10 @@ export interface components {
             regions: components["schemas"]["RegionPlacement"][];
         };
         /**
-         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity.
+         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity. `capacity_unavailable` means no worker can currently serve the requested platform and one is being brought up; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again.
          * @enum {string}
          */
-        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "rate_limited" | "budget_exceeded" | "concurrency_limit_exceeded" | "regional_concurrency_limit_exceeded" | "resource_pressure" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
+        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "rate_limited" | "budget_exceeded" | "concurrency_limit_exceeded" | "regional_concurrency_limit_exceeded" | "resource_pressure" | "capacity_unavailable" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
         ErrorBody: {
             code: components["schemas"]["ErrorCode"];
             /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic. */
@@ -525,6 +554,28 @@ export interface components {
             provider?: string;
             /** @description Whether clients should retry the operation. */
             retryable?: boolean;
+            /**
+             * @description Quota scope that denied the operation.
+             * @enum {string}
+             */
+            scope?: "global" | "regional";
+            /** @description Region whose quota denied the operation. */
+            region?: string;
+            /** @description Stable quota resource key. */
+            resource?: string;
+            /** @description Usage observed by admission. */
+            current_usage?: number;
+            /** @description Positive allocation added by the operation. */
+            requested_increment?: number;
+            /** @description Usage after the requested increment. */
+            projected_usage?: number;
+            /** @description Enforced quota cap. */
+            quota?: number;
+            /**
+             * @description Stable Console action for resolving the denial.
+             * @enum {string}
+             */
+            action?: "settings_limits";
         };
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
@@ -609,17 +660,16 @@ export interface components {
             /** @description Substrings that must appear in the request body. */
             body_contains?: string[];
         };
-        /** @description Allow or deny matching traffic, rewrite a matching request, require an authorization gate, or suspend the VM while a matching request is in flight. */
+        /** @description allow / deny, or an object with any combination of `rewrite`, `gate`, and `scaling` (at least one). */
         PolicyAction: ("allow" | "deny") | {
             rewrite?: components["schemas"]["Rewrite"];
             gate?: components["schemas"]["Gate"];
-        } | {
-            scaling: components["schemas"]["ScalingAction"];
+            scaling?: components["schemas"]["ScalingAction"];
         };
-        /** @description Auto-scaling behavior for matched outbound traffic. The object is extensible with future scaling controls. */
+        /** @description Auto-scaling behavior for matched outbound traffic (outbound rules only). May be narrowed by L7 criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and composes with `rewrite` / `gate` siblings. Prefer a `match.hosts` scope: a host-less scaling rule matches every flow it can see, which breaks certificate-pinning clients. */
         ScalingAction: {
             /**
-             * @description Suspend the VM while a matched upstream request is blocked, then resume it when the response arrives.
+             * @description Suspend the VM while a matched upstream request is blocked, then resume it when the response arrives. The VM is not billed while it is suspended.
              * @default false
              */
             suspend?: boolean;
@@ -697,6 +747,8 @@ export interface components {
             platforms?: string[] | null;
             /** @description State to inherit from the source VM. Omit this field or pass `["disk", "memory"]` for a warm fork that resumes the source's filesystem and running processes. Pass `["disk"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`. */
             layers?: ("disk" | "memory")[] | null;
+            /** @description Maximum time in seconds this request may wait before failing with `capacity_unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. */
+            queueing_timeout?: number | null;
             /** @description Network policy stored and enforced before the new VM first runs. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. A non-empty document denies unmatched outbound traffic, so include outbound rules needed during setup. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
             /** @description Resource shape for the new VM. */
@@ -790,6 +842,10 @@ export interface components {
             sessions: components["schemas"]["Session"][];
             /** @description Current VM resource allocation. */
             resources: components["schemas"]["VmResources"];
+            /** @description Immutable platform identity of this concrete VM. */
+            platform?: string | null;
+            /** @description Source-compatible platforms structurally offered in this region. This is not a live-capacity signal. */
+            compatible_platforms?: components["schemas"]["CompatiblePlatform"][] | null;
         };
         ListVmsResponse: {
             /** @description VMs visible to the authenticated caller. */
@@ -820,7 +876,11 @@ export interface components {
             session_id: string;
         };
         RunRequest: {
-            /** @description Pin the VM as always-running: do not eager-pause or idle-suspend it. A run can leave detached children the platform cannot see (setsid nohup, a cron, a background server); idle detection does not count those, so the VM looks idle and gets frozen, silently stopping the child. Tri-state: true pins, false releases, omitted leaves unchanged. A drain or scale-down still overrides the pin, and a pinned VM is billed as running. */
+            /**
+             * @description Pin the VM as always-running: do not eager-pause or idle-suspend it. Tri-state: true pins, false releases, omitted leaves unchanged. A drain or scale-down still overrides the pin, and a pinned VM is billed as running.
+             *
+             *     NOTE: a run now stays open until everything it started has exited, so a run that leaves a daemon behind (setsid nohup, a background server) holds its session until `timeout`. Later runs on the SAME session queue behind it. To keep a session usable while a daemon runs, start the daemon on its own `session_idx` and do the rest of your work on another.
+             */
             keep_alive?: boolean | null;
             /** @description Target an EXISTING session by id. A session that no longer exists is a 404 — unlike `session_idx`, this never creates one. Takes precedence over `session_idx` when both are sent. */
             session_id?: string | null;
@@ -833,10 +893,12 @@ export interface components {
              * @default false
              */
             background?: boolean;
-            /** @description Maximum command runtime in seconds. Omitted defaults to 3,600 seconds. Set to 0 to disable the runtime limit. This is separate from `time_to_background`, which controls how long the request waits for completion. */
+            /** @description Maximum command runtime in seconds. Omitted defaults to 3,600 seconds. Set to 0 to disable the runtime limit. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
             /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime — that is timeout. */
             time_to_background?: number | null;
+            /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. Independent of `timeout` (execution bound) and `time_to_background` (sync window). */
+            queueing_timeout?: number | null;
             /**
              * @description Output marker used to determine when interactive execution is complete.
              * @default auto
@@ -1167,6 +1229,26 @@ export interface components {
         };
         SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"] | components["schemas"]["SyncManifestOperationRequest"];
         SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncManifestResponse"];
+        SyncStreamResponse: {
+            ok: boolean;
+            /**
+             * @description `write_stream` for a plain file write, `extract_stream` when `extract` was set.
+             * @enum {string}
+             */
+            op: "write_stream" | "extract_stream";
+            /** @description The sanitized destination — the file for a write, the directory for an extract. */
+            path: string;
+            /**
+             * Format: int64
+             * @description Bytes streamed, matching the declared `size`.
+             */
+            size: number;
+            complete: boolean;
+            /** @description Present on `write_stream`. */
+            written?: boolean;
+            /** @description Present on `extract_stream`. */
+            extracted?: boolean;
+        };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
             /** @description Path inside the VM. */
@@ -1397,6 +1479,26 @@ export interface components {
             network?: components["schemas"]["NetworkInput"] | null;
             /** @description Complete network policy replacement for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
+        };
+        CompatiblePlatform: {
+            /** @description Stable platform identifier used in fork requests. */
+            id: string;
+            /** @description Customer-facing platform name. */
+            display_name: string;
+            /** @description CPU architecture of the platform. */
+            architecture: string;
+            /** @description Smallest vCPU count accepted on this platform. */
+            min_vcpus?: number;
+            /** @description Largest vCPU count accepted on this platform. */
+            max_vcpus?: number;
+            /** @description Smallest memory size accepted on this platform. */
+            min_memory_mib?: number;
+            /** @description Largest memory size accepted on this platform. */
+            max_memory_mib?: number;
+            /** @description Smallest disk size accepted on this platform. */
+            min_disk_mib?: number;
+            /** @description Largest disk size accepted on this platform. */
+            max_disk_mib?: number;
         };
         /** @description A {min, max, default} band for one GPU resource on one platform. `default` is what a fork that omits the field receives. */
         GpuResourceBand: {
@@ -2230,6 +2332,44 @@ export interface operations {
             };
             402: components["responses"]["PaymentRequired"];
             422: components["responses"]["UnsupportedOperation"];
+            default: components["responses"]["Error"];
+        };
+    };
+    syncStream: {
+        parameters: {
+            query: {
+                /** @description Absolute destination path. With `extract` set this is the destination DIRECTORY. */
+                path: string;
+                /** @description Exact byte length of the streamed body. The request fails if the stream does not match. */
+                size: number;
+                /** @description Optional checksum, verified by the guest on the write that completes the file. */
+                sha256?: string;
+                /** @description Treat the body as a tar and extract it into `path` server-side, making a directory sync ONE round-trip. Use `tar` for incompressible data (skips a guest gunzip that costs ~3.4x the untar) and `tar.gz` where the upload-bandwidth win pays for it. */
+                extract?: "tar.gz" | "tgz" | "tar";
+            };
+            header?: never;
+            path: {
+                /** @description VM identifier. */
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Write or extract result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncStreamResponse"];
+                };
+            };
+            402: components["responses"]["PaymentRequired"];
             default: components["responses"]["Error"];
         };
     };
