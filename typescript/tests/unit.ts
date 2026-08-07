@@ -1315,12 +1315,16 @@ async function testSyncDirUploadsAGzippedTarball(): Promise<void> {
   const fetch = new FakeFetch();
   // 1. remote manifest -> empty, so every file counts as changed
   fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, { ok: true, op: "manifest", entries: [] });
-  // 2. the tarball write (small enough to go inline)
+  // 2. no /sync-stream on this server -> 404 -> legacy upload+run path below
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 404, {
+    error: { code: "not_found", message: "no route" },
+  });
+  // 3. the tarball write (small enough to go inline)
   fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
     ok: true, op: "write",
     results: [{ path: "/tmp/t.tar.gz", complete: true, written: true, ranges: [], received: 0 }],
   });
-  // 3. the in-guest extract
+  // 4. the in-guest extract
   fetch.addJson((m, url) => m === "POST" && url.endsWith("/runs"), 200, {
     run_id: "r1", state: "completed", exit_code: 0, stdout: "", stderr: "",
     stdout_encoding: "utf-8", stderr_encoding: "utf-8",
@@ -1340,5 +1344,102 @@ async function testSyncDirUploadsAGzippedTarball(): Promise<void> {
 }
 
 await testSyncDirUploadsAGzippedTarball();
+
+// ── syncDir /sync-stream fast path ───────────────────────────────────
+// The legacy path is upload + a SEPARATE run("tar -xf"): two round-trips, with
+// the extract going through the USER run scheduler where it queues behind an
+// active foreground run. /sync-stream?extract=tar.gz does both in one request,
+// untarring in the guest before responding.
+
+/** A syncDir fixture: a temp dir of `n` small files, plus a scripted manifest. */
+async function syncDirFixture(n = 8) {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-stream-"));
+  for (let i = 0; i < n; i++) {
+    fs.writeFileSync(nodePath.join(dir, `f${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  const fetch = new FakeFetch();
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, { ok: true, op: "manifest", entries: [] });
+  const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+  return { dir, fetch, cleanup };
+}
+
+async function testSyncStreamFastPathSkipsTheExtractRun(): Promise<void> {
+  const { dir, fetch, cleanup } = await syncDirFixture();
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+
+  await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p");
+
+  const stream = fetch.calls.find((c) => c.url.includes("/sync-stream"));
+  assert.ok(stream, "syncDir must try /sync-stream first");
+  assert.equal(stream!.headers["content-type"], "application/octet-stream", "body must go raw, not base64 JSON");
+
+  // Params ride in the query string: the auth middleware strips x-arker-* from
+  // untrusted callers and would erase them as headers.
+  const qs = new URL(stream!.url).searchParams;
+  assert.equal(qs.get("path"), "/home/user/p");
+  assert.equal(qs.get("extract"), "tar.gz");
+  assert.ok(Number(qs.get("size")) > 0, "size must be the tarball byte length");
+
+  // The whole point: no second round-trip through the user run scheduler.
+  assert.equal(fetch.calls.filter((c) => c.url.endsWith("/runs")).length, 0, "fast path must not issue an extract run");
+  cleanup();
+}
+
+async function testSyncStreamErrorsOtherThan404DoNotFallBack(): Promise<void> {
+  const { dir, fetch, cleanup } = await syncDirFixture();
+  // A path escape is a REAL rejection. Silently retrying the slow path would
+  // turn a hard error into a confusing one.
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 403, {
+    error: { code: "permission_denied", message: "path escapes the VM root" },
+  });
+
+  await assert.rejects(
+    () => client(fetch).vm("vm_1").syncDir(dir, "/home/user/p"),
+    (error: unknown) => {
+      assert.ok(error instanceof ArkerError, "must surface as ArkerError");
+      assert.equal((error as ArkerError).code, "permission_denied", "server's code must survive");
+      return true;
+    },
+  );
+  assert.equal(fetch.calls.filter((c) => c.url.endsWith("/runs")).length, 0, "must not fall back on a real failure");
+  cleanup();
+}
+
+await testSyncStreamFastPathSkipsTheExtractRun();
+await testSyncStreamErrorsOtherThan404DoNotFallBack();
+
+// ── syncDir assumeEmpty ──────────────────────────────────────────────
+// The manifest exists to avoid re-sending unchanged files. Into a fresh
+// directory it is guaranteed empty, so the round-trip costs ~184ms to learn
+// nothing — on exactly the first-sync path we lose to E2B on.
+
+async function testAssumeEmptySkipsTheManifestRoundTrip(): Promise<void> {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-assume-"));
+  fs.writeFileSync(nodePath.join(dir, "a.ts"), "export const a = 1;\n");
+
+  const fetch = new FakeFetch();
+  // Deliberately NO manifest script: if syncDir asks for one, FakeFetch throws.
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+
+  const result = await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p", { assumeEmpty: true });
+
+  assert.equal(
+    fetch.calls.filter((c) => (c.body ?? "").includes('"op":"manifest"')).length,
+    0,
+    "assumeEmpty must not fetch the remote manifest",
+  );
+  assert.equal(result.sent, 1, "an empty manifest means everything is sent");
+  // Exactly 0, not merely small, so a caller can tell "skipped" from "fast".
+  assert.equal(result.timings?.manifestMs, 0, "a skipped manifest must report exactly 0");
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+await testAssumeEmptySkipsTheManifestRoundTrip();
 
 console.log("PASS unit");

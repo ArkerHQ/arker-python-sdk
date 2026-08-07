@@ -1047,8 +1047,14 @@ export class VM {
     // 1. Authoritative remote manifest: rel_path -> sha256. A directory that
     //    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
     const clock = () => Number(process.hrtime.bigint() / 1000n) / 1000;
+    //    `assumeEmpty` skips the round-trip on a destination the caller knows
+    //    is fresh. `manifestMs` then rounds to 0 on its own (the skip costs
+    //    microseconds against 0.1ms reporting precision), so a caller can still
+    //    tell "skipped" from "merely fast" — a real fetch is ~184ms.
     const tManifest0 = clock();
-    const remote = await this.remoteManifest(remoteRoot);
+    const remote = options.assumeEmpty
+      ? new Map<string, string>()
+      : await this.remoteManifest(remoteRoot);
     const manifestMs = clock() - tManifest0;
     const tWalk0 = clock();
 
@@ -1126,9 +1132,47 @@ export class VM {
     return out;
   }
 
-  /** Pack the changed files (paths relative to `localRoot`) into one tar and
-   * extract it in the guest with `tar -x`. Uses node-tar, which reads the files
-   * from disk preserving mode (exec bits) + mtime. */
+  /** One-round-trip directory upload: stream a gzip tar to `/sync-stream` and
+   * let arkerd untar it IN THE GUEST before responding.
+   *
+   * Params ride in the query string, not headers: the auth middleware strips
+   * `x-arker-*` from untrusted callers and would erase them.
+   *
+   * The body is sent raw (`application/octet-stream`) — no base64, so none of
+   * the +33% inflation the JSON write path pays. */
+  private async syncStreamExtract(tarGz: Uint8Array, remoteRoot: string): Promise<void> {
+    const qs = new URLSearchParams({
+      path: remoteRoot,
+      size: String(tarGz.byteLength),
+      extract: "tar.gz",
+    });
+    const url = `${this.baseUrl}${vmPath(this.id)}/sync-stream?${qs}`;
+    const res = await this._client._fetch(url, {
+      method: "POST",
+      headers: {
+        ...this._client._authHeaders(),
+        "content-type": "application/octet-stream",
+      },
+      body: tarGz as BodyInit,
+    });
+    if (!res.ok) {
+      let code = "internal";
+      let message = `sync-stream failed (${res.status})`;
+      try {
+        const body = (await res.json()) as { error?: { code?: string; message?: string } };
+        code = body?.error?.code ?? code;
+        message = body?.error?.message ?? message;
+      } catch {
+        // non-JSON body; keep the status-derived message
+      }
+      throw new ArkerError(code, message, res.status);
+    }
+  }
+
+  /** Pack the changed files (paths relative to `localRoot`) into one gzip tar
+   * and extract it in the guest — via `/sync-stream` where available, else by
+   * uploading and running `tar -x`. Uses node-tar, which reads the files from
+   * disk preserving mode (exec bits) + mtime. */
   private async uploadAndExtractTarball(
     changed: Array<{ rel: string; abs: string }>,
     localRoot: string,
@@ -1151,6 +1195,23 @@ export class VM {
         changed.map((entry) => entry.rel),
       );
       const data = await fsp.readFile(localTar);
+
+      // FAST PATH: one round-trip. `/sync-stream?extract=tar.gz` streams the
+      // tarball to the guest over vsock and untars it THERE before responding.
+      // The legacy path below is upload + a SEPARATE `run("tar -xf")` — two
+      // round-trips, with the extract going through the user run scheduler
+      // where it can queue behind an active foreground run.
+      //
+      // Falls back on 404 so older servers still work: the route only became
+      // reachable once registered in openapi.json.
+      try {
+        await this.syncStreamExtract(data, remoteRoot);
+        return;
+      } catch (error) {
+        if (!(error instanceof ArkerError) || error.code !== "not_found") {
+          throw error; // real failure (auth, path escape, size) must not be masked
+        }
+      }
 
       const remoteTar = `/tmp/.arker-sync-${ulid()}.tar`;
       await this.sync(remoteTar, data); // inline for small tarballs, presigned for large
@@ -2052,6 +2113,18 @@ export interface SyncDirOptions {
    * Reused across calls it skips re-hashing files whose (size, mtime) are
    * unchanged. Pure optimization — it never affects which files are sent. */
   cache?: Map<string, { size: number; mtimeMs: number; hash: string }>;
+
+  /** Skip the remote manifest round-trip and send everything.
+   *
+   * The manifest exists to avoid re-sending unchanged files. On a FIRST sync
+   * into a fresh directory it is guaranteed empty, so the round-trip costs
+   * ~184ms to learn nothing. Set this when you know the destination is new
+   * (e.g. straight after a fork).
+   *
+   * Safe by construction: an empty manifest means "send everything", which is
+   * what a first sync does anyway. Setting it wrongly re-sends files that were
+   * already there — wasteful, never incorrect. */
+  assumeEmpty?: boolean;
 }
 
 /** POSIX-single-quote a string so it is safe inside a `/bin/sh` command. */
