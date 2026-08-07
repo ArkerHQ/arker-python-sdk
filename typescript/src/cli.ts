@@ -89,6 +89,12 @@ const RESOURCE_OPTIONS: OptionSpecs = {
   vcpu: { type: "integer", min: 0, max: 255 },
 };
 
+const FORK_RESOURCE_OPTIONS: OptionSpecs = {
+  ...RESOURCE_OPTIONS,
+  "gpu-sms": { type: "integer", min: 1 },
+  "gpu-vram-mib": { type: "integer", min: 1 },
+};
+
 const RUN_OPTIONS: OptionSpecs = {
   ...GLOBAL_OPTIONS,
   acquire: { type: "string" },
@@ -110,7 +116,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   },
   fork: {
     ...GLOBAL_OPTIONS,
-    ...RESOURCE_OPTIONS,
+    ...FORK_RESOURCE_OPTIONS,
     description: { type: "string" },
     name: { type: "string" },
     "no-disk": { type: "boolean" },
@@ -176,7 +182,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   vms: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
-    ...RESOURCE_OPTIONS,
+    ...FORK_RESOURCE_OPTIONS,
     acquire: { type: "string" },
     background: { type: "boolean" },
     description: { type: "string" },
@@ -528,7 +534,8 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
 
   if (!sourceVmId && !sourceVmName) {
     die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]\n" +
-        "       [--platform <token[,token...]>] [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]");
+        "       [--platform <token[,token...]>] [--vcpu N] [--memory-mib N] [--disk-mib N]\n" +
+        "       [--gpu-vram-mib N] [--gpu-sms N] [--no-disk]");
   }
 
   // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
@@ -548,14 +555,23 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const vcpu = numFlag(args, "vcpu");
   const memoryMib = numFlag(args, "memory-mib");
   const diskMib = numFlag(args, "disk-mib");
-  const hasResources = vcpu !== undefined || memoryMib !== undefined || diskMib !== undefined;
+  const gpuVramMib = numFlag(args, "gpu-vram-mib");
+  const gpuSms = numFlag(args, "gpu-sms");
+  const hasResources = [vcpu, memoryMib, diskMib, gpuVramMib, gpuSms]
+    .some((value) => value !== undefined);
   const resources = hasResources
-    ? { vcpu: vcpu ?? null, memory_mib: memoryMib ?? null, disk_mib: diskMib ?? null }
+    ? {
+        vcpu: vcpu ?? null,
+        memory_mib: memoryMib ?? null,
+        disk_mib: diskMib ?? null,
+        gpu_vram_mib: gpuVramMib ?? null,
+        gpu_sms: gpuSms ?? null,
+      }
     : undefined;
 
-  // --no-disk forks a nodisk (memory-backed) VM; default leaves disk to the
-  // SDK (which defaults disk=true). (Inbound reachability is intentionally not
-  // exposed on the CLI yet — see the descoped SSH/reachability work.)
+  // --no-disk forks a nodisk (memory-backed) VM; by default the server derives
+  // disk behavior from the source. Inbound reachability is intentionally not
+  // exposed on the CLI yet.
   const disk = boolFlag(args, "no-disk") ? false : undefined;
 
   const computer = await client.fork({
@@ -1035,6 +1051,7 @@ function usage(_command?: string): void {
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource overrides",
       "  arker fork <vm> --platform <token[,token...]>  pin the fork to a compute platform",
+      "  arker fork <vm> --gpu-vram-mib N --gpu-sms N   size GPU resources for the fork",
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",

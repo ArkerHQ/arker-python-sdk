@@ -220,6 +220,8 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
     { args: ["run", "--time-to-background", "1.5", "vm_1", "echo", "ok"], flag: "time-to-background" },
     { args: ["ls", "--limit", "1001"], flag: "limit" },
     { args: ["fork", "--vcpu", "256", "ubuntu-full"], flag: "vcpu" },
+    { args: ["fork", "--gpu-vram-mib", "0", "ubuntu-gpu-small"], flag: "gpu-vram-mib" },
+    { args: ["fork", "--gpu-sms", "1.5", "ubuntu-gpu-small"], flag: "gpu-sms" },
     { args: ["update", "--memory-mib", "Infinity", "vm_1"], flag: "memory-mib" },
     { args: ["shell", "--rows", "0", "vm_1"], flag: "rows" },
     { args: ["run", "--timeout=", "vm_1", "echo", "ok"], flag: "timeout" },
@@ -232,6 +234,47 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
       assert.match(result.stderr, new RegExp(flag));
     });
   }
+}
+
+async function testForkForwardsGpuResourceOptions(): Promise<void> {
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
+    async (baseUrl, requests) => {
+      const result = await runCli(baseUrl, [
+        "fork",
+        "--platform",
+        "x86_64-l40s",
+        "--gpu-vram-mib",
+        "24576",
+        "--gpu-sms",
+        "8",
+        "ubuntu-gpu-small",
+      ]);
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(requests, [{
+        method: "POST",
+        url: "/api/v1/fork",
+        body: {
+          source_vm_id: null,
+          source_vm_name: "ubuntu-gpu-small",
+          source_org_id: "ArkerHQ",
+          name: null,
+          description: null,
+          public: null,
+          durable: null,
+          platforms: ["x86_64-l40s"],
+          resources: {
+            vcpu: null,
+            memory_mib: null,
+            disk_mib: null,
+            gpu_vram_mib: 24576,
+            gpu_sms: 8,
+          },
+        },
+      }]);
+    },
+  );
 }
 
 async function testGlobalOptionsBeforeCommand(): Promise<void> {
@@ -721,6 +764,7 @@ await testUnknownRunOptionBeforeCommandFails();
 await testNestedRunStopsAtRemoteCommand();
 await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
+await testForkForwardsGpuResourceOptions();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
 await testGcpProviderFlagIsAccepted();
