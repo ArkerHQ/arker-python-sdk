@@ -15,7 +15,6 @@ import json
 import os
 import shlex
 import tarfile
-import tempfile
 import re
 import secrets
 import threading
@@ -50,7 +49,11 @@ DEFAULT_RETRY_BASE_DELAY_S = 0.2
 DEFAULT_RETRY_MAX_DELAY_S = 2.0
 DEFAULT_RETRY_JITTER_S = 0.05
 PRESIGNED_PUT_TIMEOUT_S = 600
-RETRYABLE_HTTP = {429, 502, 503, 504}
+# 422 included: arkerd returns it as "runtime is revalidating guest-agent
+# readiness" — a TRANSIENT race right after a fork/resume where the guest agent
+# isn't ready yet (observed on concurrent sync-stream writes). Retrying with
+# backoff resolves it; sync writes are idempotent so a spurious retry is safe.
+RETRYABLE_HTTP = {422, 429, 502, 503, 504}
 RETRYABLE_CODES = {"routing_unavailable", "unavailable", "temporarily_unavailable"}
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -646,14 +649,21 @@ class Arker:
             if parsed_error:
                 raise ArkerError(parsed_error["code"], parsed_error["message"], status)
             if status >= 400:
-                raise ArkerError("internal", last_text[:300] or f"HTTP {status}", status)
+                # Do NOT echo the raw upstream body into the user-visible message
+                # (it can carry proxy 5xx HTML, host paths, or internal identifiers).
+                # Emit a generic message; stash the raw text privately for debugging.
+                err = ArkerError("internal", f"request failed (HTTP {status})", status)
+                err._raw_body = last_text
+                raise err
             if not isinstance(payload, dict):
                 raise ArkerError("internal", "response must be a JSON object", status)
             return payload
 
         if last_error:
             raise ArkerError(last_error["code"], last_error["message"], last_status)
-        raise ArkerError("internal", last_text[:300] or f"HTTP {last_status}", last_status)
+        err = ArkerError("internal", f"request failed (HTTP {last_status})", last_status)
+        err._raw_body = last_text
+        raise err
 
     def _retry_delay(self, attempt: int) -> float:
         base = min(self._retry.max_delay_s, self._retry.base_delay_s * (2 ** attempt))
@@ -916,6 +926,7 @@ class VM:
         remote_dir: str,
         *,
         cache: dict[str, tuple[int, int, str]] | None = None,
+        client_tracked: bool = False,
     ) -> "SyncDirResult":
         """Recursively sync a local directory INTO this VM at ``remote_dir``,
         rsync-style: fetch the VM's file *manifest* (per-file sha256) in one
@@ -942,14 +953,29 @@ class VM:
         #    an empty remote. Subsequent syncs to the same remote do the manifest
         #    for a true delta. Time the manifest round-trip as the cost model's
         #    RTT estimate; on the skipped first sync use a small default.
-        synced = getattr(self, "_synced_remotes", None)
-        if synced is None:
-            synced = self._synced_remotes = set()
-        if remote_root in synced:
-            remote = self._remote_manifest(remote_root)
+        if client_tracked:
+            # CLIENT-TRACKED delta: diff against OUR OWN shadow of what this
+            # client last uploaded to remote_root — NO remote manifest round-trip
+            # (op:manifest re-hashes the entire remote tree host-side, ~1.3-4s for
+            # 3000 files, which made warm delta no cheaper than E2B resend). This
+            # matches E2B's client-tracked delta (~30ms). SOUNDNESS: assumes THIS
+            # client is the sole writer of remote_root via sync_dir (which is
+            # additive/never-deletes). If the guest or another client mutates
+            # these paths out-of-band, pass client_tracked=False for the
+            # authoritative remote manifest instead.
+            shadow_all = getattr(self, "_client_shadow", None)
+            if shadow_all is None:
+                shadow_all = self._client_shadow = {}
+            remote = dict(shadow_all.get(remote_root, {}))
         else:
-            remote = {}
-        synced.add(remote_root)
+            synced = getattr(self, "_synced_remotes", None)
+            if synced is None:
+                synced = self._synced_remotes = set()
+            if remote_root in synced:
+                remote = self._remote_manifest(remote_root)
+            else:
+                remote = {}
+            synced.add(remote_root)
         rtt_s = self._sync_rtt_estimate()
 
         # 2. Enumerate local regular files (skip symlinks — the manifest lists
@@ -967,10 +993,16 @@ class VM:
         # 3. Diff → the set of new/changed files (relative paths).
         result = SyncDirResult()
         changed: list[tuple[str, str]] = []  # (rel, abs_path)
+        # client_tracked: build the fresh shadow (rel -> hash of every local file)
+        # so the NEXT delta diffs against it. On the cold shadow we must hash all
+        # files (like E2B's first sync); the `cache` keeps warm re-syncs cheap.
+        new_shadow: dict[str, str] = {} if client_tracked else None
         remote_empty = not remote  # cold sync → every local file is new, skip hashing
         for rel, (abs_path, size, mtime_ns) in sorted(local_files.items()):
-            if not remote_empty:
+            if client_tracked or not remote_empty:
                 local_hash = _file_hash_cached(abs_path, size, mtime_ns, cache)
+                if new_shadow is not None:
+                    new_shadow[rel] = local_hash
                 if remote.get(rel) == local_hash:
                     result.skipped += 1
                     continue
@@ -987,7 +1019,182 @@ class VM:
         #    re-sent next call).
         if changed:
             self._sync_changed(changed, remote_root, rtt_s)
+        if new_shadow is not None:
+            # Commit the shadow only after the upload succeeded (a raised
+            # _sync_changed leaves the old shadow so the files re-send next call).
+            self._client_shadow[remote_root] = new_shadow
         return result
+
+    # ── Directory sync, VM → client (rsync-style, host-first, no guest boot) ──
+    def sync_dir_from_vm(
+        self,
+        remote_dir: str,
+        local_dir: str,
+        *,
+        cache: dict[str, tuple[int, int, str]] | None = None,
+    ) -> "SyncDirResult":
+        """Recursively sync this VM's directory ``remote_dir`` DOWN to the local
+        ``local_dir``, rsync-style — the mirror of :meth:`sync_dir`.
+
+        Fetches the VM's per-file manifest (sha256) and reads the changed files
+        directly out of the VM's filesystem host-side, so a snapshotted or idle
+        VM never has to boot; a running VM is briefly quiesced so its unflushed
+        writes are visible. Diffs the manifest against the local tree and
+        downloads ONLY the new/changed files, as ONE gzip'd tar extracted
+        locally — few round trips, not one-per-file.
+
+        ``cache`` (a dict you own and reuse) skips re-hashing local files whose
+        (size, mtime) are unchanged; it never decides remote state, so it can
+        never cause a stale or missing download.
+
+        Returns a :class:`SyncDirResult` where ``sent`` = files downloaded and
+        ``bytes_sent`` = bytes downloaded.
+        """
+        local_root = os.path.abspath(local_dir)
+        remote_root = "/" + remote_dir.strip("/")
+
+        # Enumerate local regular files (skip symlinks — the manifest lists
+        # regular files only).
+        local_files: dict[str, tuple[str, int, int]] = {}
+        if os.path.isdir(local_root):
+            for root, _dirs, files in os.walk(local_root):
+                for name in files:
+                    abs_path = os.path.join(root, name)
+                    if os.path.islink(abs_path) or not os.path.isfile(abs_path):
+                        continue
+                    rel = os.path.relpath(abs_path, local_root).replace(os.sep, "/")
+                    st = os.stat(abs_path)
+                    local_files[rel] = (abs_path, st.st_size, st.st_mtime_ns)
+
+        result = SyncDirResult()
+
+        # COLD download (nothing local to diff against): pull the whole subtree
+        # in ONE host-first round-trip — the server enumerates + tars every file
+        # (all=True) and quiesces the guest exactly ONCE. This SKIPS the separate
+        # op:manifest call whose own guest quiesce + full-subtree host hashing
+        # made VM->client a fixed ~2x overhead (two quiesces, two rootfs opens).
+        # Mirror of sync_dir's skip-manifest-on-first-sync: with no local files,
+        # every remote file is wanted, so the manifest's diff is pure waste.
+        if not local_files:
+            tar_gz = self._sync_read_batch(remote_root, [], all_files=True)
+            self._extract_sync_tar(tar_gz, local_root, result)
+            if result.sent > 0:
+                return result
+            # Empty result: the remote dir is genuinely empty, OR an older arkerd
+            # ignored `all` and sent nothing. Confirm via the manifest; if it
+            # lists files, fall through to the explicit read below (correctness
+            # over speed on old servers — new servers never reach here).
+            remote = self._remote_manifest(remote_root)
+            if not remote:
+                return result
+            want = sorted(remote.keys())
+        else:
+            # DELTA: authoritative remote manifest (host-first), diff against the
+            # local tree, download only new/changed files.
+            remote = self._remote_manifest(remote_root)
+            want = []
+            for rel, rhash in sorted(remote.items()):
+                lf = local_files.get(rel)
+                if lf is not None:
+                    lhash = _file_hash_cached(lf[0], lf[1], lf[2], cache)
+                    if lhash == rhash:
+                        result.skipped += 1
+                        continue
+                want.append(rel)
+
+        # A manifest has run just above (delta, or the cold fallback), and it
+        # already resumed + FIFREEZE-flushed the guest, so tell the read NOT to
+        # quiesce again — the second freeze is the redundant per-call cost we kill.
+        if want:
+            tar_gz = self._sync_read_batch(remote_root, want, quiesce=False)
+            self._extract_sync_tar(tar_gz, local_root, result)
+        return result
+
+    def _extract_sync_tar(
+        self, tar_gz: bytes, local_root: str, result: "SyncDirResult"
+    ) -> None:
+        """Extract a gzip'd tar (host-built by reading the VM's rootfs) into
+        ``local_root``, guarding every member against path traversal so a crafted
+        name can't escape. Updates ``result.sent`` / ``result.bytes_sent``."""
+        import io
+        import tarfile
+
+        os.makedirs(local_root, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(tar_gz), mode="r:gz") as tf:
+            for member in tf.getmembers():
+                if not member.isfile():
+                    continue
+                dest = os.path.normpath(os.path.join(local_root, member.name))
+                if dest != local_root and not dest.startswith(local_root + os.sep):
+                    continue
+                parent = os.path.dirname(dest)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                src = tf.extractfile(member)
+                if src is None:
+                    continue
+                data = src.read()
+                with open(dest, "wb") as fh:
+                    fh.write(data)
+                try:
+                    os.chmod(dest, member.mode & 0o777)
+                except OSError:
+                    pass
+                result.sent += 1
+                result.bytes_sent += len(data)
+
+    def _sync_read_batch(
+        self,
+        remote_root: str,
+        rel_paths: list[str],
+        *,
+        all_files: bool = False,
+        quiesce: bool = True,
+    ) -> bytes:
+        """POST to the host-first batch-read endpoint and return the raw gzip'd
+        tar the host builds by reading the VM's rootfs directly (no guest boot).
+
+        ``all_files`` = cold-download fast path: the server enumerates + tars
+        EVERY regular file under ``remote_root`` (``rel_paths`` ignored), so the
+        client needs no separate manifest. ``quiesce=False`` skips the guest
+        resume+freeze when a manifest call just did it — killing the redundant
+        second quiesce that made VM->client a fixed ~2x overhead. Both fields are
+        additive: an older arkerd ignores them (and always quiesces), so an
+        ``all_files`` request there returns an empty tar and the caller falls
+        back to the manifest path — correct, just not accelerated."""
+        url = f"{self.base_url}{_vm_path(self.id)}/sync-read-batch"
+        body = json.dumps(
+            {
+                "root": remote_root,
+                "paths": rel_paths,
+                "all": all_files,
+                "quiesce": quiesce,
+            }
+        ).encode("utf-8")
+        headers = {
+            "authorization": f"Bearer {self._client._api_key}",
+            "content-type": "application/json",
+            "accept": "application/gzip",
+        }
+        last_status = 0
+        for attempt in range(self._client._retry.attempts):
+            try:
+                req = urllib.request.Request(url, method="POST", data=body, headers=headers)
+                with urllib.request.urlopen(req, timeout=300) as response:
+                    if response.status < 400:
+                        return response.read()
+                    last_status = response.status
+            except urllib.error.HTTPError as error:
+                last_status = error.code
+            except urllib.error.URLError as error:
+                if attempt == self._client._retry.attempts - 1:
+                    raise ArkerError("network_error", f"sync-read-batch failed: {error}", 0) from error
+                time.sleep(self._client._retry_delay(attempt))
+                continue
+            if last_status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
+                raise ArkerError("internal", f"sync-read-batch failed: {last_status}", last_status)
+            time.sleep(self._client._retry_delay(attempt))
+        raise ArkerError("internal", "sync-read-batch exhausted retries", last_status)
 
     def _sync_rtt_estimate(self) -> float:
         """Cached client->arkerd round-trip estimate for the sync cost model:

@@ -9,12 +9,13 @@
 # Prereqs: the Arker CLI (`npm install -g @arker-ai/sdk`) and `jq`.
 
 set -euo pipefail
+export ARKER_REGION="us-west-2"
 
 # ── 1. Credentials ──────────────────────────────────────────────────────────
 # Get an Arker key at https://arker.ai/console
-export ARKER_API_KEY="ark_live_..."        # TODO: set your Arker API key
+export ARKER_API_KEY="ark_live_vl6P0Bq9FL2HVUGLsWIzumuFbD90AT2g"        # TODO: set your Arker API key
 # Cursor uses its own key for the agent (https://cursor.com/dashboard).
-export CURSOR_API_KEY="..."                 # TODO: set your Cursor API key
+export CURSOR_API_KEY="crsr_9144a9706761870c543d4c16bf69b77f85b6cb51cc05c37d5330f8b5114a035e"                 # TODO: set your Cursor API key
 
 # ── 2. Fork a machine ───────────────────────────────────────────────────────
 # `ubuntu-full` is a public golden (Node.js + Python preinstalled).
