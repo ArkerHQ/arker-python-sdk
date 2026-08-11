@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
+import { createHash } from "node:crypto";
 
 import {
   Arker,
@@ -155,6 +159,56 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
       ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
       source_vm_id: "ubuntu",
     },
+  );
+}
+
+// fork() forwards the caller's fields instead of naming each one. The old
+// allowlist accepted any contract field at the type level and dropped the ones
+// it didn't enumerate, so asking for a disk-only fork silently produced a full
+// warm fork — a wrong result with no error. These pin the passthrough AND the
+// exclusions, since forwarding a non-contract key is a 400 from the server.
+
+async function testForkForwardsContractFieldsItDoesNotEnumerate(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    { vm_id: "vm_child", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  );
+
+  await client(fetch).fork("ubuntu-dev", { layers: ["disk"] });
+
+  const body = JSON.parse(fetch.calls[0]!.body!);
+  assert.deepEqual(body.layers, ["disk"], "layers must reach the wire, not be dropped");
+}
+
+async function testForkDropsNonContractKeys(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    { vm_id: "vm_child", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  );
+
+  // camelCase selectors + legacy flat resources. The server's validator 400s on
+  // unknown fields, so these must be folded/renamed, never forwarded verbatim.
+  await client(fetch).fork({
+    sourceVmName: "ubuntu-dev",
+    sourceOrgId: "org_x",
+    vcpu_count: 2,
+    memory_mib: 1024,
+  } as never);
+
+  const body = JSON.parse(fetch.calls[0]!.body!);
+  for (const key of ["sourceVmName", "sourceOrgId", "vcpu_count", "memory_mib", "disk_mib"]) {
+    assert.equal(key in body, false, `${key} is not a contract field and must not be sent`);
+  }
+  assert.equal(body.source_vm_name, "ubuntu-dev", "camelCase selector must be renamed");
+  assert.equal(body.source_org_id, "org_x");
+  assert.deepEqual(
+    body.resources,
+    { vcpu: 2, memory_mib: 1024, disk_mib: null },
+    "legacy flat resource fields must fold into resources",
   );
 }
 
@@ -950,6 +1004,8 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 }
 
 await testForkPostsDirectlyToSourceVm();
+await testForkForwardsContractFieldsItDoesNotEnumerate();
+await testForkDropsNonContractKeys();
 await testForkInfersArkerOrgForMacosFullGolden();
 await testForkOmitsUnconfiguredCapabilities();
 await testRemovedNetworkInputsFailBeforeRequests();
@@ -1297,4 +1353,351 @@ await testRunAndGetRunAgreeOnBinaryOutput();
 await testEveryByteValueRoundTrips();
 await testUtf8WireStillYieldsBothForms();
 
+// ── syncDir tarball compression ──────────────────────────────────────
+// syncDir packs changed files into ONE tarball and uploads it in a single
+// request whose cost the host pays again on commit. Uncompressed, a large tree
+// blew the sync budget and failed outright (a Linux checkout is 319 MB raw,
+// 70 MB gzipped). gzip is therefore load-bearing, not an optimization.
+
+async function testSyncDirUploadsAGzippedTarball(): Promise<void> {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-gz-"));
+  for (let i = 0; i < 40; i++) {
+    fs.writeFileSync(nodePath.join(dir, `f${i}.ts`), `export const v${i} = ${i};\n`.repeat(60));
+  }
+
+  const fetch = new FakeFetch();
+  // 1. remote manifest -> empty, so every file counts as changed
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, { ok: true, op: "manifest", entries: [] });
+  // 2. no /sync-stream on this server -> 404 -> legacy upload+run path below
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 404, {
+    error: { code: "not_found", message: "no route" },
+  });
+  // 3. the tarball write (small enough to go inline)
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+    ok: true, op: "write",
+    results: [{ path: "/tmp/t.tar.gz", complete: true, written: true, ranges: [], received: 0 }],
+  });
+  // 4. the in-guest extract
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/runs"), 200, {
+    run_id: "r1", state: "completed", exit_code: 0, stdout: "", stderr: "",
+    stdout_encoding: "utf-8", stderr_encoding: "utf-8",
+  });
+
+  await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p");
+
+  const write = fetch.calls.find(
+    (c) => c.url.endsWith("/sync") && (c.body ?? "").includes('"op":"write"'),
+  );
+  assert.ok(write, "syncDir must upload the tarball");
+  const entry = JSON.parse(write!.body!).writes[0];
+  const tarball = Buffer.from(entry.content, "base64");
+  assert.equal(tarball[0], 0x1f, "tarball must be gzipped (magic byte 0)");
+  assert.equal(tarball[1], 0x8b, "tarball must be gzipped (magic byte 1)");
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+await testSyncDirUploadsAGzippedTarball();
+
+// ── syncDir /sync-stream fast path ───────────────────────────────────
+// The legacy path is upload + a SEPARATE run("tar -xf"): two round-trips, with
+// the extract going through the USER run scheduler where it queues behind an
+// active foreground run. /sync-stream?extract=tar.gz does both in one request,
+// untarring in the guest before responding.
+
+/** A syncDir fixture: a temp dir of `n` small files, plus a scripted manifest. */
+async function syncDirFixture(n = 8) {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-stream-"));
+  for (let i = 0; i < n; i++) {
+    fs.writeFileSync(nodePath.join(dir, `f${i}.ts`), `export const v${i} = ${i};\n`);
+  }
+  const fetch = new FakeFetch();
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, { ok: true, op: "manifest", entries: [] });
+  const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+  return { dir, fetch, cleanup };
+}
+
+async function testSyncStreamFastPathSkipsTheExtractRun(): Promise<void> {
+  const { dir, fetch, cleanup } = await syncDirFixture();
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+
+  await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p");
+
+  const stream = fetch.calls.find((c) => c.url.includes("/sync-stream"));
+  assert.ok(stream, "syncDir must try /sync-stream first");
+  assert.equal(stream!.headers["content-type"], "application/octet-stream", "body must go raw, not base64 JSON");
+
+  // Params ride in the query string: the auth middleware strips x-arker-* from
+  // untrusted callers and would erase them as headers.
+  const qs = new URL(stream!.url).searchParams;
+  assert.equal(qs.get("path"), "/home/user/p");
+  assert.equal(qs.get("extract"), "tar.gz");
+  assert.ok(Number(qs.get("size")) > 0, "size must be the tarball byte length");
+
+  // The whole point: no second round-trip through the user run scheduler.
+  assert.equal(fetch.calls.filter((c) => c.url.endsWith("/runs")).length, 0, "fast path must not issue an extract run");
+  cleanup();
+}
+
+async function testSyncStreamErrorsOtherThan404DoNotFallBack(): Promise<void> {
+  const { dir, fetch, cleanup } = await syncDirFixture();
+  // A path escape is a REAL rejection. Silently retrying the slow path would
+  // turn a hard error into a confusing one.
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 403, {
+    error: { code: "permission_denied", message: "path escapes the VM root" },
+  });
+
+  await assert.rejects(
+    () => client(fetch).vm("vm_1").syncDir(dir, "/home/user/p"),
+    (error: unknown) => {
+      assert.ok(error instanceof ArkerError, "must surface as ArkerError");
+      assert.equal((error as ArkerError).code, "permission_denied", "server's code must survive");
+      return true;
+    },
+  );
+  assert.equal(fetch.calls.filter((c) => c.url.endsWith("/runs")).length, 0, "must not fall back on a real failure");
+  cleanup();
+}
+
+await testSyncStreamFastPathSkipsTheExtractRun();
+await testSyncStreamErrorsOtherThan404DoNotFallBack();
+
+// ── syncDir assumeEmpty ──────────────────────────────────────────────
+// The manifest exists to avoid re-sending unchanged files. Into a fresh
+// directory it is guaranteed empty, so the round-trip costs ~184ms to learn
+// nothing — on exactly the first-sync path we lose to E2B on.
+
+async function testAssumeEmptySkipsTheManifestRoundTrip(): Promise<void> {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-assume-"));
+  fs.writeFileSync(nodePath.join(dir, "a.ts"), "export const a = 1;\n");
+
+  const fetch = new FakeFetch();
+  // Deliberately NO manifest script: if syncDir asks for one, FakeFetch throws.
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+
+  const result = await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p", { assumeEmpty: true });
+
+  assert.equal(
+    fetch.calls.filter((c) => (c.body ?? "").includes('"op":"manifest"')).length,
+    0,
+    "assumeEmpty must not fetch the remote manifest",
+  );
+  assert.equal(result.sent, 1, "an empty manifest means everything is sent");
+  // Exactly 0, not merely small, so a caller can tell "skipped" from "fast".
+  assert.equal(result.timings?.manifestMs, 0, "a skipped manifest must report exactly 0");
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+await testAssumeEmptySkipsTheManifestRoundTrip();
+
 console.log("PASS unit");
+
+// ── syncDir stat cache ───────────────────────────────────────────────────────
+// The cache decides whether a file is re-read at all, so a wrong "unchanged"
+// answer means a silently skipped upload. These tests pin that boundary.
+
+/** A server that answers a syncDir: empty manifest, then accepts the tarball. */
+function syncDirServer(remoteEntries: Array<{ path: string; hash: string }> = []): FakeFetch {
+  const fetch = new FakeFetch();
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+    ok: true, op: "manifest", entries: remoteEntries, truncated: false,
+  });
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+  return fetch;
+}
+
+function tmpTree(files: Record<string, string>): string {
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "arker-statcache-"));
+  for (const [name, body] of Object.entries(files)) {
+    fs.mkdirSync(nodePath.dirname(nodePath.join(dir, name)), { recursive: true });
+    fs.writeFileSync(nodePath.join(dir, name), body);
+  }
+  return dir;
+}
+
+/** Isolate the persisted cache per test so they cannot bleed into each other. */
+function withCacheDir<T>(fn: (cacheDir: string) => Promise<T>): Promise<T> {
+  const cacheDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "arker-cachedir-"));
+  const previous = process.env.ARKER_CACHE_DIR;
+  process.env.ARKER_CACHE_DIR = cacheDir;
+  return fn(cacheDir).finally(() => {
+    if (previous === undefined) delete process.env.ARKER_CACHE_DIR;
+    else process.env.ARKER_CACHE_DIR = previous;
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  });
+}
+
+async function testStatCacheSkipsRereadOnSecondSync(): Promise<void> {
+  await withCacheDir(async () => {
+    const dir = tmpTree({ "a.txt": "alpha", "b.txt": "bravo" });
+    const first = await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
+    assert.equal(first.sent, 2, "first sync uploads everything");
+
+    // Second run: the remote now reports the same hashes, and nothing local
+    // changed, so every file must be skipped.
+    const hashes = ["a.txt", "b.txt"].map((rel) => ({
+      path: rel,
+      hash: createHash("sha256").update(fs.readFileSync(nodePath.join(dir, rel))).digest("hex"),
+    }));
+    const second = await client(syncDirServer(hashes)).vm("vm_1").syncDir(dir, "/p");
+    assert.equal(second.sent, 0, "unchanged tree must send nothing");
+    assert.equal(second.skipped, 2);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testStatCacheCatchesForgedMtimeEdit(): Promise<void> {
+  // THE regression this cache design exists for. A (size, mtime) key can be
+  // defeated by anything that restores timestamps — cp -p, GNU tar -x, touch -r
+  // — and the changed file would be silently NOT uploaded.
+  //
+  // Node's utimesSync truncates sub-millisecond precision, so it cannot forge
+  // an mtime exactly (real tools can). Rather than depend on that, this forges
+  // the recorded signature directly: rewrite the cached entry so size AND mtime
+  // match the edited file exactly, leaving only ctime stale. That is precisely
+  // the state a timestamp-restoring tool produces, and precisely what the
+  // narrow key cannot see.
+  await withCacheDir(async (cacheDir) => {
+    const dir = tmpTree({ "a.txt": "AAAAA" });
+    const abs = nodePath.join(dir, "a.txt");
+
+    const first = await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
+    assert.equal(first.sent, 1);
+
+    fs.writeFileSync(abs, "BBBBB"); // same length, different content
+    const now = fs.statSync(abs, { bigint: true });
+
+    const sub = nodePath.join(cacheDir, "arker", "syncdir");
+    const cacheFile = nodePath.join(sub, fs.readdirSync(sub)[0]!);
+    const parsed = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    const entry = parsed.entries["a.txt"];
+    // Perfect (size, mtime) forge; ctime deliberately left at the old value.
+    entry.size = Number(now.size);
+    entry.mtimeNs = String(now.mtimeNs);
+    entry.ino = String(now.ino);
+    entry.dev = String(now.dev);
+    entry.mode = Number(now.mode);
+    assert.notEqual(entry.ctimeNs, String(now.ctimeNs), "ctime must differ after a write");
+    // Keep it outside the racily-clean window so THIS is what forces the re-hash.
+    parsed.writtenNs = String(BigInt(entry.mtimeNs) + 10_000_000_000n);
+    fs.writeFileSync(cacheFile, JSON.stringify(parsed));
+
+    // Remote still holds the ORIGINAL content's hash. A cache trusting
+    // (size, mtime) would match it and skip — losing the edit.
+    const staleHash = createHash("sha256").update("AAAAA").digest("hex");
+    const second = await client(syncDirServer([{ path: "a.txt", hash: staleHash }]))
+      .vm("vm_1").syncDir(dir, "/p");
+    assert.equal(second.sent, 1, "a forged-mtime edit must still be uploaded");
+    assert.equal(second.skipped, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testStatCacheDistrustsRacilyCleanEntries(): Promise<void> {
+  // A file written in the same instant as the cache cannot be distinguished
+  // from one written just after it, so it must be re-hashed rather than
+  // trusted. Simulated by backdating the cache's own write stamp.
+  await withCacheDir(async (cacheDir) => {
+    const dir = tmpTree({ "a.txt": "alpha" });
+    await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
+
+    const files = fs.readdirSync(nodePath.join(cacheDir, "arker", "syncdir"));
+    assert.equal(files.length, 1, "a cache file must have been written");
+    const cacheFile = nodePath.join(cacheDir, "arker", "syncdir", files[0]!);
+    const parsed = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    const entry = Object.values(parsed.entries)[0] as { mtimeNs: string };
+    // Claim the cache was written at the same moment the file was modified.
+    parsed.writtenNs = entry.mtimeNs;
+    fs.writeFileSync(cacheFile, JSON.stringify(parsed));
+
+    const hash = createHash("sha256").update("alpha").digest("hex");
+    const again = await client(syncDirServer([{ path: "a.txt", hash }])).vm("vm_1").syncDir(dir, "/p");
+    // Re-hashed (not trusted from stat) — and since the content really is
+    // unchanged, the recomputed hash matches the remote and it is still skipped.
+    assert.equal(again.sent, 0, "racily-clean entry re-hashes to the same value");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testStatCacheSurvivesCorruptionAndBadVersion(): Promise<void> {
+  for (const contents of ["not json at all", JSON.stringify({ version: 999, entries: {} }), ""]) {
+    await withCacheDir(async (cacheDir) => {
+      const dir = tmpTree({ "a.txt": "alpha" });
+      await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
+      const sub = nodePath.join(cacheDir, "arker", "syncdir");
+      const cacheFile = nodePath.join(sub, fs.readdirSync(sub)[0]!);
+      fs.writeFileSync(cacheFile, contents);
+
+      // Must fall back to hashing rather than throwing.
+      const again = await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
+      assert.equal(again.sent, 1, `corrupt cache (${contents.slice(0, 12)}) must not break sync`);
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+  }
+}
+
+async function testStatCacheIsBestEffortWhenUnwritable(): Promise<void> {
+  // A cache must never be able to fail a sync. Point it at a path that cannot
+  // be created (a FILE where a directory must go).
+  const blocker = nodePath.join(fs.mkdtempSync(nodePath.join(os.tmpdir(), "arker-blk-")), "notadir");
+  fs.writeFileSync(blocker, "");
+  const previous = process.env.ARKER_CACHE_DIR;
+  process.env.ARKER_CACHE_DIR = blocker;
+  try {
+    const dir = tmpTree({ "a.txt": "alpha" });
+    const res = await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
+    assert.equal(res.sent, 1, "sync must succeed even when the cache cannot be written");
+    fs.rmSync(dir, { recursive: true, force: true });
+  } finally {
+    if (previous === undefined) delete process.env.ARKER_CACHE_DIR;
+    else process.env.ARKER_CACHE_DIR = previous;
+  }
+}
+
+async function testStatCacheNotWrittenWhenUploadFails(): Promise<void> {
+  // Persisting before the upload lands would record files as synced that never
+  // arrived — every later run would then skip them.
+  await withCacheDir(async (cacheDir) => {
+    const dir = tmpTree({ "a.txt": "alpha" });
+    const fetch = new FakeFetch();
+    fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+      ok: true, op: "manifest", entries: [], truncated: false,
+    });
+    fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 500, {
+      error: { code: "internal", message: "nope" },
+    });
+    await assert.rejects(() => client(fetch).vm("vm_1").syncDir(dir, "/p"));
+
+    const sub = nodePath.join(cacheDir, "arker", "syncdir");
+    const wrote = fs.existsSync(sub) && fs.readdirSync(sub).length > 0;
+    assert.equal(wrote, false, "a failed upload must not leave a cache entry behind");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testCallerSuppliedCacheBypassesDisk(): Promise<void> {
+  await withCacheDir(async (cacheDir) => {
+    const dir = tmpTree({ "a.txt": "alpha" });
+    await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p", { cache: new Map() });
+    const sub = nodePath.join(cacheDir, "arker", "syncdir");
+    assert.equal(fs.existsSync(sub) && fs.readdirSync(sub).length > 0, false,
+      "an explicit cache must keep the SDK out of the user's cache dir");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+await testStatCacheSkipsRereadOnSecondSync();
+await testStatCacheCatchesForgedMtimeEdit();
+await testStatCacheDistrustsRacilyCleanEntries();
+await testStatCacheSurvivesCorruptionAndBadVersion();
+await testStatCacheIsBestEffortWhenUnwritable();
+await testStatCacheNotWrittenWhenUploadFails();
+await testCallerSuppliedCacheBypassesDisk();

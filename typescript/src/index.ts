@@ -15,6 +15,169 @@ type ApiQuery<Name extends keyof operations> = NonNullable<
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
+ * Size at which the router stops buffering a `/sync-stream` body and forwards
+ * it as a stream (`DEFAULT_PROXY_BODY_LIMIT` in arkerd-router). Measured before
+ * that change landed: 64 MiB returned 200, 72 MiB returned 413
+ * `payload_too_large`.
+ *
+ * The SDK no longer branches on this — every write streams, and the router
+ * picks buffered or streamed forwarding itself. Retained because it is exported
+ * API and still describes where that switch happens.
+ */
+export const STREAM_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Below this, don't bother sampling for compressibility — the gzip decision
+ * costs more than it can save. Above it, `syncDir` samples before choosing
+ * `tar` vs `tar.gz` (the guest pays ~3.4x for gunzip over a plain untar, so
+ * gzipping an incompressible tree is a pure loss).
+ */
+const COMPRESSION_SAMPLE_MIN_BYTES = 256 * 1024;
+
+/**
+ * How many files to hash at once in `syncDir`. Bounds open file descriptors
+ * while still overlapping I/O; the CPU side is serial in Node regardless.
+ */
+const HASH_CONCURRENCY = 8;
+
+/** Ratio below which gzip is judged worth its extraction cost. */
+const COMPRESSION_WORTH_IT_RATIO = 0.9;
+
+/** Bump to invalidate every persisted stat cache after a format change. */
+const STAT_CACHE_VERSION = 1;
+
+/**
+ * Anything modified within this window of the cache being written is re-hashed
+ * rather than trusted.
+ *
+ * Timestamps do not have infinite resolution: FAT/exFAT stores mtime to 2
+ * SECONDS. Without a margin, a file edited shortly after we hashed it can land
+ * in the same timestamp bucket as the cache write and look unchanged forever.
+ * Git calls these entries "racily clean" and re-hashes them; this is the same
+ * defence, sized for the coarsest filesystem we might land on.
+ */
+const STAT_CACHE_RACE_MARGIN_NS = 2_000_000_000n;
+
+/**
+ * Stat signature used to decide "did this file change?" WITHOUT reading it.
+ *
+ * Deliberately wider than (size, mtime), which is forgeable: `cp -p`, `tar -x`,
+ * `rsync --times` and `touch -r` all restore mtime, so a same-size edit could
+ * look untouched. `ctime` moves on any inode change and cannot be set from
+ * userland; `ino`/`dev` catch a path being replaced by a different file.
+ *
+ * Every field must match before a cached hash is trusted, which makes the extra
+ * fields fail-safe: one that is meaningless on some platform (Windows reports
+ * creation time as ctime; `ino` can be 0) simply stays constant and contributes
+ * nothing, and one that changes spuriously (overlayfs copy-up rewrites `ino`)
+ * only costs a re-hash. Neither can produce a missed upload.
+ */
+interface StatSignature {
+  size: number;
+  mtimeNs: string;
+  ctimeNs: string;
+  ino: string;
+  dev: string;
+  mode: number;
+}
+
+function statSignaturesMatch(a: StatSignature, b: StatSignature): boolean {
+  return a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs
+    && a.ino === b.ino && a.dev === b.dev && a.mode === b.mode;
+}
+
+interface StatCacheFile {
+  version: number;
+  writtenNs: string;
+  entries: Record<string, StatSignature & { hash: string }>;
+}
+
+/**
+ * Pull arkerd's `{error:{code,message}}` envelope off a failed response.
+ * Shared so every transfer path reports failures identically — the sync call
+ * sites previously each parsed errors their own way.
+ */
+/**
+ * Where the persisted stat cache lives. Honours XDG on Linux and the platform
+ * conventions elsewhere.
+ */
+async function statCachePath(localRoot: string, remoteRoot: string): Promise<string> {
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const { createHash } = await import("node:crypto");
+  const base =
+    process.env.ARKER_CACHE_DIR ??
+    (process.platform === "darwin"
+      ? nodePath.join(os.homedir(), "Library", "Caches")
+      : process.platform === "win32"
+        ? (process.env.LOCALAPPDATA ?? nodePath.join(os.homedir(), "AppData", "Local"))
+        : (process.env.XDG_CACHE_HOME ?? nodePath.join(os.homedir(), ".cache")));
+  const key = createHash("sha256").update(`${localRoot}\0${remoteRoot}`).digest("hex").slice(0, 32);
+  return nodePath.join(base, "arker", "syncdir", `${key}.json`);
+}
+
+/**
+ * Load the persisted signatures, dropping any that fall inside the racily-clean
+ * window. A cache is an accelerator and must never be able to fail a sync, so
+ * every failure here (missing, unreadable, corrupt, wrong version) yields an
+ * empty map rather than throwing.
+ */
+async function loadStatCache(file: string): Promise<Map<string, StatSignature & { hash: string }>> {
+  const out = new Map<string, StatSignature & { hash: string }>();
+  try {
+    const fsp = (await import("node:fs")).promises;
+    const parsed = JSON.parse(await fsp.readFile(file, "utf8")) as StatCacheFile;
+    if (parsed?.version !== STAT_CACHE_VERSION || !parsed.entries) return out;
+    const writtenNs = BigInt(parsed.writtenNs);
+    for (const [rel, entry] of Object.entries(parsed.entries)) {
+      if (BigInt(entry.mtimeNs) >= writtenNs - STAT_CACHE_RACE_MARGIN_NS) continue;
+      out.set(rel, entry);
+    }
+  } catch {
+    // No cache, unreadable, or a format we don't recognise: start cold.
+  }
+  return out;
+}
+
+/** Persist via temp+rename so a concurrent reader never sees a half-written file. */
+async function saveStatCache(
+  file: string,
+  entries: Map<string, StatSignature & { hash: string }>,
+): Promise<void> {
+  try {
+    const fsp = (await import("node:fs")).promises;
+    const nodePath = await import("node:path");
+    await fsp.mkdir(nodePath.dirname(file), { recursive: true });
+    const payload: StatCacheFile = {
+      version: STAT_CACHE_VERSION,
+      // Wall clock, to be comparable with stat's mtimeNs (ns since epoch).
+      writtenNs: String(BigInt(Date.now()) * 1_000_000n),
+      entries: Object.fromEntries(entries),
+    };
+    const tmp = `${file}.${process.pid}.tmp`;
+    await fsp.writeFile(tmp, JSON.stringify(payload));
+    await fsp.rename(tmp, file);
+  } catch {
+    // Read-only home, no disk, sandboxed CI: caching is best-effort by design.
+  }
+}
+
+async function parseErrorResponse(
+  res: Response,
+  fallbackMessage: string,
+): Promise<{ code: string; message: string }> {
+  try {
+    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    return {
+      code: body?.error?.code ?? "internal",
+      message: body?.error?.message ?? fallbackMessage,
+    };
+  } catch {
+    return { code: "internal", message: fallbackMessage };
+  }
+}
+
+/**
  * Org id for the "Arker" org — the org that owns the public golden VMs
  * (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
  * `sourceOrgId` to fork a public golden:
@@ -61,7 +224,6 @@ const DEFAULT_RUN_TIMEOUT_SECS = 3_600;
 // Terminal run states — RunState ("running" | "completed" | "failed" |
 // "cancelled") minus the sole non-terminal "running".
 const TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
-const PRESIGNED_PUT_TIMEOUT_MS = 600_000;
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
   "unavailable",
@@ -574,6 +736,17 @@ export class Arker {
    * VM in another org requires that VM to be `public: true`. The new VM's
    * name (in your org) is passed as `name`. When the source is a name or
    * `VM`, extra fork options go in the second `opts` argument.
+   *
+   * `layers` selects which state layers the child inherits. Omit it for the
+   * default warm fork (`["disk", "memory"]`): the child inherits both the
+   * filesystem and a copy of the source's live RAM, so it resumes as an exact
+   * continuation — same processes, same shell state. Pass `["disk"]` for a
+   * disk-only fork: the child inherits only the filesystem and cold-boots with
+   * fresh RAM. Everything on disk survives (installed packages, checked-out
+   * source, files the parent wrote); nothing in memory does (no inherited
+   * processes, no environment, no shell state).
+   *
+   *     fork("ubuntu-dev", { layers: ["disk"] })   // disk-only, cold boot
    */
   async fork(
     source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>),
@@ -626,7 +799,30 @@ export class Arker {
             disk_mib: legacy.disk_mib ?? null,
           }
         : null);
+    // Forward everything the caller passed, THEN normalize. This used to be an
+    // allowlist that named each contract field, so any field added to the
+    // contract afterwards was accepted by the types and silently dropped on the
+    // wire — the caller got a successful fork that ignored what they asked for.
+    // `layers` was dropped exactly that way. A passthrough keeps new contract
+    // fields working without an SDK release; the entries below only normalize
+    // (defaults, camelCase→snake_case, legacy resource folding) and so must
+    // come after the spread.
+    //
+    // The excluded keys are NOT contract fields and would be rejected by the
+    // server's request validator: the camelCase source selectors, and the
+    // legacy flat resource fields folded into `resources` above.
+    const {
+      sourceVmId: _sourceVmId,
+      sourceVmName: _sourceVmName,
+      sourceOrgId: _sourceOrgId,
+      ...passthrough
+    } = src as ForkSource & Record<string, unknown>;
+    delete passthrough.vcpu_count;
+    delete passthrough.memory_mib;
+    delete passthrough.disk_mib;
+
     const requestOptions = {
+      ...passthrough,
       source_org_id: sourceOrgId ?? null,
       name: src.name ?? null,
       description: src.description ?? null,
@@ -785,6 +981,17 @@ export class Arker {
   /** @internal */
   _authHeaders(): Record<string, string> {
     return { authorization: `Bearer ${this.apiKey}` };
+  }
+
+  /**
+   * True when we're on the runtime's own `fetch`, which accepts a ReadableStream
+   * request body given `duplex: "half"`. A caller-supplied `fetch` may not, so
+   * streamed uploads fall back to a buffered body rather than risk a TypeError
+   * deep inside a transfer.
+   * @internal
+   */
+  _supportsStreamingBody(): boolean {
+    return this.fetchImpl === globalThis.fetch;
   }
 
   /** @internal */
@@ -1013,8 +1220,14 @@ export class VM {
   async sync(path: string, data?: Uint8Array | string): Promise<Uint8Array | void> {
     if (data === undefined) return this.syncRead(path);
     const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-    if (bytes.length <= CHUNK_SIZE) await this.syncWriteInline(path, bytes);
-    else await this.syncWritePresigned(path, bytes);
+    // Stream straight to the VM's disk, at every size. Syncing to a VM has no
+    // reason to detour through object storage — the bytes' destination is the
+    // guest filesystem, not S3. Presigned uploads existed only because the
+    // router buffered proxied bodies and capped them; it now forwards
+    // sync-stream as a stream above that cap, so the detour is gone. Presigned
+    // remains correct for SHARED FILESYSTEMS, where the bytes really do live in
+    // S3 — that is a different route (`/dirs/{id}/sync`), not this one.
+    await this.syncWriteStream(path, bytes);
   }
 
   /**
@@ -1046,73 +1259,329 @@ export class VM {
 
     // 1. Authoritative remote manifest: rel_path -> sha256. A directory that
     //    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
-    const remote = await this.remoteManifest(remoteRoot);
+    const clock = () => Number(process.hrtime.bigint() / 1000n) / 1000;
+    //    `assumeEmpty` skips the round-trip on a destination the caller knows
+    //    is fresh. `manifestMs` then rounds to 0 on its own (the skip costs
+    //    microseconds against 0.1ms reporting precision), so a caller can still
+    //    tell "skipped" from "merely fast" — a real fetch is ~184ms.
+    const tManifest0 = clock();
+    const manifest = options.assumeEmpty
+      ? { entries: new Map<string, string>(), truncated: false }
+      : await this.remoteManifest(remoteRoot);
+    const remote = manifest.entries;
+    const manifestMs = clock() - tManifest0;
+    const tWalk0 = clock();
 
     // 2. Enumerate local regular files (skip symlinks — the manifest lists
     //    regular files only, so a symlink would always look "missing").
-    const localFiles: Array<{ rel: string; abs: string; size: number; mtimeMs: number }> = [];
+    const localFiles: Array<{ rel: string; abs: string; sig: StatSignature }> = [];
     const walk = async (dir: string): Promise<void> => {
       for (const dirent of await fsp.readdir(dir, { withFileTypes: true })) {
         const abs = nodePath.join(dir, dirent.name);
         if (dirent.isSymbolicLink()) continue;
         if (dirent.isDirectory()) { await walk(abs); continue; }
         if (!dirent.isFile()) continue;
-        const st = await fsp.stat(abs);
+        // bigint stats: nanosecond timestamps, and ino/dev without precision loss.
+        const st = await fsp.stat(abs, { bigint: true });
         const rel = nodePath.relative(localRoot, abs).split(nodePath.sep).join("/");
-        localFiles.push({ rel, abs, size: st.size, mtimeMs: st.mtimeMs });
+        localFiles.push({
+          rel, abs,
+          sig: {
+            size: Number(st.size),
+            mtimeNs: String(st.mtimeNs),
+            ctimeNs: String(st.ctimeNs),
+            ino: String(st.ino),
+            dev: String(st.dev),
+            mode: Number(st.mode),
+          },
+        });
       }
     };
     await walk(localRoot);
     localFiles.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+    const walkMs = clock() - tWalk0;
+    const tHash0 = clock();
 
     // 3. Diff local vs the REMOTE manifest -> the set to transfer.
     const cache = options.cache;
     const result: SyncDirResult = { sent: 0, skipped: 0, bytesSent: 0 };
+    if (manifest.truncated) result.manifestTruncated = true;
     const changed: Array<{ rel: string; abs: string }> = [];
-    for (const file of localFiles) {
-      const cached = cache?.get(file.abs);
-      let hash: string;
-      if (cached && cached.size === file.size && cached.mtimeMs === file.mtimeMs) {
-        hash = cached.hash;
-      } else {
-        hash = createHash("sha256").update(await fsp.readFile(file.abs)).digest("hex");
-        cache?.set(file.abs, { size: file.size, mtimeMs: file.mtimeMs, hash });
-      }
-      if (remote.get(file.rel) === hash) { result.skipped += 1; continue; }
+
+    // Hash with bounded concurrency, streaming each file rather than reading it
+    // whole. Two distinct wins, and it is worth being precise about which:
+    //
+    //   - Streaming replaces `readFile`, which buffered an ENTIRE file in memory
+    //     just to digest it — a 2 GB file meant a 2 GB allocation.
+    //   - Concurrency overlaps the file I/O.
+    //
+    // It does NOT spread SHA-256 across cores: Node runs JS on one thread and
+    // `hash.update()` is synchronous, so the CPU half stays serial. Real
+    // multi-core hashing here would need worker_threads. (Python's hashlib
+    // releases the GIL, so the same change there IS parallel on CPU.)
+    const cacheFile = await statCachePath(localRoot, remoteRoot);
+    const statCache = options.cache ? new Map() : await loadStatCache(cacheFile);
+    const fresh = new Map<string, StatSignature & { hash: string }>();
+    const hashes = new Array<string>(localFiles.length);
+    let nextIndex = 0;
+    const workers = Math.min(HASH_CONCURRENCY, localFiles.length);
+    await Promise.all(
+      Array.from({ length: workers }, async () => {
+        for (;;) {
+          const index = nextIndex++;
+          const file = localFiles[index];
+          if (!file) return;
+          // Cheap change detection: if every stat field matches what we
+          // recorded, the contents cannot have changed under us, so skip the
+          // read entirely. This is the whole point of the cache — an untouched
+          // tree is answered from stat alone.
+          const persisted = statCache.get(file.rel);
+          if (persisted && statSignaturesMatch(persisted, file.sig)) {
+            hashes[index] = persisted.hash;
+            fresh.set(file.rel, persisted);
+            continue;
+          }
+          const cached = cache?.get(file.abs);
+          if (cached && cached.size === file.sig.size
+              && cached.mtimeMs === Number(BigInt(file.sig.mtimeNs) / 1_000_000n)) {
+            hashes[index] = cached.hash;
+            fresh.set(file.rel, { ...file.sig, hash: cached.hash });
+            continue;
+          }
+          const hash = await new Promise<string>((resolve, reject) => {
+            const hasher = createHash("sha256");
+            const stream = fs.createReadStream(file.abs);
+            stream.on("error", reject);
+            stream.on("data", (chunk) => hasher.update(chunk));
+            stream.on("end", () => resolve(hasher.digest("hex")));
+          });
+          cache?.set(file.abs, {
+            size: file.sig.size,
+            mtimeMs: Number(BigInt(file.sig.mtimeNs) / 1_000_000n),
+            hash,
+          });
+          fresh.set(file.rel, { ...file.sig, hash });
+          hashes[index] = hash;
+        }
+      }),
+    );
+
+    // Diff in the original (sorted) order so the tarball is reproducible and the
+    // counters are deterministic regardless of which hash finished first.
+    for (let index = 0; index < localFiles.length; index++) {
+      const file = localFiles[index]!;
+      if (remote.get(file.rel) === hashes[index]) { result.skipped += 1; continue; }
       changed.push({ rel: file.rel, abs: file.abs });
       result.sent += 1;
-      result.bytesSent += file.size;
+      result.bytesSent += file.sig.size;
     }
+
+    const hashMs = clock() - tHash0;
+    const tUpload0 = clock();
 
     // 4. Ship the changed files as ONE tarball and extract it in the guest. The
     //    extract's exit is checked, so a failure surfaces (never a silent partial);
     //    the manifest also fails safe — any omitted file is re-sent next call.
     if (changed.length > 0) await this.uploadAndExtractTarball(changed, localRoot, remoteRoot, fsp);
+    // Only after the upload succeeded — persisting earlier would record files
+    // as synced that never made it.
+    if (!options.cache) await saveStatCache(cacheFile, fresh);
+    const round = (v: number) => Math.round(v * 10) / 10;
+    result.timings = {
+      manifestMs: round(manifestMs),
+      walkMs: round(walkMs),
+      hashMs: round(hashMs),
+      uploadMs: round(clock() - tUpload0),
+    };
     return result;
   }
 
   /** Fetch the VM's file manifest under `path` -> Map(rel_path -> sha256), via the
    * host-first `op: "manifest"` op (no FC boot; works on a never-run VM). */
-  private async remoteManifest(path: string): Promise<Map<string, string>> {
-    const payload = await this._client._request<{ entries?: Array<{ path?: unknown; hash?: unknown }> }>(
-      "POST",
-      `${vmPath(this.id)}/sync`,
-      { op: "manifest", path },
-      this.baseUrl,
-    );
+  private async remoteManifest(
+    path: string,
+  ): Promise<{ entries: Map<string, string>; truncated: boolean }> {
+    const payload = await this._client._request<{
+      entries?: Array<{ path?: unknown; hash?: unknown }>;
+      truncated?: unknown;
+    }>("POST", `${vmPath(this.id)}/sync`, { op: "manifest", path }, this.baseUrl);
     const out = new Map<string, string>();
-    if (!Array.isArray(payload.entries)) return out;
-    for (const entry of payload.entries) {
-      if (entry && typeof entry.path === "string" && typeof entry.hash === "string") {
-        out.set(entry.path, entry.hash);
+    if (Array.isArray(payload.entries)) {
+      for (const entry of payload.entries) {
+        if (entry && typeof entry.path === "string" && typeof entry.hash === "string") {
+          out.set(entry.path, entry.hash);
+        }
       }
     }
-    return out;
+    // The server caps the walk (SYNC_MANIFEST_MAX_ENTRIES, 50_000) and reports
+    // `truncated`. Past the cap every omitted file looks absent, so the diff
+    // marks it changed and re-uploads it: correct, but it silently turns the
+    // delta sync into a full sync on exactly the trees where the delta matters
+    // most. Surfacing it lets the caller see that rather than wonder why a
+    // "delta" sync moves the whole tree every time.
+    return { entries: out, truncated: payload.truncated === true };
   }
 
-  /** Pack the changed files (paths relative to `localRoot`) into one tar and
-   * extract it in the guest with `tar -x`. Uses node-tar, which reads the files
-   * from disk preserving mode (exec bits) + mtime. */
+  /** One-round-trip directory upload: stream a gzip tar to `/sync-stream` and
+   * let arkerd untar it IN THE GUEST before responding.
+   *
+   * Params ride in the query string, not headers: the auth middleware strips
+   * `x-arker-*` from untrusted callers and would erase them.
+   *
+   * The body is sent raw (`application/octet-stream`) — no base64, so none of
+   * the +33% inflation the JSON write path pays. */
+  /**
+   * THE single `/sync-stream` call site. Every streaming upload — single file
+   * and directory tarball alike — goes through here so auth, content-type,
+   * retry and error parsing cannot drift apart (they previously did: this path
+   * had bespoke error handling and no retry at all, while `putPresigned` had
+   * retry and a different error shape).
+   *
+   * `body` is a factory, not a value: a retried attempt needs a fresh body,
+   * and a stream can only be consumed once.
+   */
+  private async syncStreamPost(
+    query: Record<string, string>,
+    body: () => BodyInit,
+    what: string,
+  ): Promise<void> {
+    const url = `${this.baseUrl}${vmPath(this.id)}/sync-stream?${new URLSearchParams(query)}`;
+    const attempts = this._client._retryAttempts();
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      let res: Response;
+      try {
+        const payload = body();
+        const init: RequestInit & { duplex?: "half" } = {
+          method: "POST",
+          headers: {
+            ...this._client._authHeaders(),
+            "content-type": "application/octet-stream",
+          },
+          body: payload,
+        };
+        // Only meaningful for a streamed body, and some runtimes REJECT the
+        // request outright when it is set alongside a plain byte body — which
+        // surfaces as an opaque "fetch failed", not an HTTP status.
+        if (typeof (payload as ReadableStream | undefined)?.getReader === "function") {
+          init.duplex = "half";
+        }
+        res = await this._client._fetch(url, init);
+      } catch (error) {
+        if (attempt === attempts - 1) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new ArkerError("unavailable", `${what} failed: ${message}`, 0);
+        }
+        await sleep(this._client._retryDelay(attempt));
+        continue;
+      }
+      if (res.ok) return;
+      const parsed = await parseErrorResponse(res, `${what} failed (${res.status})`);
+      // 413 is the router's body cap, not a transient fault — never retry it.
+      if (!RETRYABLE_HTTP.has(res.status) || attempt === attempts - 1) {
+        throw new ArkerError(parsed.code, parsed.message, res.status);
+      }
+      await sleep(this._client._retryDelay(attempt));
+    }
+  }
+
+  private async syncStreamExtract(
+    tar: Uint8Array,
+    remoteRoot: string,
+    mode: "tar" | "tar.gz",
+  ): Promise<void> {
+    await this.syncStreamPost(
+      { path: remoteRoot, size: String(tar.byteLength), extract: mode },
+      () => tar as BodyInit,
+      "sync-stream extract",
+    );
+  }
+
+  /**
+   * Upload a tarball straight off disk instead of reading it into memory first.
+   * A 2 GB tree produced a 2 GB Buffer under the old `readFile` approach purely
+   * to hand it to fetch.
+   *
+   * The body is a factory so a retry gets a FRESH read stream — a consumed
+   * stream cannot be replayed, which is why `syncStreamPost` takes a factory
+   * rather than a value.
+   */
+  private async syncStreamExtractFile(
+    localTar: string,
+    size: number,
+    remoteRoot: string,
+    mode: "tar" | "tar.gz",
+  ): Promise<void> {
+    const fs = await import("node:fs");
+    const { Readable } = await import("node:stream");
+    await this.syncStreamPost(
+      { path: remoteRoot, size: String(size), extract: mode },
+      () => Readable.toWeb(fs.createReadStream(localTar)) as unknown as BodyInit,
+      "sync-stream extract",
+    );
+  }
+
+  /**
+   * Decide whether gzip earns its keep for this file set.
+   *
+   * The guest pays for decompression: arkerd measures gunzip at ~3.4x a plain
+   * untar (294ms vs 86ms for 2000 files), so gzipping an already-compressed
+   * tree (images, video, archives, binaries) is a pure loss at both ends. Source
+   * trees, by contrast, compress ~4:1 and are well worth it.
+   *
+   * Samples the head of a handful of files rather than compressing everything
+   * twice. Falls back to compressing when the sample is too small to be
+   * meaningful, preserving the previous always-gzip behaviour for tiny syncs.
+   */
+  private async shouldCompress(
+    changed: Array<{ rel: string; abs: string }>,
+    fsp: typeof import("node:fs").promises,
+  ): Promise<boolean> {
+    const zlib = await import("node:zlib");
+    const { promisify } = await import("node:util");
+    const gzipAsync = promisify(zlib.gzip);
+
+    let raw = 0;
+    let compressed = 0;
+    for (const file of changed.slice(0, 8)) {
+      try {
+        const handle = await fsp.open(file.abs, "r");
+        try {
+          const buffer = Buffer.alloc(128 * 1024);
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+          if (bytesRead === 0) continue;
+          const chunk = buffer.subarray(0, bytesRead);
+          raw += chunk.length;
+          compressed += (await gzipAsync(chunk)).length;
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        // Unreadable sample file — the tar step will surface it if it matters.
+      }
+    }
+    if (raw < COMPRESSION_SAMPLE_MIN_BYTES) return true;
+    return compressed / raw < COMPRESSION_WORTH_IT_RATIO;
+  }
+
+  /**
+   * Write one file by streaming its bytes raw — no base64, no S3 hop.
+   *
+   * Measured in-region against the paths this replaces: 103-154 MB/s here vs
+   * 41-50 MB/s inline and 25-56 MB/s presigned. Parity with the inline path is
+   * verified: identical bytes, size and mode, nested parent directories are
+   * created, and the optional `sha256` is enforced by the guest (a wrong digest
+   * is rejected 409 rather than silently accepted).
+   */
+  private async syncWriteStream(path: string, data: Uint8Array, sha256?: string): Promise<void> {
+    const query: Record<string, string> = { path, size: String(data.length) };
+    if (sha256) query.sha256 = sha256;
+    await this.syncStreamPost(query, () => data as BodyInit, "sync write");
+  }
+
+  /** Pack the changed files (paths relative to `localRoot`) into one gzip tar
+   * and extract it in the guest — via `/sync-stream` where available, else by
+   * uploading and running `tar -x`. Uses node-tar, which reads the files from
+   * disk preserving mode (exec bits) + mtime. */
   private async uploadAndExtractTarball(
     changed: Array<{ rel: string; abs: string }>,
     localRoot: string,
@@ -1123,13 +1592,50 @@ export class VM {
     const os = await import("node:os");
     const nodePath = await import("node:path");
 
-    const localTar = nodePath.join(os.tmpdir(), `arker-sync-${ulid()}.tar`);
+    // gzip when it pays: source trees compress ~4:1 (a Linux checkout goes
+    // 319 MB -> 70 MB) and this tarball is ONE request, so compressing is a
+    // large win there. On an already-compressed tree it is a double loss —
+    // wasted CPU here plus ~3.4x the extraction cost in the guest — so sample
+    // first rather than always gzipping. `tar -xf` sniffs compression, so
+    // either choice extracts correctly and older guests stay compatible.
+    const compress = await this.shouldCompress(changed, fsp);
+    const mode = compress ? "tar.gz" : "tar";
+    const localTar = nodePath.join(os.tmpdir(), `arker-sync-${ulid()}.${mode}`);
     try {
-      await tar.create({ file: localTar, cwd: localRoot }, changed.map((entry) => entry.rel));
-      const data = await fsp.readFile(localTar);
+      await tar.create(
+        { file: localTar, cwd: localRoot, gzip: compress },
+        changed.map((entry) => entry.rel),
+      );
 
-      const remoteTar = `/tmp/.arker-sync-${ulid()}.tar`;
-      await this.sync(remoteTar, data); // inline for small tarballs, presigned for large
+      // FAST PATH: one round-trip. `/sync-stream?extract=tar.gz` streams the
+      // tarball to the guest over vsock and untars it THERE before responding.
+      // The legacy path below is upload + a SEPARATE `run("tar -xf")` — two
+      // round-trips, with the extract going through the user run scheduler
+      // where it can queue behind an active foreground run.
+      //
+      // Falls back on 404 so older servers still work: the route only became
+      // reachable once registered in openapi.json.
+      try {
+        if (this._client._supportsStreamingBody()) {
+          const { size } = await fsp.stat(localTar);
+          await this.syncStreamExtractFile(localTar, size, remoteRoot, mode);
+        } else {
+          // Caller-supplied fetch: may not accept a stream body, so buffer.
+          await this.syncStreamExtract(await fsp.readFile(localTar), remoteRoot, mode);
+        }
+        return;
+      } catch (error) {
+        if (!(error instanceof ArkerError) || error.code !== "not_found") {
+          throw error; // real failure (auth, path escape, size) must not be masked
+        }
+      }
+
+      // We only reach here because sync-stream answered 404 — an older server
+      // that predates the route. So the fallback must NOT go through `sync()`,
+      // which now streams and would 404 identically. Use the inline/presigned
+      // write that those servers do understand.
+      const remoteTar = `/tmp/.arker-sync-${ulid()}.${mode}`;
+      await this.syncWriteInline(remoteTar, await fsp.readFile(localTar));
 
       // `set -e` + explicit rm: any extract failure exits non-zero; the tarball
       // is removed on success. Missing parent dirs are created by mkdir/tar.
@@ -1176,44 +1682,6 @@ export class VM {
       is_secret: false,
     });
     assertWriteComplete(result, "inline write");
-  }
-
-  private async syncWritePresigned(path: string, data: Uint8Array): Promise<void> {
-    const request = await this.sendOneWrite({ path, size: data.length, presigned: true, is_secret: false });
-    if (!("presigned_url" in request) || !request.presigned_url || !request.upload_id) {
-      throw new ArkerError("internal", "write response missing presigned upload fields", 200);
-    }
-    await this.putPresigned(request.presigned_url, data);
-    const commit = await this.sendOneWrite({ path, size: data.length, upload_id: request.upload_id });
-    assertWriteComplete(commit, "presigned write commit");
-  }
-
-  private async putPresigned(url: string, data: Uint8Array): Promise<void> {
-    const attempts = this._client._retryAttempts();
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), PRESIGNED_PUT_TIMEOUT_MS);
-      try {
-        const response = await this._client._fetch(url, {
-          method: "PUT",
-          body: data as BodyInit,
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        if (response.ok) return;
-        if (!RETRYABLE_HTTP.has(response.status) || attempt === attempts - 1) {
-          throw new ArkerError("internal", `upload PUT failed: ${response.status}`, response.status);
-        }
-      } catch (error) {
-        clearTimeout(timeout);
-        if (error instanceof ArkerError) throw error;
-        if (attempt === attempts - 1) {
-          const message = error instanceof Error ? error.message : String(error);
-          throw new ArkerError("unavailable", `upload PUT failed: ${message}`, 0);
-        }
-      }
-      await sleep(this._client._retryDelay(attempt));
-    }
   }
 
   private async sendOneWrite(entry: SyncWriteEntry): Promise<SyncWriteResult> {
@@ -2016,6 +2484,17 @@ export interface SyncDirResult {
   skipped: number;
   /** Total uncompressed bytes of the uploaded files. */
   bytesSent: number;
+  /**
+   * True when the VM's manifest hit the server's entry cap (50,000 files) and
+   * was truncated. Everything beyond the cap is invisible to the diff, so it is
+   * treated as changed and re-uploaded — the sync stays CORRECT but stops being
+   * a delta. If you see this, split the sync into subdirectories.
+   */
+  manifestTruncated?: boolean;
+  /** Wall-clock ms per phase. Useful when a sync is slower than expected:
+   * `hash` dominating means the caller is not reusing a `cache`, since an
+   * uncached call re-reads and re-hashes every file in the tree. */
+  timings?: { manifestMs: number; walkMs: number; hashMs: number; uploadMs: number };
 }
 
 /** Options for {@link VM.syncDir}. */
@@ -2024,6 +2503,18 @@ export interface SyncDirOptions {
    * Reused across calls it skips re-hashing files whose (size, mtime) are
    * unchanged. Pure optimization — it never affects which files are sent. */
   cache?: Map<string, { size: number; mtimeMs: number; hash: string }>;
+
+  /** Skip the remote manifest round-trip and send everything.
+   *
+   * The manifest exists to avoid re-sending unchanged files. On a FIRST sync
+   * into a fresh directory it is guaranteed empty, so the round-trip costs
+   * ~184ms to learn nothing. Set this when you know the destination is new
+   * (e.g. straight after a fork).
+   *
+   * Safe by construction: an empty manifest means "send everything", which is
+   * what a first sync does anyway. Setting it wrongly re-sends files that were
+   * already there — wasteful, never incorrect. */
+  assumeEmpty?: boolean;
 }
 
 /** POSIX-single-quote a string so it is safe inside a `/bin/sh` command. */

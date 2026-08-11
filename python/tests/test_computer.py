@@ -813,31 +813,28 @@ def test_read_presigned_follows_url() -> None:
         assert client().vm("vm_1").sync("/home/user/big") == b"hello"
 
 
-def test_small_write_uses_inline_chunk() -> None:
+def test_small_write_streams_to_sync_stream() -> None:
+    """`sync` streams raw bytes to /sync-stream rather than base64-ing them
+    into a JSON writes[] envelope. Measured in-region, streaming beat the
+    inline path 103-112 MB/s vs 41-50, so it is the default at every size the
+    router will accept."""
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/sync"),
+        lambda method, url: method == "POST" and "/sync-stream" in url,
         200,
-        {"ok": True, "op": "write", "results": [{
-            "path": "/home/user/x",
-            "size": 11,
-            "received_bytes": 11,
-            "ranges": [{"start": 0, "end": 11}],
-            "complete": True,
-            "written": True,
-        }]},
+        {"ok": True},
     )
 
     with use_transport(t):
         client().vm("vm_1").sync("/home/user/x", b"hello world")
 
-    body = json.loads(t.calls[0]["body"])
-    entry = body["writes"][0]
-    assert body["op"] == "write"
-    assert base64.b64decode(entry["content"]) == b"hello world"
-    assert entry["start"] == 0
-    assert entry["end"] == 11
-    assert len(entry["upload_id"]) == 26
+    call = t.calls[0]
+    assert "/sync-stream" in call["url"]
+    assert "path=%2Fhome%2Fuser%2Fx" in call["url"]
+    assert "size=11" in call["url"]
+    # Raw body: no base64, so none of the +33% inflation the JSON path pays.
+    body = call["body"]
+    assert (body.encode() if isinstance(body, str) else body) == b"hello world"
 
 
 def test_empty_write_sends_one_empty_chunk() -> None:
@@ -853,7 +850,10 @@ def test_empty_write_sends_one_empty_chunk() -> None:
     }]})
 
     with use_transport(t):
-        client().vm("vm_1").sync("/home/user/empty", b"")
+        # `sync()` streams now; the inline write machinery stays reachable via
+        # sync_dir's fallback for servers predating /sync-stream, so this
+        # exercises it directly rather than through the public entrypoint.
+        client().vm("vm_1")._sync_write_inline("/home/user/empty", b"")
 
     writes = json.loads(t.calls[0]["body"])["writes"]
     assert len(writes) == 1
@@ -885,7 +885,10 @@ def test_mid_size_write_inlines_chunks_in_one_request() -> None:
     ]})
 
     with use_transport(t):
-        client().vm("vm_1").sync("/home/user/big", payload)
+        # `sync()` streams now; the inline write machinery stays reachable via
+        # sync_dir's fallback for servers predating /sync-stream, so this
+        # exercises it directly rather than through the public entrypoint.
+        client().vm("vm_1")._sync_write_inline("/home/user/big", payload)
 
     # One request, two chunks sharing an upload_id; only the final chunk
     # reports completion.
@@ -899,41 +902,6 @@ def test_mid_size_write_inlines_chunks_in_one_request() -> None:
     assert writes[1]["size"] == len(payload)
     decoded = base64.b64decode(writes[0]["content"]) + base64.b64decode(writes[1]["content"])
     assert decoded == payload
-
-
-def test_large_write_uses_presigned_bypass() -> None:
-    payload = b"A" * (sdk.INLINE_WRITE_LIMIT + 1)
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and url.endswith("/sync")
-    t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [{
-        "path": "/home/user/big",
-        "size": len(payload),
-        "presigned_url": "https://s3.invalid/upload",
-        "upload_id": "upload_1",
-        "expires_in": 900,
-        "method": "PUT",
-        "complete": False,
-        "written": False,
-    }]})
-    t.add_raw(lambda method, url: method == "PUT" and url == "https://s3.invalid/upload", 200, b"")
-    t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [{
-        "path": "/home/user/big",
-        "size": len(payload),
-        "complete": True,
-        "written": True,
-    }]})
-
-    with use_transport(t):
-        client().vm("vm_1").sync("/home/user/big", payload)
-
-    assert [call["method"] for call in t.calls] == ["POST", "PUT", "POST"]
-    first_entry = json.loads(t.calls[0]["body"])["writes"][0]
-    assert first_entry == {
-        "path": "/home/user/big",
-        "size": len(payload),
-        "presigned": True,
-        "is_secret": False,
-    }
 
 
 def test_fork_sends_durable_flag() -> None:
@@ -1116,7 +1084,7 @@ def test_per_entry_internal_error_retries(monkeypatch) -> None:
     }]})
 
     with use_transport(t):
-        sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x", b"hello")
+        sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm")._sync_write_inline("/home/user/x", b"hello")
 
     assert len(t.calls) == 2
 

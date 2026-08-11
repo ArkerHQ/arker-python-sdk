@@ -103,7 +103,15 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
   const text = Buffer.concat(chunks).toString("utf8");
-  return text ? JSON.parse(text) : undefined;
+  if (!text) return undefined;
+  // Not every request body is JSON any more: /sync-stream sends raw bytes with
+  // its parameters in the query string. Capture those as text instead of
+  // throwing, so a raw-body request is still assertable.
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 function jsonResponse(res: ServerResponse, value: unknown, status = 200): void {
@@ -508,23 +516,13 @@ async function testEmptyPipedInputWritesZeroBytes(): Promise<void> {
     const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/example.txt"], { stdin: "" });
     assert.equal(result.code, 0);
     assert.equal(stdoutText(result), "wrote 0 bytes to /tmp/example.txt\n");
-    const requestBody = requests[0]?.body as { op?: unknown; writes?: Array<Record<string, unknown>> };
-    assert.equal(typeof requestBody.writes?.[0]?.upload_id, "string");
-    assert.deepEqual({
-      ...requestBody,
-      writes: requestBody.writes?.map((write) => ({ ...write, upload_id: "<generated>" })),
-    }, {
-      op: "write",
-      writes: [{
-        path: "/tmp/example.txt",
-        size: 0,
-        upload_id: "<generated>",
-        content: "",
-        start: 0,
-        end: 0,
-        is_secret: false,
-      }],
-    });
+    // `sync` now streams the bytes to /sync-stream rather than base64-ing them
+    // into a JSON `writes[]` envelope: path and size ride in the query string
+    // and the body is the raw bytes (here, none). The behaviour asserted above
+    // — zero bytes written, exit 0 — is unchanged; only the transport moved.
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.method, "POST");
+    assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/sync-stream?path=%2Ftmp%2Fexample.txt&size=0");
   });
 }
 
@@ -701,11 +699,14 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       body: { filesystem_id: "fs_1", path: "/mnt" },
     },
     {
-      name: "sync inline write",
+      // `sync` streams the bytes now: path and size ride in the query string
+      // and the body is raw, rather than base64 inside a JSON `writes[]`.
+      name: "sync streamed write",
       args: ["sync", "vm_1", "/tmp/file", "hello"],
       response: { results: [{ complete: true, written: true }] },
       method: "POST",
-      url: "/api/v1/vms/vm_1/sync",
+      url: "/api/v1/vms/vm_1/sync-stream?path=%2Ftmp%2Ffile&size=5",
+      body: "hello",
     },
     {
       name: "filesystems ls",

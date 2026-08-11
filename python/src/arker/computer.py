@@ -9,6 +9,7 @@ from __future__ import annotations
 import atexit
 import base64
 import dataclasses
+import gzip
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ import threading
 import time
 import types
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, get_args, get_origin, get_type_hints
 
 import httpx
@@ -106,6 +108,23 @@ CHUNK_SIZE = 4 * 1024 * 1024
 # request — 16MB = 4 chunks, inside both. Files above this take the presigned
 # blob path, where resumable multipart genuinely earns its double transfer.
 INLINE_WRITE_LIMIT = 16 * 1024 * 1024
+
+# Largest body `/sync-stream` accepts through the public edge. The router
+# buffers proxied bodies and caps them (DEFAULT_PROXY_BODY_LIMIT in
+# arkerd-router), which overrides the worker's own disabled limit. Measured
+# against a live env: 64 MiB returns 200, 72 MiB returns 413
+# `payload_too_large` — the limit is exact and fails loudly, never truncating.
+STREAM_MAX_BYTES = 64 * 1024 * 1024
+
+# Below this a compressibility sample is not worth taking; above it sync_dir
+# samples before choosing tar vs tar.gz.
+COMPRESSION_SAMPLE_MIN_BYTES = 256 * 1024
+# Ratio below which gzip beats its ~3.4x guest-side extraction cost.
+COMPRESSION_WORTH_IT_RATIO = 0.9
+
+# Files hashed concurrently in sync_dir. hashlib releases the GIL, so this is
+# real CPU parallelism; bounded to keep open file descriptors sane.
+HASH_CONCURRENCY = 8
 
 # Org id for the "Arker" org — the org that owns the public golden VMs
 # (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
@@ -427,10 +446,12 @@ class Arker:
         ``layers`` selects which layers of the source the child inherits. Omit
         it for the default full fork (``["disk", "memory"]``): the child inherits
         both the filesystem and a copy of the source's live RAM, so it resumes
-        warm. Pass ``["disk"]`` for a disk-only fork: the child inherits only the
-        filesystem and cold-boots with fresh RAM — a much cheaper fork (no RAM
-        snapshot to copy) at the cost of a cold first ``run``. Trades fork
-        latency for first-run latency; pick per workload.
+        as an exact continuation — same processes, same shell state. Pass
+        ``["disk"]`` for a disk-only fork: the child inherits only the
+        filesystem and cold-boots with fresh RAM. Everything on disk survives
+        (installed packages, checked-out source, files the parent wrote);
+        nothing in memory does (no inherited processes, no environment, no
+        shell state).
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -904,11 +925,87 @@ class VM:
         if data is None:
             return self._sync_read(path)
         payload = data.encode("utf-8") if isinstance(data, str) else data
-        if len(payload) <= INLINE_WRITE_LIMIT:
-            self._sync_write_inline(path, payload)
-        else:
-            self._sync_write_presigned(path, payload)
+        # Stream straight to the VM's disk, at every size. Syncing to a VM has
+        # no reason to detour through object storage — the destination is the
+        # guest filesystem, not S3. Presigned uploads existed only because the
+        # router buffered proxied bodies and capped them; it now forwards
+        # sync-stream as a stream above that cap, so the detour is gone.
+        # Presigned remains correct for SHARED FILESYSTEMS, where the bytes
+        # really do live in S3 — a different route, not this one.
+        self._sync_write_stream(path, payload)
         return None
+
+    def _sync_stream_post(
+        self,
+        params: dict[str, str],
+        body: Callable[[], bytes],
+        what: str,
+    ) -> None:
+        """The single ``/sync-stream`` call site.
+
+        ``body`` is a factory, not a value, so a retried attempt gets fresh
+        bytes — matching the TypeScript SDK, where the same helper also has to
+        rebuild a consumed file stream.
+        """
+        url = f"{self.base_url}{_vm_path(self.id)}/sync-stream"
+        headers = {
+            "authorization": f"Bearer {self._client._api_key}",
+            "content-type": "application/octet-stream",
+        }
+        for attempt in range(self._client._retry.attempts):
+            try:
+                response = _http_client.post(
+                    url, params=params, content=body(),
+                    headers=headers, timeout=PRESIGNED_PUT_TIMEOUT_S,
+                )
+            except httpx.RequestError as error:
+                if attempt == self._client._retry.attempts - 1:
+                    raise ArkerError("unavailable", f"{what} failed: {error}", 0) from error
+                time.sleep(self._client._retry_delay(attempt))
+                continue
+            if response.status_code < 400:
+                return
+            status = response.status_code
+            code, message = "internal", f"{what} failed ({status})"
+            try:
+                error_body = response.json().get("error") or {}
+                code = error_body.get("code") or code
+                message = error_body.get("message") or message
+            except Exception:
+                pass
+            # 413 is the router's body cap, not a transient fault.
+            if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
+                raise ArkerError(code, message, status)
+            time.sleep(self._client._retry_delay(attempt))
+
+    def _sync_write_stream(self, path: str, data: bytes, sha256: str | None = None) -> None:
+        params = {"path": path, "size": str(len(data))}
+        if sha256:
+            params["sha256"] = sha256
+        self._sync_stream_post(params, lambda: data, "sync write")
+
+    def _sync_stream_extract_file(self, tar_path: str, remote_root: str, mode: str) -> None:
+        """Stream a tarball from disk to ``/sync-stream?extract=``.
+
+        ``size`` comes from stat, not from a buffered length: the router reads
+        that query parameter to decide whether to forward the body streamed
+        (a chunked request carries no content-length), so it must be exact.
+        """
+        size = os.path.getsize(tar_path)
+
+        def chunks():
+            with open(tar_path, "rb") as fh:
+                while True:
+                    block = fh.read(1024 * 1024)
+                    if not block:
+                        return
+                    yield block
+
+        self._sync_stream_post(
+            {"path": remote_root, "size": str(size), "extract": mode},
+            chunks,
+            "sync-stream extract",
+        )
 
     def _sync_read(self, path: str) -> bytes:
         request = SyncReadOperationRequest(op="read", path=path)
@@ -945,38 +1042,6 @@ class VM:
         # Chunks before the last legitimately report written=False; the final
         # chunk's result carries file completion.
         _assert_write_complete(results[-1], "inline write")
-
-    def _sync_write_presigned(self, path: str, data: bytes) -> None:
-        request = self._send_one_write(
-            SyncPresignedWriteRequest(path=path, size=len(data), presigned=True)
-        )
-        if not isinstance(request, SyncPresignedWriteRequestResult):
-            raise ArkerError("internal", "write response missing presigned upload fields", 200)
-        self._put_presigned(request.presigned_url, data)
-        result = self._send_one_write(
-            SyncPresignedWriteCommit(
-                path=path,
-                size=len(data),
-                upload_id=request.upload_id,
-            )
-        )
-        _assert_write_complete(result, "presigned write commit")
-
-    def _put_presigned(self, url: str, data: bytes) -> None:
-        for attempt in range(self._client._retry.attempts):
-            try:
-                response = _http_client.put(url, content=data, timeout=PRESIGNED_PUT_TIMEOUT_S)
-            except httpx.RequestError as error:
-                if attempt == self._client._retry.attempts - 1:
-                    raise ArkerError("unavailable", f"upload PUT failed: {error}", 0) from error
-                time.sleep(self._client._retry_delay(attempt))
-                continue
-            if response.status_code < 400:
-                return
-            status = response.status_code
-            if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
-                raise ArkerError("internal", f"upload PUT failed: {status}", status)
-            time.sleep(self._client._retry_delay(attempt))
 
     def _send_one_write(self, entry: SyncWriteEntry) -> SyncWriteResult:
         return self._send_writes([entry])[0]
@@ -1040,7 +1105,7 @@ class VM:
 
         # 1. Authoritative remote manifest: rel_path -> sha256. A directory that
         #    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
-        remote = self._remote_manifest(remote_root)
+        remote, manifest_truncated = self._remote_manifest(remote_root)
 
         # 2. Enumerate local regular files (skip symlinks — the manifest lists
         #    regular files only, so a symlink would always look "missing").
@@ -1055,10 +1120,28 @@ class VM:
                 local_files[rel] = (abs_path, st.st_size, st.st_mtime_ns)
 
         # 3. Diff local vs the REMOTE manifest → the set of new/changed files.
-        result = SyncDirResult()
+        result = SyncDirResult(manifest_truncated=manifest_truncated)
         changed: list[tuple[str, str]] = []  # (rel, abs_path)
-        for rel, (abs_path, size, mtime_ns) in sorted(local_files.items()):
-            local_hash = _file_hash_cached(abs_path, size, mtime_ns, cache)
+        entries = sorted(local_files.items())
+        # Hash in a thread pool. Unlike Node — where JS is single-threaded and
+        # hash.update() blocks — CPython's hashlib RELEASES THE GIL while
+        # digesting, so this genuinely spreads SHA-256 across cores rather than
+        # only overlapping I/O. Hashing dominates sync_dir on a large tree.
+        if len(entries) > 1:
+            with ThreadPoolExecutor(max_workers=HASH_CONCURRENCY) as pool:
+                hashes = list(pool.map(
+                    lambda item: _file_hash_cached(item[1][0], item[1][1], item[1][2], cache),
+                    entries,
+                ))
+        else:
+            hashes = [
+                _file_hash_cached(abs_path, size, mtime_ns, cache)
+                for _rel, (abs_path, size, mtime_ns) in entries
+            ]
+
+        # Diff in sorted order so the tarball is reproducible and the counters
+        # are deterministic regardless of which hash finished first.
+        for (rel, (abs_path, size, _mtime_ns)), local_hash in zip(entries, hashes):
             if remote.get(rel) == local_hash:
                 result.skipped += 1
                 continue
@@ -1076,17 +1159,50 @@ class VM:
             self._upload_and_extract_tarball(changed, remote_root)
         return result
 
-    def _remote_manifest(self, path: str) -> dict[str, str]:
-        """Fetch the VM's file manifest under ``path`` → {rel_path: sha256}, via
-        the host-first ``op="manifest"`` op (no FC boot; works on a never-run
-        VM). A path that doesn't exist yet yields an empty manifest."""
+    def _remote_manifest(self, path: str) -> tuple[dict[str, str], bool]:
+        """Fetch the VM's file manifest under ``path`` → ({rel_path: sha256},
+        truncated), via the host-first ``op="manifest"`` op (no FC boot; works
+        on a never-run VM). A path that doesn't exist yet yields an empty
+        manifest.
+
+        The server caps the walk (50,000 entries) and reports ``truncated``.
+        Past the cap every omitted file looks absent, so the diff marks it
+        changed and re-uploads it: correct, but it silently turns the delta sync
+        into a full sync on exactly the trees where the delta matters most."""
         request = SyncManifestOperationRequest(op="manifest", path=path)
         payload = self._client._request(
             "POST", f"{_vm_path(self.id)}/sync",
             request, base_url=self.base_url,
         )
         response = _decode_model(SyncManifestResponse, payload)
-        return {entry.path: entry.hash for entry in response.entries}
+        return (
+            {entry.path: entry.hash for entry in response.entries},
+            bool(getattr(response, "truncated", False)),
+        )
+
+    @staticmethod
+    def _should_compress(changed: list[tuple[str, str]]) -> bool:
+        """Decide whether gzip earns its keep for this file set.
+
+        Samples the head of a handful of files rather than compressing
+        everything twice. Falls back to compressing when the sample is too
+        small to be meaningful.
+        """
+        raw = 0
+        compressed = 0
+        for _rel, abs_path in changed[:8]:
+            try:
+                with open(abs_path, "rb") as fh:
+                    chunk = fh.read(128 * 1024)
+            except OSError:
+                continue  # unreadable sample; the tar step will surface it
+            if not chunk:
+                continue
+            raw += len(chunk)
+            compressed += len(gzip.compress(chunk))
+        if raw < COMPRESSION_SAMPLE_MIN_BYTES:
+            return True
+        return compressed / raw < COMPRESSION_WORTH_IT_RATIO
 
     def _upload_and_extract_tarball(
         self, changed: list[tuple[str, str]], remote_root: str
@@ -1095,17 +1211,39 @@ class VM:
         into ONE tar, upload it in a single write, and extract it in the guest
         with `tar -x` (which preserves mode/exec bits and creates missing parent
         dirs). The extract's exit is checked so any failure surfaces."""
-        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tf:
+        # gzip when it pays: source trees compress ~4:1, but the guest pays
+        # ~3.4x a plain untar to gunzip, so compressing an already-compressed
+        # tree loses at both ends. Sample first. `tar -xf` sniffs compression,
+        # so either choice extracts correctly.
+        compress = self._should_compress(changed)
+        mode = "tar.gz" if compress else "tar"
+        with tempfile.NamedTemporaryFile(suffix=f".{mode}", delete=False) as tf:
             tar_local = tf.name
         try:
-            with tarfile.open(tar_local, "w") as tar:
+            with tarfile.open(tar_local, "w:gz" if compress else "w") as tar:
                 for rel, abs_path in changed:
                     tar.add(abs_path, arcname=rel, recursive=False)
-            with open(tar_local, "rb") as fh:
-                data = fh.read()
+            # FAST PATH: one round-trip. `/sync-stream?extract=` streams the
+            # tarball to the guest and untars it THERE before responding. The
+            # legacy path below is upload + a SEPARATE run("tar -xf") — two
+            # round-trips, with the extract going through the user run
+            # scheduler where it can queue behind an active foreground run.
+            try:
+                # Streamed off disk: a 2 GB tree no longer means a 2 GB buffer
+                # just to hand it to the HTTP client. The body is a factory so a
+                # retry reopens the file — a consumed stream cannot be replayed.
+                self._sync_stream_extract_file(tar_local, remote_root, mode)
+                return
+            except ArkerError as error:
+                if error.code != "not_found":
+                    raise  # real failure (auth, path escape, size) must not be masked
 
-            remote_tar = f"/tmp/.arker-sync-{_ulid()}.tar"
-            self.sync(remote_tar, data)  # inline for small tarballs, presigned for large
+            # Only reachable on a server predating /sync-stream, so this must
+            # NOT go through self.sync() — that streams now and would fail the
+            # same way. Use the inline/presigned write those servers understand.
+            remote_tar = f"/tmp/.arker-sync-{_ulid()}.{mode}"
+            with open(tar_local, "rb") as fh:
+                self._sync_write_inline(remote_tar, fh.read())
 
             q = shlex.quote
             # `set -e` + explicit rm: any extract failure exits non-zero; the
@@ -1916,6 +2054,11 @@ class SyncDirResult:
     """Files whose remote hash already matched (nothing sent)."""
     bytes_sent: int = 0
     """Total bytes of the uploaded files."""
+    manifest_truncated: bool = False
+    """True when the VM's manifest hit the server's 50,000-entry cap and was
+    truncated. Everything beyond the cap is invisible to the diff, so it is
+    treated as changed and re-uploaded — the sync stays CORRECT but stops being
+    a delta. If you see this, split the sync into subdirectories."""
 
 
 def _file_hash_cached(
