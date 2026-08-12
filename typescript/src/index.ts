@@ -234,10 +234,7 @@ const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const DEFAULT_REGION_ENV = "ARKER_REGION";
 const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
-export const COMPUTE_PROVIDERS = ["aws", "gcp"] as const;
-export type ComputeProvider = (typeof COMPUTE_PROVIDERS)[number];
-const COMPUTE_PROVIDER_SET = new Set<string>(COMPUTE_PROVIDERS);
-const DEFAULT_PROVIDER: ComputeProvider = "aws";
+export type ComputeProvider = string;
 const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
 
 type FetchLike = typeof fetch;
@@ -262,11 +259,9 @@ export interface RetryOptions {
 
 export interface ArkerOptions {
   apiKey?: string;
-  /** Region (e.g. `"us-west-2"`). Combined with `provider` to build the
-   * compute endpoint. Back-compat: accepts the legacy combined form
-   * `"aws-us-west-2"`. */
+  /** Region combined with `provider` to build the compute endpoint. */
   region?: string;
-  /** Provider for compute calls. Defaults to `"aws"`. */
+  /** Provider for compute calls. */
   provider?: ComputeProvider;
   /** Override the compute base URL (e.g. for internal / dev targets).
    * If set, `provider` + `region` are ignored for compute. */
@@ -675,7 +670,7 @@ export class Arker {
    * like list-VMs and filesystems. */
   readonly controlBaseUrl: string;
   readonly region?: string;
-  readonly provider: ComputeProvider;
+  readonly provider?: ComputeProvider;
   private readonly apiKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly http2: boolean;
@@ -685,25 +680,28 @@ export class Arker {
     const apiKey = opts.apiKey ?? env("ARKER_API_KEY") ?? env("AUTH_KEY");
     const explicitBaseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
     const rawRegion = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
-    const configuredProvider = (opts.provider as string | undefined) ?? env(DEFAULT_PROVIDER_ENV);
-    const provider = parseProvider(configuredProvider ?? DEFAULT_PROVIDER);
-    const { region, providerFromRegion } = splitRegion(rawRegion);
-    if (configuredProvider && providerFromRegion && providerFromRegion !== provider) {
-      throw new Error(`provider ${provider} conflicts with region prefix ${providerFromRegion}`);
+    const rawProvider = opts.provider ?? (explicitBaseUrl ? undefined : env(DEFAULT_PROVIDER_ENV));
+    if (!explicitBaseUrl && Boolean(rawProvider) !== Boolean(rawRegion)) {
+      throw new Error("provider and region are required together unless baseUrl is supplied");
     }
-    const effectiveProvider = providerFromRegion ?? provider;
+    const provider = rawProvider ? normalizePlacementLabel("provider", rawProvider) : undefined;
+    const region = rawRegion ? normalizePlacementLabel("region", rawRegion) : undefined;
 
-    const baseUrl = explicitBaseUrl ?? (region ? computeBaseUrl(effectiveProvider, region) : undefined);
+    const baseUrl = explicitBaseUrl ?? (provider && region ? computeBaseUrl(provider, region) : undefined);
     const controlBaseUrl = opts.controlBaseUrl ?? env("ARKER_CONTROL_BASE_URL") ?? DEFAULT_CONTROL_BASE_URL;
 
     if (!apiKey) throw new Error("apiKey is required; pass apiKey or set ARKER_API_KEY");
-    if (!baseUrl) throw new Error("region or baseUrl is required; pass region, baseUrl, ARKER_REGION, or ARKER_BASE_URL");
+    if (!baseUrl) {
+      throw new Error(
+        "provider and region or baseUrl are required; pass provider and region, baseUrl, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL",
+      );
+    }
 
     this.apiKey = apiKey;
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.controlBaseUrl = normalizeBaseUrl(controlBaseUrl);
-    this.region = region ? normalizeRegion(region) : undefined;
-    this.provider = effectiveProvider;
+    this.region = region;
+    this.provider = provider;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     // A custom fetch owns transport; otherwise prefer HTTP/2 multiplexing on Node.
     this.http2 = opts.fetch === undefined;
@@ -2111,51 +2109,35 @@ function normalizeBaseUrl(baseUrl: string): string {
   return trimmed;
 }
 
-function normalizeRegion(region: string): string {
-  const trimmed = region.trim().toLowerCase();
-  if (!trimmed) throw new Error("region must not be empty");
-  return trimmed;
+function normalizePlacementLabel(name: "provider" | "region", value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(normalized)) {
+    throw new Error(`${name} must be a valid DNS label`);
+  }
+  return normalized;
 }
 
-function computeBaseUrl(provider: ComputeProvider, region: string): string {
-  // The subdomain encodes provider+region — `https://aws-us-west-2.arker.ai`
-  // routes to arkerd in us-west-2. Today the subdomain still resolves through
+function computeBaseUrl(provider: string, region: string): string {
+  // The subdomain encodes provider+region. Today it still resolves through
   // the CF Worker (which dispatches based on hostname), so the path includes
   // `/api`. When DNS is split to bypass the worker on the compute
   // subdomain, drop `/api` here.
-  const normalized = normalizeRegion(region);
-  return `https://${provider}-${normalized}.arker.ai/api`;
+  const normalizedProvider = normalizePlacementLabel("provider", provider);
+  const normalizedRegion = normalizePlacementLabel("region", region);
+  const placement = `${normalizedProvider}-${normalizedRegion}`;
+  if (placement.length > 63) {
+    throw new Error("provider and region produce a DNS label longer than 63 characters");
+  }
+  return `https://${placement}.arker.ai/api`;
 }
 
 function optionalComputeProvider(value: unknown): ComputeProvider | null {
   if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  return COMPUTE_PROVIDER_SET.has(normalized)
-    ? (normalized as ComputeProvider)
-    : null;
-}
-
-function parseProvider(value: string | undefined | null): ComputeProvider {
-  if (!value) return DEFAULT_PROVIDER;
-  const provider = optionalComputeProvider(value);
-  if (!provider) {
-    throw new Error(`unknown provider ${JSON.stringify(value)}; expected ${COMPUTE_PROVIDERS.join(" or ")}`);
+  try {
+    return normalizePlacementLabel("provider", value);
+  } catch {
+    return null;
   }
-  return provider;
-}
-
-/** Accept both the new `region`-only form ("us-west-2") and the legacy
- * combined form ("aws-us-west-2"). */
-function splitRegion(value: string | undefined): { region?: string; providerFromRegion?: ComputeProvider } {
-  if (!value) return {};
-  const normalized = value.trim().toLowerCase();
-  for (const provider of COMPUTE_PROVIDERS) {
-    const prefix = `${provider}-`;
-    if (normalized.startsWith(prefix)) {
-      return { region: normalized.slice(prefix.length), providerFromRegion: provider };
-    }
-  }
-  return { region: normalized };
 }
 
 function normalizeRetry(retry: RetryOptions | false | undefined): RetryConfig {

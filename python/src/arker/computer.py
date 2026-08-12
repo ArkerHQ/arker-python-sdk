@@ -167,9 +167,7 @@ TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "Thrott
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_REGION_ENV = "ARKER_REGION"
 DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
-ComputeProvider = Literal["aws", "gcp"]
-COMPUTE_PROVIDERS = frozenset({"aws", "gcp"})
-DEFAULT_PROVIDER: ComputeProvider = "aws"
+ComputeProvider = str
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
 
 # Public golden VM names owned by the Arker org. Forking one of these by name
@@ -339,18 +337,16 @@ class Arker:
         resolved_api_key = api_key or _env("ARKER_API_KEY") or _env("AUTH_KEY")
         explicit_base_url = base_url or _env("ARKER_BASE_URL")
         raw_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
-        configured_provider = provider or _env(DEFAULT_PROVIDER_ENV)
-        raw_provider = configured_provider or DEFAULT_PROVIDER
-        provider_value = _parse_provider(raw_provider)
-        resolved_region, provider_from_region = _split_region(raw_region)
-        if configured_provider and provider_from_region and provider_from_region != provider_value:
-            raise ValueError(
-                f"provider {provider_value} conflicts with region prefix {provider_from_region}"
-            )
-        effective_provider = provider_from_region or provider_value
+        raw_provider = provider or (None if explicit_base_url else _env(DEFAULT_PROVIDER_ENV))
+        if not explicit_base_url and bool(raw_provider) != bool(raw_region):
+            raise ValueError("provider and region are required together unless base_url is supplied")
+        provider_value = _normalize_placement_label("provider", raw_provider) if raw_provider else None
+        resolved_region = _normalize_placement_label("region", raw_region) if raw_region else None
 
         resolved_base_url = explicit_base_url or (
-            _compute_base_url(effective_provider, resolved_region) if resolved_region else None
+            _compute_base_url(provider_value, resolved_region)
+            if provider_value and resolved_region
+            else None
         )
         resolved_control_base_url = (
             control_base_url
@@ -361,13 +357,16 @@ class Arker:
         if not resolved_api_key:
             raise ValueError("api_key is required; pass api_key or set ARKER_API_KEY")
         if not resolved_base_url:
-            raise ValueError("region or base_url is required; pass region, base_url, ARKER_REGION, or ARKER_BASE_URL")
+            raise ValueError(
+                "provider and region or base_url are required; pass provider and region, "
+                "base_url, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL"
+            )
 
         self._api_key = resolved_api_key
         self._base_url = _normalize_base_url(resolved_base_url)
         self._control_base_url = _normalize_base_url(resolved_control_base_url)
-        self._region = _normalize_region(resolved_region) if resolved_region else None
-        self._provider = effective_provider
+        self._region = resolved_region
+        self._provider = provider_value
         self._retry = _normalize_retry(retry)
 
     @property
@@ -383,7 +382,7 @@ class Arker:
         return self._region
 
     @property
-    def provider(self) -> ComputeProvider:
+    def provider(self) -> ComputeProvider | None:
         return self._provider
 
     def vm(
@@ -1759,54 +1758,35 @@ def _normalize_base_url(base_url: str) -> str:
     return normalized
 
 
-def _normalize_region(region: str) -> str:
-    normalized = region.strip().lower()
-    if not normalized:
-        raise ValueError("region must not be empty")
+def _normalize_placement_label(name: str, value: str) -> str:
+    normalized = value.strip().lower()
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", normalized):
+        raise ValueError(f"{name} must be a valid DNS label")
     return normalized
 
 
 def _compute_base_url(provider: str, region: str) -> str:
     """The subdomain encodes provider+region.
 
-    Today ``aws-{region}.arker.ai``
-    still resolve through the CF Worker (which dispatches based on hostname),
+    Regional endpoints still resolve through the CF Worker, which dispatches based on hostname,
     so the path includes ``/api``. When DNS is split to bypass the worker on
     the compute subdomains, drop ``/api`` here.
     """
-    normalized = _normalize_region(region)
-    return f"https://{provider}-{normalized}.arker.ai/api"
+    normalized_provider = _normalize_placement_label("provider", provider)
+    normalized_region = _normalize_placement_label("region", region)
+    placement = f"{normalized_provider}-{normalized_region}"
+    if len(placement) > 63:
+        raise ValueError("provider and region produce a DNS label longer than 63 characters")
+    return f"https://{placement}.arker.ai/api"
 
 
 def _optional_compute_provider(value: object) -> ComputeProvider | None:
     if not isinstance(value, str):
         return None
-    normalized = value.strip().lower()
-    return normalized if normalized in COMPUTE_PROVIDERS else None  # type: ignore[return-value]
-
-
-def _parse_provider(value: str | None) -> ComputeProvider:
-    if not value:
-        return DEFAULT_PROVIDER
-    provider = _optional_compute_provider(value)
-    if provider is None:
-        expected = " or ".join(sorted(COMPUTE_PROVIDERS))
-        raise ValueError(f"unknown provider {value!r}; expected {expected}")
-    return provider
-
-
-def _split_region(value: str | None) -> tuple[str | None, str | None]:
-    """Accept either ``us-west-2`` or the legacy combined form
-    ``aws-us-west-2``.
-    """
-    if not value:
-        return None, None
-    normalized = value.strip().lower()
-    for provider in sorted(COMPUTE_PROVIDERS):
-        prefix = f"{provider}-"
-        if normalized.startswith(prefix):
-            return normalized[len(prefix):], provider
-    return normalized, None
+    try:
+        return _normalize_placement_label("provider", value)
+    except ValueError:
+        return None
 
 
 def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> RetryOptions:

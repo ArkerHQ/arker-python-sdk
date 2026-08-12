@@ -18,7 +18,6 @@ import {
 } from "../index.js";
 import { emitFinalOutput, shellQuote } from "./common.js";
 
-const DEFAULT_REGION = "aws-us-east-1";
 const DEFAULT_SOURCE = "ubuntu-dev";
 
 export interface ArkerComputeProviderConfig extends ArkerOptions {
@@ -42,11 +41,7 @@ function env(key: string): string | undefined {
 }
 
 function makeClient(config: ArkerComputeProviderConfig = {}): Arker {
-  const endpointConfigured = config.baseUrl || config.region || env("ARKER_BASE_URL") || env("ARKER_REGION");
-  return new Arker({
-    ...config,
-    region: config.region ?? (endpointConfigured ? undefined : DEFAULT_REGION),
-  });
+  return new Arker(config);
 }
 
 function decode(bytes: Uint8Array): string {

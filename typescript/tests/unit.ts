@@ -99,7 +99,8 @@ function client(fetch: FakeFetch): Arker {
 function regionClient(fetch: FakeFetch): Arker {
   return new Arker({
     apiKey: "ark_live_test",
-    region: "aws-us-west-2",
+    provider: "provider-one",
+    region: "region-one",
     fetch: fetch.fetch,
     retry: false,
   });
@@ -411,13 +412,10 @@ async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "sleep 999", background: true });
 }
 
-async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
+async function testConfiguredPlacementRoutesGoldensToMainEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
-  // Computer.fork() always posts to `/v1/fork` on the owning VM's
-  // backend (default-provider compute URL for "ubuntu",
-  // name).
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://aws-us-west-2.arker.ai/api/v1/fork",
+    (method, url) => method === "POST" && url === "https://provider-one-region-one.arker.ai/api/v1/fork",
     200,
     {
       vm_id: "vmh-child",
@@ -433,58 +431,46 @@ async function testRegionRoutesGoldensToMainEndpoint(): Promise<void> {
   const arker = regionClient(fetch);
   const vm = await arker.vm("ubuntu").fork();
 
-  assert.equal(arker.baseUrl, "https://aws-us-west-2.arker.ai/api");
-  assert.equal(vm.baseUrl, "https://aws-us-west-2.arker.ai/api");
+  assert.equal(arker.baseUrl, "https://provider-one-region-one.arker.ai/api");
+  assert.equal(vm.baseUrl, "https://provider-one-region-one.arker.ai/api");
 }
 
-function testGcpProviderBuildsGcpEndpoint(): void {
+function testArbitraryProviderBuildsEndpoint(): void {
   const arker = new Arker({
     apiKey: "ark_live_test",
-    provider: "gcp",
-    region: "us-central1",
+    provider: "future-cloud",
+    region: "moon-1",
     retry: false,
   });
 
-  assert.equal(arker.provider, "gcp");
-  assert.equal(arker.region, "us-central1");
-  assert.equal(arker.baseUrl, "https://gcp-us-central1.arker.ai/api");
+  assert.equal(arker.provider, "future-cloud");
+  assert.equal(arker.region, "moon-1");
+  assert.equal(arker.baseUrl, "https://future-cloud-moon-1.arker.ai/api");
 }
 
-function testGcpCombinedRegionBuildsGcpEndpoint(): void {
-  const arker = new Arker({
-    apiKey: "ark_live_test",
-    region: "gcp-us-central1",
-    retry: false,
-  });
-
-  assert.equal(arker.provider, "gcp");
-  assert.equal(arker.region, "us-central1");
-  assert.equal(arker.baseUrl, "https://gcp-us-central1.arker.ai/api");
-}
-
-function testInvalidProviderFailsClosed(): void {
+function testPlacementRequiresSeparateProviderAndRegion(): void {
   assert.throws(
-    () => new Arker({ apiKey: "ark_live_test", provider: "unknown" as never, region: "us-central1" }),
-    /provider/i,
+    () => new Arker({ apiKey: "ark_live_test", region: "region-one" }),
+    /provider and region are required together/i,
+  );
+  assert.throws(
+    () => new Arker({ apiKey: "ark_live_test", provider: "provider-one" }),
+    /provider and region are required together/i,
   );
 }
 
-function testGcpRegionIsNotHardCodedInTheClient(): void {
-  const arker = new Arker({
-    apiKey: "ark_live_test",
-    provider: "gcp",
-    region: "europe-west1",
-    retry: false,
-  });
-
-  assert.equal(arker.baseUrl, "https://gcp-europe-west1.arker.ai/api");
+function testInvalidProviderSyntaxFailsClosed(): void {
+  assert.throws(
+    () => new Arker({ apiKey: "ark_live_test", provider: "bad.example/path", region: "region-one" }),
+    /provider/i,
+  );
 }
 
 async function testListRegionsUsesPublicControlPlaneCatalog(): Promise<void> {
   const fetch = new FakeFetch();
   const placement = {
-    provider: "gcp" as const,
-    region: "us-central1",
+    provider: "provider-two",
+    region: "region-two",
   };
   fetch.addJson(
     (method, url) =>
@@ -494,6 +480,7 @@ async function testListRegionsUsesPublicControlPlaneCatalog(): Promise<void> {
   );
   const arker = new Arker({
     apiKey: "ark_live_test",
+    provider: "aws",
     region: "us-west-2",
     controlBaseUrl: "https://control.invalid/api",
     fetch: fetch.fetch,
@@ -523,26 +510,26 @@ async function testDiscoverRegionsRequiresNoConfiguredClient(): Promise<void> {
   assert.equal(fetch.calls[0]?.headers.authorization, undefined);
 }
 
-async function testListedGcpVmUsesItsPlacementEndpoint(): Promise<void> {
+async function testListedVmUsesItsPlacementEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
     (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms",
     200,
     {
       vms: [{
-        vm_id: "vm_gcp",
+        vm_id: "vm_placed",
         owner_org_id: "org_1",
         created_at: "now",
-        region: "us-central1",
-        provider: "gcp",
+        region: "region-two",
+        provider: "provider-two",
       }],
     },
   );
   fetch.addJson(
-    (method, url) => method === "POST" && url === "https://gcp-us-central1.arker.ai/api/v1/vms/vm_gcp/runs",
+    (method, url) => method === "POST" && url === "https://provider-two-region-two.arker.ai/api/v1/vms/vm_placed/runs",
     200,
     {
-      run_id: "run_gcp",
+      run_id: "run_placed",
       state: "completed",
       stdout: "ok\n",
       stdout_encoding: "utf-8",
@@ -554,23 +541,23 @@ async function testListedGcpVmUsesItsPlacementEndpoint(): Promise<void> {
 
   const arker = new Arker({
     apiKey: "ark_live_test",
-    region: "us-west-2",
+    baseUrl: "https://fallback.invalid/api",
     fetch: fetch.fetch,
     retry: false,
   });
   const { vms } = await arker.listVms();
-  assert.equal(vms[0]?.baseUrl, "https://gcp-us-central1.arker.ai/api");
+  assert.equal(vms[0]?.baseUrl, "https://provider-two-region-two.arker.ai/api");
   await vms[0]!.run("printf ok");
 }
 
-function testExplicitGcpVmHandleUsesPlacementEndpoint(): void {
+function testExplicitVmHandleUsesPlacementEndpoint(): void {
   const arker = new Arker({
     apiKey: "ark_live_test",
-    region: "us-west-2",
+    baseUrl: "https://fallback.invalid/api",
     retry: false,
   });
-  const vm = arker.vm("vm_gcp", { provider: "gcp", region: "us-central1" });
-  assert.equal(vm.baseUrl, "https://gcp-us-central1.arker.ai/api");
+  const vm = arker.vm("vm_placed", { provider: "provider-two", region: "region-two" });
+  assert.equal(vm.baseUrl, "https://provider-two-region-two.arker.ai/api");
 }
 
 async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
@@ -1013,15 +1000,14 @@ await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();
 await testBackgroundTrueReturnsAckWithoutPolling();
-await testRegionRoutesGoldensToMainEndpoint();
-testGcpProviderBuildsGcpEndpoint();
-testGcpCombinedRegionBuildsGcpEndpoint();
-testInvalidProviderFailsClosed();
-testGcpRegionIsNotHardCodedInTheClient();
+await testConfiguredPlacementRoutesGoldensToMainEndpoint();
+testArbitraryProviderBuildsEndpoint();
+testPlacementRequiresSeparateProviderAndRegion();
+testInvalidProviderSyntaxFailsClosed();
 await testListRegionsUsesPublicControlPlaneCatalog();
 await testDiscoverRegionsRequiresNoConfiguredClient();
-await testListedGcpVmUsesItsPlacementEndpoint();
-testExplicitGcpVmHandleUsesPlacementEndpoint();
+await testListedVmUsesItsPlacementEndpoint();
+testExplicitVmHandleUsesPlacementEndpoint();
 await testListRunsUsesControlPlaneAndFilters();
 await testListVmsPreservesForkLimitFields();
 await testForkSendsDurableFlag();

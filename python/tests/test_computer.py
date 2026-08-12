@@ -55,7 +55,12 @@ def client() -> sdk.Arker:
 
 
 def region_client() -> sdk.Arker:
-    return sdk.Arker(api_key="ark_live_test", region="aws-us-west-2", retry=False)
+    return sdk.Arker(
+        api_key="ark_live_test",
+        provider="provider-one",
+        region="region-one",
+        retry=False,
+    )
 
 
 def session(session_id: str = "s0") -> dict[str, str]:
@@ -66,7 +71,7 @@ def test_constructor_requires_base_url(monkeypatch) -> None:
     monkeypatch.delenv("ARKER_BASE_URL", raising=False)
     monkeypatch.delenv("ARKER_REGION", raising=False)
     monkeypatch.delenv("ARKER_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="region or base_url is required"):
+    with pytest.raises(ValueError, match="provider and region or base_url are required"):
         sdk.Arker(api_key="ark_live_test")
 
 
@@ -76,59 +81,51 @@ def test_constructor_reads_env(monkeypatch) -> None:
     assert sdk.Arker().base_url == "https://env.invalid/api"
 
 
-def test_gcp_provider_builds_gcp_endpoint() -> None:
+def test_arbitrary_provider_builds_endpoint() -> None:
     arker = sdk.Arker(
         api_key="ark_live_test",
-        provider="gcp",
-        region="us-central1",
+        provider="future-cloud",
+        region="moon-1",
         retry=False,
     )
 
-    assert arker.provider == "gcp"
-    assert arker.region == "us-central1"
-    assert arker.base_url == "https://gcp-us-central1.arker.ai/api"
+    assert arker.provider == "future-cloud"
+    assert arker.region == "moon-1"
+    assert arker.base_url == "https://future-cloud-moon-1.arker.ai/api"
 
 
-def test_gcp_combined_region_builds_gcp_endpoint() -> None:
-    arker = sdk.Arker(
-        api_key="ark_live_test",
-        region="gcp-us-central1",
-        retry=False,
-    )
-
-    assert arker.provider == "gcp"
-    assert arker.region == "us-central1"
-    assert arker.base_url == "https://gcp-us-central1.arker.ai/api"
+def test_placement_requires_separate_provider_and_region() -> None:
+    with pytest.raises(ValueError, match="provider and region are required together"):
+        sdk.Arker(api_key="ark_live_test", region="region-one")
+    with pytest.raises(ValueError, match="provider and region are required together"):
+        sdk.Arker(api_key="ark_live_test", provider="provider-one")
 
 
-def test_invalid_provider_fails_closed() -> None:
+def test_invalid_provider_syntax_fails_closed() -> None:
     with pytest.raises(ValueError, match="provider"):
-        sdk.Arker(api_key="ark_live_test", provider="unknown", region="us-central1")
+        sdk.Arker(
+            api_key="ark_live_test",
+            provider="bad.example/path",
+            region="region-one",
+        )
 
 
-def test_gcp_region_is_not_hard_coded_in_the_client() -> None:
+def test_explicit_vm_handle_uses_placement_endpoint() -> None:
     arker = sdk.Arker(
         api_key="ark_live_test",
-        provider="gcp",
-        region="europe-west1",
+        base_url="https://fallback.invalid/api",
         retry=False,
     )
+    vm = arker.vm("vm_placed", provider="provider-two", region="region-two")
 
-    assert arker.base_url == "https://gcp-europe-west1.arker.ai/api"
-
-
-def test_explicit_gcp_vm_handle_uses_placement_endpoint() -> None:
-    arker = sdk.Arker(api_key="ark_live_test", region="us-west-2", retry=False)
-    vm = arker.vm("vm_gcp", provider="gcp", region="us-central1")
-
-    assert vm.base_url == "https://gcp-us-central1.arker.ai/api"
+    assert vm.base_url == "https://provider-two-region-two.arker.ai/api"
 
 
 def test_list_regions_uses_public_control_plane_catalog() -> None:
     t = FakeTransport()
     placement = {
-        "provider": "gcp",
-        "region": "us-central1",
+        "provider": "provider-two",
+        "region": "region-two",
     }
     t.add_json(
         lambda method, url: method == "GET"
@@ -140,8 +137,8 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
     with use_transport(t):
         regions = client().list_regions()
 
-    assert regions.regions[0].provider == "gcp"
-    assert regions.regions[0].region == "us-central1"
+    assert regions.regions[0].provider == "provider-two"
+    assert regions.regions[0].region == "region-two"
 
 
 def test_discover_regions_requires_no_configured_client() -> None:
@@ -280,10 +277,10 @@ def test_fork_tolerates_unknown_response_fields() -> None:
     assert vm.id == "vm_child"
 
 
-def test_region_routes_goldens_to_main_endpoint() -> None:
+def test_configured_placement_routes_goldens_to_main_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://aws-us-west-2.arker.ai/api/v1/fork",
+        lambda method, url: method == "POST" and url == "https://provider-one-region-one.arker.ai/api/v1/fork",
         200,
         {
             "vm_id": "vmh-child",
@@ -302,8 +299,8 @@ def test_region_routes_goldens_to_main_endpoint() -> None:
         arker = region_client()
         vm = arker.fork(source_vm_id="ubuntu")
 
-    assert arker.base_url == "https://aws-us-west-2.arker.ai/api"
-    assert vm.base_url == "https://aws-us-west-2.arker.ai/api"
+    assert arker.base_url == "https://provider-one-region-one.arker.ai/api"
+    assert vm.base_url == "https://provider-one-region-one.arker.ai/api"
 
 
 def test_list_uses_configured_base_url() -> None:
@@ -354,30 +351,30 @@ def test_list_uses_configured_base_url() -> None:
     )
 
 
-def test_listed_gcp_vm_uses_its_placement_endpoint() -> None:
+def test_listed_vm_uses_its_placement_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms",
         200,
         {"vms": [{
-            "vm_id": "vm_gcp",
+            "vm_id": "vm_placed",
             "owner_org_id": "org_1",
             "created_at": "now",
             "description": None,
             "public": False,
             "state": "idle",
-            "region": "us-central1",
-            "provider": "gcp",
+            "region": "region-two",
+            "provider": "provider-two",
             "network": {},
             "sessions": [],
             "resources": {},
         }]},
     )
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://gcp-us-central1.arker.ai/api/v1/vms/vm_gcp/runs",
+        lambda method, url: method == "POST" and url == "https://provider-two-region-two.arker.ai/api/v1/vms/vm_placed/runs",
         200,
         {
-            "run_id": "run_gcp",
+            "run_id": "run_placed",
             "state": "completed",
             "stdout": "ok\n",
             "stdout_encoding": "utf-8",
@@ -387,10 +384,14 @@ def test_listed_gcp_vm_uses_its_placement_endpoint() -> None:
         },
     )
 
-    arker = sdk.Arker(api_key="ark_live_test", region="us-west-2", retry=False)
+    arker = sdk.Arker(
+        api_key="ark_live_test",
+        base_url="https://fallback.invalid/api",
+        retry=False,
+    )
     with use_transport(t):
         result = arker.list_vms()
-        assert result.vms[0].base_url == "https://gcp-us-central1.arker.ai/api"
+        assert result.vms[0].base_url == "https://provider-two-region-two.arker.ai/api"
         result.vms[0].run("printf ok")
 
 

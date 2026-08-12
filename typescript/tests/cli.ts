@@ -16,6 +16,7 @@ type CliResult = {
 type CliOptions = {
   stdin?: string | Uint8Array;
   authenticated?: boolean;
+  controlOnly?: boolean;
 };
 
 type CapturedRequest = {
@@ -72,7 +73,8 @@ async function runCli(baseUrl: string | undefined, args: string[], options: CliO
   if (options.authenticated !== false) env.ARKER_API_KEY = "ark_live_test";
   else delete env.ARKER_API_KEY;
   if (baseUrl) {
-    env.ARKER_BASE_URL = baseUrl;
+    if (!options.controlOnly) env.ARKER_BASE_URL = baseUrl;
+    else delete env.ARKER_BASE_URL;
     env.ARKER_CONTROL_BASE_URL = baseUrl;
   } else {
     delete env.ARKER_BASE_URL;
@@ -309,38 +311,44 @@ async function testHelpAndVersionAreLocalSuccesses(): Promise<void> {
   }
 }
 
-async function testGcpProviderFlagIsAccepted(): Promise<void> {
-  const gcp = await runCli(
-    undefined,
-    ["--provider", "gcp", "--region", "us-central1", "--help"],
-    { authenticated: false },
-  );
-  assert.equal(gcp.code, 0, gcp.stderr);
-
-  const invalid = await runCli(
-    undefined,
-    ["--provider", "azure", "--help"],
-    { authenticated: false },
-  );
-  assert.equal(invalid.code, 1);
-  assert.match(invalid.stderr, /aws, gcp/);
-}
-
-async function testNonAwsProviderRequiresAnExplicitRegion(): Promise<void> {
+async function testArbitraryProviderFlagIsAccepted(): Promise<void> {
   const result = await runCli(
     undefined,
-    ["update", "vm_1", "--provider", "gcp"],
+    ["--provider", "future-cloud", "--region", "moon-1", "--help"],
+    { authenticated: false },
+  );
+  assert.equal(result.code, 0, result.stderr);
+}
+
+async function testComputeCommandRequiresProviderAndRegion(): Promise<void> {
+  const result = await runCli(
+    undefined,
+    ["update", "vm_1", "--provider", "provider-one"],
   );
 
   assert.equal(result.code, 1);
-  assert.match(result.stderr, /region is required for provider gcp/i);
-  assert.match(result.stderr, /arker regions/);
+  assert.match(result.stderr, /provider and region are required for compute commands/i);
+}
+
+async function testProviderOnlyVmListDoesNotRequireAComputeRegion(): Promise<void> {
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { vms: [] }),
+    async (baseUrl, requests) => {
+      const result = await runCli(baseUrl, ["--provider", "provider-one", "list"], {
+        controlOnly: true,
+      });
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0]?.url, "/api/v1/vms?provider=provider-one");
+    },
+  );
 }
 
 async function testRegionsDiscoveryNeedsNoCredentialsOrPlacement(): Promise<void> {
   const placement = {
-    provider: "gcp",
-    region: "us-central1",
+    provider: "provider-one",
+    region: "region-one",
   };
   await withCapturedServer(
     (_request, res) => jsonResponse(res, { regions: [placement] }),
@@ -349,7 +357,7 @@ async function testRegionsDiscoveryNeedsNoCredentialsOrPlacement(): Promise<void
         authenticated: false,
       });
       assert.equal(human.code, 0, human.stderr);
-      assert.equal(stdoutText(human), "gcp-us-central1\n");
+      assert.equal(stdoutText(human), "provider-one-region-one\n");
 
       const json = await runCli(baseUrl, ["regions", "--json"], {
         authenticated: false,
@@ -768,8 +776,9 @@ await testInvalidNumbersFailBeforeRequest();
 await testForkForwardsGpuResourceOptions();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
-await testGcpProviderFlagIsAccepted();
-await testNonAwsProviderRequiresAnExplicitRegion();
+await testArbitraryProviderFlagIsAccepted();
+await testComputeCommandRequiresProviderAndRegion();
+await testProviderOnlyVmListDoesNotRequireAComputeRegion();
 await testRegionsDiscoveryNeedsNoCredentialsOrPlacement();
 await testRemovedSecretAndUrlFlagsFailLocally();
 await testHelpMatchesSupportedSurface();

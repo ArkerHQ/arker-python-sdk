@@ -18,8 +18,9 @@ from arker.modal import Sandbox as ModalSandbox
 if not os.environ.get("ARKER_API_KEY"):
     pytest.skip("live Arker credentials are not configured", allow_module_level=True)
 
-if not os.environ.get("ARKER_BASE_URL") and not os.environ.get("ARKER_REGION"):
-    os.environ["ARKER_REGION"] = "aws-us-east-1"
+if not os.environ.get("ARKER_BASE_URL"):
+    os.environ.setdefault("ARKER_PROVIDER", "aws")
+    os.environ.setdefault("ARKER_REGION", "us-east-1")
 
 
 def test_daytona_live() -> None:

@@ -15,7 +15,7 @@ Node 18+. The client reads your key from `ARKER_API_KEY` — get one in the [con
 ```ts
 import { Arker } from "@arker-ai/sdk";
 
-const ar = new Arker({ region: "us-west-2" });
+const ar = new Arker({ provider: "aws", region: "us-west-2" });
 
 // Fork a public golden, run a command, read/write a file.
 const vm = await ar.fork("ubuntu-dev"); // public golden — org inferred
@@ -85,7 +85,7 @@ await vm.listSyncs();
 await vm.deleteSync(syncId);
 ```
 
-`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. The provider defaults to `aws`. For GCP, use `new Arker({ provider: "gcp", region: "us-central1" })`. The region catalog contains only `provider` and `region`; every listed placement supports fork, run, and sync. GCP optional features can return `unsupported_operation` from its regional API. The CLI equivalent is `arker regions`. Pass `baseUrl` for dev targets. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
+`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. Set both `provider` and `region`, or pass `baseUrl`. The SDK accepts any provider and region that form valid DNS labels and resolves compute calls to `https://{provider}-{region}.arker.ai/api`. The region catalog is optional and contains only `provider` and `region`. The CLI equivalent is `arker regions`. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
 
 ## Durability
 

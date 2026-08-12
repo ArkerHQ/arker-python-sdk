@@ -9,23 +9,6 @@
   "servers": [
     {
       "url": "https://arker.ai/api"
-    },
-    {
-      "url": "https://{provider}-{region}.arker.ai/api",
-      "description": "Regional endpoint for an explicitly selected provider and region.",
-      "variables": {
-        "provider": {
-          "default": "aws",
-          "enum": [
-            "aws",
-            "gcp"
-          ]
-        },
-        "region": {
-          "default": "us-west-2",
-          "description": "A region returned by GET /v1/regions for the selected provider."
-        }
-      }
     }
   ],
   "security": [
@@ -190,7 +173,7 @@
             "in": "query",
             "name": "region",
             "required": false,
-            "description": "Narrow to a single region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region.",
+            "description": "Narrow to a single region. When omitted, the response aggregates across every configured region.",
             "schema": {
               "type": "string"
             }
@@ -1697,10 +1680,6 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": [
-              "aws",
-              "gcp"
-            ],
             "description": "Public compute provider for the placement."
           },
           "region": {
@@ -1873,14 +1852,6 @@
       },
       "Provider": {
         "type": "string",
-        "enum": [
-          "aws",
-          "azure",
-          "arker",
-          "runpod",
-          "mac",
-          "gcp"
-        ],
         "description": "Infrastructure provider currently hosting the resource."
       },
       "PolicyWriteRequest": {
@@ -4318,8 +4289,7 @@
             "type": [
               "string",
               "null"
-            ],
-            "default": "us-west-2"
+            ]
           },
           "provider": {
             "description": "Infrastructure provider hosting the filesystem.",
@@ -4330,8 +4300,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": "aws"
+            ]
           }
         }
       },
