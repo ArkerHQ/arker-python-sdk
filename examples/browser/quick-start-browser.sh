@@ -44,4 +44,4 @@ checkpoint() {
   echo "$2: https://$host:6080/vnc.html"
 }
 checkpoint "https://en.wikipedia.org/wiki/Virtual_machine" "checkpoint A"
-checkpoint "https://en.wikipedia.org/wiki/Firecracker_(software)" "checkpoint B"
+checkpoint "https://en.wikipedia.org/wiki/Cloud_computing" "checkpoint B"

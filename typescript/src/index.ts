@@ -242,9 +242,9 @@ export interface ArkerOptions {
   /** Override the compute base URL (e.g. for internal / dev targets).
    * If set, `provider` + `region` are ignored for compute. */
   baseUrl?: string;
-  /** Override the control-plane URL — the CF Worker that owns
-   * administrative endpoints like `GET /v1/vms` (cross-provider list)
-   * and `/v1/filesystems`. Default `https://arker.ai/api`. */
+  /** Override the control-plane URL that owns administrative endpoints
+   * like `GET /v1/vms` (cross-provider list) and `/v1/filesystems`.
+   * Default `https://arker.ai/api`. */
   controlBaseUrl?: string;
   fetch?: FetchLike;
   retry?: RetryOptions | false;
@@ -638,11 +638,11 @@ export interface ForkSource {
 
 export class Arker {
   /** Compute base URL for `provider` + `region` — used for fork/run/
-   * per-VM ops. SDK calls go straight to this host, skipping the CF
-   * Worker control plane. */
+   * per-VM ops. SDK calls go straight to this host, skipping the
+   * control plane. */
   readonly baseUrl: string;
-  /** CF Worker control-plane URL — used for cross-cutting admin calls
-   * like list-VMs and filesystems. */
+  /** Control-plane URL — used for cross-cutting admin calls like
+   * list-VMs and filesystems. */
   readonly controlBaseUrl: string;
   readonly region?: string;
   readonly provider?: ComputeProvider;
@@ -879,10 +879,9 @@ export class Arker {
     return new VM(this, vmId, baseUrl, data);
   }
 
-  // ── Filesystems (region-scoped, served by arkerd directly) ──────────
-  // Route to the regional endpoint (baseUrl), not the control plane: the
-  // control-plane path (arker.ai → api_proxy_bash) does not route
-  // /v1/filesystems, while the regional NLB → arkerd serves the full CRUD.
+  // ── Filesystems (region-scoped) ─────────────────────────────────────
+  // Route to the regional endpoint (baseUrl), not the control plane, which
+  // does not serve /v1/filesystems.
   async listFilesystems(opts: ListFilesystemsOptions = {}): Promise<ListFilesystemsResponse> {
     const query: ListFilesystemsParameters = {
       cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
@@ -1199,13 +1198,12 @@ export class VM {
 
   /**
    * Recursively sync a local directory INTO this VM at `remoteDir`, rsync-style:
-   * fetch the VM's file *manifest* (per-file sha256) in ONE request, diff it
-   * against the local tree, and upload ONLY the files that are new or changed —
-   * packed into a single tarball the guest extracts with `tar -x` (so the guest
-   * does the writes, always consistent with its own filesystem). Node-only: it
-   * reads the local filesystem.
+   * compare the local tree against the VM's current contents and upload ONLY
+   * the files that are new or changed, applied to the VM's filesystem in one
+   * batch. Works on a VM that has never run. Node-only: it reads the local
+   * filesystem.
    *
-   * The remote manifest is authoritative. `options.cache` (a caller-owned Map you
+   * The VM's current file state is authoritative. `options.cache` (a caller-owned Map you
    * reuse across calls) is a pure accelerator: it skips re-hashing local files
    * whose (size, mtime) are unchanged. It never decides remote state, so it can
    * never cause a stale or missing upload — worst case it re-hashes a file it
@@ -1224,8 +1222,8 @@ export class VM {
     const localRoot = nodePath.resolve(localDir);
     const remoteRoot = "/" + remoteDir.replace(/^\/+/, "").replace(/\/+$/, "");
 
-    // 1. Authoritative remote manifest: rel_path -> sha256. A directory that
-    //    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
+    // 1. Authoritative remote file listing: rel_path -> content hash. A directory
+    //    that doesn't exist yet (or an empty VM) yields {} -> everything is sent.
     const clock = () => Number(process.hrtime.bigint() / 1000n) / 1000;
     //    `assumeEmpty` skips the round-trip on a destination the caller knows
     //    is fresh. `manifestMs` then rounds to 0 on its own (the skip costs
@@ -1239,7 +1237,7 @@ export class VM {
     const manifestMs = clock() - tManifest0;
     const tWalk0 = clock();
 
-    // 2. Enumerate local regular files (skip symlinks — the manifest lists
+    // 2. Enumerate local regular files (skip symlinks — the remote listing has
     //    regular files only, so a symlink would always look "missing").
     const localFiles: Array<{ rel: string; abs: string; sig: StatSignature }> = [];
     const walk = async (dir: string): Promise<void> => {
@@ -1346,9 +1344,9 @@ export class VM {
     const hashMs = clock() - tHash0;
     const tUpload0 = clock();
 
-    // 4. Ship the changed files as ONE tarball and extract it in the guest. The
-    //    extract's exit is checked, so a failure surfaces (never a silent partial);
-    //    the manifest also fails safe — any omitted file is re-sent next call.
+    // 4. Upload the changed files and apply them to the VM in one batch. The
+    //    operation's exit is checked, so a failure surfaces (never a silent partial);
+    //    the diff also fails safe — any omitted file is re-sent next call.
     if (changed.length > 0) await this.uploadAndExtractTarball(changed, localRoot, remoteRoot, fsp);
     // Only after the upload succeeded — persisting earlier would record files
     // as synced that never made it.
@@ -1363,8 +1361,8 @@ export class VM {
     return result;
   }
 
-  /** Fetch the VM's file manifest under `path` -> Map(rel_path -> sha256), via the
-   * host-first `op: "manifest"` op (no FC boot; works on a never-run VM). */
+  /** Fetch the VM's current file listing under `path` -> Map(rel_path -> content
+   * hash). Works on a VM that has never run. */
   private async remoteManifest(
     path: string,
   ): Promise<{ entries: Map<string, string>; truncated: boolean }> {
@@ -1545,10 +1543,9 @@ export class VM {
     await this.syncStreamPost(query, () => data as BodyInit, "sync write");
   }
 
-  /** Pack the changed files (paths relative to `localRoot`) into one gzip tar
-   * and extract it in the guest — via `/sync-stream` where available, else by
-   * uploading and running `tar -x`. Uses node-tar, which reads the files from
-   * disk preserving mode (exec bits) + mtime. */
+  /** Pack the changed files (paths relative to `localRoot`) into one tar and
+   * unpack it inside the VM. Uses node-tar, which reads the files from disk
+   * preserving mode (exec bits) + mtime. */
   private async uploadAndExtractTarball(
     changed: Array<{ rel: string; abs: string }>,
     localRoot: string,
@@ -2087,10 +2084,8 @@ function normalizePlacementLabel(name: "provider" | "region", value: string): st
 }
 
 function computeBaseUrl(provider: string, region: string): string {
-  // The subdomain encodes provider+region. Today it still resolves through
-  // the CF Worker (which dispatches based on hostname), so the path includes
-  // `/api`. When DNS is split to bypass the worker on the compute
-  // subdomain, drop `/api` here.
+  // The subdomain encodes provider+region — e.g. `https://aws-us-west-2.arker.ai`
+  // for us-west-2. Requests currently include the `/api` path prefix.
   const normalizedProvider = normalizePlacementLabel("provider", provider);
   const normalizedRegion = normalizePlacementLabel("region", region);
   const placement = `${normalizedProvider}-${normalizedRegion}`;
@@ -2433,7 +2428,7 @@ export interface SyncDirResult {
   sent: number;
   /** Files already up-to-date on the VM (skipped). */
   skipped: number;
-  /** Total uncompressed bytes of the uploaded files. */
+  /** Total bytes of the uploaded files. */
   bytesSent: number;
   /**
    * True when the VM's manifest hit the server's entry cap (50,000 files) and

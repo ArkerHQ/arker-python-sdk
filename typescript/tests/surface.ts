@@ -21,7 +21,7 @@ type Status = "PASS" | "FAIL" | "STUB";
 const rows: Array<[Status, string, string]> = [];
 function rec(s: Status, name: string, detail = "") { rows.push([s, name, detail]); }
 
-// Treat arkerd's intentional stubs (empty list / not-implemented) as STUB, not FAIL.
+// Treat the server's intentional stubs (empty list / not-implemented) as STUB, not FAIL.
 async function call(name: string, fn: () => Promise<unknown>, opts: { stubOk?: boolean } = {}) {
   try {
     const r = await fn();

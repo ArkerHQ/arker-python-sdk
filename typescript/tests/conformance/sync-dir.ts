@@ -6,9 +6,9 @@
  *   add a file (delta=1) -> byte-exact readback (incl. nested + >4 MB presigned)
  *
  * Unlike fork-run-sync.ts (raw HTTP, contract drift), this drives the actual
- * SDK method, since syncDir orchestrates manifest-diff + tarball + guest extract
- * client-side. The remote manifest is authoritative, so the delta assertions
- * (repeat sends nothing; an edit sends exactly one) are the real contract.
+ * SDK method, which does the rsync-style diff-and-upload client-side. The VM's
+ * current file state is authoritative, so the delta assertions (repeat sends
+ * nothing; an edit sends exactly one) are the real contract.
  *
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://host:8080/api \
  *   ARKER_SOURCE_VM=<source-name> bun tests/conformance/sync-dir.ts

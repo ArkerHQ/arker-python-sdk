@@ -305,7 +305,7 @@ export interface paths {
         };
         /**
          * Open an interactive PTY (WebSocket upgrade)
-         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.
+         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same interactive terminal as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.
          */
         get: operations["attachSessionPty"];
         put?: never;
@@ -438,13 +438,7 @@ export interface paths {
         put?: never;
         /**
          * Stream a file or archive into the VM
-         * @description Stream RAW bytes straight into the VM over vsock as they arrive, so the
-         *     client upload and the guest write overlap into one apparent hop — no
-         *     base64 inflation on the client leg and no host temp file. With `extract`
-         *     set the body is a tar and `path` is the destination directory: arkerd
-         *     lands it at an internal guest temp path and untars it in the guest
-         *     before responding, collapsing a whole directory sync into a single
-         *     client round-trip.
+         * @description Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request.
          */
         post: operations["syncStream"];
         delete?: never;
@@ -818,7 +812,7 @@ export interface components {
             started_at?: string | null;
             /** @description The VM's network object — SSH keys only. Inbound reachability and per-port exposure are derived from `policies`, not from this object. */
             network: components["schemas"]["VmNetwork"];
-            /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */
+            /** @description Hard vCPU ceiling for a fork of this VM. Requesting more fails the run. */
             max_vcpus?: number | null;
             /** @description Smallest vCPU count accepted for this VM. */
             min_vcpus?: number | null;
@@ -1038,10 +1032,10 @@ export interface components {
         };
         OrgRunListRow: {
             /**
-             * @description Service that recorded the activity.
-             * @enum {string}
+             * @deprecated
+             * @description Deprecated and no longer meaningful; do not depend on this field.
              */
-            source: "arkerd";
+            source?: string;
             /** @description Activity timestamp as Unix epoch milliseconds. */
             t_ms: number;
             /** @description Request identifier used to correlate this activity. */
@@ -1491,7 +1485,7 @@ export interface components {
             /** @description Value applied when the field is omitted on fork. */
             default: number;
         };
-        /** @description GPU sizing bounds for one platform a VM can be forked onto, from the goldens.toml `[[gpu_platform]]` catalog. */
+        /** @description GPU sizing bounds for one platform a VM can be forked onto. */
         GpuPlatformLimits: {
             /** @description Platform label to request in `platforms` to land on this GPU, e.g. `x86_64-l40s`. */
             platform: string;
@@ -2324,9 +2318,9 @@ export interface operations {
                 path: string;
                 /** @description Exact byte length of the streamed body. The request fails if the stream does not match. */
                 size: number;
-                /** @description Optional checksum, verified by the guest on the write that completes the file. */
+                /** @description Optional checksum, verified on the write that completes the file. */
                 sha256?: string;
-                /** @description Treat the body as a tar and extract it into `path` server-side, making a directory sync ONE round-trip. Use `tar` for incompressible data (skips a guest gunzip that costs ~3.4x the untar) and `tar.gz` where the upload-bandwidth win pays for it. */
+                /** @description Treat the body as a tar archive and extract it into `path` server-side, so a whole directory syncs in one request. Use `tar` for already-compressed data and `tar.gz` when compression reduces the upload size. */
                 extract?: "tar.gz" | "tgz" | "tar";
             };
             header?: never;

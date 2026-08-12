@@ -398,7 +398,7 @@ def test_listed_vm_uses_its_placement_endpoint() -> None:
 def test_list_runs_uses_control_plane_and_filters() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=vm&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
         200,
         {
             "since": 10,
@@ -407,7 +407,6 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
             "offset": 5,
             "lite": True,
             "rows": [{
-                "source": "arkerd",
                 "t_ms": 10,
                 "request_id": "req_1",
                 "run_id": "run_1",
@@ -419,7 +418,7 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
                 "total_ms": 12.5,
                 "queue_ms": 1.5,
                 "executor_duration_ms": 10,
-                "executor_kind": "firecracker",
+                "executor_kind": "vm",
                 "executor_cpu_ms": 8,
                 "executor_mem_mb": 64,
                 "vm_vcpus": 2,
@@ -457,7 +456,7 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
             limit=25,
             offset=5,
             lite=True,
-            runtime="fc",
+            runtime="vm",
             endpoint="run",
             actions=["run", "fork"],
             status=["success", "internal"],
@@ -626,8 +625,8 @@ def test_resize_patches_vm_resources() -> None:
     with use_transport(t):
         result = client().vm("vm_1").update(memory_mib=1024)
 
-    # resize now PATCHes /v1/vms/{id} with a resources object (arkerd reality;
-    # the old POST /v1/vms/{id}/resize route does not exist). None fields are pruned.
+    # resize now PATCHes /v1/vms/{id} with a resources object (the server has no
+    # POST /v1/vms/{id}/resize route). None fields are pruned.
     assert json.loads(t.calls[0]["body"]) == {"resources": {"memory_mib": 1024}}
     assert result is not None
 
