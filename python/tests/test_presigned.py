@@ -3,7 +3,8 @@
 Run directly with live credentials:
 
     ARKER_API_KEY=ark_live_... \\
-    ARKER_REGION=aws-us-west-2 \\
+    ARKER_PROVIDER=aws \\
+    ARKER_REGION=us-west-2 \\
     ARKER_SOURCE_VM=ubuntu \\
     python tests/test_presigned.py
 """
@@ -25,13 +26,14 @@ from arker import Arker, CompletedRunResult
 API_KEY = os.environ.get("ARKER_API_KEY") or os.environ.get("AUTH_KEY")
 BASE_URL = os.environ.get("ARKER_BASE_URL")
 REGION = os.environ.get("ARKER_REGION")
+PROVIDER = os.environ.get("ARKER_PROVIDER")
 SOURCE_VM = os.environ.get("ARKER_SOURCE_VM")
 
-if pytest and (not API_KEY or not (BASE_URL or REGION) or not SOURCE_VM):
+if pytest and (not API_KEY or not (BASE_URL or (PROVIDER and REGION)) or not SOURCE_VM):
     pytest.skip("live Arker credentials are not configured", allow_module_level=True)
 
-if not API_KEY or not (BASE_URL or REGION) or not SOURCE_VM:
-    print("ARKER_API_KEY, ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
+if not API_KEY or not (BASE_URL or (PROVIDER and REGION)) or not SOURCE_VM:
+    print("ARKER_API_KEY, ARKER_PROVIDER + ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
     sys.exit(2)
 
 
@@ -39,7 +41,7 @@ def main() -> int:
     payload = secrets.token_bytes(5 * 1024 * 1024)
     expected = hashlib.sha256(payload).hexdigest()
 
-    arker = Arker(api_key=API_KEY, base_url=BASE_URL, region=REGION)
+    arker = Arker(api_key=API_KEY, base_url=BASE_URL, provider=PROVIDER, region=REGION)
     vm = arker.vm(SOURCE_VM).fork(name="python-sdk-presigned")
 
     try:

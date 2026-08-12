@@ -518,11 +518,8 @@ export interface components {
             timestamp: string;
         };
         RegionPlacement: {
-            /**
-             * @description Public compute provider for the placement.
-             * @enum {string}
-             */
-            provider: "aws" | "gcp";
+            /** @description Public compute provider for the placement. */
+            provider: string;
             /** @description Provider region identifier. */
             region: string;
         };
@@ -591,11 +588,8 @@ export interface components {
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /**
-         * @description Infrastructure provider currently hosting the resource.
-         * @enum {string}
-         */
-        Provider: "aws" | "azure" | "arker" | "runpod" | "mac" | "gcp";
+        /** @description Infrastructure provider currently hosting the resource. */
+        Provider: string;
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {
             /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
@@ -1411,15 +1405,9 @@ export interface components {
             created_at: string;
             /** @description Resource size in bytes. */
             size_bytes?: number | null;
-            /**
-             * @description Region containing the resource or activity.
-             * @default us-west-2
-             */
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /**
-             * @description Infrastructure provider hosting the filesystem.
-             * @default aws
-             */
+            /** @description Infrastructure provider hosting the filesystem. */
             provider?: components["schemas"]["Provider"] | null;
         };
         ListFilesystemsResponse: {
@@ -1655,7 +1643,7 @@ export interface operations {
                 cursor?: components["parameters"]["Cursor"];
                 /** @description Maximum items per page. Service caps may apply. */
                 limit?: components["parameters"]["Limit"];
-                /** @description Narrow to a single region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region. */
+                /** @description Narrow to a single region. When omitted, the response aggregates across every configured region. */
                 region?: string;
                 /** @description Narrow results to a cloud provider. */
                 provider?: components["schemas"]["Provider"];

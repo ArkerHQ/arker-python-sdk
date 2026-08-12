@@ -36,7 +36,7 @@ pip install arker
 ```python
 from arker import Arker
 
-ar = Arker(region="us-west-2")  # key from ARKER_API_KEY
+ar = Arker(provider="aws", region="us-west-2")  # key from ARKER_API_KEY
 vm = ar.fork("ubuntu-dev")     # public golden — org inferred
 print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
 ```
@@ -50,7 +50,7 @@ bun add @arker-ai/sdk
 ```ts
 import { Arker } from "@arker-ai/sdk";
 
-const ar = new Arker({ region: "us-west-2" }); // key from ARKER_API_KEY
+const ar = new Arker({ provider: "aws", region: "us-west-2" }); // key from ARKER_API_KEY
 const vm = await ar.fork("ubuntu-dev");        // public golden — org inferred
 const run = await vm.run("node -e 'console.log(2 + 2)'");
 if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
@@ -58,7 +58,7 @@ if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
 
 ### GCP
 
-Read the public placement catalog before you configure a client. Discovery does not require an API key:
+You can read the public placement catalog before you configure a client. Discovery does not require an API key:
 
 ```python
 from arker import discover_regions
@@ -100,6 +100,8 @@ bun add --global @arker-ai/sdk
 
 ```bash
 export ARKER_API_KEY=ark_live_...
+export ARKER_PROVIDER=aws
+export ARKER_REGION=us-west-2
 VM=$(arker fork ubuntu-dev | jq -r .vm_id)   # public golden — org inferred
 arker run "$VM" "python3 -c 'print(2 + 2)'"
 arker rm "$VM"

@@ -11,7 +11,9 @@ if (!apiKey) {
   process.exit(0);
 }
 
-const arker = new Arker({ apiKey, region: process.env.ARKER_REGION ?? "aws-us-east-1" });
+const provider = process.env.ARKER_PROVIDER ?? "aws";
+const region = process.env.ARKER_REGION ?? "us-east-1";
+const arker = new Arker({ apiKey, provider, region });
 
 async function expectArkerVm(id: string): Promise<void> {
   const vm = await arker.getVm(id);

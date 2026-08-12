@@ -8,7 +8,6 @@ from typing import Any
 
 from .computer import Arker, ArkerError, CompletedRunResult, VM
 
-DEFAULT_REGION = "aws-us-east-1"
 DEFAULT_SOURCE = "ubuntu-dev"
 ARKER_CLIENT_KEYS = {"api_key", "base_url", "control_base_url", "region", "provider", "retry"}
 
@@ -37,8 +36,6 @@ class UnsupportedMixin:
 
 def arker_client(config: dict[str, Any] | None = None) -> Arker:
     cfg = {key: value for key, value in (config or {}).items() if key in ARKER_CLIENT_KEYS}
-    if not cfg.get("base_url") and not cfg.get("region") and not os.environ.get("ARKER_BASE_URL") and not os.environ.get("ARKER_REGION"):
-        cfg["region"] = DEFAULT_REGION
     return Arker(**cfg)
 
 

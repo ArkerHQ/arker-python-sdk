@@ -19,7 +19,7 @@
  * Each supports `ls`, `get`, `rm`, and the resource-specific verbs.
  *
  * Auth: reads `ARKER_API_KEY` from the environment (or `~/.arker/config`).
- * Region: `ARKER_REGION` or the `--region` flag.
+ * Placement: `ARKER_PROVIDER` + `ARKER_REGION`, or the matching flags.
  */
 
 import { readFileSync, existsSync, fstatSync } from "node:fs";
@@ -31,12 +31,10 @@ import {
   Arker,
   ArkerError,
   ARKER_ORG_ID,
-  COMPUTE_PROVIDERS,
   discoverRegions,
 } from "./index.js";
 import { bridgePty } from "./cli-pty.js";
 import type {
-  ComputeProvider,
   PolicyDoc,
   RunRecord,
   VM,
@@ -74,7 +72,7 @@ type OptionSpecs = Record<string, OptionSpec>;
 const GLOBAL_OPTIONS: OptionSpecs = {
   help: { type: "boolean" },
   json: { type: "boolean" },
-  provider: { type: "string", values: COMPUTE_PROVIDERS },
+  provider: { type: "string" },
   region: { type: "string" },
 };
 
@@ -368,7 +366,7 @@ interface CliConfig {
   apiKey?: string;
   baseUrl?: string;
   region?: string;
-  provider?: ComputeProvider;
+  provider?: string;
   controlBaseUrl?: string;
 }
 
@@ -385,10 +383,10 @@ function readFileConfig(): CliConfig {
   return {};
 }
 
-// Region the CLI falls back to when none is given via flag, env, or config.
-const DEFAULT_REGION = "us-west-2";
-
-function clientFromArgs(args: ParsedArgs): Arker {
+function clientFromArgs(
+  args: ParsedArgs,
+  { requiresComputePlacement }: { requiresComputePlacement: boolean },
+): Arker {
   const file = readFileConfig();
   const explicitBaseUrl = process.env.ARKER_BASE_URL;
   const explicitRegion =
@@ -401,23 +399,36 @@ function clientFromArgs(args: ParsedArgs): Arker {
   const controlBaseUrl =
     process.env.ARKER_CONTROL_BASE_URL ??
     file.controlBaseUrl;
-  const provider = (args.flags.provider as ComputeProvider | undefined) ??
-    (process.env.ARKER_PROVIDER as ComputeProvider | undefined) ??
+  const provider = (args.flags.provider as string | undefined) ??
+    process.env.ARKER_PROVIDER ??
     file.provider;
   const configuredRegion = explicitRegion ?? file.region;
-  if (provider && provider !== "aws" && !configuredRegion && !baseUrl) {
-    die(`Region is required for provider ${provider}. Run 'arker regions' to list placements.`);
+  if (requiresComputePlacement && !baseUrl && (!provider || !configuredRegion)) {
+    die(
+      "Provider and region are required for compute commands. Set --provider and --region, or set ARKER_BASE_URL.",
+    );
   }
-  // Region: explicit flag/env, then the saved config, then a default of
-  // us-west-2 so the CLI works out of the box. If a base URL is already
-  // resolved (explicit or from config) it drives the endpoint and region
-  // can stay unset.
-  const region =
-    configuredRegion ?? (baseUrl ? undefined : DEFAULT_REGION);
   if (!apiKey) {
     die("Missing API key. Set ARKER_API_KEY or add apiKey to ~/.arker/config.json.");
   }
-  return new Arker({ apiKey, baseUrl, region, provider, controlBaseUrl });
+  const resolvedBaseUrl = baseUrl ?? (requiresComputePlacement ? undefined : controlBaseUrl ?? "https://arker.ai/api");
+  return new Arker({
+    apiKey,
+    baseUrl: resolvedBaseUrl,
+    region: configuredRegion,
+    provider,
+    controlBaseUrl,
+  });
+}
+
+function commandRequiresComputePlacement(
+  command: string,
+  args: ParsedArgs,
+): boolean {
+  if (command === "ls" || command === "list") return false;
+  if (command !== "vms") return true;
+  const subcommand = args.positional[0];
+  return subcommand !== undefined && subcommand !== "ls" && subcommand !== "list";
 }
 
 // ── Output ─────────────────────────────────────────────────────────
@@ -1067,8 +1078,8 @@ function usage(_command?: string): void {
       "  arker sync <vm_id> <path> [data]            read or write a file",
       "",
       "Flags:",
-      "  --region <region>          (or env ARKER_REGION; e.g. us-west-2)",
-      "  --provider <provider>      aws or gcp (or env ARKER_PROVIDER)",
+      "  --region <region>          (or env ARKER_REGION)",
+      "  --provider <provider>      (or env ARKER_PROVIDER)",
       "  --json                     emit JSON instead of tabular output",
       "  -h, --help                 show help without connecting",
       "  -v, --version              show version without connecting",
@@ -1123,7 +1134,9 @@ async function main(): Promise<void> {
 
   try {
     if (cmd === "regions") return await cmdRegions(args);
-    const client = clientFromArgs(args);
+    const client = clientFromArgs(args, {
+      requiresComputePlacement: commandRequiresComputePlacement(cmd, args),
+    });
     switch (cmd) {
       // Shortcuts.
       case "ls":

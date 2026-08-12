@@ -3,7 +3,8 @@
  *
  * Run:
  *   ARKER_API_KEY=ark_live_... \
- *   ARKER_REGION=aws-us-west-2 \
+ *   ARKER_PROVIDER=aws \
+ *   ARKER_REGION=us-west-2 \
  *   ARKER_SOURCE_VM=ubuntu \
  *   bun run demo
  */
@@ -36,6 +37,7 @@ function assertCompleted(result: unknown): asserts result is CompletedRunResult 
 
 const apiKey = requiredEnv("ARKER_API_KEY");
 const baseUrl = optionalEnv("ARKER_BASE_URL");
+const provider = optionalEnv("ARKER_PROVIDER");
 const region = optionalEnv("ARKER_REGION");
 const sourceVm = requiredEnv("ARKER_SOURCE_VM");
 
@@ -48,7 +50,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return originalFetch(input, init);
 }) as typeof fetch;
 
-const arker = new Arker({ apiKey, baseUrl, region });
+const arker = new Arker({ apiKey, baseUrl, provider, region });
 const source = arker.vm(sourceVm);
 if (!(source instanceof VM)) throw new Error("vm() did not return a VM");
 

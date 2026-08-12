@@ -200,6 +200,30 @@ def test_retired_vm_pin_is_not_in_the_public_sdk_contract() -> None:
         assert field not in (REPO_ROOT / relative_path).read_text()
 
 
+def test_provider_and_region_contract_values_are_open_ended() -> None:
+    contract = json.loads((REPO_ROOT / "contract/openapi.json").read_text())
+    schemas = contract["components"]["schemas"]
+
+    assert schemas["Provider"] == {
+        "type": "string",
+        "description": "Infrastructure provider currently hosting the resource.",
+    }
+    assert schemas["RegionPlacement"]["properties"]["provider"]["type"] == "string"
+
+    def check_placement_fields(value: object) -> None:
+        if isinstance(value, dict):
+            for name, child in value.items():
+                if name in {"provider", "region"} and isinstance(child, dict):
+                    assert "default" not in child
+                    assert "enum" not in child
+                check_placement_fields(child)
+        elif isinstance(value, list):
+            for child in value:
+                check_placement_fields(child)
+
+    check_placement_fields(contract)
+
+
 def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
     with tempfile.TemporaryDirectory() as output_directory:
         run(
