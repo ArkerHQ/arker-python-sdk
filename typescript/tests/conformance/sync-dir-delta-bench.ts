@@ -8,19 +8,18 @@
  *   2. REPEAT with no local change              -> assert sent=0   (delta)
  *   3. EDIT   one file, sync again              -> assert sent=1   (delta)
  *
- * The delta round-trip is one op="manifest" fetch + a local (size,mtime)-cached
- * diff; with nothing changed the guest is never touched and ZERO bytes upload.
- * We report delta files/s (files diffed per second on the no-change repeat) and
- * the delta-vs-full speedup (full_s / repeat_s) — the win a warm re-sync buys.
+ * The delta round-trip is one listing fetch + a local (size,mtime)-cached diff;
+ * with nothing changed the VM is never written to and ZERO bytes upload. We
+ * report delta files/s (files diffed per second on the no-change repeat) and
+ * the delta-vs-full speedup (full_s / repeat_s) — the win a repeat re-sync buys.
  *
- * ── REQUIRES THE SERVER MANIFEST-FRESHNESS FIX ──────────────────────────────
- * The `sent=0` repeat only holds once the server-side manifest is flush-consistent
- * for a running VM (quiesce/FIFREEZE-then-read, so op="manifest" reflects the
- * guest's own tar-x writes rather than a stale host rootfs.xfs). Without that fix
- * a back-to-back second syncDir re-sends everything (sent=N) and this bench fails
- * the `sent=0` assertion by design — that failure IS the signal the fix is not
- * deployed on the target host. See sync-dir-bench.ts's header for the full
- * host-flush-lag story.
+ * ── REQUIRES IMMEDIATELY-CONSISTENT FILE LISTINGS ───────────────────────────
+ * The `sent=0` repeat only holds once the VM's reported file listing reflects
+ * its most recent writes immediately. On a backend where the listing lags recent
+ * writes, a back-to-back second syncDir re-sends everything (sent=N) and this
+ * bench fails the `sent=0` assertion by design — that failure IS the signal the
+ * target host does not yet report listings consistently. See sync-dir-bench.ts's
+ * header for the full story.
  *
  * SKIP-tolerant: with ARKER_API_KEY / ARKER_BASE_URL unset it prints SKIP and
  * exits 0. Self-cleaning: it tracks the VM ids it forks and deletes only those.
@@ -92,7 +91,7 @@ async function main(): Promise<void> {
   try {
     const vm = await arker.fork(source);
     createdVms.push(vm);
-    // Warm the guest so cold-boot doesn't pollute the first sync timing.
+    // Warm the VM so first-boot cost doesn't pollute the first sync timing.
     await vm.sync(`/home/user/.bench-warm`, "warm");
 
     // A caller-owned accelerator cache reused across all three calls — the

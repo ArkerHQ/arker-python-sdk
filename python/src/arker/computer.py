@@ -107,10 +107,8 @@ _UNSET = _UnsetType()
 _EXPLICIT_NULL = _ExplicitNullType()
 
 CHUNK_SIZE = 4 * 1024 * 1024
-# Max raw bytes written inline in ONE /sync request, as multiple CHUNK_SIZE
-# chunks sharing an upload_id. Server budgets: 5MB per chunk, 20MB decoded per
-# request — 16MB = 4 chunks, inside both. Files above this take the presigned
-# blob path, where resumable multipart genuinely earns its double transfer.
+# Max bytes written inline in ONE /sync request (as CHUNK_SIZE chunks sharing
+# an upload_id). Files larger than this use the presigned upload path instead.
 INLINE_WRITE_LIMIT = 16 * 1024 * 1024
 
 # Largest body `/sync-stream` accepts through the public edge. The router
@@ -701,10 +699,9 @@ class Arker:
             cursor=cursor, limit=limit, name_prefix=name_prefix
         )
         path = _build_query("/v1/filesystems", parameters)
-        # Filesystems are region-scoped. Route to
-        # the regional endpoint (base_url) rather than the control plane: the
-        # control-plane path (arker.ai → api_proxy_bash) does not route
-        # /v1/filesystems, while the regional endpoint serves it.
+        # Filesystems are region-scoped. Route to the regional endpoint
+        # (base_url) rather than the control plane, which does not serve
+        # /v1/filesystems.
         payload = self._request("GET", path, base_url=self._base_url)
         return _decode_model(ListFilesystemsResponse, payload)
 
@@ -1166,7 +1163,7 @@ class VM:
 
     def _send_writes(self, entries: list[SyncWriteEntry]) -> list[SyncWriteResult]:
         # Chunk entries share one upload_id, so a retry resends the same byte
-        # ranges idempotently — the server's chunk ledger merges them.
+        # ranges idempotently — the server deduplicates them.
         last_error: tuple[str, str] | None = None
         for attempt in range(self._client._retry.attempts):
             request = SyncWriteOperationRequest(op="write", writes=entries)
@@ -1194,7 +1191,7 @@ class VM:
             200,
         )
 
-    # ── Directory sync (rsync-style, manifest diff) ──────────────────
+    # ── Directory sync (rsync-style incremental upload) ──────────────
     def sync_dir(
         self,
         local_dir: str,
@@ -1203,14 +1200,11 @@ class VM:
         cache: dict[str, tuple[int, int, str]] | None = None,
     ) -> SyncDirResult:
         """Recursively sync a local directory INTO this VM at ``remote_dir``,
-        rsync-style: fetch the VM's file *manifest* (per-file sha256) in ONE
-        request via the host-first ``op="manifest"`` (no FC boot; works on a
-        never-run VM), diff it against the local tree, and upload ONLY the files
-        that are new or changed — packed into a single tarball the guest extracts
-        with ``tar -x`` (so the guest does the writes, always consistent with its
-        own filesystem).
+        rsync-style: compare the local tree against the VM's current contents
+        and upload ONLY the files that are new or changed, applied to the VM's
+        filesystem in one batch. Works on a VM that has never run.
 
-        The remote manifest is authoritative. ``cache`` (an optional dict you own
+        The VM's current file state is authoritative. ``cache`` (an optional dict you own
         and reuse across calls) is a pure accelerator: it skips re-hashing local
         files whose (size, mtime) are unchanged. It never decides remote state,
         so it can never cause a stale or missing upload — worst case it hashes a
@@ -1221,12 +1215,13 @@ class VM:
         local_root = os.path.abspath(local_dir)
         remote_root = "/" + remote_dir.strip("/")
 
-        # 1. Authoritative remote manifest: rel_path -> sha256. A directory that
-        #    doesn't exist yet (or an empty VM) yields {} -> everything is sent.
+        # 1. Authoritative remote file listing: rel_path -> content hash. A
+        #    directory that doesn't exist yet (or an empty VM) yields {} ->
+        #    everything is sent.
         remote, manifest_truncated = self._remote_manifest(remote_root)
 
-        # 2. Enumerate local regular files (skip symlinks — the manifest lists
-        #    regular files only, so a symlink would always look "missing").
+        # 2. Enumerate local regular files (skip symlinks — the remote listing
+        #    has regular files only, so a symlink would always look "missing").
         local_files: dict[str, tuple[str, int, int]] = {}
         for root, _dirs, files in os.walk(local_root):
             for name in files:
@@ -1267,21 +1262,20 @@ class VM:
             result.sent += 1
             result.bytes_sent += size
 
-        # 4. Ship the changed files as ONE tarball and extract it in the guest.
-        #    The GUEST does the file writes (via `tar -x`), so they are always
-        #    consistent with its own filesystem — and one stream + one extract is
-        #    far faster than one write per file. The extract's exit code is
-        #    checked, so a failure surfaces (never a silent partial); the manifest
-        #    also fails safe: any omitted file is re-sent next call.
+        # 4. Upload the changed files and apply them to the VM in one batch —
+        #    far faster than one write per file. The VM performs the writes, so
+        #    they are always consistent with its own filesystem. The operation's
+        #    exit code is checked, so a failure surfaces (never a silent
+        #    partial); the diff also fails safe: any omitted file is re-sent
+        #    next call.
         if changed:
             self._upload_and_extract_tarball(changed, remote_root)
         return result
 
     def _remote_manifest(self, path: str) -> tuple[dict[str, str], bool]:
-        """Fetch the VM's file manifest under ``path`` → ({rel_path: sha256},
-        truncated), via the host-first ``op="manifest"`` op (no FC boot; works
-        on a never-run VM). A path that doesn't exist yet yields an empty
-        manifest.
+        """Fetch the VM's current file listing under ``path`` → ({rel_path:
+        content hash}, truncated). Works on a VM that has never run; a path
+        that doesn't exist yet yields an empty listing.
 
         The server caps the walk (50,000 entries) and reports ``truncated``.
         Past the cap every omitted file looks absent, so the diff marks it
@@ -1326,13 +1320,13 @@ class VM:
         self, changed: list[tuple[str, str]], remote_root: str
     ) -> None:
         """Pack the changed files (arcname = path relative to ``remote_root``)
-        into ONE tar, upload it in a single write, and extract it in the guest
-        with `tar -x` (which preserves mode/exec bits and creates missing parent
-        dirs). The extract's exit is checked so any failure surfaces."""
-        # gzip when it pays: source trees compress ~4:1, but the guest pays
-        # ~3.4x a plain untar to gunzip, so compressing an already-compressed
-        # tree loses at both ends. Sample first. `tar -xf` sniffs compression,
-        # so either choice extracts correctly.
+        into ONE tar, upload it in a single write, and unpack it inside the VM
+        (preserving mode/exec bits and creating missing parent dirs). The
+        unpack's exit is checked so any failure surfaces."""
+        # gzip when it pays: source trees compress ~4:1, but the VM pays ~3.4x a
+        # plain untar to gunzip, so compressing an already-compressed tree loses
+        # at both ends. Sample first. `tar -xf` sniffs compression, so either
+        # choice extracts correctly.
         compress = self._should_compress(changed)
         mode = "tar.gz" if compress else "tar"
         with tempfile.NamedTemporaryFile(suffix=f".{mode}", delete=False) as tf:

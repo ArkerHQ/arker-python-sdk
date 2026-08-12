@@ -627,7 +627,7 @@ function testExplicitVmHandleUsesPlacementEndpoint(): void {
 async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "GET" && url === "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=true&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+    (method, url) => method === "GET" && url === "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=true&runtime=vm&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
     200,
     {
       since: 10,
@@ -636,7 +636,6 @@ async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
       offset: 5,
       lite: true,
       rows: [{
-        source: "arkerd",
         t_ms: 10,
         request_id: "req_1",
         run_id: "run_1",
@@ -649,7 +648,7 @@ async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
         lambda_call_ms: 0,
         lambda_duration_ms: 0,
         executor_duration_ms: 10,
-        executor_kind: "firecracker",
+        executor_kind: "vm",
         executor_cpu_ms: 8,
         executor_mem_mb: 64,
         lambda_cpu_ms: 0,
@@ -689,7 +688,7 @@ async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
     limit: 25,
     offset: 5,
     lite: true,
-    runtime: "fc",
+    runtime: "vm",
     endpoint: "run",
     actions: ["run", "fork"],
     status: ["success", "internal"],
