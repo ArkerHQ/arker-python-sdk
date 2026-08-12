@@ -354,6 +354,41 @@ def test_list_uses_configured_base_url() -> None:
     )
 
 
+def test_list_vms_accepts_the_combined_region_form() -> None:
+    """`aws-us-west-2` must work here too — it is what `Arker(region=...)` takes.
+
+    The control plane filters on a bare region with `provider` as its own
+    field, and an unknown region comes back as an empty page rather than an
+    error. So sending the combined form unsplit does not fail loudly: it
+    returns zero VMs, which is indistinguishable from a region with none.
+    """
+    t = FakeTransport()
+    # Deliberately permissive: a strict URL predicate would fail as "no
+    # scripted response", which says nothing about what went wrong.
+    t.add_json(lambda method, url: method == "GET" and "/v1/vms" in url, 200, {"vms": []})
+
+    with use_transport(t):
+        client().list_vms(region="aws-us-west-2")
+
+    sent = t.calls[0]["url"]
+    assert "region=us-west-2" in sent
+    assert "provider=aws" in sent
+    assert "region=aws-us-west-2" not in sent
+
+
+def test_list_vms_keeps_an_explicit_provider_with_a_bare_region() -> None:
+    """The bare form must keep working, provider untouched."""
+    t = FakeTransport()
+    t.add_json(lambda method, url: method == "GET" and "/v1/vms" in url, 200, {"vms": []})
+
+    with use_transport(t):
+        client().list_vms(region="us-central1", provider="gcp")
+
+    sent = t.calls[0]["url"]
+    assert "region=us-central1" in sent
+    assert "provider=gcp" in sent
+
+
 def test_listed_gcp_vm_uses_its_placement_endpoint() -> None:
     t = FakeTransport()
     t.add_json(

@@ -545,11 +545,16 @@ class Arker:
         """Admin call — goes through the control plane so it can
         aggregate across providers and regions.
         """
+        # Accept the combined `aws-us-west-2` the constructor takes, not just
+        # the bare region the control plane filters on. Without this the
+        # combined form matches no region and returns an empty page rather
+        # than an error — a wrong region and an empty one look identical.
+        resolved_region, provider_from_region = _split_region(region)
         parameters = ListVmsParameters(
             cursor=cursor,
             limit=limit,
-            region=region,
-            provider=provider,
+            region=resolved_region,
+            provider=provider or provider_from_region,
             org_id=org_id,
             public=public,
             state=state,
