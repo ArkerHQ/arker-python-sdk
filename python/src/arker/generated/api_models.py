@@ -107,6 +107,7 @@ class PolicyMatch:
 @dataclass(frozen=True)
 class ScalingAction:
     suspend: bool | None = False
+    wake: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -718,7 +719,6 @@ class Vm:
     network: VmNetwork
     sessions: list[Session]
     resources: VmResources
-    keep_alive: bool | None = None
     name: str | None = None
     hostname: str | None = None
     root_source_vm_id: str | None = None
@@ -874,7 +874,6 @@ ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2
 
 @dataclass(frozen=True)
 class RunRequest:
-    keep_alive: bool | None = None
     session_id: str | None = None
     session_idx: int | None = None
     command: str | None = None

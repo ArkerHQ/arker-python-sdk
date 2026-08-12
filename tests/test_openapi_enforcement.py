@@ -185,6 +185,21 @@ def test_sdk_runtime_uses_only_current_public_error_codes() -> None:
         assert retired_codes.isdisjoint(source.split('"')), relative_path
 
 
+def test_retired_vm_pin_is_not_in_the_public_sdk_contract() -> None:
+    field = "_".join(("keep", "alive"))
+    contract = json.loads((REPO_ROOT / "contract/openapi.json").read_text())
+    schemas = contract["components"]["schemas"]
+
+    assert field not in schemas["Vm"]["properties"]
+    assert field not in schemas["RunRequest"]["properties"]
+
+    for relative_path in (
+        Path("python/src/arker/generated/api_models.py"),
+        Path("typescript/src/generated/api-types.ts"),
+    ):
+        assert field not in (REPO_ROOT / relative_path).read_text()
+
+
 def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
     with tempfile.TemporaryDirectory() as output_directory:
         run(
@@ -284,6 +299,7 @@ def test_contract_checks_do_not_use_hosted_ci() -> None:
 FAST_TESTS = (
     test_public_wire_types_are_generated,
     test_sdk_runtime_uses_only_current_public_error_codes,
+    test_retired_vm_pin_is_not_in_the_public_sdk_contract,
     test_contract_tooling_is_repository_local,
 )
 
