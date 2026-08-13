@@ -156,9 +156,9 @@ async function testE2BSurface(): Promise<void> {
   const box = new FakeSandbox("e2b-box");
   const fake = installFakeCompute(box);
   try {
-    const sandbox = await E2BSandbox.create("ubuntu-js-repl", { timeoutMs: 123 });
+    const sandbox = await E2BSandbox.create("catalog-template", { timeoutMs: 123 });
     assertArkerFirst(fake.captured(), "e2b");
-    assert.deepEqual(fake.createCalls[0], { templateId: "ubuntu-js-repl", timeout: 123 });
+    assert.deepEqual(fake.createCalls[0], { templateId: "catalog-template", timeout: 123 });
     assert.equal(sandbox.sandboxId, "e2b-box");
 
     const command = await sandbox.commands.run("printf e2b");
@@ -311,10 +311,10 @@ async function testInternalArkerProvider(): Promise<void> {
     retry: false,
   });
 
-  const sandbox = await provider.sandbox.create({ templateId: "ubuntu-js-repl", name: "created" });
+  const sandbox = await provider.sandbox.create({ templateId: "catalog-template", name: "created" });
   assert.equal(provider.name, "arker");
   assert.equal(sandbox.sandboxId, "vm_created");
-  assert.equal((JSON.parse(fetch.calls[0]!.body!) as Record<string, unknown>).source_vm_name, "ubuntu-js-repl");
+  assert.equal((JSON.parse(fetch.calls[0]!.body!) as Record<string, unknown>).source_vm_name, "catalog-template");
   assert.equal((JSON.parse(fetch.calls[0]!.body!) as Record<string, unknown>).name, "created");
 
   const missing = await provider.sandbox.getById("missing");
@@ -325,10 +325,32 @@ async function testInternalArkerProvider(): Promise<void> {
   assert.equal(runBody.timeout, 2);
 }
 
+async function testInternalArkerProviderRequiresSource(): Promise<void> {
+  const previousSource = process.env.ARKER_SOURCE;
+  const previousSourceVm = process.env.ARKER_SOURCE_VM;
+  delete process.env.ARKER_SOURCE;
+  delete process.env.ARKER_SOURCE_VM;
+  const provider = createArkerComputeProvider({
+    apiKey: "ark-key",
+    baseUrl: "https://arker.invalid/api",
+    retry: false,
+  });
+
+  try {
+    await assert.rejects(() => provider.sandbox.create(), /Arker source is required/);
+  } finally {
+    if (previousSource === undefined) delete process.env.ARKER_SOURCE;
+    else process.env.ARKER_SOURCE = previousSource;
+    if (previousSourceVm === undefined) delete process.env.ARKER_SOURCE_VM;
+    else process.env.ARKER_SOURCE_VM = previousSourceVm;
+  }
+}
+
 await testDaytonaSurface();
 await testDaytonaGetNotFound();
 await testE2BSurface();
 await testModalSurface();
 await testInternalArkerProvider();
+await testInternalArkerProviderRequiresSource();
 
 console.log("PASS compat");

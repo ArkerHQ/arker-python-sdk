@@ -18,8 +18,6 @@ import {
 } from "../index.js";
 import { emitFinalOutput, shellQuote } from "./common.js";
 
-const DEFAULT_SOURCE = "ubuntu-dev";
-
 export interface ArkerComputeProviderConfig extends ArkerOptions {
   source?: string;
 }
@@ -196,7 +194,10 @@ export function createArkerComputeProvider(config: ArkerComputeProviderConfig = 
     sandbox: {
       create: async (options?: CreateSandboxOptions): Promise<SandboxInterface> => {
         const client = makeClient(config);
-        const source = options?.templateId || options?.snapshotId || config.source || env("ARKER_SOURCE") || DEFAULT_SOURCE;
+        const source = options?.templateId || options?.snapshotId || config.source || env("ARKER_SOURCE") || env("ARKER_SOURCE_VM");
+        if (!source) {
+          throw new Error("Arker source is required; pass templateId, configure source, or set ARKER_SOURCE or ARKER_SOURCE_VM");
+        }
         const forkRequest: Partial<ForkOptions> = {};
         if (options?.name) forkRequest.name = options.name;
 

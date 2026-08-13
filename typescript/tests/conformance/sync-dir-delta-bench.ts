@@ -26,7 +26,7 @@
  * exits 0. Self-cleaning: it tracks the VM ids it forks and deletes only those.
  *
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://host:8080/api \
- *   ARKER_SOURCE_VM=ubuntu bun tests/conformance/sync-dir-delta-bench.ts
+ *   ARKER_SOURCE_VM=<source-name> bun tests/conformance/sync-dir-delta-bench.ts
  *
  * Knobs (env): BENCH_N_FILES (2000), BENCH_SMALL_BYTES (256),
  * BENCH_LARGE_COUNT (2), BENCH_LARGE_MB (2).
@@ -61,7 +61,8 @@ async function main(): Promise<void> {
   }
 
   const arker = new Arker({ apiKey, baseUrl });
-  const source = optionalEnv("ARKER_SOURCE_VM") ?? "ubuntu";
+  const source = optionalEnv("ARKER_SOURCE_VM");
+  if (!source) throw new Error("ARKER_SOURCE_VM is required");
   const nFiles = envInt("BENCH_N_FILES", 2000);
   const smallBytes = envInt("BENCH_SMALL_BYTES", 256);
   const largeCount = envInt("BENCH_LARGE_COUNT", 2);

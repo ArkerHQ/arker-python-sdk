@@ -182,7 +182,7 @@ def test_fork_posts_directly_to_source_vm() -> None:
 
     with use_transport(t):
         vm = client().fork(
-            source_vm_id="ubuntu",
+            source_vm_id="source-vm-id",
             name="demo",
             description="CI runner",
             ssh_public_keys=["ssh-ed25519 AAAA test@example.com"],
@@ -191,22 +191,22 @@ def test_fork_posts_directly_to_source_vm() -> None:
     assert vm.id == "vm_child"
     body = json.loads(t.calls[0]["body"])
     # Computer.fork passes source_vm_id; `disk` is omitted unless the caller
-    # sets it, so the server derives it from the source (nodisk goldens reject true).
+    # sets it, so the server derives it from the source when inheritance is unavailable.
     assert body == {
         "name": "demo",
         "description": "CI runner",
         "ssh_public_keys": ["ssh-ed25519 AAAA test@example.com"],
-        "source_vm_id": "ubuntu",
+        "source_vm_id": "source-vm-id",
     }
 
 
-def test_fork_infers_arker_org_for_macos_full_golden() -> None:
+def test_fork_omits_source_org_when_not_explicit() -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
         200,
         {
-            "vm_id": "vm_macos",
+            "vm_id": "vm_named_source",
             "owner_org_id": "owner",
             "created_at": "now",
             "description": None,
@@ -219,11 +219,11 @@ def test_fork_infers_arker_org_for_macos_full_golden() -> None:
     )
 
     with use_transport(t):
-        vm = client().fork("macos-full")
+        vm = client().fork("catalog-template")
 
-    assert vm.id == "vm_macos"
+    assert vm.id == "vm_named_source"
     body = json.loads(t.calls[0]["body"])
-    assert body == {"source_vm_name": "macos-full", "source_org_id": "ArkerHQ"}
+    assert body == {"source_vm_name": "catalog-template"}
 
 
 def test_fork_rejects_legacy_id_response() -> None:
@@ -240,7 +240,7 @@ def test_fork_rejects_legacy_id_response() -> None:
     )
 
     with use_transport(t), pytest.raises(TypeError):
-        client().fork(source_vm_id="ubuntu")
+        client().fork(source_vm_id="source-vm-id")
 
 
 def test_fork_tolerates_unknown_response_fields() -> None:
@@ -273,11 +273,11 @@ def test_fork_tolerates_unknown_response_fields() -> None:
     )
 
     with use_transport(t):
-        vm = client().fork(source_vm_id="ubuntu")
+        vm = client().fork(source_vm_id="source-vm-id")
     assert vm.id == "vm_child"
 
 
-def test_configured_placement_routes_goldens_to_main_endpoint() -> None:
+def test_configured_placement_routes_named_sources_to_main_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url == "https://provider-one-region-one.arker.ai/api/v1/fork",
@@ -297,7 +297,7 @@ def test_configured_placement_routes_goldens_to_main_endpoint() -> None:
 
     with use_transport(t):
         arker = region_client()
-        vm = arker.fork(source_vm_id="ubuntu")
+        vm = arker.fork(source_vm_id="source-vm-id")
 
     assert arker.base_url == "https://provider-one-region-one.arker.ai/api"
     assert vm.base_url == "https://provider-one-region-one.arker.ai/api"
@@ -925,7 +925,7 @@ def test_fork_sends_durable_flag() -> None:
 
     with use_transport(t):
         client().fork(
-            source_vm_id="ubuntu",
+            source_vm_id="source-vm-id",
             durable=True,
             ssh_public_keys=["ssh-ed25519 AAAA test@example"],
             policies={"policies": []},
@@ -934,7 +934,7 @@ def test_fork_sends_durable_flag() -> None:
     # Computer.fork auto-fills source_vm_id; `disk` is omitted unless set.
     assert json.loads(t.calls[0]["body"]) == {
         "durable": True,
-        "source_vm_id": "ubuntu",
+        "source_vm_id": "source-vm-id",
         "ssh_public_keys": ["ssh-ed25519 AAAA test@example"],
         "policies": {"policies": []},
     }
@@ -961,12 +961,12 @@ def test_fork_sends_disk_only_layers() -> None:
     )
 
     with use_transport(t):
-        client().fork(source_vm_id="ubuntu", layers=["disk"])
+        client().fork(source_vm_id="source-vm-id", layers=["disk"])
 
     # Computer.fork auto-fills source_vm_id; `disk` is omitted unless set.
     assert json.loads(t.calls[0]["body"]) == {
         "layers": ["disk"],
-        "source_vm_id": "ubuntu",
+        "source_vm_id": "source-vm-id",
     }
 
 
@@ -991,7 +991,7 @@ def test_fork_omits_layers_by_default() -> None:
     )
 
     with use_transport(t):
-        client().fork(source_vm_id="ubuntu")
+        client().fork(source_vm_id="source-vm-id")
 
     assert "layers" not in json.loads(t.calls[0]["body"])
 
@@ -1483,14 +1483,14 @@ def test_fork_sends_gpu_resources() -> None:
 
     with use_transport(t):
         client().fork(
-            source_vm_id="ubuntu-gpu-small",
+            source_vm_id="gpu-source-vm-id",
             platforms=["x86_64-l40s"],
             gpu_vram_mib=24576,
             gpu_sms=8,
         )
 
     assert json.loads(t.calls[0]["body"]) == {
-        "source_vm_id": "ubuntu-gpu-small",
+        "source_vm_id": "gpu-source-vm-id",
         "platforms": ["x86_64-l40s"],
         "resources": {"gpu_vram_mib": 24576, "gpu_sms": 8},
     }
@@ -1516,10 +1516,10 @@ def test_fork_mixes_gpu_and_cpu_resources() -> None:
     )
 
     with use_transport(t):
-        client().fork(source_vm_id="ubuntu-gpu-small", vcpu_count=4, gpu_vram_mib=8192)
+        client().fork(source_vm_id="gpu-source-vm-id", vcpu_count=4, gpu_vram_mib=8192)
 
     assert json.loads(t.calls[0]["body"]) == {
-        "source_vm_id": "ubuntu-gpu-small",
+        "source_vm_id": "gpu-source-vm-id",
         "resources": {"vcpu": 4, "gpu_vram_mib": 8192},
     }
 
@@ -1548,20 +1548,13 @@ def test_fork_omits_resources_when_no_sizing_requested() -> None:
     )
 
     with use_transport(t):
-        client().fork(source_vm_id="ubuntu")
+        client().fork(source_vm_id="source-vm-id")
 
     assert "resources" not in json.loads(t.calls[0]["body"])
 
 
 def test_fork_omits_disk_so_nodisk_sources_work() -> None:
-    """`disk` must not be defaulted client-side.
-
-    Every GPU golden is a nodisk source, and arkerd rejects a disk-backed fork
-    from one with "cannot create a disk-backed fork from a nodisk source". The
-    SDK used to send `disk: true` on every fork, which made those goldens
-    unforkable. Omitting it is explicitly supported and yields an identical VM
-    for disk-backed sources (verified against prod: disk_mib=4096 either way).
-    """
+    """`disk` must not be defaulted client-side."""
     t = FakeTransport()
     for _ in range(3):
         t.add_json(
@@ -1581,18 +1574,18 @@ def test_fork_omits_disk_so_nodisk_sources_work() -> None:
         )
 
     with use_transport(t):
-        client().fork(source_vm_name="ubuntu-gpu-small")
+        client().fork(source_vm_name="gpu-source-vm")
 
     body = json.loads(t.calls[0]["body"])
     assert "disk" not in body
 
     # An explicit choice is still honoured in both directions.
     with use_transport(t):
-        client().fork(source_vm_name="ubuntu-gpu-small", disk=False)
+        client().fork(source_vm_name="gpu-source-vm", disk=False)
     assert json.loads(t.calls[1]["body"])["disk"] is False
 
     with use_transport(t):
-        client().fork(source_vm_name="ubuntu", disk=True)
+        client().fork(source_vm_name="source-vm", disk=True)
     assert json.loads(t.calls[2]["body"])["disk"] is True
 
 
@@ -1644,6 +1637,6 @@ def test_retry_after_hint_drives_the_actual_sleep() -> None:
             api_key="ark_live_test",
             base_url="https://test.invalid/api",
             retry={"attempts": 2, "base_delay_s": 0.001, "jitter_s": 0.0},
-        ).fork(source_vm_name="ubuntu")
+        ).fork(source_vm_name="source-vm")
     assert time.monotonic() - started >= 0.045
     assert len(t.calls) == 2

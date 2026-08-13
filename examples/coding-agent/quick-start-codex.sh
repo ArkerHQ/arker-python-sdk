@@ -2,8 +2,7 @@
 #
 # Background coding agent — quick start (Codex)
 #
-# Forks ubuntu-dev and runs the OpenAI Codex CLI inside it. A background coding
-# agent is just a VM + a CLI agent.
+# Forks a caller-selected source and runs the OpenAI Codex CLI inside it.
 #
 # Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`) and `jq`.
 
@@ -11,12 +10,13 @@ set -euo pipefail
 
 export ARKER_API_KEY="${ARKER_API_KEY:-ark_live_...}"    # TODO: set your Arker API key
 export OPENAI_API_KEY="${OPENAI_API_KEY:-sk-proj-...}"   # TODO: set your OpenAI API key
+: "${ARKER_SOURCE_VM:?set ARKER_SOURCE_VM to a source that contains Codex}"
 
-VM=$(arker fork ubuntu-dev | jq -r .vm_id)
+VM=$(arker fork "$ARKER_SOURCE_VM" | jq -r .vm_id)
 echo "forked $VM"
 trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
 
-# codex is already baked into the ubuntu-dev golden — fork lands warm, no install.
+# The selected source contains Codex, so no install is necessary.
 arker run "$VM" "printf '%s' '$OPENAI_API_KEY' | codex login --with-api-key"
 # --dangerously-bypass... skips approvals + Codex's own sandbox (safe: the VM is isolated).
 # The agent runs for minutes; a synchronous `arker run` is capped at 300s by the HTTP layer,

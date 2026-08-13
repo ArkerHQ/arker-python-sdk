@@ -10,14 +10,14 @@
  * Run one target:
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_BASE_URL=https://aws-us-west-2.arker.ai \
- *   ARKER_SOURCE_VM=ubuntu \
+ *   ARKER_SOURCE_VM=<source-name> \
  *   bun run smoke
  *
  * Run multiple targets:
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_SMOKE_TARGETS='[
- *     {"name":"ubuntu","baseUrl":"https://aws-us-west-2.arker.ai/api","sourceVmName":"ubuntu"},
- *     {"name":"ubuntu-full","baseUrl":"https://aws-us-west-2.arker.ai/api","sourceVmName":"ubuntu-full"}
+ *     {"name":"primary","baseUrl":"https://aws-us-west-2.arker.ai/api","sourceVmName":"<source-name>"},
+ *     {"name":"secondary","baseUrl":"https://gcp-us-central1.arker.ai/api","sourceVmName":"<source-name>"}
  *   ]' \
  *   bun run smoke
  */
@@ -56,7 +56,7 @@ function targets(): SmokeTarget[] {
   return [{
     name: "default",
     baseUrl: requiredEnv("ARKER_BASE_URL"),
-    sourceVmName: process.env.ARKER_SOURCE_VM ?? "ubuntu",
+    sourceVmName: requiredEnv("ARKER_SOURCE_VM"),
     runtime: process.env.ARKER_RUNTIME,
   }];
 }

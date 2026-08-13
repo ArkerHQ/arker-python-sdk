@@ -8,7 +8,7 @@
  *   bun run build   # produces dist/ (connectPty needs the optional `ws` dep)
  *   ARKER_API_KEY=ark_live_... \
  *   ARKER_BASE_URL=http://<worker>:8080/api  (or ARKER_REGION=us-west-2) \
- *   GOLDEN=ubuntu  ARKER_SOURCE_ORG_ID=ArkerHQ \
+ *   ARKER_SOURCE_VM=<source-name> ARKER_SOURCE_ORG_ID=<source-org> \
  *   bun tests/conformance/pty-roundtrip.ts
  *
  * Exits non-zero on any failure. Self-cleans the VM it forks.
@@ -18,10 +18,11 @@ import { Arker, ARKER_ORG_ID, type PtyConnection } from "../../src/index.js";
 const API_KEY = process.env.ARKER_API_KEY;
 const BASE_URL = process.env.ARKER_BASE_URL;
 const REGION = process.env.ARKER_REGION;
-const GOLDEN = process.env.GOLDEN ?? "ubuntu";
+const SOURCE = process.env.ARKER_SOURCE_VM;
 const SOURCE_ORG_ID = process.env.ARKER_SOURCE_ORG_ID ?? ARKER_ORG_ID;
 if (!API_KEY) { console.error("FATAL: set ARKER_API_KEY"); process.exit(2); }
 if (!BASE_URL && !REGION) { console.error("FATAL: set ARKER_BASE_URL or ARKER_REGION"); process.exit(2); }
+if (!SOURCE) { console.error("FATAL: set ARKER_SOURCE_VM"); process.exit(2); }
 
 const arker = new Arker({ apiKey: API_KEY, baseUrl: BASE_URL, region: REGION });
 const dec = new TextDecoder();
@@ -91,8 +92,8 @@ async function live(vmId: string, sessionId: string, opts: Record<string, unknow
 }
 
 async function main(): Promise<void> {
-  console.log(`==== PTY round-trip e2e vs ${BASE_URL ?? REGION} (golden=${GOLDEN}) ====`);
-  const vm = await arker.fork({ sourceVmName: GOLDEN, sourceOrgId: SOURCE_ORG_ID, name: "pty-e2e" });
+  console.log(`==== PTY round-trip e2e vs ${BASE_URL ?? REGION} (source=${SOURCE}) ====`);
+  const vm = await arker.fork({ sourceVmName: SOURCE, sourceOrgId: SOURCE_ORG_ID, name: "pty-e2e" });
   const vmId = vm.id;
   console.log(`  (vm=${vmId})`);
   try {

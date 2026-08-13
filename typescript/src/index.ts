@@ -177,32 +177,8 @@ async function parseErrorResponse(
   }
 }
 
-/**
- * Org id for the "Arker" org — the org that owns the public golden VMs
- * (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
- * `sourceOrgId` to fork a public golden:
- *
- *     arker.fork({ sourceVmName: "ubuntu-dev", sourceOrgId: ARKER_ORG_ID })
- */
+/** Org id for callers that explicitly select an Arker-owned public source. */
 export const ARKER_ORG_ID = "ArkerHQ";
-
-/** Public golden VM names owned by the Arker org. Forking one of these by
- * name auto-fills `sourceOrgId = ARKER_ORG_ID` (see `Arker.fork`). */
-const GOLDEN_NAMES = new Set<string>([
-  // Canonical
-  "ubuntu-base", "ubuntu-node-small", "ubuntu-systemd", "ubuntu-nonet-nodisk",
-  "ubuntu-dev", "ubuntu-dev-8", "ubuntu-dev-32", "ubuntu-dev-desktop",
-  "ubuntu-py-repl", "ubuntu-js-repl",
-  "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
-  "ubuntu-gpu", "ubuntu-gpu-small",
-  "windows", "android", "macos", "macos-ios",
-  // Deprecated aliases (still forkable)
-  "ubuntu", "ubuntu-small", "ubuntu-full", "ubuntu-full-8", "ubuntu-full-32",
-  "ubuntu-desktop-vnc", "ubuntu-gpu-full",
-  // Legacy names kept for back-compat
-  "arkuntu", "ubuntu-nodisk", "ubuntu-servo-js-repl",
-  "ubuntu-chromium-js-repl", "macos-full",
-]);
 
 const DEFAULT_RETRY_ATTEMPTS = 4;
 const DEFAULT_RETRY_BASE_DELAY_MS = 200;
@@ -650,9 +626,8 @@ function rejectRemovedNetworkInputs(operation: "fork" | "run", request: unknown)
 
 /** Source for `Arker.fork()`. Exactly one of `sourceVmId` or
  * `sourceVmName` must be set. When `sourceVmName` is set,
- * `sourceOrgId` selects which org to look the name up in (defaults
- * server-side to the caller's org; pass `ARKER_ORG_ID` to fork the
- * public goldens like `"arkuntu"` / `"ubuntu"`).
+ * `sourceOrgId` selects which organization owns the name. Omit it to let the
+ * service resolve the current public catalog or caller-owned source.
  *
  * Distinct from the new VM's `name`, which is the *destination* name. */
 export interface ForkSource {
@@ -721,19 +696,19 @@ export class Arker {
   /**
    * Create a new VM by forking from a source.
    *
-   *     fork("ubuntu-dev")                       // public golden by name
+   *     fork(sourceName)                          // API-returned source name
    *     fork("base")                              // a VM by name in your org
    *     fork(vm)                                  // an existing VM (uses its id)
    *     fork({ sourceVmId: "vm_abc..." })
    *     fork({ sourceVmName: "base", sourceOrgId: "org_..." })
    *
    * The source can be a name string, a `VM` handle, or a `ForkSource`
-   * object. `sourceOrgId` defaults to the Arker org when `sourceVmName`
-   * is a known public golden, otherwise to your own org; an explicit
-   * value always wins, and it's irrelevant when forking by id. Forking a
-   * VM in another org requires that VM to be `public: true`. The new VM's
-   * name (in your org) is passed as `name`. When the source is a name or
-   * `VM`, extra fork options go in the second `opts` argument.
+   * object. `sourceOrgId` is sent only when supplied explicitly. The service
+   * resolves omitted ownership from its current source catalog and the caller's
+   * organization. It is irrelevant when forking by id. Forking a VM in another
+   * org requires that VM to be `public: true`. The new VM's name (in your org)
+   * is passed as `name`. When the source is a name or `VM`, extra fork options
+   * go in the second `opts` argument.
    *
    * `layers` selects which state layers the child inherits. Omit it for the
    * default warm fork (`["disk", "memory"]`): the child inherits both the
@@ -744,7 +719,7 @@ export class Arker {
    * source, files the parent wrote); nothing in memory does (no inherited
    * processes, no environment, no shell state).
    *
-   *     fork("ubuntu-dev", { layers: ["disk"] })   // disk-only, cold boot
+   *     fork(sourceName, { layers: ["disk"] })      // disk-only, cold boot
    */
   async fork(
     source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>),
@@ -773,13 +748,7 @@ export class Arker {
         400,
       );
     }
-    // A public golden by name defaults to the Arker org; any other name
-    // defaults (server-side) to the caller's own org. Explicit wins.
-    const sourceOrgId =
-      src.sourceOrgId ??
-      (src.sourceVmName != null && GOLDEN_NAMES.has(src.sourceVmName)
-        ? ARKER_ORG_ID
-        : undefined);
+    const sourceOrgId = src.sourceOrgId;
     // Back-compat: callers used to pass flat resource fields
     // (vcpu_count / memory_mib / disk_mib). The contract now folds these
     // into a single `resources` object, so map any legacy flat fields in.
@@ -821,13 +790,13 @@ export class Arker {
 
     const requestOptions = {
       ...passthrough,
-      source_org_id: sourceOrgId ?? null,
+      ...(sourceOrgId !== undefined ? { source_org_id: sourceOrgId } : {}),
       name: src.name ?? null,
       description: src.description ?? null,
       public: src.public ?? null,
       ssh_public_keys: src.ssh_public_keys,
       // Omit disk unless the caller chose it. The server derives the correct
-      // default from the source, including nodisk GPU goldens.
+      // default from the source, including sources without a disk.
       disk: src.disk,
       durable: src.durable ?? null,
       platforms: src.platforms,

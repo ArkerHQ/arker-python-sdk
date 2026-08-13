@@ -126,11 +126,7 @@ COMPRESSION_WORTH_IT_RATIO = 0.9
 # real CPU parallelism; bounded to keep open file descriptors sane.
 HASH_CONCURRENCY = 8
 
-# Org id for the "Arker" org — the org that owns the public golden VMs
-# (`arkuntu`, `ubuntu`, `ubuntu-dev`, `ubuntu-py-repl`, …). Pass it as
-# ``source_org_id`` to fork a public golden:
-#
-#     arker.fork(source_vm_name="ubuntu-dev", source_org_id=ARKER_ORG_ID)
+# Org id for callers that explicitly select an Arker-owned public source.
 ARKER_ORG_ID = "ArkerHQ"
 
 DEFAULT_RETRY_ATTEMPTS = 4
@@ -169,27 +165,6 @@ DEFAULT_REGION_ENV = "ARKER_REGION"
 DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
 ComputeProvider = str
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
-
-# Public golden VM names owned by the Arker org. Forking one of these by name
-# auto-fills source_org_id = ARKER_ORG_ID (see Arker.fork). Canonical names
-# plus the deprecated pre-rename aliases (ubuntu, ubuntu-full*, ubuntu-small,
-# ubuntu-desktop-vnc, ubuntu-gpu-full), which still fork for back-compat.
-GOLDEN_NAMES = frozenset({
-    # Canonical
-    "ubuntu-base", "ubuntu-node-small", "ubuntu-systemd", "ubuntu-nonet-nodisk",
-    "ubuntu-dev", "ubuntu-dev-8", "ubuntu-dev-32", "ubuntu-dev-desktop",
-    "ubuntu-py-repl", "ubuntu-js-repl",
-    "ubuntu-docker", "ubuntu-chromium", "ubuntu-servo",
-    "ubuntu-gpu", "ubuntu-gpu-small",
-    "windows", "android", "macos", "macos-ios",
-    # Deprecated aliases (still forkable)
-    "ubuntu", "ubuntu-small", "ubuntu-full", "ubuntu-full-8", "ubuntu-full-32",
-    "ubuntu-desktop-vnc", "ubuntu-gpu-full",
-    # Legacy names kept for back-compat
-    "arkuntu", "ubuntu-nodisk", "ubuntu-servo-js-repl",
-    "ubuntu-chromium-js-repl", "macos-full",
-})
-
 
 @dataclasses.dataclass(frozen=True)
 class RetryOptions:
@@ -422,17 +397,16 @@ class Arker:
 
         The source can be passed positionally or by keyword:
 
-        - ``fork("ubuntu-dev")`` — fork a public golden by name (the Arker
-          org is filled in automatically for known goldens).
+        - ``fork(source_name)`` — fork an API-returned source by name.
         - ``fork("base")`` — fork a VM by name in your own org.
         - ``fork(vm)`` — fork an existing ``VM`` (uses its id).
         - ``fork(source_vm_id="vm_abc...")`` — fork by global id.
         - ``fork(source_vm_name="base", source_org_id="org_...")`` — fork a
           named VM in a specific org (it must be ``public``).
 
-        ``source_org_id`` defaults to the Arker org when ``source_vm_name`` is
-        a known public golden, otherwise to your own org; an explicit value
-        always wins, and it's irrelevant when forking by id. ``name``
+        ``source_org_id`` is sent only when supplied explicitly. The service
+        resolves omitted ownership from its current source catalog and the
+        caller's organization. It is irrelevant when forking by id. ``name``
         (optional) is the *new* VM's name in your org. ``description`` is a
         short description owned by the new VM and is never inherited.
 
@@ -472,11 +446,6 @@ class Arker:
                 "fork network/egress inputs were removed; use policies",
                 400,
             )
-        # A public golden by name defaults to the Arker org; any other name
-        # defaults (server-side) to the caller's own org. Explicit wins;
-        # irrelevant when forking by id.
-        if source_vm_name and source_org_id is None and source_vm_name in GOLDEN_NAMES:
-            source_org_id = ARKER_ORG_ID
         # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
         # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
         # platform's max is a 400 from the server, not a silent clamp.
@@ -505,13 +474,9 @@ class Arker:
             description=description,
             public=public,
             ssh_public_keys=ssh_public_keys,
-            # Do NOT default `disk` to True. A nodisk source (every GPU golden,
-            # ubuntu-nodisk, ubuntu-nonet-nodisk) rejects a disk-backed fork with
-            # "cannot create a disk-backed fork from a nodisk source", so forcing
-            # true here made those goldens unforkable from the SDK entirely.
-            # Omitting it is explicitly supported and the server derives the right
-            # default from the source: a disk-backed golden yields an identical VM
-            # either way (verified against prod: disk_mib=4096 in both cases).
+            # Do NOT default `disk` to True. A source without a disk rejects a
+            # disk-backed fork. Omitting it lets the server inherit the source
+            # configuration. Only emit this field when the caller opts in.
             disk=disk,
             durable=durable,
             platforms=platforms,

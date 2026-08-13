@@ -13,12 +13,14 @@ Python 3.10+, no runtime dependencies. The client reads your key from `ARKER_API
 ## Quickstart
 
 ```python
+import os
+
 from arker import Arker
 
 ar = Arker(provider="aws", region="us-west-2")
 
-# Fork a public golden, run a command, read/write a file.
-vm = ar.fork("ubuntu-dev")  # public golden — org inferred
+# Fork a source returned by the API, then run a command and read or write a file.
+vm = ar.fork(os.environ["ARKER_SOURCE_VM"])
 
 print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
 
@@ -37,7 +39,7 @@ catalog = discover_regions()                 # public; no API key or placement r
 ar = Arker(provider="aws", region=..., api_key=None, base_url=None, retry=None)
 
 # VMs
-ar.fork("ubuntu-dev")                        # public golden by name (org inferred)
+ar.fork(source_vm_name)                      # source ownership is resolved by the service
 ar.fork(vm, name="child")                     # an existing VM (uses its id)
 ar.fork(source_vm_name=..., source_org_id=..., name=None, durable=False)
 ar.list_vms(state=None)
@@ -77,7 +79,7 @@ Install the optional WebSocket dependency: `pip install 'arker[pty]'`.
 ```python
 import sys
 
-vm = ar.fork("ubuntu-dev")
+vm = ar.fork(os.environ["ARKER_SOURCE_VM"])
 
 # on_data is called from a background reader thread with raw output bytes.
 pty = vm.connect_pty(
@@ -105,7 +107,7 @@ For long-running or non-idempotent work, fork with `durable=True` and pass an id
 ```python
 import uuid
 
-vm = ar.fork("ubuntu-dev", durable=True)
+vm = ar.fork(os.environ["ARKER_SOURCE_VM"], durable=True)
 vm.run("python3 train.py", background=True, idempotency_key=str(uuid.uuid4()))
 ```
 

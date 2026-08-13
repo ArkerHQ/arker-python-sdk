@@ -1,14 +1,14 @@
 /**
- * iOS QA example for the macos-full golden.
+ * iOS QA example for a caller-selected source VM.
  *
  * Smoke only:
- *   ARKER_API_KEY=ark_live_... IOS_QA_SMOKE_ONLY=1 bun run example:ios-qa
+ *   ARKER_API_KEY=ark_live_... IOS_QA_SOURCE_VM=<source-name> IOS_QA_SMOKE_ONLY=1 bun run example:ios-qa
  *
  * Smoke with a simulator screenshot:
- *   ARKER_API_KEY=ark_live_... IOS_QA_SMOKE_ONLY=1 IOS_QA_SCREENSHOT=1 bun run example:ios-qa
+ *   ARKER_API_KEY=ark_live_... IOS_QA_SOURCE_VM=<source-name> IOS_QA_SMOKE_ONLY=1 IOS_QA_SCREENSHOT=1 bun run example:ios-qa
  *
  * XCTest:
- *   ARKER_API_KEY=ark_live_... IOS_QA_WORKDIR=/Users/arker/app IOS_QA_SCHEME=MyApp bun run example:ios-qa
+ *   ARKER_API_KEY=ark_live_... IOS_QA_SOURCE_VM=<source-name> IOS_QA_WORKDIR=/Users/arker/app IOS_QA_SCHEME=MyApp bun run example:ios-qa
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -140,7 +140,7 @@ const smokeOnly = env("IOS_QA_SMOKE_ONLY") === "1";
 const captureScreenshot = env("IOS_QA_SCREENSHOT") === "1";
 const artifactDir = env("IOS_QA_ARTIFACT_DIR", "ios-qa-artifacts");
 const keepVm = env("IOS_QA_KEEP_VM") === "1";
-const golden = env("IOS_QA_GOLDEN", "macos-full");
+const source = requiredEnv("IOS_QA_SOURCE_VM");
 const vcpu = envInt("IOS_QA_VCPU", 4);
 const memoryMib = envInt("IOS_QA_MEMORY_MIB", 8192);
 const screenshotDevice = env("IOS_QA_SCREENSHOT_DEVICE", "iPhone 17");
@@ -149,11 +149,11 @@ const screenshotTimeout = envInt("IOS_QA_SCREENSHOT_TIMEOUT_SECS", 300);
 let vm: VM | undefined;
 
 try {
-  vm = await ar.fork(golden, {
+  vm = await ar.fork(source, {
     name: `ios-qa-${Date.now()}`,
     resources: { vcpu, memory_mib: memoryMib },
   });
-  console.log(`forked ${vm.id} from ${golden}${vmMetadata(vm)}`);
+  console.log(`forked ${vm.id} from ${source}${vmMetadata(vm)}`);
 
   await runOrThrow(
     vm,

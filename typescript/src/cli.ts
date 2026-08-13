@@ -30,7 +30,6 @@ import { stdin as input, stdout as output } from "node:process";
 import {
   Arker,
   ArkerError,
-  ARKER_ORG_ID,
   discoverRegions,
 } from "./index.js";
 import { bridgePty } from "./cli-pty.js";
@@ -523,7 +522,7 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
 async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   // Source resolution is strict: exactly one of source-vm-id or
   // source-vm-name. A positional arg without flags is treated as a
-  // source-vm-name in the Arker org (shortcut: `arker fork arkuntu`).
+  // source-vm-name.
   const refPositional = args.positional[0];
   const srcVmIdFlag = args.flags["source-vm-id"] as string | undefined;
   const srcVmNameFlag = args.flags["source-vm-name"] as string | undefined;
@@ -537,9 +536,8 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   let sourceOrgId: string | undefined = srcOrgIdFlag;
 
   if (!sourceVmId && !sourceVmName && refPositional) {
-    // Shortcut: `arker fork ubuntu-dev` → source-vm-name. Org defaulting
-    // (known golden → Arker org, otherwise your own org) is handled by the
-    // SDK's fork(); pass --source-org-id to override.
+    // A positional source is a source VM name. Pass --source-org-id to select
+    // an owner explicitly.
     sourceVmName = refPositional;
   }
 
@@ -553,7 +551,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   // the fork onto a worker of that compute platform and fails closed if none
   // is available — it never silently falls back to another arch. Comma-
   // separate to allow any of several platforms (e.g. `graviton2,icelake`).
-  // Omit to inherit the source VM's platform / the golden's declared set.
+  // Omit to inherit the source VM's platform set.
   const platformFlag = args.flags.platform as string | undefined;
   const platforms = platformFlag
     ?.split(",")
@@ -952,7 +950,7 @@ async function cmdFilesystems(args: ParsedArgs, client: Arker): Promise<void> {
 
 async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   // Attach to an explicit VM by id (--vm-id or a positional vm id), otherwise
-  // fork a fresh one from a source name in the Arker org (default: ubuntu-dev).
+  // fork a fresh one from an explicit source name.
   let computer: VM;
   const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
   const explicitSessionId = args.flags["session-id"] as string | undefined;
@@ -962,11 +960,13 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   if (vmIdArg) {
     computer = await client.vm(vmIdArg).refresh();
   } else {
-    const sourceVmName =
-      (args.flags["source-vm-name"] as string | undefined) ?? "ubuntu-dev";
+    const sourceVmName = args.flags["source-vm-name"] as string | undefined;
+    if (!sourceVmName) {
+      die("usage: arker shell <vm_id> | --source-vm-name <name> [--source-org-id <org>]");
+    }
     computer = await client.fork({
       sourceVmName,
-      sourceOrgId: ARKER_ORG_ID,
+      sourceOrgId: args.flags["source-org-id"] as string | undefined,
     });
     err(`forked ${computer.id}`);
   }
@@ -1055,7 +1055,7 @@ function usage(_command?: string): void {
       "Shortcuts:",
       "  arker ls                                       list VMs",
       "  arker rm <vm>                                  delete VM",
-      "  arker fork <vm_name>                           fork the public golden (in Arker org)",
+      "  arker fork <vm_name>                           fork by source VM name",
       "  arker fork --source-vm-id <id>                 fork by global id",
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
@@ -1066,7 +1066,8 @@ function usage(_command?: string): void {
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
-      "  arker shell [vm_id]                            native PTY shell (forks ubuntu-dev if no vm)",
+      "  arker shell <vm_id>                            native PTY shell",
+      "  arker shell --source-vm-name <name>            fork a source, then open a shell",
       "",
       "Resources:",
       "  arker regions                                  list available public placements",

@@ -10,6 +10,7 @@ Run from the repository root:
     ARKER_API_KEY=ark_live_... ./examples/react-policy/quick_start.py
 """
 
+import os
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -47,16 +48,17 @@ PUBLIC_POLICY = {
 
 
 def main() -> None:
+    source_vm = os.environ["ARKER_SOURCE_VM"]
     arker = Arker(region=REGION, provider=PROVIDER)
     vm = None
 
     try:
-        print("1. Forking ubuntu-dev")
+        print(f"1. Forking {source_vm}")
         print("   Build policy: allow registry.npmjs.org:443")
-        print("   $ arker fork ubuntu-dev")
+        print('   $ arker fork "$ARKER_SOURCE_VM"')
         print("   $ arker policies set $VM  # allow registry.npmjs.org:443")
         vm = arker.fork(
-            "ubuntu-dev",
+            source_vm,
             name="react-policy-demo",
             policies=BUILD_POLICY,
         )

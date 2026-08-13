@@ -5,7 +5,7 @@ Run directly with live credentials:
     ARKER_API_KEY=ark_live_... \\
     ARKER_PROVIDER=aws \\
     ARKER_REGION=us-west-2 \\
-    ARKER_SOURCE_VM=ubuntu \\
+    ARKER_SOURCE_VM=<source-name> \\
     python tests/test_e2e.py
 """
 
