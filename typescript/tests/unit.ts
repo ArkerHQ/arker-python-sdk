@@ -145,7 +145,7 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
     },
   );
 
-  const vm = await client(fetch).vm("ubuntu").fork({
+  const vm = await client(fetch).vm("source-vm-id").fork({
     name: "demo",
     description: "CI runner",
     ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
@@ -158,7 +158,7 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
       name: "demo",
       description: "CI runner",
       ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
-      source_vm_id: "ubuntu",
+      source_vm_id: "source-vm-id",
     },
   );
 }
@@ -177,7 +177,7 @@ async function testForkForwardsContractFieldsItDoesNotEnumerate(): Promise<void>
     { vm_id: "vm_child", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
   );
 
-  await client(fetch).fork("ubuntu-dev", { layers: ["disk"] });
+  await client(fetch).fork("source-vm", { layers: ["disk"] });
 
   const body = JSON.parse(fetch.calls[0]!.body!);
   assert.deepEqual(body.layers, ["disk"], "layers must reach the wire, not be dropped");
@@ -194,7 +194,7 @@ async function testForkDropsNonContractKeys(): Promise<void> {
   // camelCase selectors + legacy flat resources. The server's validator 400s on
   // unknown fields, so these must be folded/renamed, never forwarded verbatim.
   await client(fetch).fork({
-    sourceVmName: "ubuntu-dev",
+    sourceVmName: "source-vm",
     sourceOrgId: "org_x",
     vcpu_count: 2,
     memory_mib: 1024,
@@ -204,7 +204,7 @@ async function testForkDropsNonContractKeys(): Promise<void> {
   for (const key of ["sourceVmName", "sourceOrgId", "vcpu_count", "memory_mib", "disk_mib"]) {
     assert.equal(key in body, false, `${key} is not a contract field and must not be sent`);
   }
-  assert.equal(body.source_vm_name, "ubuntu-dev", "camelCase selector must be renamed");
+  assert.equal(body.source_vm_name, "source-vm", "camelCase selector must be renamed");
   assert.equal(body.source_org_id, "org_x");
   assert.deepEqual(
     body.resources,
@@ -213,13 +213,13 @@ async function testForkDropsNonContractKeys(): Promise<void> {
   );
 }
 
-async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
+async function testForkOmitsSourceOrgWhenNotExplicit(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
     (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
     200,
     {
-      vm_id: "vm_macos",
+      vm_id: "vm_named_source",
       owner_org_id: "owner",
       created_at: "now",
       public: false,
@@ -230,15 +230,15 @@ async function testForkInfersArkerOrgForMacosFullGolden(): Promise<void> {
     },
   );
 
-  const vm = await client(fetch).fork("macos-full", {
+  const vm = await client(fetch).fork("catalog-template", {
     ssh_public_keys: ["ssh-ed25519 AAAA test@example"],
     policies: { policies: [] },
   });
 
-  assert.equal(vm.id, "vm_macos");
+  assert.equal(vm.id, "vm_named_source");
   const body = JSON.parse(fetch.calls[0]!.body!);
-  assert.equal(body.source_vm_name, "macos-full");
-  assert.equal(body.source_org_id, "ArkerHQ");
+  assert.equal(body.source_vm_name, "catalog-template");
+  assert.equal(body.source_org_id, undefined);
   assert.equal(body.disk, undefined);
   assert.equal(body.platforms, undefined);
   assert.deepEqual(body.ssh_public_keys, ["ssh-ed25519 AAAA test@example"]);
@@ -264,7 +264,7 @@ async function testForkOmitsUnconfiguredCapabilities(): Promise<void> {
     },
   );
 
-  await client(fetch).fork("ubuntu-full");
+  await client(fetch).fork("catalog-template");
 
   const body = JSON.parse(fetch.calls[0]!.body!);
   assert.equal(body.policies, undefined);
@@ -282,7 +282,7 @@ async function testRemovedNetworkInputsFailBeforeRequests(): Promise<void> {
   await assert.rejects(
     () =>
       client(fetch).fork(
-        "ubuntu",
+        "source-vm",
         { network: { reachable: false } } as never,
       ),
     isBadRequest,
@@ -412,7 +412,7 @@ async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "sleep 999", background: true });
 }
 
-async function testConfiguredPlacementRoutesGoldensToMainEndpoint(): Promise<void> {
+async function testConfiguredPlacementRoutesNamedSourcesToMainEndpoint(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
     (method, url) => method === "POST" && url === "https://provider-one-region-one.arker.ai/api/v1/fork",
@@ -429,7 +429,7 @@ async function testConfiguredPlacementRoutesGoldensToMainEndpoint(): Promise<voi
   );
 
   const arker = regionClient(fetch);
-  const vm = await arker.vm("ubuntu").fork();
+  const vm = await arker.vm("source-vm-id").fork();
 
   assert.equal(arker.baseUrl, "https://provider-one-region-one.arker.ai/api");
   assert.equal(vm.baseUrl, "https://provider-one-region-one.arker.ai/api");
@@ -695,11 +695,11 @@ async function testForkSendsDurableFlag(): Promise<void> {
     },
   );
 
-  await client(fetch).vm("ubuntu").fork({ durable: true });
+  await client(fetch).vm("source-vm-id").fork({ durable: true });
 
   assert.deepEqual(
     JSON.parse(fetch.calls[0]!.body!),
-    { durable: true, source_vm_id: "ubuntu" },
+    { durable: true, source_vm_id: "source-vm-id" },
   );
 }
 
@@ -993,14 +993,14 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 await testForkPostsDirectlyToSourceVm();
 await testForkForwardsContractFieldsItDoesNotEnumerate();
 await testForkDropsNonContractKeys();
-await testForkInfersArkerOrgForMacosFullGolden();
+await testForkOmitsSourceOrgWhenNotExplicit();
 await testForkOmitsUnconfiguredCapabilities();
 await testRemovedNetworkInputsFailBeforeRequests();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();
 await testBackgroundTrueReturnsAckWithoutPolling();
-await testConfiguredPlacementRoutesGoldensToMainEndpoint();
+await testConfiguredPlacementRoutesNamedSourcesToMainEndpoint();
 testArbitraryProviderBuildsEndpoint();
 testPlacementRequiresSeparateProviderAndRegion();
 testInvalidProviderSyntaxFailsClosed();
@@ -1327,7 +1327,7 @@ async function testRetryAfterHintDrivesTheActualSleep(): Promise<void> {
     retry: { attempts: 2, baseDelayMs: 1, jitterMs: 0 },
   });
   const started = Date.now();
-  const vm = await client.fork("arkuntu");
+  const vm = await client.fork("source-vm");
   assert.equal(vm.id, "vm-1");
   assert.ok(Date.now() - started >= 45, "the 50ms hint must drive the sleep");
   assert.equal(fetchImpl.calls.length, 2);

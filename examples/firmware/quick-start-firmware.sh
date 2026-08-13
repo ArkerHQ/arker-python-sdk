@@ -2,7 +2,7 @@
 #
 # Firmware app-factory — quick start (a coding agent edits firmware, runs it on QEMU)
 #
-# Forks ubuntu-dev, installs the Cursor agent + an embedded toolchain + QEMU,
+# Forks a caller-selected source, then installs an embedded toolchain and QEMU,
 # seeds a Cortex-M3 firmware, has the agent add a feature, then forks a checkpoint
 # and has it add another — building on the first.
 #
@@ -12,6 +12,7 @@
 set -uo pipefail
 : "${ARKER_API_KEY:?set ARKER_API_KEY (https://arker.ai/console)}"
 : "${CURSOR_API_KEY:?set CURSOR_API_KEY (https://cursor.com/dashboard)}"
+: "${ARKER_SOURCE_VM:?set ARKER_SOURCE_VM to a source that contains Cursor}"
 
 GCC="arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -nostartfiles -nostdlib -ffreestanding -O2 -T fw.ld fw.c -o fw.elf"
 QEMU="qemu-system-arm -M lm3s6965evb -cpu cortex-m3 -nographic -semihosting -kernel fw.elf"
@@ -52,10 +53,9 @@ run() {
 }
 show() { arker run "$1" "{ set +x; } 2>/dev/null; cat $2" 2>&1 | grep -vaE '^\+\+? ' || true; }
 
-VM=$(arker fork ubuntu-dev | jq -r .vm_id); echo "# forked $VM"
+VM=$(arker fork "$ARKER_SOURCE_VM" | jq -r .vm_id); echo "# forked $VM"
 
-# cursor-agent is already baked into the ubuntu-dev golden. Only the embedded ARM
-# toolchain (gcc-arm-none-eabi + qemu-system-arm) isn't, so that's all we install.
+# The selected source contains Cursor. Install only the embedded ARM toolchain.
 echo "# install ARM toolchain, seed firmware"
 run "$VM" "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq >/dev/null && apt-get install -y -qq --no-install-recommends gcc-arm-none-eabi qemu-system-arm >/dev/null"
 run "$VM" "mkdir -p /work && echo $(b64 "$FW_C") | base64 -d > /work/fw.c && echo $(b64 "$FW_LD") | base64 -d > /work/fw.ld && printf %s '$CURSOR_API_KEY' > /work/.key"

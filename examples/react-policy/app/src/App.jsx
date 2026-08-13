@@ -1,9 +1,10 @@
 const cliCommands = String.raw`# 1. Configure Arker
 export ARKER_API_KEY=ark_live_...
 export ARKER_REGION=us-west-2
+: "${ARKER_SOURCE_VM:?set ARKER_SOURCE_VM to a source name returned by the API}"
 
-# 2. Fork an Ubuntu VM
-VM=$(arker fork ubuntu-dev | jq -r .vm_id)
+# 2. Fork the selected source VM
+VM=$(arker fork "$ARKER_SOURCE_VM" | jq -r .vm_id)
 
 # 3. Allow npm during the build
 arker policies set "$VM" >/dev/null <<'JSON'

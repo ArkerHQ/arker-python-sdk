@@ -34,10 +34,12 @@ pip install arker
 ```
 
 ```python
+import os
+
 from arker import Arker
 
 ar = Arker(provider="aws", region="us-west-2")  # key from ARKER_API_KEY
-vm = ar.fork("ubuntu-dev")     # public golden — org inferred
+vm = ar.fork(os.environ["ARKER_SOURCE_VM"])
 print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
 ```
 
@@ -51,7 +53,7 @@ bun add @arker-ai/sdk
 import { Arker } from "@arker-ai/sdk";
 
 const ar = new Arker({ provider: "aws", region: "us-west-2" }); // key from ARKER_API_KEY
-const vm = await ar.fork("ubuntu-dev");        // public golden — org inferred
+const vm = await ar.fork(process.env.ARKER_SOURCE_VM!);
 const run = await vm.run("node -e 'console.log(2 + 2)'");
 if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
 ```
@@ -87,7 +89,7 @@ const ar = new Arker({ provider: "gcp", region: "us-central1" });
 ```
 
 ```bash
-arker fork ubuntu-dev --provider gcp --region us-central1
+arker fork "$ARKER_SOURCE_VM" --provider gcp --region us-central1
 ```
 
 You can also use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript after client setup. The catalog returns only `provider` and `region`, and every listed placement supports fork, run, and sync. GCP `us-central1` does not currently support encrypted network policies, SSH, shared directories, desktop ingress, or cross-platform restore. Its regional API returns `unsupported_operation` for these optional operations.
@@ -102,7 +104,8 @@ bun add --global @arker-ai/sdk
 export ARKER_API_KEY=ark_live_...
 export ARKER_PROVIDER=aws
 export ARKER_REGION=us-west-2
-VM=$(arker fork ubuntu-dev | jq -r .vm_id)   # public golden — org inferred
+: "${ARKER_SOURCE_VM:?set ARKER_SOURCE_VM to a source name returned by the API}"
+VM=$(arker fork "$ARKER_SOURCE_VM" | jq -r .vm_id)
 arker run "$VM" "python3 -c 'print(2 + 2)'"
 arker rm "$VM"
 ```

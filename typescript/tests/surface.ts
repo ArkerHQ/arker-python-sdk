@@ -62,11 +62,14 @@ await call("Arker.list (vms)", () => arker.listVms());
 await call("Arker.filesystems.list", () => arker.listFilesystems(), { stubOk: true });
 
 // ── fork (the real SDK top-level path) ──────────────────────────────
-let vm = await call("Arker.fork(sourceVmName=ubuntu)",
-  () => arker.fork({ sourceVmName: "ubuntu", name: `${stamp}-a` })) as any;
+const sourceVmName = process.env.ARKER_SOURCE_VM;
+if (!sourceVmName) throw new Error("ARKER_SOURCE_VM is required");
+
+let vm = await call("Arker.fork(sourceVmName)",
+  () => arker.fork({ sourceVmName, name: `${stamp}-a` })) as any;
 if (!vm) {
-  vm = await call("Arker.fork(sourceVmName=ubuntu, org=ArkerHQ)",
-    () => arker.fork({ sourceVmName: "ubuntu", sourceOrgId: ARKER_ORG_ID, name: `${stamp}-b` })) as any;
+  vm = await call("Arker.fork(sourceVmName, org=ArkerHQ)",
+    () => arker.fork({ sourceVmName, sourceOrgId: ARKER_ORG_ID, name: `${stamp}-b` })) as any;
 }
 if (!vm) { print(); throw new Error("fork failed — cannot exercise per-VM surface"); }
 const vmId: string = vm.id;

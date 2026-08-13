@@ -17,8 +17,8 @@ import { Arker } from "@arker-ai/sdk";
 
 const ar = new Arker({ provider: "aws", region: "us-west-2" });
 
-// Fork a public golden, run a command, read/write a file.
-const vm = await ar.fork("ubuntu-dev"); // public golden — org inferred
+// Fork a source returned by the API, then run a command and read or write a file.
+const vm = await ar.fork(process.env.ARKER_SOURCE_VM!);
 
 const run = await vm.run("python3 -c 'print(2 + 2)'");
 if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
@@ -59,7 +59,7 @@ const catalog = await discoverRegions();     // public; no API key or placement 
 const ar = new Arker({ provider: "aws", region, apiKey?, baseUrl?, retry? });
 
 // VMs
-await ar.fork("ubuntu-dev");                 // public golden by name (org inferred)
+await ar.fork(sourceVmName);                  // source ownership is resolved by the service
 await ar.fork(vm, { name: "child" });         // an existing VM (uses its id)
 await ar.fork({ sourceVmName, sourceOrgId, name?, durable? });
 await ar.listVms({ state? });
@@ -92,7 +92,7 @@ await vm.deleteSync(syncId);
 For long-running or non-idempotent work, fork with `durable: true` and pass an idempotency key when retrying a run:
 
 ```ts
-const vm = await ar.fork("ubuntu-dev", { durable: true });
+const vm = await ar.fork(process.env.ARKER_SOURCE_VM!, { durable: true });
 await vm.run("python3 train.py", { background: true, idempotencyKey: crypto.randomUUID() });
 ```
 

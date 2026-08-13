@@ -18,7 +18,7 @@
  * bench once the host manifest is flush-consistent for a running VM.
  *
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://host:8080/api \
- *   ARKER_SOURCE_VM=ubuntu bun tests/conformance/sync-dir-bench.ts
+ *   ARKER_SOURCE_VM=<source-name> bun tests/conformance/sync-dir-bench.ts
  *
  * Knobs (env): BENCH_N_FILES (3000), BENCH_SMALL_BYTES (256),
  * BENCH_LARGE_COUNT (3), BENCH_LARGE_MB (2), BENCH_NAIVE_FILES (400 — cap on
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     apiKey: requiredEnv("ARKER_API_KEY"),
     baseUrl: requiredEnv("ARKER_BASE_URL"),
   });
-  const source = process.env.ARKER_SOURCE_VM ?? "ubuntu";
+  const source = requiredEnv("ARKER_SOURCE_VM");
   const nFiles = envInt("BENCH_N_FILES", 3000);
   const smallBytes = envInt("BENCH_SMALL_BYTES", 256);
   const largeCount = envInt("BENCH_LARGE_COUNT", 3);

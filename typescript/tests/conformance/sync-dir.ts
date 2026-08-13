@@ -11,7 +11,7 @@
  * (repeat sends nothing; an edit sends exactly one) are the real contract.
  *
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://host:8080/api \
- *   ARKER_SOURCE_VM=ubuntu bun tests/conformance/sync-dir.ts
+ *   ARKER_SOURCE_VM=<source-name> bun tests/conformance/sync-dir.ts
  */
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     apiKey: requiredEnv("ARKER_API_KEY"),
     baseUrl: requiredEnv("ARKER_BASE_URL"),
   });
-  const source = process.env.ARKER_SOURCE_VM ?? "ubuntu";
+  const source = requiredEnv("ARKER_SOURCE_VM");
 
   // A nested local tree: two small files, one nested, and one >CHUNK_SIZE (4 MB)
   // file so the tarball takes the presigned path rather than inline.

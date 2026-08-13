@@ -10,9 +10,15 @@ import httpx
 import pytest
 
 import arker.computer as sdk
+from arker._compat import arker_source
 from arker.daytona import Daytona
 from arker.e2b import Sandbox as E2BSandbox
 from arker.modal import Sandbox as ModalSandbox
+
+
+@pytest.fixture(autouse=True)
+def source_env(monkeypatch) -> None:
+    monkeypatch.setenv("ARKER_SOURCE", "catalog-template")
 
 
 class FakeTransport:
@@ -110,7 +116,15 @@ def test_daytona_official_surface(monkeypatch) -> None:
         assert alias.result == "Hello, World!\n"
         sandbox.delete()
 
-    assert json.loads(t.calls[0]["body"])["source_vm_name"] == "ubuntu-dev"
+    assert json.loads(t.calls[0]["body"])["source_vm_name"] == "catalog-template"
+
+
+def test_compat_requires_source(monkeypatch) -> None:
+    monkeypatch.delenv("ARKER_SOURCE", raising=False)
+    monkeypatch.delenv("ARKER_SOURCE_VM", raising=False)
+
+    with pytest.raises(ValueError, match="Arker source is required"):
+        arker_source()
 
 
 def test_arker_shim_config_customizes_source_without_forwarding_to_client(monkeypatch) -> None:

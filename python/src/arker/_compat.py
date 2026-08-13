@@ -8,7 +8,6 @@ from typing import Any
 
 from .computer import Arker, ArkerError, CompletedRunResult, VM
 
-DEFAULT_SOURCE = "ubuntu-dev"
 ARKER_CLIENT_KEYS = {"api_key", "base_url", "control_base_url", "region", "provider", "retry"}
 
 
@@ -41,7 +40,9 @@ def arker_client(config: dict[str, Any] | None = None) -> Arker:
 
 def arker_source(config: dict[str, Any] | None = None) -> str:
     cfg = config or {}
-    source = cfg.get("source") or os.environ.get("ARKER_SOURCE") or os.environ.get("ARKER_SOURCE_VM") or DEFAULT_SOURCE
+    source = cfg.get("source") or os.environ.get("ARKER_SOURCE") or os.environ.get("ARKER_SOURCE_VM")
+    if not source:
+        raise ValueError("Arker source is required; set source, ARKER_SOURCE, or ARKER_SOURCE_VM")
     return str(source)
 
 

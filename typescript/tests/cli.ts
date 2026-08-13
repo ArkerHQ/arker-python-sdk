@@ -229,9 +229,9 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
     { args: ["run", "--session-idx", "-1", "vm_1", "echo", "ok"], flag: "session-idx" },
     { args: ["run", "--time-to-background", "1.5", "vm_1", "echo", "ok"], flag: "time-to-background" },
     { args: ["ls", "--limit", "1001"], flag: "limit" },
-    { args: ["fork", "--vcpu", "256", "ubuntu-full"], flag: "vcpu" },
-    { args: ["fork", "--gpu-vram-mib", "0", "ubuntu-gpu-small"], flag: "gpu-vram-mib" },
-    { args: ["fork", "--gpu-sms", "1.5", "ubuntu-gpu-small"], flag: "gpu-sms" },
+    { args: ["fork", "--vcpu", "256", "source-vm"], flag: "vcpu" },
+    { args: ["fork", "--gpu-vram-mib", "0", "source-vm"], flag: "gpu-vram-mib" },
+    { args: ["fork", "--gpu-sms", "1.5", "source-vm"], flag: "gpu-sms" },
     { args: ["update", "--memory-mib", "Infinity", "vm_1"], flag: "memory-mib" },
     { args: ["shell", "--rows", "0", "vm_1"], flag: "rows" },
     { args: ["run", "--timeout=", "vm_1", "echo", "ok"], flag: "timeout" },
@@ -258,7 +258,7 @@ async function testForkForwardsGpuResourceOptions(): Promise<void> {
         "24576",
         "--gpu-sms",
         "8",
-        "ubuntu-gpu-small",
+        "source-vm",
       ]);
 
       assert.equal(result.code, 0, result.stderr);
@@ -267,8 +267,7 @@ async function testForkForwardsGpuResourceOptions(): Promise<void> {
         url: "/api/v1/fork",
         body: {
           source_vm_id: null,
-          source_vm_name: "ubuntu-gpu-small",
-          source_org_id: "ArkerHQ",
+          source_vm_name: "source-vm",
           name: null,
           description: null,
           public: null,
@@ -574,6 +573,15 @@ async function testShellSetupUsesPackagedCli(): Promise<void> {
   wss.close();
 }
 
+async function testShellRequiresVmOrSourceBeforeRequest(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["shell"]);
+    assert.equal(result.code, 1);
+    assert.equal(requests.length, 0);
+    assert.match(result.stderr, /--source-vm-name/);
+  });
+}
+
 async function testStructuredErrorsDoNotRepeatCode(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, {
     error: {
@@ -635,7 +643,7 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
         "fork",
         "--description",
         "CI runner",
-        "ubuntu-full",
+        "source-vm",
       ],
       response: { vm_id: "vm_child" },
       method: "POST",
@@ -790,6 +798,7 @@ await testRunHumanWarnsOnPartialMemory();
 await testEmptyPipedInputWritesZeroBytes();
 await testNoPipeReadsFileBytes();
 await testShellSetupUsesPackagedCli();
+await testShellRequiresVmOrSourceBeforeRequest();
 await testStructuredErrorsDoNotRepeatCode();
 await testFalseMutationResultsExitNonzero();
 await testRemainingHttpCommandSurface();

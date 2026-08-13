@@ -101,6 +101,7 @@ class FakeArker:
 def run_demo(monkeypatch: pytest.MonkeyPatch, build_exit_code: int = 0) -> list[str]:
     FakeArker.instances.clear()
     FakeArker.build_exit_code = build_exit_code
+    monkeypatch.setenv("ARKER_SOURCE_VM", "catalog-template")
 
     arker_module = ModuleType("arker")
     arker_module.Arker = FakeArker  # type: ignore[attr-defined]
@@ -128,7 +129,7 @@ def test_python_demo_runs_the_documented_sdk_flow(
     vm = arker.vm
 
     assert arker.forks == [
-        ("ubuntu-dev", {"name": "react-policy-demo", "policies": BUILD_POLICY})
+        ("catalog-template", {"name": "react-policy-demo", "policies": BUILD_POLICY})
     ]
     assert vm.syncs == [(str(DEMO_DIR / "app"), "/workspace/react-policy")]
 

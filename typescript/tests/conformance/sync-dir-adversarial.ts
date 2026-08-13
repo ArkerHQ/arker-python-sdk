@@ -15,7 +15,7 @@
  * actively busy, which is the real-world case that regressed the delta path.
  *
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://host:8080/api \
- *   ARKER_SOURCE_VM=ubuntu bun tests/conformance/sync-dir-adversarial.ts
+ *   ARKER_SOURCE_VM=<source-name> bun tests/conformance/sync-dir-adversarial.ts
  */
 
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     apiKey: requiredEnv("ARKER_API_KEY"),
     baseUrl: requiredEnv("ARKER_BASE_URL"),
   });
-  const source = process.env.ARKER_SOURCE_VM ?? "ubuntu";
+  const source = requiredEnv("ARKER_SOURCE_VM");
   const SMALL_N = 600;
   const BIG_N = 2;
 
