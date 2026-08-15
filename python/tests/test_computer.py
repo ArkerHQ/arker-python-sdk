@@ -123,9 +123,12 @@ def test_explicit_vm_handle_uses_placement_endpoint() -> None:
 
 def test_list_regions_uses_public_control_plane_catalog() -> None:
     t = FakeTransport()
+    # `provider` is a closed set in the contract and `endpoint` is required;
+    # a placement missing either is not a shape the service can return.
     placement = {
-        "provider": "provider-two",
+        "provider": "aws",
         "region": "region-two",
+        "endpoint": "https://aws-region-two.arker.ai",
     }
     t.add_json(
         lambda method, url: method == "GET"
@@ -137,8 +140,9 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
     with use_transport(t):
         regions = client().list_regions()
 
-    assert regions.regions[0].provider == "provider-two"
+    assert regions.regions[0].provider == "aws"
     assert regions.regions[0].region == "region-two"
+    assert regions.regions[0].endpoint == "https://aws-region-two.arker.ai"
 
 
 def test_discover_regions_requires_no_configured_client() -> None:
@@ -224,6 +228,57 @@ def test_fork_omits_source_org_when_not_explicit() -> None:
     assert vm.id == "vm_named_source"
     body = json.loads(t.calls[0]["body"])
     assert body == {"source_vm_name": "catalog-template"}
+
+
+def test_fork_from_image_sends_only_the_image() -> None:
+    """`image` is a third source: no VM selector is sent alongside it.
+
+    The service's schema models the three sources as a `oneOf`, so a body
+    carrying both `image` and a selector fails to decode there. Sending a
+    stray `source_vm_name: null` would be harmless, but sending a real one
+    would turn a registry pull into a fork of someone's VM.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        {
+            "vm_id": "vm_from_image",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        vm = client().fork(image="ubuntu:24.04", name="from-image")
+
+    assert vm.id == "vm_from_image"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {"image": "ubuntu:24.04", "name": "from-image"}
+
+
+def test_fork_rejects_an_image_alongside_a_source_vm() -> None:
+    for kwargs in (
+        {"image": "ubuntu:24.04", "source_vm_name": "base"},
+        {"image": "ubuntu:24.04", "source_vm_id": "vm_abc"},
+    ):
+        with pytest.raises(sdk.ArkerError) as excinfo:
+            client().fork(**kwargs)  # type: ignore[arg-type]
+        assert excinfo.value.code == "bad_request"
+
+
+def test_fork_rejects_an_image_passed_positionally_and_by_keyword() -> None:
+    # The positional form resolves to `source_vm_name`, so this is the same
+    # collision as above arriving by a different route.
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork("base", image="ubuntu:24.04")
+    assert excinfo.value.code == "bad_request"
 
 
 def test_fork_rejects_legacy_id_response() -> None:

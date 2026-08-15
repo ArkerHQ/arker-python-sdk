@@ -41,6 +41,7 @@ from .generated.api_models import (
     FilesystemCreateRequest,
     ForkRequest1,
     ForkRequest2,
+    ForkRequest3,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -376,6 +377,7 @@ class Arker:
         source_vm_id: str | None = None,
         source_vm_name: str | None = None,
         source_org_id: str | None = None,
+        image: str | None = None,
         name: str | None = None,
         description: str | None = None,
         public: bool | None = None,
@@ -403,6 +405,16 @@ class Arker:
         - ``fork(source_vm_id="vm_abc...")`` — fork by global id.
         - ``fork(source_vm_name="base", source_org_id="org_...")`` — fork a
           named VM in a specific org (it must be ``public``).
+        - ``fork(image="ubuntu:24.04")`` — create a VM from an OCI image
+          instead of an existing VM. A bare reference, never a URI: an
+          unqualified name resolves against Docker Hub, so ``ubuntu:24.04`` is
+          ``docker.io/library/ubuntu:24.04`` and ``ghcr.io/org/img:v1`` is not.
+          Exclusive with the VM selectors. The image is pulled and converted on
+          the host, so the first fork of an image is slow (tens of seconds) and
+          later ones reuse the cached layers. Inputs that only mean something
+          relative to a source VM (``layers``, ``platforms``, ``durable``,
+          ``public`` and the GPU fields) are rejected by the service rather
+          than silently ignored.
 
         ``source_org_id`` is sent only when supplied explicitly. The service
         resolves omitted ownership from its current source catalog and the
@@ -436,8 +448,11 @@ class Arker:
                 source_vm_name = source
             else:
                 raise ArkerError("bad_request", "fork source must be a VM or a source-name string", 400)
-        if not source_vm_id and not source_vm_name:
-            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, or source_vm_id)", 400)
+        # `image` is a third source, exclusive with the two VM selectors.
+        if image and (source_vm_id or source_vm_name):
+            raise ArkerError("bad_request", "fork: pass a source VM or an image, not both", 400)
+        if not source_vm_id and not source_vm_name and not image:
+            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, source_vm_id, or image)", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
         if network is not None or egress is not None:
@@ -485,7 +500,12 @@ class Arker:
             policies=policy_doc,
         )
         body = (
-            ForkRequest1(source_vm_id=source_vm_id, **request_options)
+            # Truthiness, matching the exclusivity checks above and the TS SDK:
+            # `image=""` is caller error, and treating it as "an image was
+            # given" would discard a `source_vm_name` the caller did supply.
+            ForkRequest3(image=image, **request_options)
+            if image
+            else ForkRequest1(source_vm_id=source_vm_id, **request_options)
             if source_vm_id is not None
             else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )

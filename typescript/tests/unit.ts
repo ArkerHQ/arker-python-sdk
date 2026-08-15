@@ -183,6 +183,45 @@ async function testForkForwardsContractFieldsItDoesNotEnumerate(): Promise<void>
   assert.deepEqual(body.layers, ["disk"], "layers must reach the wire, not be dropped");
 }
 
+// `image` is a third fork source. The service models the three as a `oneOf`,
+// so a body carrying `image` alongside a VM selector fails to decode there —
+// and a body that sent a REAL selector next to an image would turn a registry
+// pull into a fork of someone's VM.
+async function testForkFromImageSendsOnlyTheImage(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    { vm_id: "vm_img", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  );
+
+  await client(fetch).fork({ image: "ubuntu:24.04", name: "from-image" });
+
+  const body = JSON.parse(fetch.calls[0]!.body!);
+  assert.equal(body.image, "ubuntu:24.04", "image must reach the wire");
+  assert.equal(body.name, "from-image");
+  assert.equal(body.source_vm_id, null, "no VM selector may accompany an image");
+  assert.equal(body.source_vm_name, null, "no VM selector may accompany an image");
+}
+
+async function testForkRejectsImageAlongsideASourceVm(): Promise<void> {
+  const fetch = new FakeFetch();
+  for (const src of [
+    { image: "ubuntu:24.04", sourceVmName: "base" },
+    { image: "ubuntu:24.04", sourceVmId: "vm_abc" },
+  ]) {
+    let threw = false;
+    try {
+      await client(fetch).fork(src);
+    } catch (err) {
+      threw = true;
+      assert.equal((err as { code?: string }).code, "bad_request");
+    }
+    assert.equal(threw, true, `${JSON.stringify(src)} must be refused before any request`);
+  }
+  assert.equal(fetch.calls.length, 0, "a refused fork must not reach the network");
+}
+
 async function testForkDropsNonContractKeys(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -993,6 +1032,8 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 await testForkPostsDirectlyToSourceVm();
 await testForkForwardsContractFieldsItDoesNotEnumerate();
 await testForkDropsNonContractKeys();
+await testForkFromImageSendsOnlyTheImage();
+await testForkRejectsImageAlongsideASourceVm();
 await testForkOmitsSourceOrgWhenNotExplicit();
 await testForkOmitsUnconfiguredCapabilities();
 await testRemovedNetworkInputsFailBeforeRequests();

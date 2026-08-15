@@ -15,8 +15,9 @@ class HealthResponse:
 
 @dataclass(frozen=True)
 class RegionPlacement:
-    provider: str
+    provider: Literal['aws', 'azure', 'arker', 'gcp']
     region: str
+    endpoint: str
 
 
 @dataclass(frozen=True)
@@ -87,7 +88,7 @@ SessionState: TypeAlias = VmState
 RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
 
 
-Provider: TypeAlias = str
+Provider: TypeAlias = Literal['aws', 'azure', 'arker', 'gcp']
 
 
 Port: TypeAlias = int
@@ -188,6 +189,7 @@ class CompletedRunResponse:
     memory_requested_mib: int | None = None
     memory_achieved_mib: int | None = None
     memory_partial: bool | None = None
+    memory_backend: Literal['file', 'uffd'] | None = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +245,6 @@ class ListRunsResponse:
 
 @dataclass(frozen=True)
 class OrgRunListRow:
-    source: Literal['arkerd']
     t_ms: int
     request_id: str
     run_id: str
@@ -271,6 +272,7 @@ class OrgRunListRow:
     body_bytes_out: int
     body_in: str
     body_out: str
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -437,8 +439,8 @@ class Filesystem:
     owner_org_id: str
     created_at: str
     size_bytes: int | None = None
-    region: str | None = None
-    provider: Provider | None = None
+    region: str | None = 'us-west-2'
+    provider: Provider | None = 'aws'
 
 
 @dataclass(frozen=True)
@@ -464,6 +466,7 @@ class VmResources:
     disk_mib: int | None = None
     gpu_sms: int | None = None
     gpu_vram_mib: int | None = None
+    gpu_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -483,19 +486,6 @@ class VmNetwork:
 
 
 @dataclass(frozen=True)
-class CompatiblePlatform:
-    id: str
-    display_name: str
-    architecture: str
-    min_vcpus: int | None = None
-    max_vcpus: int | None = None
-    min_memory_mib: int | None = None
-    max_memory_mib: int | None = None
-    min_disk_mib: int | None = None
-    max_disk_mib: int | None = None
-
-
-@dataclass(frozen=True)
 class GpuResourceBand:
     min: int
     max: int
@@ -508,6 +498,13 @@ class GpuPlatformLimits:
     vram_mib: GpuResourceBand
     sms: GpuResourceBand
     gpu: str | None = None
+
+
+@dataclass(frozen=True)
+class PlatformGpuLimits:
+    vram_mib: GpuResourceBand
+    sms: GpuResourceBand
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -708,41 +705,6 @@ class PolicyAction1:
 PolicyAction: TypeAlias = Literal['allow', 'deny'] | PolicyAction1
 
 
-@dataclass(frozen=True)
-class Vm:
-    vm_id: str
-    owner_org_id: str
-    created_at: str
-    description: str | None
-    public: bool
-    state: VmState
-    network: VmNetwork
-    sessions: list[Session]
-    resources: VmResources
-    name: str | None = None
-    hostname: str | None = None
-    root_source_vm_id: str | None = None
-    root_source_vm_name: str | None = None
-    region: str | None = None
-    provider: Provider | None = None
-    started_at: str | None = None
-    max_vcpus: int | None = None
-    min_vcpus: int | None = None
-    max_memory_mib: int | None = None
-    min_memory_mib: int | None = None
-    gpu_platforms: list[GpuPlatformLimits] | None = None
-    min_disk_mib: int | None = None
-    max_disk_mib: int | None = None
-    platform: str | None = None
-    compatible_platforms: list[CompatiblePlatform] | None = None
-
-
-@dataclass(frozen=True)
-class ListVmsResponse:
-    vms: list[Vm]
-    next_cursor: str | None = None
-
-
 RunResponse: TypeAlias = CompletedRunResponse | BackgroundRunResponse
 
 
@@ -788,11 +750,63 @@ class SyncCommitWriteResult:
 
 
 @dataclass(frozen=True)
+class CompatiblePlatform:
+    id: str
+    display_name: str
+    architecture: str
+    min_vcpus: int | None = None
+    max_vcpus: int | None = None
+    min_memory_mib: int | None = None
+    max_memory_mib: int | None = None
+    min_disk_mib: int | None = None
+    max_disk_mib: int | None = None
+    default_vcpus: int | None = None
+    default_memory_mib: int | None = None
+    default_disk_mib: int | None = None
+    gpu: PlatformGpuLimits | None = None
+
+
+@dataclass(frozen=True)
 class PolicyEntry:
     type: Literal['outbound', 'inbound']
     action: PolicyAction
     match: PolicyMatch | None = None
     auth: Literal['open', 'arker'] | None = None
+
+
+@dataclass(frozen=True)
+class Vm:
+    vm_id: str
+    owner_org_id: str
+    created_at: str
+    description: str | None
+    public: bool
+    state: VmState
+    network: VmNetwork
+    sessions: list[Session]
+    resources: VmResources
+    name: str | None = None
+    hostname: str | None = None
+    root_source_vm_id: str | None = None
+    root_source_vm_name: str | None = None
+    region: str | None = None
+    provider: Provider | None = None
+    started_at: str | None = None
+    max_vcpus: int | None = None
+    min_vcpus: int | None = None
+    max_memory_mib: int | None = None
+    min_memory_mib: int | None = None
+    gpu_platforms: list[GpuPlatformLimits] | None = None
+    min_disk_mib: int | None = None
+    max_disk_mib: int | None = None
+    platform: str | None = None
+    compatible_platforms: list[CompatiblePlatform] | None = None
+
+
+@dataclass(frozen=True)
+class ListVmsResponse:
+    vms: list[Vm]
+    next_cursor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -833,6 +847,7 @@ class PolicyDoc:
 class ForkRequest1:
     source_vm_id: str
     source_vm_name: None = None
+    image: None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -853,6 +868,7 @@ class ForkRequest1:
 class ForkRequest2:
     source_vm_name: str
     source_vm_id: None = None
+    image: None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -869,7 +885,28 @@ class ForkRequest2:
     resources: VmResources | None = None
 
 
-ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2
+@dataclass(frozen=True)
+class ForkRequest3:
+    image: str
+    source_vm_id: None = None
+    source_vm_name: None = None
+    source_org_id: str | None = None
+    name: str | None = None
+    description: str | None = None
+    public: bool | None = None
+    ssh_public_keys: list[str] | None = None
+    disk: bool | None = None
+    durable: bool | None = None
+    network: dict[str, Any] | None = None
+    egress: dict[str, Any] | None = None
+    platforms: list[str] | None = None
+    layers: list[Literal['disk', 'memory']] | None = None
+    queueing_timeout: int | None = None
+    policies: PolicyWriteRequest | None = None
+    resources: VmResources | None = None
+
+
+ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2 | ForkRequest3
 
 
 @dataclass(frozen=True)
@@ -885,6 +922,7 @@ class RunRequest:
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
+    memory_backend: Literal['file', 'uffd'] | None = None
     acquire: str | None = None
     release: str | None = None
     signal: Literal['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'] | None = None
