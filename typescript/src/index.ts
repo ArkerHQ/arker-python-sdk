@@ -632,6 +632,17 @@ export interface ForkSource {
   sourceVmId?: ForkRequest["source_vm_id"];
   sourceVmName?: ForkRequest["source_vm_name"];
   sourceOrgId?: ForkRequest["source_org_id"];
+  /** OCI image to create the VM from instead of forking an existing VM —
+   * `ubuntu:24.04`, `ghcr.io/org/img:v1`, `img@sha256:...`. A bare reference,
+   * never a URI; an unqualified name resolves against Docker Hub. Exclusive
+   * with the VM selectors above.
+   *
+   * The image is pulled and converted on the host, so the first fork of a
+   * given image takes tens of seconds and later ones reuse the cached layers.
+   * Inputs that only mean something relative to a source VM (`layers`,
+   * `platforms`, `durable`, `public`, GPU fields) are rejected by the service
+   * rather than silently ignored. */
+  image?: string;
 }
 
 export class Arker {
@@ -720,22 +731,31 @@ export class Arker {
    *     fork(sourceName, { layers: ["disk"] })      // disk-only, cold boot
    */
   async fork(
-    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>),
-    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> = {},
+    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">>),
+    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">> = {},
   ): Promise<VM> {
     // Normalize the source: a name string, a VM handle (use its id), or a
     // ForkSource object.
-    const src: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> =
+    const src: ForkSource &
+      Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">> =
       typeof source === "string"
         ? { sourceVmName: source, ...opts }
         : source instanceof VM
           ? { sourceVmId: source.id, ...opts }
           : source;
     rejectRemovedNetworkInputs("fork", src);
-    if (!src.sourceVmId && !src.sourceVmName) {
+    // `image` is a third source, exclusive with the two VM selectors.
+    if (src.image && (src.sourceVmId || src.sourceVmName)) {
       throw new ArkerError(
         "bad_request",
-        "fork requires a source (a name, a VM, sourceVmName, or sourceVmId)",
+        "fork: pass a source VM or an image, not both",
+        400,
+      );
+    }
+    if (!src.sourceVmId && !src.sourceVmName && !src.image) {
+      throw new ArkerError(
+        "bad_request",
+        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, or image)",
         400,
       );
     }
@@ -780,6 +800,7 @@ export class Arker {
       sourceVmId: _sourceVmId,
       sourceVmName: _sourceVmName,
       sourceOrgId: _sourceOrgId,
+      image: _image,
       ...passthrough
     } = src as ForkSource & Record<string, unknown>;
     delete passthrough.vcpu_count;
@@ -803,17 +824,24 @@ export class Arker {
       policies: src.policies,
       queueing_timeout: src.queueing_timeout,
     };
-    const body: ForkRequest = src.sourceVmId
+    const body: ForkRequest = src.image
       ? {
           ...requestOptions,
-          source_vm_id: src.sourceVmId,
+          image: src.image,
+          source_vm_id: null,
           source_vm_name: null,
         }
-      : {
-          ...requestOptions,
-          source_vm_id: null,
-          source_vm_name: src.sourceVmName!,
-        };
+      : src.sourceVmId
+        ? {
+            ...requestOptions,
+            source_vm_id: src.sourceVmId,
+            source_vm_name: null,
+          }
+        : {
+            ...requestOptions,
+            source_vm_id: null,
+            source_vm_name: src.sourceVmName!,
+          };
     const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
     const vm = await this._request<Vm>(
       "POST",
