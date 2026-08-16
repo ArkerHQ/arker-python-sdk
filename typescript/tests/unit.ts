@@ -18,6 +18,8 @@ type FetchCall = {
   url: string;
   method: string;
   body?: string;
+  /** Raw request body, buffered for the binary upload paths. */
+  bodyBytes?: Uint8Array;
   headers: Record<string, string>;
 };
 
@@ -48,7 +50,21 @@ class FakeFetch {
     for (const [key, value] of Object.entries((init?.headers ?? {}) as Record<string, string>)) {
       headers[key.toLowerCase()] = value;
     }
-    this.calls.push({ url, method, body, headers });
+    // Buffer binary bodies too, so upload tests can inspect what was packed.
+    let bodyBytes: Uint8Array | undefined;
+    const raw = init?.body as unknown;
+    if (raw instanceof Uint8Array) bodyBytes = raw;
+    else if (raw && typeof (raw as ReadableStream).getReader === "function") {
+      const chunks: Uint8Array[] = [];
+      const reader = (raw as ReadableStream<Uint8Array>).getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+      bodyBytes = new Uint8Array(Buffer.concat(chunks.map((c) => Buffer.from(c))));
+    }
+    this.calls.push({ url, method, body, bodyBytes, headers });
 
     const index = this.script.findIndex((entry) => entry.predicate(method, url));
     assert.notEqual(index, -1, `no scripted response for ${method} ${url}`);
@@ -125,6 +141,10 @@ const RETRYABLE_ERROR_BODY = {
 
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function testForkPostsDirectlyToSourceVm(): Promise<void> {
@@ -1498,11 +1518,10 @@ await testRunAndGetRunAgreeOnBinaryOutput();
 await testEveryByteValueRoundTrips();
 await testUtf8WireStillYieldsBothForms();
 
-// ── syncDir tarball compression ──────────────────────────────────────
-// syncDir packs changed files into ONE tarball and uploads it in a single
-// request whose cost the host pays again on commit. Uncompressed, a large tree
-// blew the sync budget and failed outright (a Linux checkout is 319 MB raw,
-// 70 MB gzipped). gzip is therefore load-bearing, not an optimization.
+// ── Directory upload: compression ────────────────────────────────────
+// A whole tree is packed into ONE archive and uploaded in a single request, so
+// on a payload that genuinely compresses, compressing it is what keeps a large
+// tree inside the accepted request size at all — not merely an optimization.
 
 async function testSyncDirUploadsAGzippedTarball(): Promise<void> {
   const fs = await import("node:fs");
@@ -1546,11 +1565,9 @@ async function testSyncDirUploadsAGzippedTarball(): Promise<void> {
 
 await testSyncDirUploadsAGzippedTarball();
 
-// ── syncDir /sync-stream fast path ───────────────────────────────────
-// The legacy path is upload + a SEPARATE run("tar -xf"): two round-trips, with
-// the extract going through the USER run scheduler where it queues behind an
-// active foreground run. /sync-stream?extract=tar.gz does both in one request,
-// untarring in the guest before responding.
+// ── Directory upload: the preferred single-request path ──────────────
+// A whole tree travels as one archive in one request; the compatibility
+// fallback below is only reached when a deployment does not offer it.
 
 /** A syncDir fixture: a temp dir of `n` small files, plus a scripted manifest. */
 async function syncDirFixture(n = 8) {
@@ -1717,8 +1734,17 @@ async function testStatCacheCatchesForgedMtimeEdit(): Promise<void> {
     const first = await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
     assert.equal(first.sent, 1);
 
-    fs.writeFileSync(abs, "BBBBB"); // same length, different content
-    const now = fs.statSync(abs, { bigint: true });
+    // The test needs the post-edit ctime to DIFFER from the recorded one, and
+    // ctime granularity is filesystem-dependent (often 1ms). Rewrite until the
+    // clock has actually moved on rather than assuming it has.
+    const before = String(fs.statSync(abs, { bigint: true }).ctimeNs);
+    let now = fs.statSync(abs, { bigint: true });
+    for (let attempt = 0; attempt < 100; attempt++) {
+      fs.writeFileSync(abs, "BBBBB"); // same length, different content
+      now = fs.statSync(abs, { bigint: true });
+      if (String(now.ctimeNs) !== before) break;
+      await sleep(2);
+    }
 
     const sub = nodePath.join(cacheDir, "arker", "syncdir");
     const cacheFile = nodePath.join(sub, fs.readdirSync(sub)[0]!);
@@ -1981,3 +2007,224 @@ await testExplicitTimeoutStillBoundsTheWait();
 await testPollingGivesUpWhenTheServiceStopsAnswering();
 await testAPollBlipDoesNotEndAnUnboundedWait();
 await testTimeToBackgroundZeroReturnsTheAckWithoutPolling();
+
+
+// ── Unified sync(): one call, transport chosen internally ────────────────────
+
+function streamCalls(fetch: FakeFetch): FetchCall[] {
+  return fetch.calls.filter((call) => call.url.includes("/sync-stream"));
+}
+
+function extractMode(url: string): string | null {
+  return new URL(url).searchParams.get("extract");
+}
+
+/** Entry names in a (possibly gzipped) tar, read straight from the headers. */
+function tarEntryNames(body: Uint8Array, gzipped: boolean): string[] {
+  const zlib = require("node:zlib") as typeof import("node:zlib");
+  const raw = gzipped ? zlib.gunzipSync(Buffer.from(body)) : Buffer.from(body);
+  const names: string[] = [];
+  for (let offset = 0; offset + 512 <= raw.length; ) {
+    const name = raw.subarray(offset, offset + 100).toString("utf8").replace(/\0.*$/, "");
+    if (!name) break;
+    const size = parseInt(raw.subarray(offset + 124, offset + 136).toString("utf8").replace(/\0.*$/, "").trim(), 8) || 0;
+    names.push(name);
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return names;
+}
+
+function tmpTreeBytes(files: Record<string, Uint8Array>): string {
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "arker-sync-"));
+  for (const [name, body] of Object.entries(files)) {
+    fs.mkdirSync(nodePath.dirname(nodePath.join(dir, name)), { recursive: true });
+    fs.writeFileSync(nodePath.join(dir, name), body);
+  }
+  return dir;
+}
+
+async function testSyncFromLocalSmallFileSendsBytes(): Promise<void> {
+  // A lone small file has nothing to gain from an archive.
+  await withCacheDir(async () => {
+    const dir = tmpTree({ "note.txt": "hello world" });
+    const fetch = new FakeFetch();
+    fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+    const res = await client(fetch).vm("vm_1").sync("/home/user/note.txt", {
+      fromLocal: nodePath.join(dir, "note.txt"),
+    });
+    assert.equal(res.sent, 1);
+    assert.equal(res.bytesSent, 11);
+    const call = streamCalls(fetch)[0]!;
+    assert.equal(extractMode(call.url), null, "a lone small file needs no archive");
+    assert.equal(new URL(call.url).searchParams.get("path"), "/home/user/note.txt");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testSyncFromLocalLargeFileUsesArchive(): Promise<void> {
+  await withCacheDir(async () => {
+    const dir = tmpTreeBytes({ "blob.bin": new Uint8Array(1024 * 1024 + 1) });
+    const fetch = new FakeFetch();
+    fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+    await client(fetch).vm("vm_1").sync("/home/user/blob.bin", {
+      fromLocal: nodePath.join(dir, "blob.bin"),
+    });
+    const mode = extractMode(streamCalls(fetch)[0]!.url);
+    assert.ok(mode === "tar" || mode === "tar.gz", `expected an archive, got ${mode}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testSyncFromLocalExecutableUsesArchive(): Promise<void> {
+  // Small, but its mode has to survive the trip.
+  await withCacheDir(async () => {
+    const dir = tmpTree({ tool: "#!/bin/sh\necho hi\n" });
+    fs.chmodSync(nodePath.join(dir, "tool"), 0o755);
+    const fetch = new FakeFetch();
+    fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+    await client(fetch).vm("vm_1").sync("/usr/local/bin/tool", {
+      fromLocal: nodePath.join(dir, "tool"),
+    });
+    const mode = extractMode(streamCalls(fetch)[0]!.url);
+    assert.ok(mode === "tar" || mode === "tar.gz", `expected an archive, got ${mode}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testSyncFromLocalDirSendsOneArchive(): Promise<void> {
+  await withCacheDir(async () => {
+    const dir = tmpTree({ "a.txt": "alpha", "b.txt": "bravo", "n/c.txt": "charlie" });
+    const fetch = syncDirServer();
+    const res = await client(fetch).vm("vm_1").sync("/home/user/pkg", { fromLocal: dir });
+    assert.equal(res.sent, 3);
+    assert.equal(streamCalls(fetch).length, 1, "a whole tree is one request");
+    const mode = extractMode(streamCalls(fetch)[0]!.url);
+    assert.ok(mode === "tar" || mode === "tar.gz");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testSyncFromLocalDirSkipsUnchanged(): Promise<void> {
+  await withCacheDir(async () => {
+    const dir = tmpTree({ "a.txt": "same" });
+    const hash = createHash("sha256").update("same").digest("hex");
+    const fetch = new FakeFetch();
+    fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+      ok: true, op: "manifest", entries: [{ path: "a.txt", hash }], truncated: false,
+    });
+    const res = await client(fetch).vm("vm_1").sync("/home/user/pkg", { fromLocal: dir });
+    assert.equal(res.sent, 0);
+    assert.equal(res.skipped, 1);
+    assert.equal(streamCalls(fetch).length, 0, "nothing changed, nothing sent");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testIncompressiblePayloadIsNotCompressed(): Promise<void> {
+  await withCacheDir(async () => {
+    const { randomBytes } = await import("node:crypto");
+    const files: Record<string, Uint8Array> = {};
+    for (let index = 0; index < 4; index++) files[`r${index}.bin`] = randomBytes(256 * 1024);
+    const dir = tmpTreeBytes(files);
+    const fetch = syncDirServer();
+    await client(fetch).vm("vm_1").sync("/home/user/pkg", { fromLocal: dir });
+    assert.equal(extractMode(streamCalls(fetch)[0]!.url), "tar",
+      "random bytes do not compress, so compression must be skipped");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testCompressiblePayloadIsCompressed(): Promise<void> {
+  await withCacheDir(async () => {
+    const body = "def hello(): return 'world'\n".repeat(12000);
+    const dir = tmpTree({ "t0.py": body, "t1.py": body, "t2.py": body, "t3.py": body });
+    const fetch = syncDirServer();
+    await client(fetch).vm("vm_1").sync("/home/user/pkg", { fromLocal: dir });
+    assert.equal(extractMode(streamCalls(fetch)[0]!.url), "tar.gz");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testSyncToLocalFile(): Promise<void> {
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "arker-dl-"));
+  const fetch = new FakeFetch();
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+    ok: true, op: "manifest", entries: [], truncated: false,
+  });
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+    ok: true, op: "read", path: "/home/user/out.txt", size: 5, content: "hello", encoding: "utf8",
+  });
+  const res = await client(fetch).vm("vm_1").sync("/home/user/out.txt", {
+    toLocal: nodePath.join(dir, "out.txt"),
+  });
+  assert.equal(fs.readFileSync(nodePath.join(dir, "out.txt"), "utf8"), "hello");
+  assert.equal(res.sent, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+async function testSyncToLocalDirReadsEachFile(): Promise<void> {
+  // No bulk read exists, so a directory download is one request per file.
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "arker-dl-"));
+  const fetch = new FakeFetch();
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+    ok: true, op: "manifest", truncated: false,
+    entries: [{ path: "a.txt", hash: "0".repeat(64) }, { path: "nested/b.txt", hash: "1".repeat(64) }],
+  });
+  for (const body of ["A", "B"]) {
+    fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, {
+      ok: true, op: "read", path: "x", size: 1, content: body, encoding: "utf8",
+    });
+  }
+  const res = await client(fetch).vm("vm_1").sync("/home/user/pkg", { toLocal: dir });
+  assert.equal(res.sent, 2);
+  assert.ok(fs.existsSync(nodePath.join(dir, "a.txt")));
+  assert.ok(fs.existsSync(nodePath.join(dir, "nested", "b.txt")));
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+async function testSyncFromLocalRenamesOnUpload(): Promise<void> {
+  // The destination basename differs from the local one, and the file is big
+  // enough to travel as an archive — the archive entry must still carry the
+  // DESTINATION name, or the file lands under the wrong path.
+  await withCacheDir(async () => {
+    const dir = tmpTreeBytes({ "orig.bin": new Uint8Array(1024 * 1024 + 1) });
+    const fetch = new FakeFetch();
+    fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 200, { ok: true });
+    const res = await client(fetch).vm("vm_1").sync("/home/user/renamed.bin", {
+      fromLocal: nodePath.join(dir, "orig.bin"),
+    });
+    assert.equal(res.sent, 1);
+    const call = streamCalls(fetch)[0]!;
+    assert.equal(new URL(call.url).searchParams.get("path"), "/home/user",
+      "an archive lands in the destination DIRECTORY");
+    const mode = extractMode(call.url);
+    assert.ok(mode === "tar" || mode === "tar.gz");
+    // The archive must name the entry after the DESTINATION, not the source.
+    assert.ok(call.bodyBytes && call.bodyBytes.length > 0, "the archive body was captured");
+    const names = tarEntryNames(call.bodyBytes!, mode === "tar.gz");
+    assert.deepEqual(names, ["renamed.bin"], `archive entries were ${JSON.stringify(names)}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+async function testSyncDirAliasStillWorks(): Promise<void> {
+  await withCacheDir(async () => {
+    const dir = tmpTree({ "a.txt": "alpha" });
+    const res = await client(syncDirServer()).vm("vm_1").syncDir(dir, "/p");
+    assert.equal(res.sent, 1);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+await testSyncFromLocalSmallFileSendsBytes();
+await testSyncFromLocalLargeFileUsesArchive();
+await testSyncFromLocalExecutableUsesArchive();
+await testSyncFromLocalDirSendsOneArchive();
+await testSyncFromLocalDirSkipsUnchanged();
+await testIncompressiblePayloadIsNotCompressed();
+await testCompressiblePayloadIsCompressed();
+await testSyncToLocalFile();
+await testSyncToLocalDirReadsEachFile();
+await testSyncFromLocalRenamesOnUpload();
+await testSyncDirAliasStillWorks();
+console.log("PASS unified sync");

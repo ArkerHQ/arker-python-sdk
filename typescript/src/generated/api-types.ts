@@ -93,7 +93,7 @@ export interface paths {
         };
         /**
          * List organization runs
-         * @description Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions.
+         * @description Organization-wide listing of run activity visible to the authenticated caller across VMs, providers, and regions.
          */
         get: operations["listOrgRuns"];
         put?: never;
@@ -305,7 +305,7 @@ export interface paths {
         };
         /**
          * Open an interactive PTY (WebSocket upgrade)
-         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same interactive terminal as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.
+         * @description Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.
          */
         get: operations["attachSessionPty"];
         put?: never;
@@ -360,9 +360,9 @@ export interface paths {
         /**
          * Mount a filesystem
          * @description Create a persistent sync: ensure a Filesystem exists (creating
-         *     one if requested) and bind-mount it into this VM at `path`.
-         *     Bidirectional by virtue of being a mount — there is no separate
-         *     sync-direction parameter. Returns `ErrorResponse` code
+         *     one if requested) and attach it to this VM at `path`.
+         *     Reads and writes are visible in both directions, so there is no
+         *     separate sync-direction parameter. Returns `ErrorResponse` code
          *     `conflict` if a sync already exists at `path`.
          */
         post: operations["createSync"];
@@ -438,7 +438,7 @@ export interface paths {
         put?: never;
         /**
          * Stream a file or archive into the VM
-         * @description Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request.
+         * @description Write a file into the VM in a single request, streaming the body as it arrives. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory is written in one request.
          */
         post: operations["syncStream"];
         delete?: never;
@@ -527,7 +527,7 @@ export interface components {
             regions: components["schemas"]["RegionPlacement"][];
         };
         /**
-         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `upstream_rate_limited` means a third-party service the request directed Arker to contact — a registry named by `image`, today — rate limited Arker while acting on the caller's behalf; unlike `rate_limited`, the limit is not Arker's and not the organization's request rate, so the remedy is with that service (authenticate, or pull less from it); `message` carries the upstream's own words, including which host refused. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity. `capacity_unavailable` means no worker can currently serve the requested platform and one is being brought up; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again.
+         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `upstream_rate_limited` means a third-party service the request directed Arker to contact — a registry named by `image`, today — rate limited Arker while acting on the caller's behalf; unlike `rate_limited`, the limit is not Arker's and not the organization's request rate, so the remedy is with that service (authenticate, or pull less from it); `message` carries the upstream's own words, including which host refused. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means capacity is temporarily exhausted. `capacity_unavailable` means the requested platform has no capacity right now and more is being provisioned; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again.
          * @enum {string}
          */
         ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "rate_limited" | "upstream_rate_limited" | "budget_exceeded" | "concurrency_limit_exceeded" | "regional_concurrency_limit_exceeded" | "resource_pressure" | "capacity_unavailable" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
@@ -559,7 +559,7 @@ export interface components {
             region?: string;
             /** @description Stable quota resource key. */
             resource?: string;
-            /** @description Usage observed by admission. */
+            /** @description Usage counted against the limit at the time of the request. */
             current_usage?: number;
             /** @description Positive allocation added by the operation. */
             requested_increment?: number;
@@ -589,15 +589,15 @@ export interface components {
         RunState: "pending" | "running" | "completed" | "failed" | "cancelled";
         /** @description Infrastructure provider currently hosting the resource. */
         Provider: string;
-        /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
+        /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any VM port. */
         PolicyWriteRequest: {
-            /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
+            /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any VM port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
             policies?: components["schemas"]["PolicyEntry"][];
             /** @description Named secret values referenced by `${secret:NAME}` in rewrite actions. Values are encrypted at rest and masked in subsequent policy responses. */
             secrets?: {
                 [key: string]: string;
             };
-            /** @description Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present. */
+            /** @description Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects VM port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present. */
             readonly hostname?: string | null;
             /** @description Server-derived; accepted and ignored on write so a client can PUT back a document it read. */
             readonly mitm_domains?: string[];
@@ -606,15 +606,15 @@ export interface components {
         };
         /** @description A VM's current network policy and its derived inbound exposure metadata. */
         PolicyDoc: {
-            /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
+            /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any VM port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
             policies?: components["schemas"]["PolicyEntry"][];
             /** @description Named secrets referenced by `${secret:NAME}` in rewrite actions. Stored values are represented as `***`; supply the original value when replacing a policy that uses it. */
             secrets?: {
                 [key: string]: string;
             };
-            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present. */
+            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects VM port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present. */
             readonly hostname?: string | null;
-            /** @description Domains whose matching traffic is evaluated by the request-level policy engine. */
+            /** @description Domains whose matching traffic is evaluated against request-level criteria. */
             readonly mitm_domains?: string[];
             /** @description Non-fatal policy application notices. */
             readonly warnings?: string[];
@@ -622,19 +622,19 @@ export interface components {
         /** @description One policy rule. `match` AND's its present fields (absent ⇒ catch-all). */
         PolicyEntry: {
             /**
-             * @description Traffic direction: `outbound` controls connections initiated by the VM; `inbound` exposes a guest port. Unknown values are rejected.
+             * @description Traffic direction: `outbound` controls connections initiated by the VM; `inbound` exposes a VM port. Unknown values are rejected.
              * @enum {string}
              */
             type: "outbound" | "inbound";
             match?: components["schemas"]["PolicyMatch"];
             action: components["schemas"]["PolicyAction"];
             /**
-             * @description Authentication for an inbound rule that exposes a port — `allow`, or a scaling-only action. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. All port-exposing inbound rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges.
+             * @description Authentication for an inbound rule that exposes a port — `allow`, or a scaling-only action. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the VM. The default is `arker`. This field is invalid on deny and outbound rules. All port-exposing inbound rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges.
              * @enum {string}
              */
             auth?: "open" | "arker";
         };
-        /** @description Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive, and inbound rules cannot use `hosts`. Port, IP, and host rules operate at the connection layer. Method, path, header, and body rules operate at the request layer. */
+        /** @description Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive, and inbound rules cannot use `hosts`. `ports`, `ips`, and `hosts` match a connection; `methods`, `paths`, `headers`, and `body_contains` match an individual request. */
         PolicyMatch: {
             /** @description Single ports and/or inclusive [start, end] ranges, e.g. [80, 443, [1000, 2000]]. Empty/absent = any port. Inbound allow rules require one or more individual ports and reject ranges. */
             ports?: (number | number[])[];
@@ -659,14 +659,14 @@ export interface components {
             gate?: components["schemas"]["Gate"];
             scaling?: components["schemas"]["ScalingAction"];
         };
-        /** @description Auto-scaling behavior for matched traffic. On an `outbound` rule it brackets the time the VM is blocked awaiting an upstream response; on an `inbound` rule it brackets the time the VM is idle between requests (scale to zero). Outbound rules may be narrowed by L7 criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and compose with `rewrite` / `gate` siblings. For outbound, prefer a `match.hosts` scope: a host-less scaling rule matches every flow it can see, which breaks certificate-pinning clients. */
+        /** @description Auto-scaling behavior for matched traffic. On an `outbound` rule it brackets the time the VM is blocked awaiting an upstream response; on an `inbound` rule it brackets the time the VM is idle between requests (scale to zero). Outbound rules may be narrowed by request-level criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and compose with `rewrite` / `gate` siblings. For outbound, prefer a `match.hosts` scope: a host-less scaling rule matches every outbound connection the VM makes, which is rarely what you want. */
         ScalingAction: {
             /**
-             * @description Suspend the VM (snapshot and free CPU/RAM). On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped. On an `outbound` rule, matched responses are delivered only once the upstream response is COMPLETE: a suspended VM has no running guest to receive bytes, so the proxy holds the whole body and hands it over at the end. Total latency is unchanged, but a response whose fragments are individually usable — an SSE token stream, for example — stops arriving incrementally, so a client rendering tokens as they arrive will see nothing until the response finishes. Enabling this is a deliberate trade of incremental delivery for the memory saving.
+             * @description Suspend the VM, releasing its CPU and memory while preserving its state. On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped. On an `outbound` rule, matched responses are delivered only once the upstream response is COMPLETE: a suspended VM is not running to receive bytes, so the proxy holds the whole body and hands it over at the end. Total latency is unchanged, but a response whose fragments are individually usable — an SSE token stream, for example — stops arriving incrementally, so a client rendering tokens as they arrive will see nothing until the response finishes. Enabling this is a deliberate trade of incremental delivery for the memory saving.
              * @default false
              */
             suspend?: boolean;
-            /** @description Whether a matched inbound request may wake a suspended VM. Omit this field to allow waking. Set it to `false` so a request that would need to start the VM fails with `503 vm_suspended`; requests received while the VM is running are served normally. This field is not valid on outbound rules. */
+            /** @description Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead — this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. The field has no schema default: when it is absent, waking is allowed. */
             wake?: boolean;
         };
         /** @description Mutate-and-forward. Host/path/header/body values support request-time `$`-token interpolation: `$domain`, `$path`, `$method`, `$vm_id`, `$body` (the request body as received, also `${…}`-braced), and `$$` for a literal `$`. Unknown/unresolved tokens pass through unchanged. */
@@ -814,7 +814,7 @@ export interface components {
             name?: string | null;
             /** @description Short optional description owned by this VM. */
             description: string | null;
-            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present. */
+            /** @description Nullable base `.app` hostname for inbound services. The bare hostname selects VM port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present. */
             readonly hostname?: string | null;
             /** @description When `true`, other orgs can fork this VM (but cannot run on it). */
             public: boolean;
@@ -835,9 +835,9 @@ export interface components {
             max_vcpus?: number | null;
             /** @description Smallest vCPU count accepted for this VM. */
             min_vcpus?: number | null;
-            /** @description Hard memory ceiling (MiB) a fork can hotplug up to. */
+            /** @description Hard memory ceiling (MiB) a fork can grow to. */
             max_memory_mib?: number | null;
-            /** @description Non-hotpluggable base memory (MiB). */
+            /** @description Base memory (MiB) that is always present and is never released. */
             min_memory_mib?: number | null;
             /** @description GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A base VM is GPU-agnostic and may be offered on several GPUs at once, so this is a list — clients pick the entry matching the platform they intend to request. */
             gpu_platforms?: components["schemas"]["GpuPlatformLimits"][] | null;
@@ -851,7 +851,7 @@ export interface components {
             resources: components["schemas"]["VmResources"];
             /** @description Immutable platform identity of this concrete VM. */
             platform?: string | null;
-            /** @description Source-compatible platforms structurally offered in this region. This is not a live-capacity signal. */
+            /** @description Platforms this source can be forked onto in this region. This is not a live-capacity signal. */
             compatible_platforms?: components["schemas"]["CompatiblePlatform"][] | null;
         };
         ListVmsResponse: {
@@ -920,9 +920,8 @@ export interface components {
             /**
              * @description Comma-separated list of resources to release after the run
              *     finishes. Values: `cpu`, `memory`, `disk`. `"cpu"` frees
-             *     vCPU but keeps memory hot for the next run on this VM;
-             *     `"cpu,memory,disk"` is a full release (closest to a
-             *     suspend).
+             *     vCPU while keeping memory allocated for the next run on this
+             *     VM; `"cpu,memory,disk"` releases all three.
              */
             release?: string | null;
             /**
@@ -957,11 +956,11 @@ export interface components {
             stderr_encoding: "utf-8" | "base64";
             /** @description The command's exit status. `null` means a prompt ended the run before a command completion marker was received, so no exit status is available. This is expected for `end_symbol` and REPL commands. If it is unexpected, `stdout` can show that an interpreter from an earlier run received the command. Exit the interpreter, pass `end_symbol: "none"`, or use another session. */
             exit_code: number | null;
-            /** @description Execution mode selected by the service, when reported. */
+            /** @description Opaque service-selected execution mode, reported for diagnostics only. Do not depend on its values. */
             dispatch?: string | null;
             /** @description Requested total memory in MiB when this run included a memory override. Absent when no override was requested. */
             memory_requested_mib?: number | null;
-            /** @description Achieved total memory in MiB after applying the run's memory override. A memory reduction is best-effort, so this value can exceed `memory_requested_mib` when guest pages cannot be released. Absent when no override was requested. */
+            /** @description Achieved total memory in MiB after applying the run's memory override. A memory reduction is best-effort, so this value can exceed `memory_requested_mib` when memory still in use cannot be released. Absent when no override was requested. */
             memory_achieved_mib?: number | null;
             /** @description True when a requested memory reduction was only partially applied. The command runs with the achieved allocation, and `memory_achieved_mib` reports that allocation. Defaults to false. */
             memory_partial?: boolean;
@@ -1083,7 +1082,7 @@ export interface components {
             queue_ms: number;
             /** @description Wall-clock command execution time, in milliseconds. */
             executor_duration_ms: number;
-            /** @description Execution engine used for the command. */
+            /** @description Opaque identifier for how the command was executed, reported for diagnostics only. Do not depend on its values. */
             executor_kind: string;
             /** @description CPU time consumed by command execution, in milliseconds. */
             executor_cpu_ms: number;
@@ -1283,7 +1282,7 @@ export interface components {
             content: string;
             /** @description Inclusive starting byte offset. */
             start: number;
-            /** @description Exclusive ending byte offset. The range is half-open `[start, end)`, so a whole file of `N` bytes uses `start=0` and `end=N`. */
+            /** @description EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected. */
             end: number;
             /** @description Lowercase hexadecimal SHA-256 digest used to verify file content. */
             sha256?: string | null;
@@ -1419,7 +1418,7 @@ export interface components {
         SyncByteRange: {
             /** @description Inclusive starting byte offset. */
             start: number;
-            /** @description Exclusive ending byte offset. The range is half-open `[start, end)`, so a whole file of `N` bytes uses `start=0` and `end=N`. */
+            /** @description EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected. */
             end: number;
         };
         SyncEntryError: {
@@ -2413,7 +2412,7 @@ export interface operations {
                 size: number;
                 /** @description Optional checksum, verified on the write that completes the file. */
                 sha256?: string;
-                /** @description Treat the body as a tar archive and extract it into `path` server-side, so a whole directory syncs in one request. Use `tar` for already-compressed data and `tar.gz` when compression reduces the upload size. */
+                /** @description Treat the body as a tar archive and unpack it into `path`, so a whole directory is written in one request. Use `tar` for data that is already compressed and `tar.gz` when compression reduces the upload size. */
                 extract?: "tar.gz" | "tgz" | "tar";
             };
             header?: never;

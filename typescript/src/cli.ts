@@ -193,7 +193,9 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   },
   sync: {
     ...GLOBAL_OPTIONS,
+    from: { type: "string" },
     read: { type: "boolean" },
+    to: { type: "string" },
   },
   "sync-dir": {
     ...GLOBAL_OPTIONS,
@@ -623,7 +625,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   }
 
   // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
-  // the fork onto a worker of that compute platform and fails closed if none
+  // the fork onto a machine of that compute platform and fails closed if none
   // is available — it never silently falls back to another arch. Comma-
   // separate to allow any of several platforms (e.g. `graviton2,icelake`).
   // Omit to inherit the source VM's platform set.
@@ -651,8 +653,8 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
       }
     : undefined;
 
-  // --no-disk forks a nodisk (memory-backed) VM; by default the server derives
-  // disk behavior from the source. Inbound reachability is intentionally not
+  // --no-disk forks a memory-backed VM with no persistent disk; by default the
+  // service derives disk behavior from the source. Inbound reachability is intentionally not
   // exposed on the CLI yet.
   const disk = boolFlag(args, "no-disk") ? false : undefined;
 
@@ -889,8 +891,9 @@ async function cmdSignal(args: ParsedArgs, client: Arker): Promise<void> {
   process.exitCode = result.exitCode ?? 0;
 }
 
-// Recursive local -> VM directory sync. `sync` moves one file; this moves a
-// tree, and only the files whose contents differ.
+// Deprecated alias of `arker sync <vm_id> <remote> --from <local>`, kept so
+// existing scripts keep working. Recursive local -> VM directory sync: only the
+// files whose contents differ are sent.
 async function cmdSyncDir(args: ParsedArgs, client: Arker): Promise<void> {
   const vm = args.positional[0] ?? die("usage: arker sync-dir <vm_id> <local_dir> <remote_dir> [--assume-empty]");
   const localDir = args.positional[1] ?? die("missing local_dir");
@@ -989,19 +992,35 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
 }
 
 const SYNC_USAGE =
-  "usage: arker sync <vm_id> <path> [data|-]   (omit data to read; - or a pipe writes stdin)";
+  "usage: arker sync <vm_id> <path> [data|-] [--from LOCAL] [--to LOCAL]   " +
+  "(omit data to read; - or a pipe writes stdin)";
 
 /** How long a piped-but-silent stdin is given to prove it is a writer before
  *  `arker sync` refuses to guess. Only reached when the arguments alone leave
  *  the direction open. */
 const STDIN_DIRECTION_GRACE_MS = 2000;
 
-// File I/O on a VM. Direction comes from the arguments, mirroring the SDK's
-// `sync(path)` = read / `sync(path, data)` = write overloads. stdin is only
-// consulted when the arguments leave it open, and never blocks indefinitely.
+// File I/O on a VM: read (no data), write (inline arg or piped stdin), or copy
+// a local file/directory in (--from) or out (--to) — mirroring the SDK's single
+// `sync()` entrypoint. Direction comes from the arguments; stdin is only
+// consulted when they leave it open, and never blocks indefinitely.
 async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
   const vm = args.positional[0] ?? die(SYNC_USAGE);
   const path = args.positional[1] ?? die("missing path");
+  const fromLocal = args.flags.from as string | undefined;
+  const toLocal = args.flags.to as string | undefined;
+  if (fromLocal && toLocal) die("pass --from or --to, not both");
+  if (fromLocal) {
+    if (!existsSync(fromLocal)) die(`no such file or directory: ${fromLocal}`);
+    const res = await client.vm(vm).sync(path, { fromLocal });
+    out(`sent ${res.sent} file(s), ${res.bytesSent} bytes to ${path} (skipped ${res.skipped})`);
+    return;
+  }
+  if (toLocal) {
+    const res = await client.vm(vm).sync(path, { toLocal });
+    out(`received ${res.sent} file(s), ${res.bytesSent} bytes from ${path}`);
+    return;
+  }
   const inline = args.positional[2];
 
   const write = async (data: Uint8Array | string): Promise<void> => {
@@ -1258,6 +1277,7 @@ const OPTION_HELP: Record<string, { placeholder?: string; desc: string }> = {
   "disk-mib": { placeholder: "<n>", desc: "disk size in MiB" },
   file: { placeholder: "<path>", desc: "read the policy document from this file" },
   "filesystem-id": { placeholder: "<id>", desc: "filter by filesystem" },
+  from: { placeholder: "<local>", desc: "upload this local file or directory into the VM" },
   "gpu-sms": { placeholder: "<n>", desc: "GPU SM count, in hardware units" },
   "gpu-vram-mib": { placeholder: "<n>", desc: "GPU VRAM in MiB, in hardware units" },
   help: { desc: "show help without connecting" },
@@ -1286,6 +1306,7 @@ const OPTION_HELP: Record<string, { placeholder?: string; desc: string }> = {
   state: { desc: "filter by lifecycle state" },
   timeout: { placeholder: "<seconds>", desc: "exec/kill bound in seconds (omitted or 0 = unbounded)" },
   "time-to-background": { placeholder: "<seconds>", desc: "sync window; 0 returns a run id immediately (default 120)" },
+  to: { placeholder: "<local>", desc: "download the VM path to this local file or directory" },
   vcpu: { placeholder: "<n>", desc: "vCPU count" },
   vgpu: { placeholder: "<fraction>", desc: "GPU size in eighths of a card (0.125 - 1)" },
   "vm-id": { placeholder: "<id>", desc: "target VM by global id" },
@@ -1376,12 +1397,21 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
     summary: "Signal a session's foreground process group.",
   },
   sync: {
-    synopsis: ["arker sync <vm_id> <path> [data|-] [flags]"],
-    summary: "Read a file from the VM, or write data/stdin into it.",
+    synopsis: [
+      "arker sync <vm_id> <path> [data|-] [flags]",
+      "arker sync <vm_id> <path> --from <local> [flags]",
+      "arker sync <vm_id> <path> --to <local> [flags]",
+    ],
+    summary: "Move files between the VM and here: read, write, upload or download.",
+    notes: [
+      "--from uploads a local file or directory into <path>; --to downloads <path>",
+      "out to a local file or directory. Without either, <path> is read (no data)",
+      "or written (data argument, '-', or piped stdin).",
+    ],
   },
   "sync-dir": {
     synopsis: ["arker sync-dir <vm_id> <local> <remote> [flags]"],
-    summary: "Sync a local directory into the VM.",
+    summary: "Deprecated: use 'arker sync <vm_id> <remote> --from <local>'.",
   },
   syncs: {
     synopsis: ["arker syncs <ls|create|rm> <vm_id> [args] [flags]"],
@@ -1501,7 +1531,9 @@ function usage(command?: string, sub?: string): void {
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
       "  arker sync <vm_id> <path> [data|-]          read a file, or write data/stdin",
       "  arker sync <vm_id> <path> --read            read a file, ignoring stdin",
-      "  arker sync-dir <vm_id> <local> <remote>     sync a directory into the VM",
+      "  arker sync <vm_id> <path> --from <local>    upload a local file or directory",
+      "  arker sync <vm_id> <path> --to <local>      download a file or directory",
+      "  arker sync-dir <vm_id> <local> <remote>     deprecated: use sync --from",
       "  arker signal <vm_id> <SIGINT|SIGTERM|SIGKILL|SIGHUP>",
       "                                              signal a session's foreground group",
       "",
@@ -1522,7 +1554,7 @@ function usage(command?: string, sub?: string): void {
       "  --vcpu <n>                 vCPU count for the new VM (capped by source max_vcpus)",
       "  --memory-mib <n>           memory (MiB) for the new VM",
       "  --disk-mib <n>             disk size (MiB) for the new VM",
-      "  --no-disk                  fork a memory-backed (nodisk) VM",
+      "  --no-disk                  fork a memory-backed VM with no disk",
       "",
       "Update flags:",
       "  --description <text>       replace the VM description (empty clears it)",

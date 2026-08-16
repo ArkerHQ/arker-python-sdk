@@ -55,10 +55,8 @@ function vmMetadata(vm: VM): string {
   return fields.length > 0 ? ` (${fields.join(", ")})` : "";
 }
 
-// Synchronous run() auto-polls a backgrounded run (one that outlived its sync
-// window) to completion under the hood, so the result is always the terminal
-// run — no manual background polling needed here. `label` is retained for
-// call-site readability.
+// Synchronous run() waits for the command to finish, so the result is always a
+// terminal run — no manual background polling needed here.
 async function runAndWait(vm: VM, command: string, timeout: number, _label: string): Promise<CompletedRunResult> {
   return vm.run(command, { timeout: timeout * 1000 });
 }

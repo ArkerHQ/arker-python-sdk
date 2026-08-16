@@ -2,7 +2,7 @@
 #
 # Browser checkpoints — quick start
 #
-# fork snapshots a machine's live memory, so forking a running browser
+# A fork comes up exactly where its source was, so forking a running browser
 # checkpoints it mid-session. Here we open two Wikipedia pages and fork at each,
 # leaving two live checkpoints you can reopen over VNC.
 #
