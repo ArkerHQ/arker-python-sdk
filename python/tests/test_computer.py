@@ -398,7 +398,7 @@ def test_listed_vm_uses_its_placement_endpoint() -> None:
 def test_list_runs_uses_control_plane_and_filters() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=vm&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
         200,
         {
             "since": 10,
@@ -407,7 +407,6 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
             "offset": 5,
             "lite": True,
             "rows": [{
-                "source": "arkerd",
                 "t_ms": 10,
                 "request_id": "req_1",
                 "run_id": "run_1",
@@ -419,7 +418,7 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
                 "total_ms": 12.5,
                 "queue_ms": 1.5,
                 "executor_duration_ms": 10,
-                "executor_kind": "firecracker",
+                "executor_kind": "vm",
                 "executor_cpu_ms": 8,
                 "executor_mem_mb": 64,
                 "vm_vcpus": 2,
@@ -457,7 +456,7 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
             limit=25,
             offset=5,
             lite=True,
-            runtime="fc",
+            runtime="vm",
             endpoint="run",
             actions=["run", "fork"],
             status=["success", "internal"],
@@ -626,8 +625,8 @@ def test_resize_patches_vm_resources() -> None:
     with use_transport(t):
         result = client().vm("vm_1").update(memory_mib=1024)
 
-    # resize now PATCHes /v1/vms/{id} with a resources object (arkerd reality;
-    # the old POST /v1/vms/{id}/resize route does not exist). None fields are pruned.
+    # resize now PATCHes /v1/vms/{id} with a resources object (the server has no
+    # POST /v1/vms/{id}/resize route). None fields are pruned.
     assert json.loads(t.calls[0]["body"]) == {"resources": {"memory_mib": 1024}}
     assert result is not None
 
@@ -815,10 +814,7 @@ def test_read_presigned_follows_url() -> None:
 
 
 def test_small_write_streams_to_sync_stream() -> None:
-    """`sync` streams raw bytes to /sync-stream rather than base64-ing them
-    into a JSON writes[] envelope. Measured in-region, streaming beat the
-    inline path 103-112 MB/s vs 41-50, so it is the default at every size the
-    router will accept."""
+    """A content write puts the bytes on the wire as-is, in one request."""
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and "/sync-stream" in url,
@@ -833,7 +829,7 @@ def test_small_write_streams_to_sync_stream() -> None:
     assert "/sync-stream" in call["url"]
     assert "path=%2Fhome%2Fuser%2Fx" in call["url"]
     assert "size=11" in call["url"]
-    # Raw body: no base64, so none of the +33% inflation the JSON path pays.
+    # The bytes travel as-is.
     body = call["body"]
     assert (body.encode() if isinstance(body, str) else body) == b"hello world"
 
@@ -851,9 +847,9 @@ def test_empty_write_sends_one_empty_chunk() -> None:
     }]})
 
     with use_transport(t):
-        # `sync()` streams now; the inline write machinery stays reachable via
-        # sync_dir's fallback for servers predating /sync-stream, so this
-        # exercises it directly rather than through the public entrypoint.
+        # `sync()` streams now; the chunked write machinery stays reachable as
+        # a compatibility fallback, so this exercises it directly rather than
+        # through the public entrypoint.
         client().vm("vm_1")._sync_write_inline("/home/user/empty", b"")
 
     writes = json.loads(t.calls[0]["body"])["writes"]
@@ -886,9 +882,9 @@ def test_mid_size_write_inlines_chunks_in_one_request() -> None:
     ]})
 
     with use_transport(t):
-        # `sync()` streams now; the inline write machinery stays reachable via
-        # sync_dir's fallback for servers predating /sync-stream, so this
-        # exercises it directly rather than through the public entrypoint.
+        # `sync()` streams now; the chunked write machinery stays reachable as
+        # a compatibility fallback, so this exercises it directly rather than
+        # through the public entrypoint.
         client().vm("vm_1")._sync_write_inline("/home/user/big", payload)
 
     # One request, two chunks sharing an upload_id; only the final chunk
@@ -1640,3 +1636,257 @@ def test_retry_after_hint_drives_the_actual_sleep() -> None:
         ).fork(source_vm_name="source-vm")
     assert time.monotonic() - started >= 0.045
     assert len(t.calls) == 2
+
+
+# ── Unified sync(): one call, transport chosen internally ────────────────────
+
+def _stream_calls(t: FakeTransport) -> list[dict[str, Any]]:
+    return [call for call in t.calls if "/sync-stream" in call["url"]]
+
+
+def _extract_mode(url: str) -> str | None:
+    query = httpx.URL(url).params
+    return query.get("extract")
+
+
+def test_sync_from_local_small_file_sends_bytes(tmp_path) -> None:
+    """A lone small file has nothing to gain from an archive, so it goes as
+    plain bytes in one request."""
+    local = tmp_path / "note.txt"
+    local.write_bytes(b"hello world")
+
+    t = FakeTransport()
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        result = client().vm("vm_1").sync("/home/user/note.txt", from_local=str(local))
+
+    assert (result.sent, result.bytes_sent) == (1, 11)
+    call = _stream_calls(t)[0]
+    assert _extract_mode(call["url"]) is None
+    assert "path=%2Fhome%2Fuser%2Fnote.txt" in call["url"]
+    assert call["body"] == b"hello world"
+
+
+def test_sync_from_local_large_file_uses_archive(tmp_path) -> None:
+    """At or above the archive threshold a single file travels as an archive,
+    so its mode bits travel with it."""
+    local = tmp_path / "blob.bin"
+    local.write_bytes(b"\0" * (sdk.ARCHIVE_MIN_BYTES + 1))
+
+    t = FakeTransport()
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        client().vm("vm_1").sync("/home/user/blob.bin", from_local=str(local))
+
+    call = _stream_calls(t)[0]
+    assert _extract_mode(call["url"]) in ("tar", "tar.gz")
+    assert "path=%2Fhome%2Fuser" in call["url"]
+
+
+def test_sync_from_local_executable_uses_archive(tmp_path) -> None:
+    """An executable file is small but still needs its mode preserved."""
+    local = tmp_path / "tool"
+    local.write_bytes(b"#!/bin/sh\necho hi\n")
+    local.chmod(0o755)
+
+    t = FakeTransport()
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        client().vm("vm_1").sync("/usr/local/bin/tool", from_local=str(local))
+
+    assert _extract_mode(_stream_calls(t)[0]["url"]) in ("tar", "tar.gz")
+
+
+def test_sync_from_local_dir_sends_one_archive(tmp_path) -> None:
+    """A multi-file tree is one request regardless of file count."""
+    (tmp_path / "pkg").mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / "pkg" / name).write_text(name * 10)
+
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/pkg", "hash_algo": "sha256",
+         "entries": [], "truncated": False},
+    )
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        result = client().vm("vm_1").sync("/home/user/pkg", from_local=str(tmp_path / "pkg"))
+
+    assert result.sent == 3
+    assert len(_stream_calls(t)) == 1
+    assert _extract_mode(_stream_calls(t)[0]["url"]) in ("tar", "tar.gz")
+
+
+def test_sync_from_local_dir_skips_unchanged(tmp_path) -> None:
+    """What the VM already has is authoritative: matching files are not sent."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.txt").write_text("same")
+    digest = __import__("hashlib").sha256(b"same").hexdigest()
+
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/pkg", "hash_algo": "sha256",
+         "entries": [{"path": "a.txt", "size": 4, "mode": 0o100644, "hash": digest}],
+         "truncated": False},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").sync("/home/user/pkg", from_local=str(tmp_path / "pkg"))
+
+    assert (result.sent, result.skipped) == (0, 1)
+    assert _stream_calls(t) == []
+
+
+def test_incompressible_payload_is_not_compressed(tmp_path) -> None:
+    """Compression only pays when the payload actually shrinks."""
+    import os as _os
+    (tmp_path / "pkg").mkdir()
+    for index in range(4):
+        (tmp_path / "pkg" / f"r{index}.bin").write_bytes(_os.urandom(256 * 1024))
+
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/pkg", "hash_algo": "sha256",
+         "entries": [], "truncated": False},
+    )
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        client().vm("vm_1").sync("/home/user/pkg", from_local=str(tmp_path / "pkg"))
+
+    assert _extract_mode(_stream_calls(t)[0]["url"]) == "tar"
+
+
+def test_compressible_payload_is_compressed(tmp_path) -> None:
+    (tmp_path / "pkg").mkdir()
+    for index in range(4):
+        (tmp_path / "pkg" / f"t{index}.txt").write_text("def hello(): return 'world'\n" * 12000)
+
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/pkg", "hash_algo": "sha256",
+         "entries": [], "truncated": False},
+    )
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        client().vm("vm_1").sync("/home/user/pkg", from_local=str(tmp_path / "pkg"))
+
+    assert _extract_mode(_stream_calls(t)[0]["url"]) == "tar.gz"
+
+
+def test_sync_to_local_file(tmp_path) -> None:
+    """VM -> client for a single file."""
+    dest = tmp_path / "out.txt"
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/out.txt", "hash_algo": "sha256",
+         "entries": [], "truncated": False},
+    )
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "read", "path": "/home/user/out.txt", "size": 5,
+         "content": "hello", "encoding": "utf8"},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").sync("/home/user/out.txt", to_local=str(dest))
+
+    assert dest.read_bytes() == b"hello"
+    assert (result.sent, result.bytes_sent) == (1, 5)
+
+
+def test_sync_to_local_dir_reads_each_file(tmp_path) -> None:
+    """VM -> client for a directory. There is no bulk read, so this is one
+    request per file."""
+    dest = tmp_path / "pulled"
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/pkg", "hash_algo": "sha256",
+         "entries": [
+             {"path": "a.txt", "size": 1, "mode": 0o100644, "hash": "0" * 64},
+             {"path": "nested/b.txt", "size": 1, "mode": 0o100644, "hash": "1" * 64},
+         ],
+         "truncated": False},
+    )
+    for body in ("A", "B"):
+        t.add_json(
+            lambda m, u: m == "POST" and u.endswith("/sync"),
+            200,
+            {"ok": True, "op": "read", "path": "x", "size": 1, "content": body, "encoding": "utf8"},
+        )
+
+    with use_transport(t):
+        result = client().vm("vm_1").sync("/home/user/pkg", to_local=str(dest))
+
+    assert result.sent == 2
+    assert sorted(q.name for q in dest.rglob("*.txt")) == ["a.txt", "b.txt"]
+    assert (dest / "nested" / "b.txt").exists()
+
+
+def test_sync_rejects_both_directions() -> None:
+    with pytest.raises(sdk.ArkerError) as caught:
+        client().vm("vm_1").sync("/home/user/x", from_local="a", to_local="b")
+    assert caught.value.code == "invalid_request"
+
+
+def test_sync_dir_alias_still_works(tmp_path) -> None:
+    """The deprecated alias forwards to the same code path."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.txt").write_text("hello")
+
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/pkg", "hash_algo": "sha256",
+         "entries": [], "truncated": False},
+    )
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        result = client().vm("vm_1").sync_dir(str(tmp_path / "pkg"), "/home/user/pkg")
+
+    assert result.sent == 1
+    assert isinstance(result, sdk.SyncResult)
+
+
+def test_sync_from_local_renames_on_upload(tmp_path) -> None:
+    """The destination basename may differ from the local one; the archive entry
+    must carry the DESTINATION name or the file lands under the wrong path."""
+    import io
+    import tarfile as _tarfile
+
+    local = tmp_path / "orig.bin"
+    local.write_bytes(b"\0" * (sdk.ARCHIVE_MIN_BYTES + 1))
+
+    t = FakeTransport()
+    t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        client().vm("vm_1").sync("/home/user/renamed.bin", from_local=str(local))
+
+    call = _stream_calls(t)[0]
+    params = httpx.URL(call["url"]).params
+    assert params.get("path") == "/home/user"
+    mode = params.get("extract")
+    assert mode in ("tar", "tar.gz")
+    with _tarfile.open(fileobj=io.BytesIO(call["body"]), mode="r:*") as archive:
+        assert archive.getnames() == ["renamed.bin"]

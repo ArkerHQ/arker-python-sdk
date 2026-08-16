@@ -243,7 +243,6 @@ class ListRunsResponse:
 
 @dataclass(frozen=True)
 class OrgRunListRow:
-    source: Literal['arkerd']
     t_ms: int
     request_id: str
     run_id: str
@@ -271,6 +270,7 @@ class OrgRunListRow:
     body_bytes_out: int
     body_in: str
     body_out: str
+    source: str | None = None
 
 
 @dataclass(frozen=True)

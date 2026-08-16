@@ -441,7 +441,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Control-plane listing of run activity visible to the authenticated caller across VMs, providers, and regions."
+        "description": "Organization-wide listing of run activity visible to the authenticated caller across VMs, providers, and regions."
       }
     },
     "/v1/vms/{id}": {
@@ -568,7 +568,7 @@
           "Policies"
         ],
         "summary": "Replace a VM network policy",
-        "description": "Replace the complete network policy of a mutable VM owned by the authenticated caller and apply it to the running VM. Golden templates are immutable.",
+        "description": "Replace the complete network policy of a mutable VM owned by the authenticated caller and apply it to the running VM. Public template VMs are immutable.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1038,7 +1038,7 @@
           "PTY"
         ],
         "summary": "Open an interactive PTY (WebSocket upgrade)",
-        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.",
+        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.",
         "security": [
           {
             "BearerAuth": []
@@ -1154,7 +1154,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and bind-mount it into this VM at `path`.\nBidirectional by virtue of being a mount \u2014 there is no separate\nsync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
+        "description": "Create a persistent sync: ensure a Filesystem exists (creating\none if requested) and attach it to this VM at `path`.\nReads and writes are visible in both directions, so there is no\nseparate sync-direction parameter. Returns `ErrorResponse` code\n`conflict` if a sync already exists at `path`.\n"
       },
       "get": {
         "operationId": "listSyncs",
@@ -1315,7 +1315,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Optional checksum, verified by the guest on the write that completes the file."
+            "description": "Optional checksum, verified on the write that completes the file."
           },
           {
             "name": "extract",
@@ -1329,7 +1329,7 @@
                 "tar"
               ]
             },
-            "description": "Treat the body as a tar and extract it into `path` server-side, making a directory sync ONE round-trip. Use `tar` for incompressible data (skips a guest gunzip that costs ~3.4x the untar) and `tar.gz` where the upload-bandwidth win pays for it."
+            "description": "Treat the body as a tar archive and unpack it into `path`, so a whole directory is written in one request. Use `tar` for data that is already compressed and `tar.gz` when compression reduces the upload size."
           }
         ],
         "requestBody": {
@@ -1361,7 +1361,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Stream RAW bytes straight into the VM over vsock as they arrive, so the\nclient upload and the guest write overlap into one apparent hop — no\nbase64 inflation on the client leg and no host temp file. With `extract`\nset the body is a tar and `path` is the destination directory: arkerd\nlands it at an internal guest temp path and untars it in the guest\nbefore responding, collapsing a whole directory sync into a single\nclient round-trip.\n"
+        "description": "Write a file into the VM in a single request, streaming the body as it arrives. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory is written in one request."
       }
     },
     "/v1/filesystems": {
@@ -1733,7 +1733,7 @@
           "stale_route",
           "unrecoverable"
         ],
-        "description": "Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity. `capacity_unavailable` means no worker can currently serve the requested platform and one is being brought up; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again."
+        "description": "Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means capacity is temporarily exhausted. `capacity_unavailable` means the requested platform has no capacity right now and more is being provisioned; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again."
       },
       "ErrorBody": {
         "type": "object",
@@ -1793,7 +1793,7 @@
           "current_usage": {
             "type": "integer",
             "minimum": 0,
-            "description": "Usage observed by admission."
+            "description": "Usage counted against the limit at the time of the request."
           },
           "requested_increment": {
             "type": "integer",
@@ -1857,11 +1857,11 @@
       "PolicyWriteRequest": {
         "type": "object",
         "additionalProperties": false,
-        "description": "A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port.",
+        "description": "A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any VM port.",
         "properties": {
           "policies": {
             "type": "array",
-            "description": "Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports.",
+            "description": "Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any VM port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports.",
             "items": {
               "$ref": "#/components/schemas/PolicyEntry"
             }
@@ -1879,7 +1879,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+            "description": "Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects VM port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
           },
           "mitm_domains": {
             "type": "array",
@@ -1906,7 +1906,7 @@
         "properties": {
           "policies": {
             "type": "array",
-            "description": "Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports.",
+            "description": "Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any VM port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports.",
             "items": {
               "$ref": "#/components/schemas/PolicyEntry"
             }
@@ -1924,7 +1924,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects VM port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
           },
           "mitm_domains": {
             "type": "array",
@@ -1932,7 +1932,7 @@
               "type": "string"
             },
             "readOnly": true,
-            "description": "Domains whose matching traffic is evaluated by the request-level policy engine."
+            "description": "Domains whose matching traffic is evaluated against request-level criteria."
           },
           "warnings": {
             "type": "array",
@@ -1959,7 +1959,7 @@
               "outbound",
               "inbound"
             ],
-            "description": "Traffic direction: `outbound` controls connections initiated by the VM; `inbound` exposes a guest port. Unknown values are rejected."
+            "description": "Traffic direction: `outbound` controls connections initiated by the VM; `inbound` exposes a VM port. Unknown values are rejected."
           },
           "match": {
             "$ref": "#/components/schemas/PolicyMatch"
@@ -1973,14 +1973,14 @@
               "open",
               "arker"
             ],
-            "description": "Authentication for an inbound rule that exposes a port — `allow`, or a scaling-only action. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. All port-exposing inbound rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges."
+            "description": "Authentication for an inbound rule that exposes a port — `allow`, or a scaling-only action. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the VM. The default is `arker`. This field is invalid on deny and outbound rules. All port-exposing inbound rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges."
           }
         }
       },
       "PolicyMatch": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive, and inbound rules cannot use `hosts`. Port, IP, and host rules operate at the connection layer. Method, path, header, and body rules operate at the request layer.",
+        "description": "Match criteria: present fields are combined with AND; list items are combined with OR. `ips` and `hosts` are mutually exclusive, and inbound rules cannot use `hosts`. `ports`, `ips`, and `hosts` match a connection; `methods`, `paths`, `headers`, and `body_contains` match an individual request.",
         "properties": {
           "ports": {
             "type": "array",
@@ -2084,16 +2084,16 @@
       "ScalingAction": {
         "type": "object",
         "additionalProperties": false,
-        "description": "Auto-scaling behavior for matched traffic. On an `outbound` rule it brackets the time the VM is blocked awaiting an upstream response; on an `inbound` rule it brackets the time the VM is idle between requests (scale to zero). Outbound rules may be narrowed by L7 criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and compose with `rewrite` / `gate` siblings. For outbound, prefer a `match.hosts` scope: a host-less scaling rule matches every flow it can see, which breaks certificate-pinning clients.",
+        "description": "Auto-scaling behavior for matched traffic. On an `outbound` rule it brackets the time the VM is blocked awaiting an upstream response; on an `inbound` rule it brackets the time the VM is idle between requests (scale to zero). Outbound rules may be narrowed by request-level criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and compose with `rewrite` / `gate` siblings. For outbound, prefer a `match.hosts` scope: a host-less scaling rule matches every outbound connection the VM makes, which is rarely what you want.",
         "properties": {
           "suspend": {
             "type": "boolean",
             "default": false,
-            "description": "Suspend the VM (snapshot and free CPU/RAM). On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped."
+            "description": "Suspend the VM, releasing its CPU and memory while preserving its state. On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped."
           },
           "wake": {
             "type": "boolean",
-            "description": "Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead — this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. (Deliberately declared with no JSON-Schema `default`: a schema default is MATERIALIZED by the generated wire types, which would stamp `wake` onto every scaling action including outbound ones — where the field is invalid — and would also emit it into every stored policy document, breaking older workers that reject unknown fields. The absent-means-wake semantic lives in this description and in the server's `ScalingAction::wakes()`.)"
+            "description": "Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead — this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. The field has no schema default: when it is absent, waking is allowed."
           }
         }
       },
@@ -2508,7 +2508,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects VM port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
           },
           "public": {
             "type": "boolean",
@@ -2567,7 +2567,7 @@
             ],
             "minimum": 0,
             "maximum": 255,
-            "description": "Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run."
+            "description": "Hard vCPU ceiling for a fork of this VM. Requesting more fails the run."
           },
           "min_vcpus": {
             "type": [
@@ -2584,7 +2584,7 @@
               "null"
             ],
             "minimum": 0,
-            "description": "Hard memory ceiling (MiB) a fork can hotplug up to."
+            "description": "Hard memory ceiling (MiB) a fork can grow to."
           },
           "min_memory_mib": {
             "type": [
@@ -2592,7 +2592,7 @@
               "null"
             ],
             "minimum": 0,
-            "description": "Non-hotpluggable base memory (MiB)."
+            "description": "Base memory (MiB) that is always present and is never released."
           },
           "gpu_platforms": {
             "type": [
@@ -2602,7 +2602,7 @@
             "items": {
               "$ref": "#/components/schemas/GpuPlatformLimits"
             },
-            "description": "GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A golden is GPU-agnostic and may be offered on several GPUs at once, so this is a list \u2014 clients pick the entry matching the platform they intend to request."
+            "description": "GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A source VM may be offered on several GPU platforms at once, so this is a list \u2014 pick the entry matching the platform you intend to request."
           },
           "min_disk_mib": {
             "type": [
@@ -2646,7 +2646,7 @@
             "items": {
               "$ref": "#/components/schemas/CompatiblePlatform"
             },
-            "description": "Source-compatible platforms structurally offered in this region. This is not a live-capacity signal."
+            "description": "Platforms this source can be forked onto in this region. This is not a live-capacity signal."
           }
         }
       },
@@ -2752,7 +2752,7 @@
             ]
           },
           "session_idx": {
-            "description": "Zero-based session index within the VM. Selects a shell SLOT on the VM, FIND-OR-CREATE: if no session occupies this index one is created. Use distinct indexes to run commands CONCURRENTLY on one VM \u2014 a per-session lock means two runs targeting the same session serialise. Omitting BOTH `session_id` and `session_idx` targets index 0, the VM's default shell, so unrelated callers that both omit them share one shell and therefore one working directory, environment, and lock.",
+            "description": "Zero-based session index within the VM. Selects a shell SLOT on the VM, FIND-OR-CREATE: if no session occupies this index one is created. Use distinct indexes to run commands CONCURRENTLY on one VM \u2014 two runs targeting the same session are serialised. Omitting BOTH `session_id` and `session_idx` targets index 0, the VM's default shell, so unrelated callers that both omit them share one shell and therefore one working directory and environment.",
             "type": [
               "integer",
               "null"
@@ -2837,7 +2837,7 @@
               "string",
               "null"
             ],
-            "description": "Comma-separated list of resources to release after the run\nfinishes. Values: `cpu`, `memory`, `disk`. `\"cpu\"` frees\nvCPU but keeps memory hot for the next run on this VM;\n`\"cpu,memory,disk\"` is a full release (closest to a\nsuspend).\n"
+            "description": "Comma-separated list of resources to release after the run\nfinishes. Values: `cpu`, `memory`, `disk`. `\"cpu\"` frees\nvCPU while keeping memory allocated for the next run on this\nVM; `\"cpu,memory,disk\"` releases all three.\n"
           },
           "signal": {
             "type": [
@@ -2927,7 +2927,7 @@
             "type": "integer"
           },
           "dispatch": {
-            "description": "Execution mode selected by the service, when reported.",
+            "description": "Opaque service-selected execution mode, reported for diagnostics only. Do not depend on its values.",
             "type": [
               "string",
               "null"
@@ -2941,7 +2941,7 @@
             ]
           },
           "memory_achieved_mib": {
-            "description": "Achieved total memory in MiB after applying the run's memory override. A memory reduction is best-effort, so this value can exceed `memory_requested_mib` when guest pages cannot be released. Absent when no override was requested.",
+            "description": "Achieved total memory in MiB after applying the run's memory override. A memory reduction is best-effort, so this value can exceed `memory_requested_mib` when memory still in use cannot be released. Absent when no override was requested.",
             "type": [
               "integer",
               "null"
@@ -3224,7 +3224,6 @@
       "OrgRunListRow": {
         "type": "object",
         "required": [
-          "source",
           "t_ms",
           "request_id",
           "run_id",
@@ -3256,11 +3255,9 @@
         "additionalProperties": false,
         "properties": {
           "source": {
-            "description": "Service that recorded the activity.",
+            "description": "Deprecated and no longer meaningful; do not depend on this field.",
             "type": "string",
-            "enum": [
-              "arkerd"
-            ]
+            "deprecated": true
           },
           "t_ms": {
             "description": "Activity timestamp as Unix epoch milliseconds.",
@@ -3307,7 +3304,7 @@
             "type": "integer"
           },
           "executor_kind": {
-            "description": "Execution engine used for the command.",
+            "description": "Opaque identifier for how the command was executed, reported for diagnostics only. Do not depend on its values.",
             "type": "string"
           },
           "executor_cpu_ms": {
@@ -3839,7 +3836,7 @@
             "minimum": 0
           },
           "end": {
-            "description": "EXCLUSIVE ending byte offset \u2014 the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`.",
+            "description": "EXCLUSIVE ending byte offset \u2014 the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected.",
             "type": "integer",
             "minimum": 0
           },
@@ -4226,7 +4223,7 @@
             "minimum": 0
           },
           "end": {
-            "description": "EXCLUSIVE ending byte offset \u2014 the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`.",
+            "description": "EXCLUSIVE ending byte offset \u2014 the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected.",
             "type": "integer",
             "minimum": 0
           }
@@ -4410,7 +4407,7 @@
             "items": {
               "type": "string"
             },
-            "description": "OpenSSH public keys authorized for terminator auth and in-VM sshd injection."
+            "description": "OpenSSH public keys authorized for SSH access to this VM."
           }
         }
       },
@@ -4574,7 +4571,7 @@
       },
       "GpuPlatformLimits": {
         "type": "object",
-        "description": "GPU sizing bounds for one platform a VM can be forked onto, from the goldens.toml `[[gpu_platform]]` catalog.",
+        "description": "GPU sizing bounds for one platform a VM can be forked onto.",
         "required": [
           "platform",
           "vram_mib",

@@ -29,10 +29,34 @@ const data = await vm.sync("/tmp/data.txt"); // read -> Uint8Array
 await vm.delete();
 ```
 
+## Syncing files
+
+`vm.sync()` is the single call for moving files in either direction. It takes a
+path inside the VM, plus what to do with it:
+
+```ts
+const data = await vm.sync("/home/user/out.txt");                 // read a file
+await vm.sync("/home/user/in.txt", "hello\n");                    // write a file
+await vm.sync("/home/user/project", { fromLocal: "./project" });  // upload
+await vm.sync("/home/user/project", { toLocal: "./project" });    // download
+```
+
+`fromLocal` accepts a file or a directory. Directories are uploaded recursively
+and incrementally: the VM's current contents decide what needs to move, so a
+repeat call transfers nothing and an edited file transfers alone. File mode —
+including the executable bit — is preserved, missing parent directories are
+created, and it works on a VM that has never run. A failure is always reported;
+a sync never half-applies silently.
+
+`toLocal` copies a file or directory out of the VM to a local path.
+
+`fromLocal` and `toLocal` touch the local filesystem, so they are Node-only. The
+read and write forms work in any runtime.
+
 ## Interactive PTY
 
-`arker shell` opens a native PTY session over WebSocket. It does not use SSH and
-does not call `/runs` for each line:
+`arker shell` opens an interactive terminal session in the VM — a real PTY, not a
+sequence of one-off commands:
 
 ```bash
 arker shell vm_123
@@ -70,9 +94,11 @@ await ar.vm(vmId).connectPty({ sessionId?, cols?, rows?, command?, persist? });
 await ar.vm(vmId).update({ resources: { vcpu, memory_mib, disk_mib } });
 await ar.vm(vmId).delete();
 
-// Files inside a VM
-await vm.sync(path);                          // read  -> Uint8Array
-await vm.sync(path, data);                    // write
+// Files: one call, both directions, files or directories
+await vm.sync(path);                                 // read a file -> Uint8Array
+await vm.sync(path, data);                           // write a file
+await vm.sync(path, { fromLocal: "./project" });     // upload a file or directory
+await vm.sync(path, { toLocal: "./project" });       // download a file or directory
 
 // Filesystems — standalone, persistent volumes
 await ar.createFilesystem({ name });

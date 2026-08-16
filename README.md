@@ -92,7 +92,7 @@ const ar = new Arker({ provider: "gcp", region: "us-central1" });
 arker fork "$ARKER_SOURCE_VM" --provider gcp --region us-central1
 ```
 
-You can also use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript after client setup. The catalog returns only `provider` and `region`, and every listed placement supports fork, run, and sync. GCP `us-central1` does not currently support encrypted network policies, SSH, shared directories, desktop ingress, or cross-platform restore. Its regional API returns `unsupported_operation` for these optional operations.
+You can also use `ar.list_regions()` in Python or `ar.listRegions()` in TypeScript after client setup. The catalog returns only `provider` and `region`, and every listed placement supports fork, run, and sync. GCP `us-central1` does not currently support encrypted network policies, SSH, shared directories, desktop ingress, or forking across compute platforms. Its regional API returns `unsupported_operation` for these optional operations.
 
 ### CLI
 
@@ -117,7 +117,7 @@ Runnable quick-starts in [`examples/`](./examples):
 - [`browser/`](./examples/browser) — open two Wikipedia pages and fork a live checkpoint at each
 - [`coding-agent/`](./examples/coding-agent) — background coding agents (Claude Code, Codex, Cursor)
 - [`firmware/`](./examples/firmware) — a coding agent edits firmware and runs it on QEMU
-- [`policies/`](./examples/policies) — host-enforced egress policy as code
+- [`policies/`](./examples/policies) — egress policy as code
 
 ### Get Started
 

@@ -164,7 +164,11 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     help: { type: "boolean" },
     json: { type: "boolean" },
   },
-  sync: GLOBAL_OPTIONS,
+  sync: {
+    ...GLOBAL_OPTIONS,
+    from: { type: "string" },
+    to: { type: "string" },
+  },
   syncs: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
@@ -548,7 +552,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   }
 
   // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
-  // the fork onto a worker of that compute platform and fails closed if none
+  // the fork onto a machine of that compute platform and fails closed if none
   // is available — it never silently falls back to another arch. Comma-
   // separate to allow any of several platforms (e.g. `graviton2,icelake`).
   // Omit to inherit the source VM's platform set.
@@ -578,8 +582,8 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
       }
     : undefined;
 
-  // --no-disk forks a nodisk (memory-backed) VM; by default the server derives
-  // disk behavior from the source. Inbound reachability is intentionally not
+  // --no-disk forks a memory-backed VM with no persistent disk; by default the
+  // service derives disk behavior from the source. Inbound reachability is intentionally not
   // exposed on the CLI yet.
   const disk = boolFlag(args, "no-disk") ? false : undefined;
 
@@ -858,10 +862,24 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
   }
 }
 
-// File I/O on a VM: read (no data) or write (inline arg or piped stdin).
+// File I/O on a VM: read (no data), write (inline arg or piped stdin), or copy
+// a local file/directory in (--from) or out (--to).
 async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
-  const vm = args.positional[0] ?? die("usage: arker sync <vm_id> <path> [data]   (omit data to read; or pipe stdin to write)");
+  const vm = args.positional[0] ?? die("usage: arker sync <vm_id> <path> [data] [--from LOCAL] [--to LOCAL]");
   const path = args.positional[1] ?? die("missing path");
+  const fromLocal = args.flags.from as string | undefined;
+  const toLocal = args.flags.to as string | undefined;
+  if (fromLocal && toLocal) die("pass --from or --to, not both");
+  if (fromLocal) {
+    const res = await client.vm(vm).sync(path, { fromLocal });
+    out(`sent ${res.sent} file(s), ${res.bytesSent} bytes to ${path} (skipped ${res.skipped})`);
+    return;
+  }
+  if (toLocal) {
+    const res = await client.vm(vm).sync(path, { toLocal });
+    out(`received ${res.sent} file(s), ${res.bytesSent} bytes from ${path}`);
+    return;
+  }
   const inline = args.positional[2];
   if (inline !== undefined) {
     await client.vm(vm).sync(path, inline);
@@ -1077,6 +1095,8 @@ function usage(_command?: string): void {
       "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
       "  arker sync <vm_id> <path> [data]            read or write a file",
+      "  arker sync <vm_id> <path> --from <local>    upload a local file or directory",
+      "  arker sync <vm_id> <path> --to <local>      download a file or directory",
       "",
       "Flags:",
       "  --region <region>          (or env ARKER_REGION)",
@@ -1090,7 +1110,7 @@ function usage(_command?: string): void {
       "  --vcpu <n>                 vCPU count for the new VM (capped by source max_vcpus)",
       "  --memory-mib <n>           memory (MiB) for the new VM",
       "  --disk-mib <n>             disk size (MiB) for the new VM",
-      "  --no-disk                  fork a memory-backed (nodisk) VM",
+      "  --no-disk                  fork a memory-backed VM with no disk",
       "",
       "Update flags:",
       "  --description <text>       replace the VM description (empty clears it)",
