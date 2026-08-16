@@ -2,7 +2,7 @@
  * Arker TypeScript SDK.
  *
  * A small wrapper around the VM API. Configure a region for the standard
- * Arker endpoints, or pass baseUrl directly for internal/dev targets.
+ * Arker endpoints, or pass baseUrl directly to target a specific deployment.
  */
 
 import type { components, operations } from "./generated/api-types.js";
@@ -15,33 +15,45 @@ type ApiQuery<Name extends keyof operations> = NonNullable<
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
- * Size at which the router stops buffering a `/sync-stream` body and forwards
- * it as a stream (`DEFAULT_PROXY_BODY_LIMIT` in arkerd-router). Measured before
- * that change landed: 64 MiB returned 200, 72 MiB returned 413
- * `payload_too_large`.
- *
- * The SDK no longer branches on this — every write streams, and the router
- * picks buffered or streamed forwarding itself. Retained because it is exported
- * API and still describes where that switch happens.
+ * Largest single request body the service accepts. A larger body is rejected
+ * with 413 `payload_too_large`; the limit is exact and fails loudly, never
+ * truncating. `sync()` streams its body, so this bounds one request, not the
+ * total a call may transfer.
  */
 export const STREAM_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
- * Below this, don't bother sampling for compressibility — the gzip decision
- * costs more than it can save. Above it, `syncDir` samples before choosing
- * `tar` vs `tar.gz` (the guest pays ~3.4x for gunzip over a plain untar, so
- * gzipping an incompressible tree is a pure loss).
+ * A single file at or above this size is uploaded as an archive rather than as
+ * a plain byte body, so its mode bits travel with it.
+ */
+const ARCHIVE_MIN_BYTES = 1024 * 1024;
+
+/**
+ * Below this, don't bother sampling for compressibility — the decision costs
+ * more than it can save.
  */
 const COMPRESSION_SAMPLE_MIN_BYTES = 256 * 1024;
 
 /**
- * How many files to hash at once in `syncDir`. Bounds open file descriptors
- * while still overlapping I/O; the CPU side is serial in Node regardless.
+ * How many files to hash at once. Bounds open file descriptors while still
+ * overlapping I/O; the CPU side is serial in Node regardless.
  */
 const HASH_CONCURRENCY = 8;
 
-/** Ratio below which gzip is judged worth its extraction cost. */
-const COMPRESSION_WORTH_IT_RATIO = 0.9;
+/** How many files to fetch at once when pulling a directory out of a VM. */
+const DOWNLOAD_CONCURRENCY = 8;
+
+/**
+ * Compress only when a sample sees at least this much reduction. A payload
+ * that barely compresses costs time on both ends for nothing.
+ */
+const COMPRESSION_WORTH_IT_RATIO = 0.6;
+
+/**
+ * Fastest gzip setting. Higher settings buy ~1% more reduction for ~3x the
+ * time, which loses on any link fast enough to matter.
+ */
+const COMPRESSION_LEVEL = 1;
 
 /** Bump to invalidate every persisted stat cache after a format change. */
 const STAT_CACHE_VERSION = 1;
@@ -93,9 +105,8 @@ interface StatCacheFile {
 }
 
 /**
- * Pull arkerd's `{error:{code,message}}` envelope off a failed response.
- * Shared so every transfer path reports failures identically — the sync call
- * sites previously each parsed errors their own way.
+ * Pull the `{error:{code,message}}` envelope off a failed response. Shared so
+ * every transfer path reports failures identically.
  */
 /**
  * Where the persisted stat cache lives. Honours XDG on Linux and the platform
@@ -818,7 +829,7 @@ export class Arker {
     const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
     const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
     const vmId = vm.vm_id;
-    // Child lives on the same host the fork was posted to.
+    // The child is served by the endpoint the fork was posted to.
     return new VM(this, vmId, baseUrl, vm);
   }
 
@@ -1037,8 +1048,8 @@ export class VM {
     } as ForkRequest;
     const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
     const vmId = vm.vm_id;
-    // The child is forked on the same compute host as the source, so it lives
-    // on the same base URL (this.baseUrl) — not whatever the id alone implies.
+    // The child is served by the same endpoint as its source, so it keeps
+    // this.baseUrl — not whatever the id alone implies.
     return new VM(this._client, vmId, this.baseUrl, vm);
   }
 
@@ -1093,12 +1104,11 @@ export class VM {
    *
    * This is the recovery path when a session is stuck — e.g. an interactive
    * program (`python3`, `psql`, `cat`) holds the terminal and never returns to
-   * a prompt the run matcher recognises. Nothing else clears that state:
-   * {@link cancelRun} cancels the run record but not the process, a run's
-   * `timeout` does not apply once a REPL owns the terminal, and attaching a
-   * PTY to a busy session does not get through. A signal request
-   * short-circuits before the exec dispatch, so it is not queued behind the
-   * stuck run.
+   * a prompt. Nothing else clears that state: {@link cancelRun} cancels the
+   * run record but not the process, a run's `timeout` does not apply once a
+   * REPL owns the terminal, and attaching a PTY to a busy session does not get
+   * through. A signal is delivered even while the session is busy, so it is
+   * never queued behind the stuck run.
    *
    * `SIGKILL` is the reliable choice. `SIGINT` behaves exactly as Ctrl-C would
    * — a Python REPL catches it, prints `KeyboardInterrupt` and keeps running —
@@ -1171,29 +1181,100 @@ export class VM {
   }
 
   /**
-   * Read or write a file in this VM over `POST /v1/vms/{id}/sync`.
-   * Omit `data` to read; pass `data` (string or bytes) to write. The
-   * client picks inline transfer for small files and presigned uploads
-   * for large ones automatically.
+   * Move files between this VM and the caller. One call covers every case; the
+   * SDK picks how the bytes travel.
    *
-   *     const bytes = await vm.sync("/home/user/out.txt");   // read
-   *     await vm.sync("/home/user/in.txt", "hello\n");       // write
+   *     const bytes = await vm.sync("/home/user/out.txt");                    // read a file
+   *     await vm.sync("/home/user/in.txt", "hello\n");                        // write a file
+   *     await vm.sync("/home/user/project", { fromLocal: "./project" });      // upload a file or directory
+   *     await vm.sync("/home/user/project", { toLocal: "./project" });        // download a file or directory
    *
-   * To mount a standalone filesystem into the VM, use `vm.syncs.create`.
+   * `fromLocal` uploads a local path INTO the VM at `path`. Directories are
+   * uploaded recursively and incrementally: only files that are new or changed
+   * on the VM are transferred, and the VM's current contents are authoritative,
+   * so a repeat call moves nothing. File mode (including the executable bit) is
+   * preserved. It works on a VM that has never run.
+   *
+   * `toLocal` copies `path` OUT of the VM onto the local filesystem, recursing
+   * when `path` is a directory.
+   *
+   * `fromLocal` and `toLocal` read and write the local filesystem, so they are
+   * Node-only. The two-argument content forms work in any runtime.
+   *
+   * To mount a standalone filesystem into the VM, use `vm.createSync`.
    */
   async sync(path: string): Promise<Uint8Array>;
   async sync(path: string, data: Uint8Array | string): Promise<void>;
-  async sync(path: string, data?: Uint8Array | string): Promise<Uint8Array | void> {
+  async sync(path: string, options: SyncUploadOptions | SyncDownloadOptions): Promise<SyncResult>;
+  async sync(
+    path: string,
+    data?: Uint8Array | string | SyncUploadOptions | SyncDownloadOptions,
+  ): Promise<Uint8Array | SyncResult | void> {
     if (data === undefined) return this.syncRead(path);
-    const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
-    // Stream straight to the VM's disk, at every size. Syncing to a VM has no
-    // reason to detour through object storage — the bytes' destination is the
-    // guest filesystem, not S3. Presigned uploads existed only because the
-    // router buffered proxied bodies and capped them; it now forwards
-    // sync-stream as a stream above that cap, so the detour is gone. Presigned
-    // remains correct for SHARED FILESYSTEMS, where the bytes really do live in
-    // S3 — that is a different route (`/dirs/{id}/sync`), not this one.
-    await this.syncWriteStream(path, bytes);
+    if (typeof data === "string" || data instanceof Uint8Array) {
+      const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+      await this.syncWriteStream(path, bytes);
+      return;
+    }
+    if ("fromLocal" in data) return this.uploadLocal(data.fromLocal, path, data);
+    if ("toLocal" in data) return this.downloadToLocal(path, data.toLocal);
+    throw new ArkerError("invalid_request", "sync options must set fromLocal or toLocal", 0);
+  }
+
+  /**
+   * @deprecated Use `vm.sync(remoteDir, { fromLocal: localDir })`, which
+   * behaves identically and also handles single files and downloads.
+   */
+  async syncDir(localDir: string, remoteDir: string, options: SyncDirOptions = {}): Promise<SyncDirResult> {
+    return this.uploadTree(localDir, remoteDir, options);
+  }
+
+  /**
+   * Upload a local file or directory into the VM at `remotePath`.
+   */
+  private async uploadLocal(
+    localPath: string,
+    remotePath: string,
+    options: SyncDirOptions,
+  ): Promise<SyncResult> {
+    const fsp = (await import("node:fs")).promises;
+    const nodePath = await import("node:path");
+    const stat = await fsp.stat(localPath);
+    if (stat.isDirectory()) return this.uploadTree(localPath, remotePath, options);
+
+    // A lone file: the destination is the file itself, so an archive is rooted
+    // at its parent directory with the destination basename as its one entry.
+    const remoteRoot = nodePath.posix.dirname("/" + remotePath.replace(/^\/+/, ""));
+    const rel = nodePath.posix.basename(remotePath.replace(/\/+$/, ""));
+    const abs = nodePath.resolve(localPath);
+    const transport = await this.selectWriteTransport([{ abs, size: stat.size, mode: stat.mode }]);
+    if (transport.kind === "bytes") {
+      await this.syncWriteStream(remotePath, new Uint8Array(await fsp.readFile(abs)));
+      return { sent: 1, skipped: 0, bytesSent: stat.size };
+    }
+    // An archive entry takes its name from the path on disk, so a destination
+    // with a different basename needs the file staged under that name first. A
+    // hard link avoids copying the bytes; a copy covers a cross-device staging
+    // directory.
+    let root = nodePath.dirname(abs);
+    let staged: string | undefined;
+    if (nodePath.basename(abs) !== rel) {
+      const os = await import("node:os");
+      staged = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "arker-stage-"));
+      const target = nodePath.join(staged, rel);
+      try {
+        await fsp.link(abs, target);
+      } catch {
+        await fsp.copyFile(abs, target);
+      }
+      root = staged;
+    }
+    try {
+      await this.uploadAndExtractTarball([{ rel, abs }], root, remoteRoot, fsp, transport.compress);
+    } finally {
+      if (staged) await fsp.rm(staged, { recursive: true, force: true }).catch(() => {});
+    }
+    return { sent: 1, skipped: 0, bytesSent: stat.size };
   }
 
   /**
@@ -1208,12 +1289,8 @@ export class VM {
    * whose (size, mtime) are unchanged. It never decides remote state, so it can
    * never cause a stale or missing upload — worst case it re-hashes a file it
    * didn't need to.
-   *
-   *     const cache = new Map();
-   *     await vm.syncDir("./project", "/home/user/project", { cache }); // full
-   *     await vm.syncDir("./project", "/home/user/project", { cache }); // delta
    */
-  async syncDir(localDir: string, remoteDir: string, options: SyncDirOptions = {}): Promise<SyncDirResult> {
+  private async uploadTree(localDir: string, remoteDir: string, options: SyncDirOptions = {}): Promise<SyncDirResult> {
     const fs = await import("node:fs");
     const nodePath = await import("node:path");
     const { createHash } = await import("node:crypto");
@@ -1226,9 +1303,8 @@ export class VM {
     //    that doesn't exist yet (or an empty VM) yields {} -> everything is sent.
     const clock = () => Number(process.hrtime.bigint() / 1000n) / 1000;
     //    `assumeEmpty` skips the round-trip on a destination the caller knows
-    //    is fresh. `manifestMs` then rounds to 0 on its own (the skip costs
-    //    microseconds against 0.1ms reporting precision), so a caller can still
-    //    tell "skipped" from "merely fast" — a real fetch is ~184ms.
+    //    is fresh. `manifestMs` then rounds to 0 on its own, so a caller can
+    //    still tell "skipped" from "merely fast".
     const tManifest0 = clock();
     const manifest = options.assumeEmpty
       ? { entries: new Map<string, string>(), truncated: false }
@@ -1271,7 +1347,7 @@ export class VM {
     const cache = options.cache;
     const result: SyncDirResult = { sent: 0, skipped: 0, bytesSent: 0 };
     if (manifest.truncated) result.manifestTruncated = true;
-    const changed: Array<{ rel: string; abs: string }> = [];
+    const changed: Array<{ rel: string; abs: string; size: number; mode: number }> = [];
 
     // Hash with bounded concurrency, streaming each file rather than reading it
     // whole. Two distinct wins, and it is worth being precise about which:
@@ -1331,12 +1407,12 @@ export class VM {
       }),
     );
 
-    // Diff in the original (sorted) order so the tarball is reproducible and the
+    // Diff in the original (sorted) order so the payload is reproducible and the
     // counters are deterministic regardless of which hash finished first.
     for (let index = 0; index < localFiles.length; index++) {
       const file = localFiles[index]!;
       if (remote.get(file.rel) === hashes[index]) { result.skipped += 1; continue; }
-      changed.push({ rel: file.rel, abs: file.abs });
+      changed.push({ rel: file.rel, abs: file.abs, size: file.sig.size, mode: file.sig.mode });
       result.sent += 1;
       result.bytesSent += file.sig.size;
     }
@@ -1345,9 +1421,18 @@ export class VM {
     const tUpload0 = clock();
 
     // 4. Upload the changed files and apply them to the VM in one batch. The
-    //    operation's exit is checked, so a failure surfaces (never a silent partial);
-    //    the diff also fails safe — any omitted file is re-sent next call.
-    if (changed.length > 0) await this.uploadAndExtractTarball(changed, localRoot, remoteRoot, fsp);
+    //    operation's outcome is checked, so a failure surfaces (never a silent
+    //    partial); the diff also fails safe — any omitted file is re-sent next
+    //    call.
+    if (changed.length > 0) {
+      const transport = await this.selectWriteTransport(changed);
+      if (transport.kind === "bytes") {
+        const only = changed[0]!;
+        await this.syncWriteStream(`${remoteRoot}/${only.rel}`, new Uint8Array(await fsp.readFile(only.abs)));
+      } else {
+        await this.uploadAndExtractTarball(changed, localRoot, remoteRoot, fsp, transport.compress);
+      }
+    }
     // Only after the upload succeeded — persisting earlier would record files
     // as synced that never made it.
     if (!options.cache) await saveStatCache(cacheFile, fresh);
@@ -1378,29 +1463,37 @@ export class VM {
         }
       }
     }
-    // The server caps the walk (SYNC_MANIFEST_MAX_ENTRIES, 50_000) and reports
-    // `truncated`. Past the cap every omitted file looks absent, so the diff
-    // marks it changed and re-uploads it: correct, but it silently turns the
-    // delta sync into a full sync on exactly the trees where the delta matters
-    // most. Surfacing it lets the caller see that rather than wonder why a
-    // "delta" sync moves the whole tree every time.
+    // The listing is capped and reports `truncated`. Past the cap every omitted
+    // file looks absent, so the diff marks it changed and re-uploads it:
+    // correct, but it silently turns an incremental sync into a full one on
+    // exactly the trees where the increment matters most. Surfacing it lets the
+    // caller see that rather than wonder why the whole tree moves every time.
     return { entries: out, truncated: payload.truncated === true };
   }
 
-  /** One-round-trip directory upload: stream a gzip tar to `/sync-stream` and
-   * let arkerd untar it IN THE GUEST before responding.
-   *
-   * Params ride in the query string, not headers: the auth middleware strips
-   * `x-arker-*` from untrusted callers and would erase them.
-   *
-   * The body is sent raw (`application/octet-stream`) — no base64, so none of
-   * the +33% inflation the JSON write path pays. */
   /**
-   * THE single `/sync-stream` call site. Every streaming upload — single file
-   * and directory tarball alike — goes through here so auth, content-type,
-   * retry and error parsing cannot drift apart (they previously did: this path
-   * had bespoke error handling and no retry at all, while `putPresigned` had
-   * retry and a different error shape).
+   * Choose how a set of local files is put on the wire. Every upload goes
+   * through here, so the choice is made in exactly one place.
+   *
+   * A lone small file travels as its own bytes; anything else travels as one
+   * archive, which keeps a whole tree to a single request and carries mode bits
+   * with it. Compression is applied only when a sample of the payload says it
+   * actually compresses.
+   */
+  private async selectWriteTransport(
+    files: Array<{ abs: string; size: number; mode: number }>,
+  ): Promise<{ kind: "bytes" } | { kind: "archive"; compress: boolean }> {
+    const only = files.length === 1 ? files[0]! : undefined;
+    if (only && only.size < ARCHIVE_MIN_BYTES && (only.mode & 0o111) === 0) {
+      return { kind: "bytes" };
+    }
+    return { kind: "archive", compress: await this.shouldCompress(files) };
+  }
+
+  /**
+   * The single upload call site. Every write — a lone file and a whole tree
+   * alike — goes through here, so auth, content type, retry and error handling
+   * cannot drift apart between them.
    *
    * `body` is a factory, not a value: a retried attempt needs a fresh body,
    * and a stream can only be consumed once.
@@ -1441,7 +1534,8 @@ export class VM {
       }
       if (res.ok) return;
       const parsed = await parseErrorResponse(res, `${what} failed (${res.status})`);
-      // 413 is the router's body cap, not a transient fault — never retry it.
+      // 413 means the body exceeded the accepted size — not a transient fault,
+      // so never retry it.
       if (!RETRYABLE_HTTP.has(res.status) || attempt === attempts - 1) {
         throw new ArkerError(parsed.code, parsed.message, res.status);
       }
@@ -1457,14 +1551,13 @@ export class VM {
     await this.syncStreamPost(
       { path: remoteRoot, size: String(tar.byteLength), extract: mode },
       () => tar as BodyInit,
-      "sync-stream extract",
+      "sync upload",
     );
   }
 
   /**
-   * Upload a tarball straight off disk instead of reading it into memory first.
-   * A 2 GB tree produced a 2 GB Buffer under the old `readFile` approach purely
-   * to hand it to fetch.
+   * Upload an archive straight off disk instead of reading it into memory
+   * first, so a 2 GB tree does not mean a 2 GB allocation.
    *
    * The body is a factory so a retry gets a FRESH read stream — a consumed
    * stream cannot be replayed, which is why `syncStreamPost` takes a factory
@@ -1481,26 +1574,24 @@ export class VM {
     await this.syncStreamPost(
       { path: remoteRoot, size: String(size), extract: mode },
       () => Readable.toWeb(fs.createReadStream(localTar)) as unknown as BodyInit,
-      "sync-stream extract",
+      "sync upload",
     );
   }
 
   /**
-   * Decide whether gzip earns its keep for this file set.
+   * Decide whether compressing this file set earns its keep.
    *
-   * The guest pays for decompression: arkerd measures gunzip at ~3.4x a plain
-   * untar (294ms vs 86ms for 2000 files), so gzipping an already-compressed
-   * tree (images, video, archives, binaries) is a pure loss at both ends. Source
-   * trees, by contrast, compress ~4:1 and are well worth it.
+   * Compression costs time at both ends, so it only pays when the payload
+   * genuinely shrinks. Already-compressed data (images, video, archives,
+   * binaries) is a pure loss; source trees shrink several-fold and are well
+   * worth it.
    *
    * Samples the head of a handful of files rather than compressing everything
-   * twice. Falls back to compressing when the sample is too small to be
-   * meaningful, preserving the previous always-gzip behaviour for tiny syncs.
+   * twice. A sample too small to be meaningful is treated as compressible,
+   * which is harmless at that size.
    */
-  private async shouldCompress(
-    changed: Array<{ rel: string; abs: string }>,
-    fsp: typeof import("node:fs").promises,
-  ): Promise<boolean> {
+  private async shouldCompress(changed: Array<{ abs: string }>): Promise<boolean> {
+    const fsp = (await import("node:fs")).promises;
     const zlib = await import("node:zlib");
     const { promisify } = await import("node:util");
     const gzipAsync = promisify(zlib.gzip);
@@ -1516,12 +1607,12 @@ export class VM {
           if (bytesRead === 0) continue;
           const chunk = buffer.subarray(0, bytesRead);
           raw += chunk.length;
-          compressed += (await gzipAsync(chunk)).length;
+          compressed += (await gzipAsync(chunk, { level: COMPRESSION_LEVEL })).length;
         } finally {
           await handle.close();
         }
       } catch {
-        // Unreadable sample file — the tar step will surface it if it matters.
+        // Unreadable sample file — the pack step will surface it if it matters.
       }
     }
     if (raw < COMPRESSION_SAMPLE_MIN_BYTES) return true;
@@ -1529,13 +1620,10 @@ export class VM {
   }
 
   /**
-   * Write one file by streaming its bytes raw — no base64, no S3 hop.
-   *
-   * Measured in-region against the paths this replaces: 103-154 MB/s here vs
-   * 41-50 MB/s inline and 25-56 MB/s presigned. Parity with the inline path is
-   * verified: identical bytes, size and mode, nested parent directories are
-   * created, and the optional `sha256` is enforced by the guest (a wrong digest
-   * is rejected 409 rather than silently accepted).
+   * Write one file by streaming its bytes as-is, in a single request. Nested
+   * parent directories are created, and the optional `sha256` is verified
+   * before the write completes — a wrong digest is rejected rather than
+   * silently accepted.
    */
   private async syncWriteStream(path: string, data: Uint8Array, sha256?: string): Promise<void> {
     const query: Record<string, string> = { path, size: String(data.length) };
@@ -1543,7 +1631,7 @@ export class VM {
     await this.syncStreamPost(query, () => data as BodyInit, "sync write");
   }
 
-  /** Pack the changed files (paths relative to `localRoot`) into one tar and
+  /** Pack the changed files (paths relative to `localRoot`) into one archive and
    * unpack it inside the VM. Uses node-tar, which reads the files from disk
    * preserving mode (exec bits) + mtime. */
   private async uploadAndExtractTarball(
@@ -1551,34 +1639,23 @@ export class VM {
     localRoot: string,
     remoteRoot: string,
     fsp: typeof import("node:fs").promises,
+    compress: boolean,
   ): Promise<void> {
     const tar = await import("tar");
     const os = await import("node:os");
     const nodePath = await import("node:path");
 
-    // gzip when it pays: source trees compress ~4:1 (a Linux checkout goes
-    // 319 MB -> 70 MB) and this tarball is ONE request, so compressing is a
-    // large win there. On an already-compressed tree it is a double loss —
-    // wasted CPU here plus ~3.4x the extraction cost in the guest — so sample
-    // first rather than always gzipping. `tar -xf` sniffs compression, so
-    // either choice extracts correctly and older guests stay compatible.
-    const compress = await this.shouldCompress(changed, fsp);
     const mode = compress ? "tar.gz" : "tar";
     const localTar = nodePath.join(os.tmpdir(), `arker-sync-${ulid()}.${mode}`);
     try {
       await tar.create(
-        { file: localTar, cwd: localRoot, gzip: compress },
+        { file: localTar, cwd: localRoot, gzip: compress ? { level: COMPRESSION_LEVEL } : false },
         changed.map((entry) => entry.rel),
       );
 
-      // FAST PATH: one round-trip. `/sync-stream?extract=tar.gz` streams the
-      // tarball to the guest over vsock and untars it THERE before responding.
-      // The legacy path below is upload + a SEPARATE `run("tar -xf")` — two
-      // round-trips, with the extract going through the user run scheduler
-      // where it can queue behind an active foreground run.
-      //
-      // Falls back on 404 so older servers still work: the route only became
-      // reachable once registered in openapi.json.
+      // Preferred path: the whole set travels in ONE request and is unpacked
+      // before the response. Falls back below when the deployment does not
+      // offer it.
       try {
         if (this._client._supportsStreamingBody()) {
           const { size } = await fsp.stat(localTar);
@@ -1594,15 +1671,14 @@ export class VM {
         }
       }
 
-      // We only reach here because sync-stream answered 404 — an older server
-      // that predates the route. So the fallback must NOT go through `sync()`,
-      // which now streams and would 404 identically. Use the inline/presigned
-      // write that those servers do understand.
+      // Compatibility fallback, reached only when the preferred path is not
+      // available. It must not route back through `sync()`, which would fail
+      // identically.
       const remoteTar = `/tmp/.arker-sync-${ulid()}.${mode}`;
       await this.syncWriteInline(remoteTar, await fsp.readFile(localTar));
 
-      // `set -e` + explicit rm: any extract failure exits non-zero; the tarball
-      // is removed on success. Missing parent dirs are created by mkdir/tar.
+      // `set -e` + explicit rm: any failure exits non-zero; the archive is
+      // removed on success. Missing parent dirs are created by mkdir/tar.
       const q = shellQuoteSingle;
       const cmd =
         `set -e; mkdir -p ${q(remoteRoot)}; ` +
@@ -1612,13 +1688,65 @@ export class VM {
         const stderr = (res.stderr ?? "").slice(0, 300);
         throw new ArkerError(
           "internal",
-          `syncDir tar extract failed (exit=${res.exitCode}, state=${res.state}): ${stderr}`,
+          `sync upload failed (exit=${res.exitCode}, state=${res.state}): ${stderr}`,
           200,
         );
       }
     } finally {
       await fsp.unlink(localTar).catch(() => {});
     }
+  }
+
+  /**
+   * Copy `remotePath` out of the VM to `localPath`, recursing when it is a
+   * directory. Node-only: it writes the local filesystem.
+   */
+  private async downloadToLocal(remotePath: string, localPath: string): Promise<SyncResult> {
+    const fsp = (await import("node:fs")).promises;
+    const nodePath = await import("node:path");
+    const remoteRoot = "/" + remotePath.replace(/^\/+/, "").replace(/\/+$/, "");
+
+    // A directory listing on a plain file (or a path that does not exist) comes
+    // back empty, which is the signal to treat the path as a single file. A
+    // genuinely missing path then surfaces its own not-found error from the read.
+    let entries: Map<string, string>;
+    try {
+      ({ entries } = await this.remoteManifest(remoteRoot));
+    } catch {
+      entries = new Map();
+    }
+
+    if (entries.size === 0) {
+      const bytes = await this.syncRead(remoteRoot);
+      let dest = nodePath.resolve(localPath);
+      const asDir = await fsp.stat(dest).then((s) => s.isDirectory()).catch(() => false);
+      if (asDir || localPath.endsWith("/")) dest = nodePath.join(dest, nodePath.posix.basename(remoteRoot));
+      await fsp.mkdir(nodePath.dirname(dest), { recursive: true });
+      await fsp.writeFile(dest, bytes);
+      return { sent: 1, skipped: 0, bytesSent: bytes.length };
+    }
+
+    // One request per file: there is no bulk read, so fetch with bounded
+    // concurrency to keep the round trips overlapping.
+    const localRoot = nodePath.resolve(localPath);
+    const rels = Array.from(entries.keys()).sort();
+    const result: SyncResult = { sent: 0, skipped: 0, bytesSent: 0 };
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, rels.length) }, async () => {
+        for (;;) {
+          const rel = rels[next++];
+          if (rel === undefined) return;
+          const bytes = await this.syncRead(`${remoteRoot}/${rel}`);
+          const dest = nodePath.join(localRoot, ...rel.split("/"));
+          await fsp.mkdir(nodePath.dirname(dest), { recursive: true });
+          await fsp.writeFile(dest, bytes);
+          result.sent += 1;
+          result.bytesSent += bytes.length;
+        }
+      }),
+    );
+    return result;
   }
 
   private async syncRead(path: string): Promise<Uint8Array> {
@@ -1631,7 +1759,7 @@ export class VM {
     );
     if ("content" in response) return decodeBytes(response.content, response.encoding);
     const signed = await this._client._fetch(response.presigned_url);
-    if (!signed.ok) throw new ArkerError("internal", `signed GET failed: ${signed.status}`, signed.status);
+    if (!signed.ok) throw new ArkerError("internal", `sync read failed (${signed.status})`, signed.status);
     return new Uint8Array(await signed.arrayBuffer());
   }
 
@@ -1658,7 +1786,7 @@ export class VM {
       };
       const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, request, this.baseUrl);
       const result = response.results[0];
-      if (!result) throw new ArkerError("internal", "write response missing results[0]", 200);
+      if (!result) throw new ArkerError("internal", "sync write returned no result", 200);
       const error = result.error ?? undefined;
       if (!error) return result;
       lastError = error;
@@ -2422,19 +2550,19 @@ function bytesToBase64(data: Uint8Array): string {
   return btoa(binary);
 }
 
-/** Result of {@link VM.syncDir}. */
-export interface SyncDirResult {
-  /** Files uploaded (new or changed on the VM). */
+/** Result of a {@link VM.sync} transfer. */
+export interface SyncResult {
+  /** Files transferred. */
   sent: number;
-  /** Files already up-to-date on the VM (skipped). */
+  /** Files already up-to-date on the VM and therefore not transferred. */
   skipped: number;
-  /** Total bytes of the uploaded files. */
+  /** Total bytes of the transferred files. */
   bytesSent: number;
   /**
-   * True when the VM's manifest hit the server's entry cap (50,000 files) and
-   * was truncated. Everything beyond the cap is invisible to the diff, so it is
-   * treated as changed and re-uploaded — the sync stays CORRECT but stops being
-   * a delta. If you see this, split the sync into subdirectories.
+   * True when the VM's file listing hit the service's entry cap and was
+   * truncated. Everything beyond the cap is invisible to the comparison, so it
+   * is treated as changed and re-uploaded — the sync stays CORRECT but stops
+   * being incremental. If you see this, split the sync into subdirectories.
    */
   manifestTruncated?: boolean;
   /** Wall-clock ms per phase. Useful when a sync is slower than expected:
@@ -2443,24 +2571,39 @@ export interface SyncDirResult {
   timings?: { manifestMs: number; walkMs: number; hashMs: number; uploadMs: number };
 }
 
-/** Options for {@link VM.syncDir}. */
+/** @deprecated Alias of {@link SyncResult}. */
+export type SyncDirResult = SyncResult;
+
+/** Options shared by every {@link VM.sync} transfer. */
 export interface SyncDirOptions {
   /** Caller-owned accelerator cache: absolute local path -> {size, mtimeMs, hash}.
    * Reused across calls it skips re-hashing files whose (size, mtime) are
    * unchanged. Pure optimization — it never affects which files are sent. */
   cache?: Map<string, { size: number; mtimeMs: number; hash: string }>;
 
-  /** Skip the remote manifest round-trip and send everything.
+  /** Skip the check for what the VM already has and send everything.
    *
-   * The manifest exists to avoid re-sending unchanged files. On a FIRST sync
-   * into a fresh directory it is guaranteed empty, so the round-trip costs
-   * ~184ms to learn nothing. Set this when you know the destination is new
-   * (e.g. straight after a fork).
+   * That check exists to avoid re-sending unchanged files. On a FIRST sync into
+   * a fresh directory the answer is guaranteed to be "nothing", so the round
+   * trip learns nothing. Set this when you know the destination is new (e.g.
+   * straight after a fork).
    *
-   * Safe by construction: an empty manifest means "send everything", which is
-   * what a first sync does anyway. Setting it wrongly re-sends files that were
-   * already there — wasteful, never incorrect. */
+   * Safe by construction: "the VM has nothing" means "send everything", which
+   * is what a first sync does anyway. Setting it wrongly re-sends files that
+   * were already there — wasteful, never incorrect. */
   assumeEmpty?: boolean;
+}
+
+/** Upload form of {@link VM.sync}: copy a local file or directory INTO the VM. */
+export interface SyncUploadOptions extends SyncDirOptions {
+  /** Local file or directory to upload. Directories are uploaded recursively. */
+  fromLocal: string;
+}
+
+/** Download form of {@link VM.sync}: copy a VM file or directory OUT to disk. */
+export interface SyncDownloadOptions {
+  /** Local destination path. */
+  toLocal: string;
 }
 
 /** POSIX-single-quote a string so it is safe inside a `/bin/sh` command. */

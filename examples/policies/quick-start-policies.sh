@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Policies as code — quick start (host-enforced egress policy)
+# Policies as code — quick start (egress policy)
 #
 # Forks a caller-selected source and attaches an ordered list of outbound
-# rules (allow / deny / rewrite / gate), enforced in the host network path so a
-# process in the VM can't escape it. The CLI has no policy verb, so we PUT the
+# rules (allow / deny / rewrite / gate), enforced outside the VM so no process
+# inside it can bypass them. The CLI has no policy verb, so we PUT the
 # document to the API.
 #
 # Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`), `jq`, and `curl`.

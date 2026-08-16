@@ -49,9 +49,11 @@ ar.vm(vm_id).run(command, **options)
 ar.vm(vm_id).resize(vcpu_count=..., memory_mib=...)
 ar.vm(vm_id).delete()
 
-# Files inside a VM
-vm.sync(path)                                 # read  -> bytes
-vm.sync(path, data)                           # write
+# Files: one call, both directions, files or directories
+vm.sync(path)                                 # read a file      -> bytes
+vm.sync(path, data)                           # write a file
+vm.sync(path, from_local="./project")         # upload a file or directory
+vm.sync(path, to_local="./project")           # download a file or directory
 
 # Filesystems — standalone, persistent volumes
 ar.create_filesystem(name=...)
@@ -66,13 +68,34 @@ vm.delete_sync(sync_id)
 
 `api_key` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. Set both `provider` and `region`, or pass `base_url`. The SDK accepts any provider and region that form valid DNS labels and resolves compute calls to `https://{provider}-{region}.arker.ai/api`. The region catalog is optional and contains only `provider` and `region`. Configure retries with `RetryOptions(...)`, or `retry=False` to disable.
 
+## Syncing files
+
+`vm.sync()` is the single call for moving files in either direction. It takes a
+path inside the VM, plus what to do with it:
+
+```python
+data = vm.sync("/home/user/out.txt")                    # read a file
+vm.sync("/home/user/in.txt", "hello\n")                 # write a file
+vm.sync("/home/user/project", from_local="./project")   # upload
+vm.sync("/home/user/project", to_local="./project")     # download
+```
+
+`from_local` accepts a file or a directory. Directories are uploaded recursively
+and incrementally: the VM's current contents decide what needs to move, so a
+repeat call transfers nothing and an edited file transfers alone. File mode —
+including the executable bit — is preserved, missing parent directories are
+created, and it works on a VM that has never run. A failure is always reported;
+a sync never half-applies silently.
+
+`to_local` copies a file or directory out of the VM to a local path.
+
 ## Interactive terminal (PTY)
 
 Open a real pseudo-terminal in a VM and drive it interactively — stream raw
 terminal bytes out, send keystrokes in (incl. control chars like Ctrl-C),
 resize, and kill. `isatty()` is true inside, so an interactive shell, `vim`,
-`htop`, a REPL, and `claude` all work. Transport is a TLS WebSocket; a key can
-only attach to its own org's VMs.
+`htop`, a REPL, and `claude` all work. A key can only attach to its own
+organization's VMs.
 
 Install the optional WebSocket dependency: `pip install 'arker[pty]'`.
 
