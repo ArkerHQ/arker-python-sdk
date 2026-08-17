@@ -36,11 +36,15 @@ import { bridgePty } from "./cli-pty.js";
 import type {
   PolicyDoc,
   RunRecord,
+  RunSignal,
   VM,
   RunResult,
   Vm,
   ListVmsParameters,
 } from "./index.js";
+
+/** Signals the service accepts, per RunRequest.signal in the OpenAPI contract. */
+const RUN_SIGNALS = ["SIGINT", "SIGTERM", "SIGKILL", "SIGHUP"] as const;
 
 // Version string for `--version` and the help header. Read from the
 // published package.json (dist/cli.js → ../package.json) so it never
@@ -140,8 +144,11 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   sessions: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
+    cols: { type: "integer", min: 1 },
     cwd: { type: "string" },
+    rows: { type: "integer", min: 1 },
     state: { type: "string", values: ["idle", "running"] },
+    "timeout-secs": { type: "integer", min: 0 },
   },
   shell: {
     ...GLOBAL_OPTIONS,
@@ -164,7 +171,19 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     help: { type: "boolean" },
     json: { type: "boolean" },
   },
-  sync: GLOBAL_OPTIONS,
+  signal: {
+    ...GLOBAL_OPTIONS,
+    "session-id": { type: "string" },
+    "session-idx": { type: "integer", min: 0 },
+  },
+  sync: {
+    ...GLOBAL_OPTIONS,
+    read: { type: "boolean" },
+  },
+  "sync-dir": {
+    ...GLOBAL_OPTIONS,
+    "assume-empty": { type: "boolean" },
+  },
   syncs: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
@@ -267,7 +286,14 @@ function validateInvocationOptions(command: string, args: ParsedArgs): void {
       ? { ...GLOBAL_OPTIONS, ...PAGINATION_OPTIONS, state: { type: "string" } }
       : subcommand === "create"
         ? { ...GLOBAL_OPTIONS, cwd: { type: "string" } }
-        : GLOBAL_OPTIONS;
+        : subcommand === "update"
+          ? {
+              ...GLOBAL_OPTIONS,
+              cols: { type: "integer", min: 1 },
+              rows: { type: "integer", min: 1 },
+              "timeout-secs": { type: "integer", min: 0 },
+            }
+          : GLOBAL_OPTIONS;
   } else if (command === "syncs") {
     context = `syncs ${subcommand ?? ""}`.trim();
     allowed = subcommand === "ls" || subcommand === "list"
@@ -769,9 +795,64 @@ async function cmdSessions(args: ParsedArgs, client: Arker): Promise<void> {
       else { err("delete failed"); process.exitCode = 1; }
       return;
     }
+    case "update": {
+      if (!vm) die("usage: arker sessions update <vm_id> <session_id> [--cols N] [--rows N] [--timeout-secs N]");
+      const sid = rest[1] ?? die("missing session_id");
+      const cols = numFlag(args, "cols");
+      const rows = numFlag(args, "rows");
+      const timeoutSecs = numFlag(args, "timeout-secs");
+      if (cols === undefined && rows === undefined && timeoutSecs === undefined) {
+        die("sessions update: pass at least one of --cols, --rows, --timeout-secs");
+      }
+      out(
+        await client.vm(vm).updateSession(sid, {
+          ...(cols !== undefined ? { cols } : {}),
+          ...(rows !== undefined ? { rows } : {}),
+          ...(timeoutSecs !== undefined ? { timeoutSecs } : {}),
+        }),
+      );
+      return;
+    }
     default:
-      die(`usage: arker sessions <ls|get|create|rm> ...`);
+      die(`usage: arker sessions <ls|get|create|rm|update> ...`);
   }
+}
+
+// Signal the foreground process group of a persistent session, which is a
+// distinct operation from `run`: the service delivers the signal instead of
+// executing a command.
+async function cmdSignal(args: ParsedArgs, client: Arker): Promise<void> {
+  const vm = args.positional[0] ?? die("usage: arker signal <vm_id> <SIGINT|SIGTERM|SIGKILL|SIGHUP> [--session-id ID] [--session-idx N]");
+  const raw = args.positional[1] ?? die("missing signal");
+  const signal = raw.toUpperCase();
+  if (!(RUN_SIGNALS as readonly string[]).includes(signal)) {
+    die(`unknown signal ${raw} (expected one of: ${RUN_SIGNALS.join(", ")})`);
+  }
+  const sessionId = args.flags["session-id"] as string | undefined;
+  const sessionIdx = numFlag(args, "session-idx");
+  const result = await client.vm(vm).signal(signal as RunSignal, {
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(sessionIdx !== undefined ? { sessionIdx } : {}),
+  });
+  if (args.flags.json) return out(result);
+  if (result.stdout) output.write(result.stdout);
+  if (result.stderr) err(result.stderr);
+  process.exitCode = result.exitCode ?? 0;
+}
+
+// Recursive local -> VM directory sync. `sync` moves one file; this moves a
+// tree, and only the files whose contents differ.
+async function cmdSyncDir(args: ParsedArgs, client: Arker): Promise<void> {
+  const vm = args.positional[0] ?? die("usage: arker sync-dir <vm_id> <local_dir> <remote_dir> [--assume-empty]");
+  const localDir = args.positional[1] ?? die("missing local_dir");
+  const remoteDir = args.positional[2] ?? die("missing remote_dir");
+  if (!existsSync(localDir)) die(`no such directory: ${localDir}`);
+  const result = await client.vm(vm).syncDir(localDir, remoteDir, {
+    ...(args.flags["assume-empty"] ? { assumeEmpty: true } : {}),
+  });
+  if (args.flags.json) return out(result);
+  out(`synced ${result.sent} file(s), skipped ${result.skipped}, ${result.bytesSent} byte(s) to ${remoteDir}`);
+  if (result.manifestTruncated) err("warning: remote manifest was truncated; sync stayed correct but re-sent files beyond the cap");
 }
 
 // Policies are a whole-document GET/PUT, so `set` replaces the document. It is
@@ -858,23 +939,55 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
   }
 }
 
-// File I/O on a VM: read (no data) or write (inline arg or piped stdin).
+const SYNC_USAGE =
+  "usage: arker sync <vm_id> <path> [data|-]   (omit data to read; - or a pipe writes stdin)";
+
+/** How long a piped-but-silent stdin is given to prove it is a writer before
+ *  `arker sync` refuses to guess. Only reached when the arguments alone leave
+ *  the direction open. */
+const STDIN_DIRECTION_GRACE_MS = 2000;
+
+// File I/O on a VM. Direction comes from the arguments, mirroring the SDK's
+// `sync(path)` = read / `sync(path, data)` = write overloads. stdin is only
+// consulted when the arguments leave it open, and never blocks indefinitely.
 async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
-  const vm = args.positional[0] ?? die("usage: arker sync <vm_id> <path> [data]   (omit data to read; or pipe stdin to write)");
+  const vm = args.positional[0] ?? die(SYNC_USAGE);
   const path = args.positional[1] ?? die("missing path");
   const inline = args.positional[2];
-  if (inline !== undefined) {
-    await client.vm(vm).sync(path, inline);
-    out(`wrote ${Buffer.byteLength(inline)} bytes to ${path}`);
+
+  const write = async (data: Uint8Array | string): Promise<void> => {
+    await client.vm(vm).sync(path, data);
+    const n = typeof data === "string" ? Buffer.byteLength(data) : data.length;
+    out(`wrote ${n} bytes to ${path}`);
+  };
+
+  if (args.flags.read) {
+    if (inline !== undefined) die("sync: --read takes no data argument");
+    output.write(await client.vm(vm).sync(path));
     return;
   }
-  if (stdinHasDataSource()) {
-    const buf = await readAllStdin();
-    await client.vm(vm).sync(path, buf);
-    out(`wrote ${buf.length} bytes to ${path}`);
-    return;
+  // Explicit stdin write: the user said so, so wait as long as it takes.
+  if (inline === "-") return write(await readAllStdin());
+  if (inline !== undefined) return write(inline);
+
+  switch (stdinKind()) {
+    case "file":
+      // A `< file` redirect is unambiguous and ends at EOF.
+      return write(await readAllStdin());
+    case "stream": {
+      const piped = await readAllStdinWithFirstByteDeadline(STDIN_DIRECTION_GRACE_MS);
+      if (piped === null) {
+        return die(
+          `sync: stdin is an open pipe that sent nothing in ${STDIN_DIRECTION_GRACE_MS}ms, so read-vs-write is ambiguous.\n` +
+            `  to read:  arker sync ${vm} ${path} --read\n` +
+            `  to write: <producer> | arker sync ${vm} ${path} -`,
+        );
+      }
+      return write(piped);
+    }
+    default:
+      output.write(await client.vm(vm).sync(path));
   }
-  output.write(await client.vm(vm).sync(path));
 }
 
 async function cmdUpdate(args: ParsedArgs, client: Arker): Promise<void> {
@@ -1034,14 +1147,48 @@ async function readAllStdin(): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-function stdinHasDataSource(): boolean {
-  if (input.isTTY) return false;
+/** How stdin is attached. This is the only thing that can disambiguate a bare
+ *  `arker sync <vm> <path>`: read the file back, or write what is piped in.
+ *
+ *  The distinction that matters is whether draining is guaranteed to finish.
+ *  A `< file` redirect ends at EOF. A pipe or socket does not: a script that
+ *  inherits stdin from a parent nobody ever closes hands us a descriptor that
+ *  stays open forever, and draining it blocks with no output and no error. */
+function stdinKind(): "tty" | "file" | "stream" | "none" {
+  if (input.isTTY) return "tty";
   try {
     const stat = fstatSync(0);
-    return stat.isFIFO() || stat.isFile() || stat.isSocket();
+    if (stat.isFile()) return "file";
+    if (stat.isFIFO() || stat.isSocket()) return "stream";
+    return "none";
   } catch {
-    return false;
+    return "none";
   }
+}
+
+function stdinHasDataSource(): boolean {
+  const kind = stdinKind();
+  return kind === "file" || kind === "stream";
+}
+
+/** Drain stdin, giving up if the FIRST byte never arrives. Returns null when
+ *  nothing had been read by the deadline — the descriptor is idle and the
+ *  caller cannot tell read from write. Once any data arrives the remainder is
+ *  read unbounded: a slow producer is legitimate, a silent one is not
+ *  actionable. */
+async function readAllStdinWithFirstByteDeadline(ms: number): Promise<Uint8Array | null> {
+  const chunks: Buffer[] = [];
+  const drained = (async () => {
+    for await (const chunk of input) chunks.push(chunk as Buffer);
+  })();
+  const deadline = new Promise<"deadline">((resolve) => {
+    const timer = setTimeout(() => resolve("deadline"), ms);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+  const first = await Promise.race([drained.then(() => "drained" as const), deadline]);
+  if (first === "deadline" && chunks.length === 0) return null;
+  await drained;
+  return new Uint8Array(Buffer.concat(chunks));
 }
 
 function usage(_command?: string): void {
@@ -1073,10 +1220,14 @@ function usage(_command?: string): void {
       "  arker regions                                  list available public placements",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
       "  arker runs        <ls|get|rm> <vm_id> ...",
-      "  arker sessions    <ls|get|create|rm> <vm_id> ...",
+      "  arker sessions    <ls|get|create|rm|update> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
-      "  arker sync <vm_id> <path> [data]            read or write a file",
+      "  arker sync <vm_id> <path> [data|-]          read a file, or write data/stdin",
+      "  arker sync <vm_id> <path> --read            read a file, ignoring stdin",
+      "  arker sync-dir <vm_id> <local> <remote>     sync a directory into the VM",
+      "  arker signal <vm_id> <SIGINT|SIGTERM|SIGKILL|SIGHUP>",
+      "                                              signal a session's foreground group",
       "",
       "Flags:",
       "  --region <region>          (or env ARKER_REGION)",
@@ -1150,8 +1301,12 @@ async function main(): Promise<void> {
         return await cmdFork(args, client);
       case "run":
         return await cmdRun(args, client);
+      case "signal":
+        return await cmdSignal(args, client);
       case "sync":
         return await cmdSync(args, client);
+      case "sync-dir":
+        return await cmdSyncDir(args, client);
       case "syncs":
         return await cmdSyncs(args, client);
       case "policies":
