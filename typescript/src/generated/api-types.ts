@@ -1431,7 +1431,9 @@ export interface components {
             memory_mib?: number | null;
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
-            /** @description Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default. */
+            /** @description Fraction of one physical GPU to allocate, where `1` is the whole card — the GPU counterpart of `vcpu`. A convenience alternative to `gpu_sms`/`gpu_vram_mib`, which it resolves to against the serving platform's GPU (`vgpu: 0.25` on `x86_64-l40s` is 35 SMs and 11517 MiB). Mutually exclusive with `gpu_sms` and `gpu_vram_mib`, and not valid together with `gpu_count` above 1. Only valid for GPU platforms. A fraction too small to yield a servable slice returns 400 rather than being rounded up. Request-only: responses always report the resolved `gpu_sms`/`gpu_vram_mib` and never this field. */
+            vgpu?: number | null;
+            /** @description Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default, or use `vgpu` to size by fraction instead. */
             gpu_sms?: number | null;
             /** @description GPU memory available to the VM, in MiB. Only valid for GPU platforms. Omit to use the platform default. */
             gpu_vram_mib?: number | null;

@@ -462,6 +462,7 @@ class VmResources:
     vcpu: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
+    vgpu: float | None = None
     gpu_sms: int | None = None
     gpu_vram_mib: int | None = None
 
