@@ -533,6 +533,84 @@ async function testEmptyPipedInputWritesZeroBytes(): Promise<void> {
   });
 }
 
+// `-` is the explicit "write stdin" form. It exists so a caller never has to
+// rely on stdin sniffing, which cannot distinguish an idle inherited pipe from
+// a producer that has not written yet.
+async function testSyncDashWritesStdin(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {
+    results: [{ complete: true, written: true }],
+  }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/a.txt", "-"], { stdin: "hi\n" });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(stdoutText(result), "wrote 3 bytes to /tmp/a.txt\n");
+    assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/sync-stream?path=%2Ftmp%2Fa.txt&size=3");
+  });
+}
+
+// --read is the explicit "read" form: it must win even when data is piped in,
+// so a script can force the direction rather than inherit it from its parent.
+async function testSyncReadFlagIgnoresPipedStdin(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {
+    content: "aGVsbG8=",
+    encoding: "base64",
+  }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/a.txt", "--read"], { stdin: "ignored" });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(result.stdout, Buffer.from("hello"));
+    assert.deepEqual(requests, [{
+      method: "POST",
+      url: "/api/v1/vms/vm_1/sync",
+      body: { op: "read", path: "/tmp/a.txt" },
+    }]);
+  });
+}
+
+async function testSyncReadFlagRejectsDataArgument(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/a.txt", "data", "--read"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /--read takes no data argument/);
+    assert.equal(requests.length, 0, "must fail before touching the network");
+  });
+}
+
+async function testSignalValidatesNameBeforeRequest(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["signal", "vm_1", "SIGBOGUS"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /unknown signal SIGBOGUS/);
+    assert.equal(requests.length, 0, "must fail before touching the network");
+  });
+}
+
+async function testSignalForwardsSignalAndSession(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["signal", "vm_1", "sigterm", "--session-id", "s_1"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/runs");
+    assert.deepEqual(requests[0]?.body, { signal: "SIGTERM", session_id: "s_1" });
+  });
+}
+
+async function testSessionsUpdateForwardsPatch(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, { ok: true, session_id: "s_1" }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sessions", "update", "vm_1", "s_1", "--cols", "120", "--timeout-secs", "600"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(requests[0]?.method, "PATCH");
+    assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/sessions/s_1");
+    assert.deepEqual(requests[0]?.body, { cols: 120, timeout_secs: 600 });
+  });
+}
+
+async function testSessionsUpdateRequiresAField(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sessions", "update", "vm_1", "s_1"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /at least one of --cols, --rows, --timeout-secs/);
+    assert.equal(requests.length, 0, "must fail before touching the network");
+  });
+}
+
 async function testNoPipeReadsFileBytes(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, {
     content: "/wD+",
@@ -796,6 +874,13 @@ await testRunFailureReasonIsVisible();
 await testRunsGetUsesRunFormatter();
 await testRunHumanWarnsOnPartialMemory();
 await testEmptyPipedInputWritesZeroBytes();
+await testSyncDashWritesStdin();
+await testSyncReadFlagIgnoresPipedStdin();
+await testSyncReadFlagRejectsDataArgument();
+await testSignalValidatesNameBeforeRequest();
+await testSignalForwardsSignalAndSession();
+await testSessionsUpdateForwardsPatch();
+await testSessionsUpdateRequiresAField();
 await testNoPipeReadsFileBytes();
 await testShellSetupUsesPackagedCli();
 await testShellRequiresVmOrSourceBeforeRequest();
