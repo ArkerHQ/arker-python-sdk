@@ -246,6 +246,36 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
   }
 }
 
+/// `--vgpu` is the only fractional resource flag, so it exercises the number
+/// option type as well as the fork wiring — an integer-only parser would have
+/// refused `0.25` outright.
+async function testForkForwardsVgpu(): Promise<void> {
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
+    async (baseUrl, requests) => {
+      const result = await runCli(baseUrl, ["fork", "--vgpu", "0.25", "source-vm"]);
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(
+        (requests[0]!.body as { resources: { vgpu: number } }).resources.vgpu,
+        0.25,
+      );
+    },
+  );
+
+  // Out of range and non-numeric must fail before any request is made.
+  for (const value of ["0", "1.5", "-0.5", "half"]) {
+    await withCapturedServer(
+      (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
+      async (baseUrl, requests) => {
+        const result = await runCli(baseUrl, ["fork", "--vgpu", value, "source-vm"]);
+        assert.equal(result.code, 1, `--vgpu ${value} must be refused`);
+        assert.equal(requests.length, 0, `--vgpu ${value} must not reach the server`);
+      },
+    );
+  }
+}
+
 async function testForkForwardsGpuResourceOptions(): Promise<void> {
   await withCapturedServer(
     (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
@@ -277,6 +307,7 @@ async function testForkForwardsGpuResourceOptions(): Promise<void> {
             vcpu: null,
             memory_mib: null,
             disk_mib: null,
+            vgpu: null,
             gpu_vram_mib: 24576,
             gpu_sms: 8,
           },
@@ -860,6 +891,7 @@ await testNestedRunStopsAtRemoteCommand();
 await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
 await testForkForwardsGpuResourceOptions();
+await testForkForwardsVgpu();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
 await testArbitraryProviderFlagIsAccepted();

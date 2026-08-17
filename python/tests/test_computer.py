@@ -1496,6 +1496,45 @@ def test_fork_sends_gpu_resources() -> None:
     }
 
 
+def test_fork_sends_vgpu_as_the_only_resource() -> None:
+    """`vgpu` alone must reach the wire, and reach it as a float.
+
+    It is the one resource arg that is not an int, so it has to be in the
+    "any of these were passed" guard as well as the VmResources construction —
+    miss the guard and `resources` is dropped entirely and the caller silently
+    gets a whole card.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().fork(
+            source_vm_id="gpu-source-vm-id",
+            platforms=["x86_64-l40s"],
+            vgpu=0.25,
+        )
+
+    assert json.loads(t.calls[0]["body"]) == {
+        "source_vm_id": "gpu-source-vm-id",
+        "platforms": ["x86_64-l40s"],
+        "resources": {"vgpu": 0.25},
+    }
+
+
 def test_fork_mixes_gpu_and_cpu_resources() -> None:
     """CPU and GPU fields coexist in the single resources object."""
     t = FakeTransport()
