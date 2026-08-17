@@ -100,6 +100,7 @@ const RUN_OPTIONS: OptionSpecs = {
   ...GLOBAL_OPTIONS,
   acquire: { type: "string" },
   background: { type: "boolean" },
+  "queueing-timeout": { type: "integer", min: 0 },
   release: { type: "string" },
   "session-id": { type: "string" },
   "session-idx": { type: "integer", min: 0 },
@@ -123,6 +124,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     "no-disk": { type: "boolean" },
     platform: { type: "string" },
     public: { type: "boolean" },
+    "queueing-timeout": { type: "integer", min: 0 },
     "source-org-id": { type: "string" },
     "source-vm-id": { type: "string" },
     "source-vm-name": { type: "string" },
@@ -206,6 +208,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     "no-disk": { type: "boolean" },
     platform: { type: "string" },
     public: { type: "boolean" },
+    "queueing-timeout": { type: "integer", min: 0 },
     release: { type: "string" },
     "session-id": { type: "string" },
     "session-idx": { type: "integer", min: 0 },
@@ -609,6 +612,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   // exposed on the CLI yet.
   const disk = boolFlag(args, "no-disk") ? false : undefined;
 
+  const queueingTimeout = numFlag(args, "queueing-timeout");
   const computer = await client.fork({
     sourceVmId,
     sourceVmName,
@@ -619,6 +623,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     ...(platforms && platforms.length > 0 ? { platforms } : {}),
     ...(resources ? { resources } : {}),
     ...(disk !== undefined ? { disk } : {}),
+    ...(queueingTimeout !== undefined ? { queueing_timeout: queueingTimeout } : {}),
   });
   out({ vm_id: computer.id });
 }
@@ -632,6 +637,7 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
     background: boolFlag(args, "background"),
     timeout: numFlag(args, "timeout"),
     time_to_background: numFlag(args, "time-to-background"),
+    queueing_timeout: numFlag(args, "queueing-timeout"),
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
     session_id: args.flags["session-id"] as string | undefined,
@@ -1252,6 +1258,7 @@ function usage(_command?: string): void {
       "  --background               return a run id instead of blocking",
       "  --timeout <seconds>             exec/kill bound in seconds (0 = unbounded; server default 3600)",
       "  --time-to-background <seconds>  sync window before returning a run id (default 30)",
+      "  --queueing-timeout <seconds>    queue up to this long instead of failing fast (also a fork flag)",
       "  --acquire <list>           warm resources before the run (cpu,memory,disk)",
       "  --release <list>           release resources after the run (cpu,memory,disk)",
       "",

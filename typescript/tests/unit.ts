@@ -1335,6 +1335,98 @@ async function testRetryAfterHintDrivesTheActualSleep(): Promise<void> {
 
 await testRetryHonoursServerRetryAfter();
 await testRetryAfterHintDrivesTheActualSleep();
+
+function unavailableBody(retryAfterS: number): unknown {
+  return {
+    error: {
+      code: "unavailable",
+      message: "at capacity",
+      retry_after: retryAfterS,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+async function testQueueingTimeoutRetriesPastTheAttemptCap(): Promise<void> {
+  // The window is the budget: three failures exceed attempts=2, still succeeds.
+  const runs = (m: string, u: string) => m === "POST" && u.includes("/runs");
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  fetchImpl.addJson(runs, 200, { run_id: "run_q", state: "completed", exit_code: 0, stdout: "ok", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8" });
+  const client = new Arker({
+    apiKey: "k",
+    baseUrl: "http://x",
+    fetch: fetchImpl.fetch,
+    retry: { attempts: 2, baseDelayMs: 1, jitterMs: 0 },
+  });
+  const vm = client.vm("vm-1");
+  const result = await vm.run("echo ok", { queueing_timeout: 30 });
+  assert.equal(result.type, "completed");
+  assert.equal(fetchImpl.calls.length, 4, "the window must outlast attempts=2");
+}
+
+async function testQueueingWindowDrainsThenSurfacesUnavailable(): Promise<void> {
+  // 3s window, 1.1s hints: bodies re-send the remaining window (3, 2, 1),
+  // then the error surfaces without sleeping past the deadline.
+  const runs = (m: string, u: string) => m === "POST" && u.includes("/runs");
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson(runs, 503, unavailableBody(1.1));
+  fetchImpl.addJson(runs, 503, unavailableBody(1.1));
+  fetchImpl.addJson(runs, 503, unavailableBody(1.1));
+  const client = new Arker({
+    apiKey: "k",
+    baseUrl: "http://x",
+    fetch: fetchImpl.fetch,
+    retry: { attempts: 4, baseDelayMs: 1, jitterMs: 0 },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    client.vm("vm-1").run("true", { queueing_timeout: 3 }),
+    (error: unknown) => error instanceof ArkerError && error.code === "unavailable" && error.status === 503,
+  );
+  const elapsed = Date.now() - started;
+  const sent = fetchImpl.calls.map(
+    (call) => (JSON.parse(call.body ?? "{}") as { queueing_timeout?: number }).queueing_timeout,
+  );
+  assert.deepEqual(sent, [3, 2, 1]);
+  assert.ok(elapsed >= 2_000 && elapsed < 5_000, `waited ${elapsed}ms`);
+}
+
+async function testQueueingTimeoutRespectsRetryFalse(): Promise<void> {
+  // retry: false = exactly one request, window or not.
+  const runs = (m: string, u: string) => m === "POST" && u.includes("/runs");
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  const client = new Arker({
+    apiKey: "k",
+    baseUrl: "http://x",
+    fetch: fetchImpl.fetch,
+    retry: false,
+  });
+  await assert.rejects(
+    client.vm("vm-1").run("true", { queueing_timeout: 30 }),
+    (error: unknown) => error instanceof ArkerError && error.code === "unavailable",
+  );
+  assert.equal(fetchImpl.calls.length, 1);
+}
+
+async function testForkForwardsQueueingTimeout(): Promise<void> {
+  // fork() builds its body from an explicit allowlist — pin that the field
+  // survives it. The retry mechanics are shared with run and tested there.
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson((m, u) => m === "POST" && u.includes("/fork"), 200, { vm_id: "vm-9", state: "running" });
+  const client = new Arker({ apiKey: "k", baseUrl: "http://x", fetch: fetchImpl.fetch, retry: false });
+  await client.fork("arkuntu", { queueing_timeout: 30 });
+  const body = JSON.parse(fetchImpl.calls[0]!.body ?? "{}") as { queueing_timeout?: number };
+  assert.equal(body.queueing_timeout, 30);
+}
+
+await testQueueingTimeoutRetriesPastTheAttemptCap();
+await testQueueingWindowDrainsThenSurfacesUnavailable();
+await testQueueingTimeoutRespectsRetryFalse();
+await testForkForwardsQueueingTimeout();
 await testRunAndGetRunAgreeOnBinaryOutput();
 await testEveryByteValueRoundTrips();
 await testUtf8WireStillYieldsBothForms();
