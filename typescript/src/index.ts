@@ -642,8 +642,20 @@ export interface ForkSource {
    * The image is pulled and converted on the host, so the first fork of a
    * given image takes tens of seconds and later ones reuse the cached layers.
    * Inputs that only mean something relative to a source VM (`layers`,
-   * `platforms`, `durable`, `public`, GPU fields) are rejected by the service
-   * rather than silently ignored. */
+   * `public`, GPU fields) are rejected by the service rather than silently
+   * ignored.
+   *
+   * `platforms` MATTERS here, and is served. The image is pulled for the
+   * architecture of whatever host the request lands on, so an image published
+   * only for amd64 (`pytorch/pytorch`, for one) fails on an arm64 host: it
+   * converts and boots, then the guest cannot execute anything in its own
+   * filesystem. Pin an x86 platform for such an image:
+   *
+   *     await arker.fork({ image: "pytorch/pytorch:latest",
+   *                        platforms: ["icelake"] });
+   *
+   * The image's Docker `ENV` is not applied to runs, so a tool outside the
+   * default `PATH` needs its prefix added once; it persists for the session. */
   image?: string;
 }
 

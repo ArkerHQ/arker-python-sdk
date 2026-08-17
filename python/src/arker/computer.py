@@ -412,9 +412,24 @@ class Arker:
           Exclusive with the VM selectors. The image is pulled and converted on
           the host, so the first fork of an image is slow (tens of seconds) and
           later ones reuse the cached layers. Inputs that only mean something
-          relative to a source VM (``layers``, ``platforms``, ``durable``,
-          ``public`` and the GPU fields) are rejected by the service rather
-          than silently ignored.
+          relative to a source VM (``layers``, ``public`` and the GPU fields)
+          are rejected by the service rather than silently ignored.
+
+          ``platforms`` MATTERS here, and is served. The image is pulled for
+          the architecture of whatever host the request lands on, so an image
+          published only for amd64 (``pytorch/pytorch``, for one) fails on an
+          arm64 host: it converts and boots, then the guest cannot execute
+          anything in its own filesystem. Pin an x86 platform for such an
+          image::
+
+              vm = arker.fork(image="pytorch/pytorch:latest",
+                              platforms=["icelake"])
+
+          The image's Docker ``ENV`` is not applied to runs, so a tool that
+          lives outside the default ``PATH`` needs its prefix added once — it
+          persists for the rest of the session::
+
+              vm.run('export PATH=/opt/conda/bin:$PATH; python -c "import torch"')
 
         ``source_org_id`` is sent only when supplied explicitly. The service
         resolves omitted ownership from its current source catalog and the
