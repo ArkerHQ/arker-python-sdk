@@ -11,6 +11,7 @@ import {
   type CompletedRunResult,
   type PtyWebSocketFactory,
 } from "../src/index.js";
+import { runPollBudgetMs } from "../src/internal/run-poll.js";
 import { isExpectedSurfaceStub } from "./helpers/surface-errors.js";
 
 type FetchCall = {
@@ -391,6 +392,23 @@ async function testSyncRunPollsBackgroundedRunToCompletion(): Promise<void> {
   assert.equal(fetch.calls[0]!.method, "POST");
   assert.equal(fetch.calls[1]!.method, "GET");
   assert.equal(fetch.calls[2]!.method, "GET");
+}
+
+async function testRunPollBudgetIsUnboundedWithoutACallerTimeout(): Promise<void> {
+  // The poll budget exists to outlive the server-side kill and report its
+  // outcome. There is no server-side kill without a caller `timeout` (absent
+  // and `0` are both unbounded), so there is nothing to outlive and the poll
+  // must not invent a deadline — abandoning a run that is still going is worse
+  // than waiting.
+  assert.equal(runPollBudgetMs(undefined), null);
+  assert.equal(runPollBudgetMs(null), null);
+  assert.equal(runPollBudgetMs(0), null);
+  // A caller-set bound still gets the kill bound plus the 30s margin.
+  assert.equal(runPollBudgetMs(5), 5_000 + 30_000);
+  assert.equal(runPollBudgetMs(3_600), 3_600_000 + 30_000);
+  // Negative is nonsense the API would reject; treat it as unbounded rather
+  // than as an instantly-expired deadline.
+  assert.equal(runPollBudgetMs(-1), null);
 }
 
 async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
@@ -999,6 +1017,7 @@ await testRemovedNetworkInputsFailBeforeRequests();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();
+await testRunPollBudgetIsUnboundedWithoutACallerTimeout();
 await testBackgroundTrueReturnsAckWithoutPolling();
 await testConfiguredPlacementRoutesNamedSourcesToMainEndpoint();
 testArbitraryProviderBuildsEndpoint();

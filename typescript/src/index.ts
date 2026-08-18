@@ -5,6 +5,7 @@
  * Arker endpoints, or pass baseUrl directly for internal/dev targets.
  */
 
+import { runPollBudgetMs } from "./internal/run-poll.js";
 import type { components, operations } from "./generated/api-types.js";
 
 type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
@@ -193,10 +194,6 @@ const DEFAULT_RETRY_JITTER_MS = 50;
 const RUN_POLL_INITIAL_MS = 500;
 const RUN_POLL_MAX_MS = 3_000;
 const RUN_POLL_BACKOFF = 1.5;
-// Slack beyond the run's kill bound before we stop polling and surface a timeout.
-const RUN_POLL_MARGIN_MS = 30_000;
-// Server default kill bound (seconds) used when `timeout` is unset or 0 (disabled).
-const DEFAULT_RUN_TIMEOUT_SECS = 3_600;
 // Terminal run states — RunState ("running" | "completed" | "failed" |
 // "cancelled") minus the sole non-terminal "running".
 const TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
@@ -1069,10 +1066,11 @@ export class VM {
    * with a `run_id`; run() then transparently polls {@link getRun} until the
    * run reaches a terminal state and resolves to the completed run — so a
    * synchronous caller always receives the final result. Polling is bounded
-   * by the run's `timeout` (its kill bound, default 3600s; `0`/unset ⇒ the
-   * default) plus a margin; if that budget is exceeded run() throws an
-   * ArkerError with code `"timeout"` (the run keeps executing server-side —
-   * poll {@link getRun} to retrieve it).
+   * by the run's `timeout` (its kill bound) plus a margin; if that budget is
+   * exceeded run() throws an ArkerError with code `"timeout"` (the run keeps
+   * executing server-side — poll {@link getRun} to retrieve it). With no
+   * `timeout` the run is unbounded server-side and the poll is unbounded with
+   * it; pass `background: true` if you do not want to wait.
    *
    * Pass `background: true` to skip the wait entirely: run() returns the
    * running acknowledgement (`{ type: "background", runId }`) immediately and
@@ -1169,19 +1167,25 @@ export class VM {
    * Poll {@link getRun} until the run reaches a terminal state, then return it
    * as a {@link CompletedRunResult}. Backs the transparent synchronous run():
    * invoked only when the server backgrounds a run that outlived its sync
-   * window. Bounded by `timeoutSecs` (the run's kill bound) plus a margin;
-   * throws `"timeout"` if the budget is exceeded.
+   * window.
+   *
+   * Bounded by `timeoutSecs` (the run's kill bound) plus a margin, so the poll
+   * outlives the server-side kill and reports its outcome. An unset or `0`
+   * timeout is unbounded server-side, so the poll is unbounded too — giving up
+   * at a client-side deadline the caller never asked for would abandon a run
+   * that is still going.
    */
   private async _awaitRun(runId: string, timeoutSecs?: number | null): Promise<CompletedRunResult> {
-    const killBoundSecs = timeoutSecs && timeoutSecs > 0 ? timeoutSecs : DEFAULT_RUN_TIMEOUT_SECS;
-    const budgetMs = killBoundSecs * 1000 + RUN_POLL_MARGIN_MS;
-    const deadline = Date.now() + budgetMs;
+    const budgetMs = runPollBudgetMs(timeoutSecs);
+    const deadline = budgetMs === null ? null : Date.now() + budgetMs;
+    // budgetMs and deadline are null together, so the throw below can read
+    // budgetMs without a non-null assertion.
     let delay = RUN_POLL_INITIAL_MS;
     for (;;) {
       await sleep(delay);
       const run = await this.getRun(runId);
       if (TERMINAL_RUN_STATES.has(run.state)) return runToCompletedResult(run);
-      if (Date.now() >= deadline) {
+      if (budgetMs !== null && deadline !== null && Date.now() >= deadline) {
         throw new ArkerError(
           "timeout",
           `run ${runId} did not reach a terminal state within ${Math.round(budgetMs / 1000)}s; ` +

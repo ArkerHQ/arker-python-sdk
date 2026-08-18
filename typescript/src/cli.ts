@@ -1272,7 +1272,7 @@ function usage(_command?: string): void {
       "  --session-id <ulid>        run in a specific existing session",
       "  --session-idx <n>          run in the session at this index (default 0)",
       "  --background               return a run id instead of blocking",
-      "  --timeout <seconds>             exec/kill bound in seconds (0 = unbounded; server default 3600)",
+      "  --timeout <seconds>             exec/kill bound in seconds (omitted or 0 = unbounded)",
       "  --time-to-background <seconds>  sync window before returning a run id (default 30)",
       "  --queueing-timeout <seconds>    queue up to this long instead of failing fast (also a fork flag)",
       "  --acquire <list>           warm resources before the run (cpu,memory,disk)",

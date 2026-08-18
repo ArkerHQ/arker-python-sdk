@@ -145,8 +145,19 @@ RUN_POLL_MAX_S = 3.0
 RUN_POLL_BACKOFF = 1.5
 # Slack beyond the run's kill bound before we stop polling and raise a timeout.
 RUN_POLL_MARGIN_S = 30.0
-# Server default kill bound (seconds) used when ``timeout`` is unset or 0 (disabled).
-DEFAULT_RUN_TIMEOUT_S = 3600
+
+
+def run_poll_budget_s(timeout: int | None) -> float | None:
+    """How long run()'s poll may wait for a backgrounded run, in seconds —
+    ``None`` for no limit.
+
+    An unset or ``0`` timeout is unbounded server-side, so the poll is
+    unbounded too: giving up at a client-side deadline the caller never asked
+    for would abandon a run that is still going.
+    """
+    if timeout is None or timeout <= 0:
+        return None
+    return timeout + RUN_POLL_MARGIN_S
 # Terminal run states — RunState ("running" | "completed" | "failed" |
 # "cancelled") minus the sole non-terminal "running".
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
@@ -745,21 +756,22 @@ class VM:
         reaches a terminal state and returns the completed
         :class:`CompletedRunResult` — so a synchronous caller always receives
         the final result. Polling is bounded by ``timeout`` (the run's kill
-        bound; ``None``/``0`` ⇒ the 3600s default) plus a margin; if that budget
-        is exceeded run() raises an :class:`ArkerError` with code ``"timeout"``
-        (the run keeps executing server-side — poll :meth:`get_run` to retrieve
-        it).
+        bound) plus a margin; if that budget is exceeded run() raises an
+        :class:`ArkerError` with code ``"timeout"`` (the run keeps executing
+        server-side — poll :meth:`get_run` to retrieve it). With no ``timeout``
+        the run is unbounded server-side and the poll is unbounded with it;
+        pass ``background=True`` if you do not want to wait.
 
         Pass ``background=True`` to skip the wait entirely: run() returns the
         running :class:`BackgroundRunResult` immediately and you manage polling
         yourself via :meth:`get_run`.
 
-        ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
-        time the command may run before the host kills it. ``None`` (default)
-        applies the server default (3600 seconds);
-        ``0`` opts out of any kill (unbounded). It is NOT the HTTP wait window,
-        so ``background=True`` runs should leave it unset (or set a real kill
-        bound) — a small ``timeout`` would kill the run, not just background it.
+        ``timeout`` is the execution/kill bound in seconds: the maximum
+        wall-clock time the command may run before the host kills it. ``None``
+        (default) and ``0`` both mean unbounded — the run is killed only if you
+        set a ``timeout``. It is NOT the HTTP wait window, so ``background=True``
+        runs should leave it unset (or set a real kill bound) — a small
+        ``timeout`` would kill the run, not just background it.
 
         ``time_to_background`` is the HTTP sync window in seconds: how long the call
         blocks inline before backgrounding the run and returning a pollable
@@ -821,19 +833,22 @@ class VM:
         """Poll :meth:`get_run` until the run reaches a terminal state, then
         return it as a :class:`CompletedRunResult`. Backs the transparent
         synchronous :meth:`run`: invoked only when the server backgrounds a run
-        that outlived its sync window. Bounded by ``timeout`` (the run's kill
-        bound) plus a margin; raises an :class:`ArkerError` with code
-        ``"timeout"`` if the budget is exceeded."""
-        kill_bound_s = timeout if (timeout is not None and timeout > 0) else DEFAULT_RUN_TIMEOUT_S
-        budget_s = kill_bound_s + RUN_POLL_MARGIN_S
-        deadline = time.monotonic() + budget_s
+        that outlived its sync window.
+
+        Bounded by ``timeout`` (the run's kill bound) plus a margin, so the
+        poll outlives the server-side kill and reports its outcome. An unset or
+        ``0`` timeout is unbounded server-side, so the poll is unbounded too —
+        giving up at a client-side deadline the caller never asked for would
+        abandon a run that is still going."""
+        budget_s = run_poll_budget_s(timeout)
+        deadline = None if budget_s is None else time.monotonic() + budget_s
         delay = RUN_POLL_INITIAL_S
         while True:
             time.sleep(delay)
             run = self.get_run(run_id)
             if run.state in TERMINAL_RUN_STATES:
                 return _run_to_completed_result(run)
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise ArkerError(
                     "timeout",
                     f"run {run_id} did not reach a terminal state within "
