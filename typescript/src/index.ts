@@ -1014,7 +1014,7 @@ export class VM {
   readonly max_vcpus?: Vm["max_vcpus"];
   readonly max_memory_mib?: Vm["max_memory_mib"];
   readonly min_memory_mib?: Vm["min_memory_mib"];
-  readonly started_at?: Vm["started_at"];
+  readonly last_active_at?: Vm["last_active_at"];
   readonly root_source_vm_id?: Vm["root_source_vm_id"];
   readonly root_source_vm_name?: Vm["root_source_vm_name"];
   readonly worker_id?: string | null;
