@@ -12,6 +12,7 @@ import dataclasses
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -158,6 +159,7 @@ RETRYABLE_CODES = {
     "unavailable",
     "bad_gateway",
     "stale_route",
+    "capacity_unavailable",
 }
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -393,6 +395,7 @@ class Arker:
         platforms: list[str] | None = None,
         layers: list[str] | None = None,
         policies: PolicyDoc | dict[str, Any] | None = None,
+        queueing_timeout: int | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -432,6 +435,10 @@ class Arker:
         (installed packages, checked-out source, files the parent wrote);
         nothing in memory does (no inherited processes, no environment, no
         shell state).
+
+        ``queueing_timeout`` (seconds) queues instead of failing fast: retries
+        until the window elapses, then surfaces the error. ``None``/``0`` =
+        fail fast.
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -491,6 +498,7 @@ class Arker:
             layers=layers,
             resources=resources,
             policies=policy_doc,
+            queueing_timeout=queueing_timeout,
         )
         body = (
             ForkRequest1(source_vm_id=source_vm_id, **request_options)
@@ -498,7 +506,9 @@ class Arker:
             else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )
         base_url = source.base_url if isinstance(source, VM) else self._base_url
-        payload = self._request("POST", "/v1/fork", body, base_url=base_url)
+        payload = self._request(
+            "POST", "/v1/fork", body, base_url=base_url, max_queueing_s=queueing_timeout
+        )
         info = _vm_info(payload)
         # Child lives on the host the fork was posted to.
         return VM(self, info.vm_id, base_url, info)
@@ -634,6 +644,7 @@ class Arker:
         *,
         base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_queueing_s: int | None = None,
     ) -> dict[str, Any]:
         return _request_json(
             method,
@@ -643,6 +654,7 @@ class Arker:
             retry=self._retry,
             api_key=self._api_key,
             extra_headers=extra_headers,
+            max_queueing_s=max_queueing_s,
         )
 
     def _retry_delay(self, attempt: int) -> float:
@@ -713,6 +725,7 @@ class VM:
         background: bool | None = None,
         timeout: int | None = None,
         time_to_background: int | None = None,
+        queueing_timeout: int | None = None,
         end_symbol: str | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
@@ -752,6 +765,10 @@ class VM:
         blocks inline before backgrounding the run and returning a pollable
         ``run_id``. ``None`` (default) = 120. It does not bound command
         runtime — that is ``timeout``.
+
+        ``queueing_timeout`` (seconds) queues instead of failing fast: retries
+        until the window elapses, then surfaces the error. ``None``/``0`` =
+        fail fast.
         """
         if network is not None:
             raise ArkerError(
@@ -773,6 +790,7 @@ class VM:
             background=background,
             timeout=timeout,
             time_to_background=time_to_background,
+            queueing_timeout=queueing_timeout,
             end_symbol=end_symbol,
             vcpu_count=vcpu_count,
             memory_mib=memory_mib,
@@ -789,6 +807,7 @@ class VM:
             body,
             base_url=self.base_url,
             extra_headers=headers,
+            max_queueing_s=queueing_timeout,
         ))
         # The server backgrounds a run that outlived its sync window. When the
         # caller did NOT request background, poll get_run() to a terminal state
@@ -1630,6 +1649,7 @@ def _request_json(
     retry: RetryOptions,
     api_key: str | None = None,
     extra_headers: dict[str, str] | None = None,
+    max_queueing_s: int | None = None,
 ) -> dict[str, Any]:
     url = base_url + path
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
@@ -1638,46 +1658,65 @@ def _request_json(
             if value is not None:
                 headers[key] = value
     data = None
+    payload_dict: Any = None
 
     if body is not None:
         headers["content-type"] = "application/json"
-        data = json.dumps(_drop_none(body)).encode("utf-8")
+        payload_dict = _drop_none(body)
+        data = json.dumps(payload_dict).encode("utf-8")
 
-    last_status = 0
-    last_text = ""
-    last_error: dict[str, Any] | None = None
+    # queueing_timeout swaps the retry budget from attempt count to wall-clock
+    # window; retry=False (attempts = 1) still means exactly one request.
+    deadline = (
+        time.monotonic() + max_queueing_s
+        if max_queueing_s and retry.attempts > 1
+        else None
+    )
 
-    for attempt in range(retry.attempts):
+    attempt = 0
+    while True:
+        if deadline is not None and attempt > 0 and isinstance(payload_dict, dict):
+            # Retries re-send the remaining window.
+            remaining = max(1, math.ceil(deadline - time.monotonic()))
+            data = json.dumps({**payload_dict, "queueing_timeout": remaining}).encode("utf-8")
         try:
             status, raw = _http(method, url, headers, data)
         except httpx.RequestError as error:
-            if attempt < retry.attempts - 1:
-                time.sleep(_retry_delay(retry, attempt))
+            delay = _retry_delay(retry, attempt)
+            if _can_retry_again(retry, attempt, deadline, delay):
+                time.sleep(delay)
+                attempt += 1
                 continue
             raise ArkerError("unavailable", str(error), 0) from error
 
         text = raw.decode("utf-8", "replace")
         payload = _parse_json(text)
         parsed_error = _extract_error(payload)
-        last_status = status
-        last_text = text
-        last_error = parsed_error
 
-        if _is_retryable(status, parsed_error) and attempt < retry.attempts - 1:
-            time.sleep(_retry_delay(retry, attempt, parsed_error))
-            continue
+        if _is_retryable(status, parsed_error):
+            delay = _retry_delay(retry, attempt, parsed_error)
+            if _can_retry_again(retry, attempt, deadline, delay):
+                time.sleep(delay)
+                attempt += 1
+                continue
 
         if parsed_error:
             raise ArkerError(parsed_error["code"], parsed_error["message"], status)
         if status >= 400:
-            raise ArkerError("internal", last_text[:300] or f"HTTP {status}", status)
+            raise ArkerError("internal", text[:300] or f"HTTP {status}", status)
         if not isinstance(payload, dict):
             raise ArkerError("internal", "response must be a JSON object", status)
         return payload
 
-    if last_error:
-        raise ArkerError(last_error["code"], last_error["message"], last_status)
-    raise ArkerError("internal", last_text[:300] or f"HTTP {last_status}", last_status)
+
+def _can_retry_again(
+    retry: RetryOptions, attempt: int, deadline: float | None, delay_s: float
+) -> bool:
+    """No window: the attempt count is the budget. With one: the retry's
+    sleep must still land inside the window."""
+    if deadline is not None:
+        return time.monotonic() + delay_s < deadline
+    return attempt < retry.attempts - 1
 
 
 def _retry_delay(
@@ -1697,7 +1736,9 @@ def _retry_delay(
             hint = min(float(hint), retry.max_delay_s)
         return float(hint) + jitter
     max_delay = DEFAULT_RETRY_MAX_DELAY_S if retry.max_delay_s is None else retry.max_delay_s
-    base = min(max_delay, retry.base_delay_s * (2 ** attempt))
+    # A queueing window leaves the attempt count unbounded; cap the exponent so
+    # the doubling stays convertible to float. It is long past max_delay by 32.
+    base = min(max_delay, retry.base_delay_s * (2 ** min(attempt, 32)))
     return base + jitter
 
 

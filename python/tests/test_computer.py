@@ -1679,3 +1679,92 @@ def test_retry_after_hint_drives_the_actual_sleep() -> None:
         ).fork(source_vm_name="source-vm")
     assert time.monotonic() - started >= 0.045
     assert len(t.calls) == 2
+
+
+def _unavailable_body(retry_after_s: float) -> dict[str, Any]:
+    return {"error": {
+        "code": "unavailable", "message": "at capacity",
+        "retry_after": retry_after_s, "timestamp": "2026-01-01T00:00:00.000Z",
+    }}
+
+
+def _completed_run_body() -> dict[str, Any]:
+    return {"run_id": "run_q", "state": "completed", "exit_code": 0,
+            "stdout": "ok", "stdout_encoding": "utf-8",
+            "stderr": "", "stderr_encoding": "utf-8"}
+
+
+def _queueing_client(**retry: Any) -> sdk.Arker:
+    return sdk.Arker(
+        api_key="ark_live_test",
+        base_url="https://test.invalid/api",
+        retry={"base_delay_s": 0.001, "jitter_s": 0.0, **retry},
+    )
+
+
+def test_queueing_timeout_retries_past_the_attempt_cap() -> None:
+    # The window is the budget: three failures exceed attempts=2, still succeeds.
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
+    for _ in range(3):
+        t.add_json(predicate, 503, _unavailable_body(0.05))
+    t.add_json(predicate, 200, _completed_run_body())
+
+    with use_transport(t):
+        result = _queueing_client(attempts=2).vm("vm_1").run("echo ok", queueing_timeout=30)
+    assert result.exit_code == 0
+    assert len(t.calls) == 4, "the window must outlast attempts=2"
+
+
+def test_queueing_window_drains_then_surfaces_unavailable() -> None:
+    # 3s window, 1.1s hints: bodies re-send the remaining window (3, 2, 1),
+    # then the error surfaces without sleeping past the deadline.
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
+    for _ in range(3):
+        t.add_json(predicate, 503, _unavailable_body(1.1))
+
+    started = time.monotonic()
+    with use_transport(t):
+        with pytest.raises(sdk.ArkerError) as error:
+            _queueing_client(attempts=4).vm("vm_1").run("true", queueing_timeout=3)
+    elapsed = time.monotonic() - started
+    assert error.value.code == "unavailable"
+    assert error.value.status == 503
+    assert [json.loads(c["body"])["queueing_timeout"] for c in t.calls] == [3, 2, 1]
+    assert 2.0 <= elapsed < 5.0, f"waited {elapsed}s"
+
+
+def test_queueing_timeout_respects_retry_false() -> None:
+    # retry=False = exactly one request, window or not.
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
+    t.add_json(predicate, 503, _unavailable_body(0.05))
+
+    with use_transport(t):
+        with pytest.raises(sdk.ArkerError) as error:
+            client().vm("vm_1").run("true", queueing_timeout=30)
+    assert error.value.code == "unavailable"
+    assert len(t.calls) == 1
+
+
+def test_fork_forwards_queueing_timeout() -> None:
+    # fork() builds its body from an explicit kwarg list — pin that the field
+    # survives it. The retry mechanics are shared with run and tested there.
+    t = FakeTransport()
+    t.add_json(lambda method, url: method == "POST" and url.endswith("/v1/fork"), 200, {
+        "vm_id": "vm_child", "owner_org_id": "owner", "created_at": "now",
+        "description": None, "public": False, "state": "idle",
+        "sessions": [session()], "network": {}, "resources": {},
+    })
+
+    with use_transport(t):
+        client().fork("ubuntu", queueing_timeout=30)
+    assert json.loads(t.calls[0]["body"])["queueing_timeout"] == 30
+
+
+def test_backoff_survives_an_unbounded_attempt_count() -> None:
+    # A queueing window uncaps attempts, so the backoff exponent grows without
+    # limit; base_delay_s * 2**attempt must not overflow the float multiply.
+    retry = sdk.RetryOptions(attempts=4, base_delay_s=0.2, jitter_s=0.0)
+    assert sdk._retry_delay(retry, 5000) == sdk.DEFAULT_RETRY_MAX_DELAY_S
