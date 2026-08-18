@@ -441,7 +441,7 @@ export interface paths {
          * @description Stream RAW bytes straight into the VM over vsock as they arrive, so the
          *     client upload and the guest write overlap into one apparent hop — no
          *     base64 inflation on the client leg and no host temp file. With `extract`
-         *     set the body is a tar and `path` is the destination directory: arkerd
+         *     set the body is a tar and `path` is the destination directory: the server
          *     lands it at an internal guest temp path and untars it in the guest
          *     before responding, collapsing a whole directory sync into a single
          *     client round-trip.

@@ -16,7 +16,7 @@ export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
  * Size at which the router stops buffering a `/sync-stream` body and forwards
- * it as a stream (`DEFAULT_PROXY_BODY_LIMIT` in arkerd-router). Measured before
+ * it as a stream (a server-side proxy body limit). Measured before
  * that change landed: 64 MiB returned 200, 72 MiB returned 413
  * `payload_too_large`.
  *
@@ -93,7 +93,7 @@ interface StatCacheFile {
 }
 
 /**
- * Pull arkerd's `{error:{code,message}}` envelope off a failed response.
+ * Pull the `{error:{code,message}}` envelope off a failed response.
  * Shared so every transfer path reports failures identically — the sync call
  * sites previously each parsed errors their own way.
  */
@@ -888,10 +888,10 @@ export class Arker {
     return new VM(this, vmId, baseUrl, data);
   }
 
-  // ── Filesystems (region-scoped, served by arkerd directly) ──────────
+  // ── Filesystems (region-scoped) ────────────────────────────────────
   // Route to the regional endpoint (baseUrl), not the control plane: the
   // control-plane path (arker.ai → api_proxy_bash) does not route
-  // /v1/filesystems, while the regional NLB → arkerd serves the full CRUD.
+  // /v1/filesystems, while the regional endpoint serves the full CRUD.
   async listFilesystems(opts: ListFilesystemsOptions = {}): Promise<ListFilesystemsResponse> {
     const query: ListFilesystemsParameters = {
       cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
@@ -1412,7 +1412,7 @@ export class VM {
   }
 
   /** One-round-trip directory upload: stream a gzip tar to `/sync-stream` and
-   * let arkerd untar it IN THE GUEST before responding.
+   * let the server untar it IN THE GUEST before responding.
    *
    * Params ride in the query string, not headers: the auth middleware strips
    * `x-arker-*` from untrusted callers and would erase them.
@@ -1512,7 +1512,7 @@ export class VM {
   /**
    * Decide whether gzip earns its keep for this file set.
    *
-   * The guest pays for decompression: arkerd measures gunzip at ~3.4x a plain
+   * The guest pays for decompression: gunzip measures ~3.4x a plain
    * untar (294ms vs 86ms for 2000 files), so gzipping an already-compressed
    * tree (images, video, archives, binaries) is a pure loss at both ends. Source
    * trees, by contrast, compress ~4:1 and are well worth it.

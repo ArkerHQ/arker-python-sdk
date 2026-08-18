@@ -112,7 +112,7 @@ INLINE_WRITE_LIMIT = 16 * 1024 * 1024
 
 # Largest body `/sync-stream` accepts through the public edge. The router
 # buffers proxied bodies and caps them (DEFAULT_PROXY_BODY_LIMIT in
-# arkerd-router), which overrides the worker's own disabled limit. Measured
+# server side), which overrides the worker's own disabled limit. Measured
 # against a live env: 64 MiB returns 200, 72 MiB returns 413
 # `payload_too_large` — the limit is exact and fails loudly, never truncating.
 STREAM_MAX_BYTES = 64 * 1024 * 1024
@@ -610,10 +610,10 @@ class Arker:
             cursor=cursor, limit=limit, name_prefix=name_prefix
         )
         path = _build_query("/v1/filesystems", parameters)
-        # Filesystems are region-scoped and served by arkerd directly. Route to
+        # Filesystems are region-scoped. Route to
         # the regional endpoint (base_url) rather than the control plane: the
         # control-plane path (arker.ai → api_proxy_bash) does not route
-        # /v1/filesystems, while the regional NLB → arkerd serves it.
+        # /v1/filesystems, while the regional endpoint serves it.
         payload = self._request("GET", path, base_url=self._base_url)
         return _decode_model(ListFilesystemsResponse, payload)
 

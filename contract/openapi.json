@@ -1361,7 +1361,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Stream RAW bytes straight into the VM over vsock as they arrive, so the\nclient upload and the guest write overlap into one apparent hop — no\nbase64 inflation on the client leg and no host temp file. With `extract`\nset the body is a tar and `path` is the destination directory: arkerd\nlands it at an internal guest temp path and untars it in the guest\nbefore responding, collapsing a whole directory sync into a single\nclient round-trip.\n"
+        "description": "Stream RAW bytes straight into the VM over vsock as they arrive, so the\nclient upload and the guest write overlap into one apparent hop — no\nbase64 inflation on the client leg and no host temp file. With `extract`\nset the body is a tar and `path` is the destination directory: the server\nlands it at an internal guest temp path and untars it in the guest\nbefore responding, collapsing a whole directory sync into a single\nclient round-trip.\n"
       }
     },
     "/v1/filesystems": {
