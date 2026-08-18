@@ -1768,3 +1768,19 @@ def test_backoff_survives_an_unbounded_attempt_count() -> None:
     # limit; base_delay_s * 2**attempt must not overflow the float multiply.
     retry = sdk.RetryOptions(attempts=4, base_delay_s=0.2, jitter_s=0.0)
     assert sdk._retry_delay(retry, 5000) == sdk.DEFAULT_RETRY_MAX_DELAY_S
+
+
+def test_run_poll_budget_is_unbounded_without_a_caller_timeout() -> None:
+    # The poll budget exists to outlive the server-side kill and report its
+    # outcome. There is no server-side kill without a caller ``timeout``
+    # (absent and ``0`` are both unbounded), so there is nothing to outlive and
+    # the poll must not invent a deadline — abandoning a run that is still
+    # going is worse than waiting.
+    assert sdk.run_poll_budget_s(None) is None
+    assert sdk.run_poll_budget_s(0) is None
+    # A caller-set bound still gets the kill bound plus the 30s margin.
+    assert sdk.run_poll_budget_s(5) == 5 + sdk.RUN_POLL_MARGIN_S
+    assert sdk.run_poll_budget_s(3600) == 3600 + sdk.RUN_POLL_MARGIN_S
+    # Negative is nonsense the API would reject; treat it as unbounded rather
+    # than as an instantly-expired deadline.
+    assert sdk.run_poll_budget_s(-1) is None

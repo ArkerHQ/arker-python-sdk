@@ -881,7 +881,7 @@ export interface components {
              * @default false
              */
             background?: boolean;
-            /** @description Maximum command runtime in seconds. Omitted defaults to 3,600 seconds. Set to 0 to disable the runtime limit. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
+            /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
             /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime — that is timeout. */
             time_to_background?: number | null;
