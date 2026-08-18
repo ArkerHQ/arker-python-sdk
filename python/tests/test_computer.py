@@ -126,6 +126,7 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
     placement = {
         "provider": "provider-two",
         "region": "region-two",
+        "endpoint": "https://region-two.example/api",
     }
     t.add_json(
         lambda method, url: method == "GET"
@@ -139,6 +140,7 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
 
     assert regions.regions[0].provider == "provider-two"
     assert regions.regions[0].region == "region-two"
+    assert regions.regions[0].endpoint == "https://region-two.example/api"
 
 
 def test_discover_regions_requires_no_configured_client() -> None:

@@ -110,7 +110,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Public placement catalog. Use a returned provider and region to select a regional API endpoint. Every listed placement accepts fork, run, and sync requests. Unavailable placements are omitted."
+        "description": "Public placement catalog. Each item supplies the provider, region, and regional endpoint. Every listed placement accepts fork, run, and sync requests. Unavailable placements are omitted."
       }
     },
     "/v1/fork": {
@@ -173,7 +173,7 @@
             "in": "query",
             "name": "region",
             "required": false,
-            "description": "Narrow to a single region. When omitted, the response aggregates across every configured region.",
+            "description": "Narrow to a customer-facing service region (e.g. `us-west`). When omitted, the response aggregates across every configured service region.",
             "schema": {
               "type": "string"
             }
@@ -182,7 +182,7 @@
             "in": "query",
             "name": "provider",
             "required": false,
-            "description": "Narrow results to a cloud provider.",
+            "description": "Narrow results to a provider.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -291,7 +291,7 @@
             "in": "query",
             "name": "provider",
             "required": false,
-            "description": "Cloud provider filter.",
+            "description": "Provider filter.",
             "schema": {
               "$ref": "#/components/schemas/Provider"
             }
@@ -545,7 +545,7 @@
           "Policies"
         ],
         "summary": "Get a VM network policy",
-        "description": "Return the VM's network policy together with its derived inbound exposure and enforcement metadata. The base application hostname is nullable; non-default ports use `<vm>-<port>.<region>.arker.app`.",
+        "description": "Return the VM's network policy together with its derived inbound exposure and enforcement metadata. The base application hostname is nullable; non-default ports use `<vm>-<port>.<provider>-<region>.arker.app`.",
         "responses": {
           "200": {
             "description": "The VM's policy document (empty when none is set), plus its derived inbound exposure metadata.",
@@ -568,7 +568,7 @@
           "Policies"
         ],
         "summary": "Replace a VM network policy",
-        "description": "Replace the complete network policy of a mutable VM owned by the authenticated caller and apply it to the running VM. Golden templates are immutable.",
+        "description": "Replace the complete network policy of a mutable VM owned by the authenticated caller and apply it to the running VM. Public base VMs are immutable.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1038,7 +1038,7 @@
           "PTY"
         ],
         "summary": "Open an interactive PTY (WebSocket upgrade)",
-        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same in-guest PTY as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.",
+        "description": "Upgrades to a WebSocket carrying an interactive pseudo-terminal in the VM, reusing the same interactive terminal as SSH. Authenticate with a bearer API key or, for browser clients, a short-lived PTY ticket. Reopening the same `session_id` reconnects to a persistent shell and replays recent scrollback. Binary server frames contain raw terminal output; binary client frames contain stdin bytes. Text client frames accept JSON controls for `resize`, `kill`, and `ping`. Closing the socket detaches a persistent shell or destroys a non-persistent shell; `kill` always destroys it. The service enforces attachment limits and closes oversized or idle connections.",
         "security": [
           {
             "BearerAuth": []
@@ -1315,7 +1315,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "Optional checksum, verified by the guest on the write that completes the file."
+            "description": "Optional checksum, verified on the write that completes the file."
           },
           {
             "name": "extract",
@@ -1329,7 +1329,7 @@
                 "tar"
               ]
             },
-            "description": "Treat the body as a tar and extract it into `path` server-side, making a directory sync ONE round-trip. Use `tar` for incompressible data (skips a guest gunzip that costs ~3.4x the untar) and `tar.gz` where the upload-bandwidth win pays for it."
+            "description": "Treat the body as a tar archive and extract it into `path` server-side, so a whole directory syncs in one request. Use `tar` for already-compressed data and `tar.gz` when compression reduces the upload size."
           }
         ],
         "requestBody": {
@@ -1361,7 +1361,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Stream RAW bytes straight into the VM over vsock as they arrive, so the\nclient upload and the guest write overlap into one apparent hop — no\nbase64 inflation on the client leg and no host temp file. With `extract`\nset the body is a tar and `path` is the destination directory: the server\nlands it at an internal guest temp path and untars it in the guest\nbefore responding, collapsing a whole directory sync into a single\nclient round-trip.\n"
+        "description": "Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request."
       }
     },
     "/v1/filesystems": {
@@ -1527,7 +1527,7 @@
         "name": "id",
         "in": "path",
         "required": true,
-        "description": "VM identifier.",
+        "description": "VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id.",
         "schema": {
           "type": "string"
         }
@@ -1674,17 +1674,29 @@
         "type": "object",
         "required": [
           "provider",
-          "region"
+          "region",
+          "endpoint"
         ],
         "additionalProperties": false,
         "properties": {
           "provider": {
             "type": "string",
-            "description": "Public compute provider for the placement."
+            "enum": [
+              "aws",
+              "azure",
+              "arker",
+              "gcp"
+            ],
+            "description": "Public provider for the placement."
           },
           "region": {
             "type": "string",
             "description": "Provider region identifier."
+          },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "Base URL for this placement's regional API."
           }
         }
       },
@@ -1771,7 +1783,7 @@
           },
           "provider": {
             "type": "string",
-            "description": "Infrastructure provider involved in the failure, when safe to expose."
+            "description": "Public provider involved in the failure, when safe to expose."
           },
           "retryable": {
             "type": "boolean",
@@ -1779,7 +1791,10 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["global", "regional"],
+            "enum": [
+              "global",
+              "regional"
+            ],
             "description": "Quota scope that denied the operation."
           },
           "region": {
@@ -1812,7 +1827,9 @@
           },
           "action": {
             "type": "string",
-            "enum": ["settings_limits"],
+            "enum": [
+              "settings_limits"
+            ],
             "description": "Stable Console action for resolving the denial."
           }
         }
@@ -1852,7 +1869,13 @@
       },
       "Provider": {
         "type": "string",
-        "description": "Infrastructure provider currently hosting the resource."
+        "enum": [
+          "aws",
+          "azure",
+          "arker",
+          "gcp"
+        ],
+        "description": "Public provider containing the resource."
       },
       "PolicyWriteRequest": {
         "type": "object",
@@ -1879,7 +1902,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+            "description": "Server-derived; accepted and ignored on write so a client can PUT back a document it read. Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present."
           },
           "mitm_domains": {
             "type": "array",
@@ -1924,7 +1947,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present."
           },
           "mitm_domains": {
             "type": "array",
@@ -1973,7 +1996,7 @@
               "open",
               "arker"
             ],
-            "description": "Authentication for an inbound rule that exposes a port — `allow`, or a scaling-only action. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. All port-exposing inbound rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges."
+            "description": "Authentication for an inbound rule that exposes a port \u2014 `allow`, or a scaling-only action. `open` exposes the port publicly; `arker` requires `Authorization: Bearer $ARKER_API_KEY` from the VM owner's organization before forwarding to the guest. The default is `arker`. This field is invalid on deny and outbound rules. All port-exposing inbound rules in one document must use the same authentication mode. Inbound port matches must use individual ports rather than ranges."
           }
         }
       },
@@ -2089,11 +2112,11 @@
           "suspend": {
             "type": "boolean",
             "default": false,
-            "description": "Suspend the VM (snapshot and free CPU/RAM). On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped."
+            "description": "Suspend the VM (snapshot and free CPU/RAM). On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped. On an `outbound` rule, matched responses are delivered only once the upstream response is COMPLETE: a suspended VM has no running guest to receive bytes, so the proxy holds the whole body and hands it over at the end. Total latency is unchanged, but a response whose fragments are individually usable \u2014 an SSE token stream, for example \u2014 stops arriving incrementally, so a client rendering tokens as they arrive will see nothing until the response finishes. Enabling this is a deliberate trade of incremental delivery for the memory saving."
           },
           "wake": {
             "type": "boolean",
-            "description": "Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead — this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. (Deliberately declared with no JSON-Schema `default`: a schema default is MATERIALIZED by the generated wire types, which would stamp `wake` onto every scaling action including outbound ones — where the field is invalid — and would also emit it into every stored policy document, breaking older workers that reject unknown fields. The absent-means-wake semantic lives in this description and in the server's `ScalingAction::wakes()`.)"
+            "description": "Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead \u2014 this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. (Deliberately declared with no JSON-Schema `default`: a schema default is MATERIALIZED by the generated wire types, which would stamp `wake` onto every scaling action including outbound ones \u2014 where the field is invalid \u2014 and would also emit it into every stored policy document, breaking older workers that reject unknown fields. The absent-means-wake semantic lives in this description and in the server's `ScalingAction::wakes()`.)"
           }
         }
       },
@@ -2192,6 +2215,9 @@
               },
               "source_vm_name": {
                 "type": "null"
+              },
+              "image": {
+                "type": "null"
               }
             }
           },
@@ -2204,6 +2230,25 @@
                 "type": "null"
               },
               "source_vm_name": {
+                "type": "string"
+              },
+              "image": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "required": [
+              "image"
+            ],
+            "properties": {
+              "source_vm_id": {
+                "type": "null"
+              },
+              "source_vm_name": {
+                "type": "null"
+              },
+              "image": {
                 "type": "string"
               }
             }
@@ -2223,6 +2268,13 @@
               "null"
             ],
             "description": "VM name within an organization. `source_org_id` defaults to the caller's organization. A VM owned by another organization must be public."
+          },
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OCI image reference to fork from — for example `ubuntu:24.04`, `ghcr.io/org/image:v1`, or `image@sha256:...`. An unqualified name resolves against Docker Hub. Give a bare reference, not a URI. The new VM boots a rootfs converted from that image rather than from an existing VM, so neither `source_vm_id` nor `source_vm_name` is given."
           },
           "source_org_id": {
             "type": [
@@ -2425,7 +2477,7 @@
             ]
           },
           "provider": {
-            "description": "Infrastructure provider currently hosting the session's VM.",
+            "description": "Public provider containing the session's VM.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Provider"
@@ -2508,7 +2560,7 @@
               "null"
             ],
             "readOnly": true,
-            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<region>.arker.app`. Clients must not require this field to be present."
+            "description": "Nullable base `.app` hostname for inbound services. The bare hostname selects guest port 8080. For another port, insert `-<port>` before the first dot: `<vm>-<port>.<provider>-<region>.arker.app`. Clients must not require this field to be present."
           },
           "public": {
             "type": "boolean",
@@ -2532,14 +2584,14 @@
             "$ref": "#/components/schemas/VmState"
           },
           "region": {
-            "description": "Region containing the resource or activity.",
+            "description": "Customer-facing service region containing the VM.",
             "type": [
               "string",
               "null"
             ]
           },
           "provider": {
-            "description": "Infrastructure provider currently hosting the VM.",
+            "description": "Public provider containing the VM.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Provider"
@@ -2567,7 +2619,7 @@
             ],
             "minimum": 0,
             "maximum": 255,
-            "description": "Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run."
+            "description": "Hard vCPU ceiling for a fork of this VM. Requesting more fails the run."
           },
           "min_vcpus": {
             "type": [
@@ -2602,7 +2654,7 @@
             "items": {
               "$ref": "#/components/schemas/GpuPlatformLimits"
             },
-            "description": "GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A golden is GPU-agnostic and may be offered on several GPUs at once, so this is a list \u2014 clients pick the entry matching the platform they intend to request."
+            "description": "GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A base VM is GPU-agnostic and may be offered on several GPUs at once, so this is a list \u2014 clients pick the entry matching the platform they intend to request."
           },
           "min_disk_mib": {
             "type": [
@@ -2825,6 +2877,18 @@
             ],
             "minimum": 0
           },
+          "memory_backend": {
+            "description": "Preferred guest-memory mode if this run has to restore the VM: `file` maps the memory image from the host page cache, `uffd` supplies pages on demand through a userfaultfd handler. Omit it to let the server choose from the image's resident size, which is the right answer for almost everything. Set `uffd` for a short-lived call where restore latency dominates, `file` for a long-lived session that will touch most of its memory. A HINT, not a command: it only overrides the size policy, and an image reconstructed from object storage still uses `uffd` because the file mode cannot fault it correctly. Only takes effect when this run actually restores the VM \u2014 on an already-running VM it does nothing, and the mode in use is reported back as `memory_backend` on the response.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "file",
+              "uffd",
+              null
+            ]
+          },
           "acquire": {
             "type": [
               "string",
@@ -2950,6 +3014,18 @@
           "memory_partial": {
             "description": "True when a requested memory reduction was only partially applied. The command runs with the achieved allocation, and `memory_achieved_mib` reports that allocation. Defaults to false.",
             "type": "boolean"
+          },
+          "memory_backend": {
+            "description": "Which guest-memory mode this VM is restored with: `file` maps the memory image from the host page cache, `uffd` supplies pages on demand through a userfaultfd handler. Absent when this run involved no Firecracker restore \u2014 a `brush` dispatch, or a VM that was already running. Informational only: the mode is chosen per restore from the image's resident size, and an image reconstructed from object storage always uses `uffd`, which is a correctness requirement rather than a tuning choice.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "file",
+              "uffd",
+              null
+            ]
           }
         }
       },
@@ -3089,7 +3165,7 @@
             ]
           },
           "provider": {
-            "description": "Infrastructure provider that hosted the run.",
+            "description": "Public provider containing the run.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Provider"
@@ -3186,7 +3262,7 @@
             ]
           },
           "provider": {
-            "description": "Infrastructure provider that hosted the run.",
+            "description": "Public provider containing the run.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Provider"
@@ -3224,7 +3300,6 @@
       "OrgRunListRow": {
         "type": "object",
         "required": [
-          "source",
           "t_ms",
           "request_id",
           "run_id",
@@ -3256,11 +3331,9 @@
         "additionalProperties": false,
         "properties": {
           "source": {
-            "description": "Service that recorded the activity.",
+            "description": "No longer meaningful; do not depend on this field.",
             "type": "string",
-            "enum": [
-              "arkerd"
-            ]
+            "deprecated": true
           },
           "t_ms": {
             "description": "Activity timestamp as Unix epoch milliseconds.",
@@ -3288,7 +3361,7 @@
           },
           "provider": {
             "$ref": "#/components/schemas/Provider",
-            "description": "Infrastructure provider containing the resource or activity."
+            "description": "Public provider containing the resource or activity."
           },
           "status": {
             "description": "HTTP response status code.",
@@ -3759,7 +3832,8 @@
         ],
         "properties": {
           "ok": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True when the operation succeeded."
           },
           "op": {
             "type": "string",
@@ -3771,7 +3845,7 @@
           },
           "path": {
             "type": "string",
-            "description": "The sanitized destination — the file for a write, the directory for an extract."
+            "description": "The sanitized destination \u2014 the file for a write, the directory for an extract."
           },
           "size": {
             "type": "integer",
@@ -3779,7 +3853,8 @@
             "description": "Bytes streamed, matching the declared `size`."
           },
           "complete": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "True when all data for this operation has been received and applied."
           },
           "written": {
             "type": "boolean",
@@ -4289,10 +4364,11 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "default": "us-west-2"
           },
           "provider": {
-            "description": "Infrastructure provider hosting the filesystem.",
+            "description": "Public provider containing the filesystem.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Provider"
@@ -4300,7 +4376,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": "aws"
           }
         }
       },
@@ -4397,7 +4474,7 @@
               "null"
             ],
             "minimum": 1,
-            "description": "Number of GPU streaming multiprocessors available to the VM. Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default, or use `vgpu` to size by fraction instead."
+            "description": "Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default, or use `vgpu` to size by fraction instead."
           },
           "gpu_vram_mib": {
             "type": [
@@ -4405,7 +4482,15 @@
               "null"
             ],
             "minimum": 1,
-            "description": "GPU memory available to the VM, in MiB. Only valid for GPU platforms. Omit to use the platform default."
+            "description": "GPU memory available to the VM, in MiB, on EACH of its GPUs (a per-GPU value; see `gpu_count`). Only valid for GPU platforms. Omit to use the platform default."
+          },
+          "gpu_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Only valid for GPU platforms; requesting more GPUs than the serving host carries returns 400. Omit for a single GPU (absent means 1)."
           }
         }
       },
@@ -4505,6 +4590,7 @@
       "CompatiblePlatform": {
         "type": "object",
         "additionalProperties": false,
+        "description": "One platform this source can be forked onto, with the resource limits that apply there. This is the authoritative per-platform record: when an entry carries bounds they win over the flat `min_*`/`max_*` fields on the VM, which are a single-platform convenience projection of the same data. CPU, memory, and disk limits come from the source VM; GPU limits come from the platform catalog.",
         "required": [
           "id",
           "display_name",
@@ -4552,6 +4638,24 @@
             "type": "integer",
             "minimum": 0,
             "description": "Largest disk size accepted on this platform."
+          },
+          "default_vcpus": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "vCPU count a fork that omits `resources.vcpu` receives on this platform."
+          },
+          "default_memory_mib": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Memory size in MiB a fork that omits `resources.memory_mib` receives on this platform."
+          },
+          "default_disk_mib": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Disk size in MiB a fork that omits `resources.disk_mib` receives on this platform. `0` means nodisk."
+          },
+          "gpu": {
+            "$ref": "#/components/schemas/PlatformGpuLimits"
           }
         }
       },
@@ -4583,7 +4687,7 @@
       },
       "GpuPlatformLimits": {
         "type": "object",
-        "description": "GPU sizing bounds for one platform a VM can be forked onto, from the goldens.toml `[[gpu_platform]]` catalog.",
+        "description": "GPU sizing bounds for one platform a VM can be forked onto.",
         "required": [
           "platform",
           "vram_mib",
@@ -4595,6 +4699,30 @@
             "description": "Platform label to request in `platforms` to land on this GPU, e.g. `x86_64-l40s`."
           },
           "gpu": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Human-readable GPU model for display, e.g. `NVIDIA L40S`. Never parse this for sizing \u2014 use the bands."
+          },
+          "vram_mib": {
+            "$ref": "#/components/schemas/GpuResourceBand"
+          },
+          "sms": {
+            "$ref": "#/components/schemas/GpuResourceBand"
+          }
+        }
+      },
+      "PlatformGpuLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "GPU sizing bands for one compatible platform, from the platform catalog. Present on a `CompatiblePlatform` entry only when that platform has a GPU; absent means the platform has none. Bands are per GPU.",
+        "required": [
+          "vram_mib",
+          "sms"
+        ],
+        "properties": {
+          "name": {
             "type": [
               "string",
               "null"
