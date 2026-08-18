@@ -726,7 +726,7 @@ class Vm:
     root_source_vm_name: str | None = None
     region: str | None = None
     provider: Provider | None = None
-    started_at: str | None = None
+    last_active_at: str | None = None
     max_vcpus: int | None = None
     min_vcpus: int | None = None
     max_memory_mib: int | None = None

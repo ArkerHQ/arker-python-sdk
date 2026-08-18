@@ -694,7 +694,7 @@ class VM:
     max_vcpus: int | None
     max_memory_mib: int | None
     min_memory_mib: int | None
-    started_at: str | None
+    last_active_at: str | None
     sessions: list[Session] | None
 
     def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, data: Vm | None = None) -> None:

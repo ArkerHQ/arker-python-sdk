@@ -814,8 +814,8 @@ export interface components {
             region?: string | null;
             /** @description Infrastructure provider currently hosting the VM. */
             provider?: components["schemas"]["Provider"] | null;
-            /** @description RFC 3339 timestamp when execution or the session started. */
-            started_at?: string | null;
+            /** @description RFC 3339 timestamp of the machine's most recent activity — a run, an SSH session, an open tunnel, a resume, or being used as the source of a fork. Recorded when a stretch of activity begins and refreshed at most once a minute while it continues, so it is a recent-activity marker rather than a precise heartbeat. Null if the machine has not been active since it was created. */
+            last_active_at?: string | null;
             /** @description The VM's network object — SSH keys only. Inbound reachability and per-port exposure are derived from `policies`, not from this object. */
             network: components["schemas"]["VmNetwork"];
             /** @description Hard vCPU ceiling for a fork of this VM (KVM slot count). Requesting more fails the run. */

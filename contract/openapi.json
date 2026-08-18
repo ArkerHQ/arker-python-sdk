@@ -2549,8 +2549,8 @@
               }
             ]
           },
-          "started_at": {
-            "description": "RFC 3339 timestamp when execution or the session started.",
+          "last_active_at": {
+            "description": "RFC 3339 timestamp of the machine's most recent activity \u2014 a run, an SSH session, an open tunnel, a resume, or being used as the source of a fork. Recorded when a stretch of activity begins and refreshed at most once a minute while it continues, so it is a recent-activity marker rather than a precise heartbeat. Null if the machine has not been active since it was created.",
             "type": [
               "string",
               "null"
