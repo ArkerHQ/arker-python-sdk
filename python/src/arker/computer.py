@@ -388,6 +388,7 @@ class Arker:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        vgpu: float | None = None,
         gpu_vram_mib: int | None = None,
         gpu_sms: int | None = None,
         durable: bool | None = None,
@@ -418,6 +419,12 @@ class Arker:
         document to replace it — even an empty
         ``{"policies": []}``, which clears to allow-all rather than inheriting.
         Pass ``ssh_public_keys`` to authorize keys on the new VM.
+
+        ``vgpu`` sizes a GPU as a fraction of one card, where ``1`` is the whole
+        card: ``vgpu=0.25`` on an L40S is 35 SMs and 11517 MiB. ``gpu_sms`` and
+        ``gpu_vram_mib`` size the same slice in hardware units instead; set one
+        style or the other, not both. The VM reports the resolved ``gpu_sms``
+        and ``gpu_vram_mib`` either way.
 
         ``layers`` selects which layers of the source the child inherits. Omit
         it for the default full fork (``["disk", "memory"]``): the child inherits
@@ -459,12 +466,13 @@ class Arker:
         resources: VmResources | None = None
         if any(
             v is not None
-            for v in (vcpu_count, memory_mib, disk_mib, gpu_vram_mib, gpu_sms)
+            for v in (vcpu_count, memory_mib, disk_mib, vgpu, gpu_vram_mib, gpu_sms)
         ):
             resources = VmResources(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
+                vgpu=vgpu,
                 gpu_vram_mib=gpu_vram_mib,
                 gpu_sms=gpu_sms,
             )

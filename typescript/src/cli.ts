@@ -68,7 +68,10 @@ interface ParsedArgs {
 type OptionSpec =
   | { type: "boolean" }
   | { type: "string"; values?: readonly string[] }
-  | { type: "integer"; min: number; max?: number };
+  | { type: "integer"; min: number; max?: number }
+  // Fractional, for `--vgpu 0.25`. `min` is EXCLUSIVE: zero is not a GPU, and
+  // the server refuses it rather than rounding it up to a servable slice.
+  | { type: "number"; min: number; max: number };
 
 type OptionSpecs = Record<string, OptionSpec>;
 
@@ -94,6 +97,7 @@ const FORK_RESOURCE_OPTIONS: OptionSpecs = {
   ...RESOURCE_OPTIONS,
   "gpu-sms": { type: "integer", min: 1 },
   "gpu-vram-mib": { type: "integer", min: 1 },
+  vgpu: { type: "number", min: 0, max: 1 },
 };
 
 const RUN_OPTIONS: OptionSpecs = {
@@ -374,6 +378,15 @@ function parseOption(
       die(`parameter "${name}" must be one of: ${spec.values.join(", ")}`);
     }
     flags[name] = value;
+  } else if (spec.type === "number") {
+    const parsed = Number(value);
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(value) || !Number.isFinite(parsed)) {
+      die(`parameter "${name}" must be a number`);
+    }
+    if (parsed <= spec.min || parsed > spec.max) {
+      die(`parameter "${name}" must be > ${spec.min} and <= ${spec.max}`);
+    }
+    flags[name] = parsed;
   } else {
     if (!/^[+-]?\d+$/.test(value)) {
       die(`parameter "${name}" must be an integer`);
@@ -573,7 +586,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   if (!sourceVmId && !sourceVmName) {
     die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]\n" +
         "       [--platform <token[,token...]>] [--vcpu N] [--memory-mib N] [--disk-mib N]\n" +
-        "       [--gpu-vram-mib N] [--gpu-sms N] [--no-disk]");
+        "       [--vgpu F] [--gpu-vram-mib N] [--gpu-sms N] [--no-disk]");
   }
 
   // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
@@ -595,13 +608,15 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const diskMib = numFlag(args, "disk-mib");
   const gpuVramMib = numFlag(args, "gpu-vram-mib");
   const gpuSms = numFlag(args, "gpu-sms");
-  const hasResources = [vcpu, memoryMib, diskMib, gpuVramMib, gpuSms]
+  const vgpu = numFlag(args, "vgpu");
+  const hasResources = [vcpu, memoryMib, diskMib, gpuVramMib, gpuSms, vgpu]
     .some((value) => value !== undefined);
   const resources = hasResources
     ? {
         vcpu: vcpu ?? null,
         memory_mib: memoryMib ?? null,
         disk_mib: diskMib ?? null,
+        vgpu: vgpu ?? null,
         gpu_vram_mib: gpuVramMib ?? null,
         gpu_sms: gpuSms ?? null,
       }
@@ -1215,7 +1230,8 @@ function usage(_command?: string): void {
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource overrides",
       "  arker fork <vm> --platform <token[,token...]>  pin the fork to a compute platform",
-      "  arker fork <vm> --gpu-vram-mib N --gpu-sms N   size GPU resources for the fork",
+      "  arker fork <vm> --vgpu 0.25                    size the GPU as a fraction of one card",
+      "  arker fork <vm> --gpu-vram-mib N --gpu-sms N   size GPU resources in hardware units",
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
