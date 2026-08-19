@@ -137,9 +137,17 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   list: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
+    public: { type: "boolean" },
+    "source-org-id": { type: "string" },
     state: { type: "string", values: ["idle", "running"] },
   },
-  ls: {},
+  ls: {
+    ...GLOBAL_OPTIONS,
+    ...PAGINATION_OPTIONS,
+    public: { type: "boolean" },
+    "source-org-id": { type: "string" },
+    state: { type: "string", values: ["idle", "running"] },
+  },
   rm: GLOBAL_OPTIONS,
   run: RUN_OPTIONS,
   runs: {
@@ -272,7 +280,13 @@ function validateInvocationOptions(command: string, args: ParsedArgs): void {
   if (command === "vms") {
     context = `vms ${subcommand ?? "ls"}`;
     if (subcommand === undefined || subcommand === "ls" || subcommand === "list") {
-      allowed = { ...GLOBAL_OPTIONS, ...PAGINATION_OPTIONS, state: { type: "string" } };
+      allowed = {
+        ...GLOBAL_OPTIONS,
+        ...PAGINATION_OPTIONS,
+        public: { type: "boolean" },
+        "source-org-id": { type: "string" },
+        state: { type: "string" },
+      };
     } else if (subcommand === "fork") {
       allowed = COMMAND_OPTIONS.fork!;
     } else if (subcommand === "run") {
@@ -524,6 +538,11 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
         provider: args.flags.provider as ListVmsParameters["provider"],
         region: args.flags.region as string | undefined,
         state: args.flags.state as "idle" | "running" | undefined,
+        // Same two flags fork already takes: `--source-org-id ArkerHQ
+        // --public` is the public template catalog. Without them the listing
+        // stays scoped to the caller's own org.
+        org_id: args.flags["source-org-id"] as string | undefined,
+        public: boolFlag(args, "public"),
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
       });
@@ -1241,6 +1260,7 @@ function usage(_command?: string): void {
       "Resources:",
       "  arker regions                                  list available public placements",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
+      "  arker vms ls --source-org-id ArkerHQ --public  list the public VM catalog",
       "  arker runs        <ls|get|rm> <vm_id> ...",
       "  arker sessions    <ls|get|create|rm|update> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
@@ -1257,6 +1277,11 @@ function usage(_command?: string): void {
       "  --json                     emit JSON instead of tabular output",
       "  -h, --help                 show help without connecting",
       "  -v, --version              show version without connecting",
+      "",
+      "List flags (arker vms ls):",
+      "  --source-org-id <org>      list that org's VMs (only ArkerHQ, with --public)",
+      "  --public                   restrict the listing to public VMs",
+      "  --state <idle|running>     filter by VM state",
       "",
       "Fork flags:",
       "  --description <text>       short description for the new VM",
