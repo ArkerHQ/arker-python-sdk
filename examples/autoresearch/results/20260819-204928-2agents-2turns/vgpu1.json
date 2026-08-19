@@ -1,0 +1,39 @@
+{
+  "config": "vgpu1",
+  "vgpu": 1.0,
+  "agents": 2,
+  "turns": 2,
+  "wall_s": 137,
+  "in_progress": false,
+  "turns_done": 4,
+  "cost_usd": 0.2,
+  "experiments": 4,
+  "gpu_seconds": 14.5,
+  "best_loss": 2.2741,
+  "per_agent": {
+    "agent1": [
+      {
+        "loss": 3.8651,
+        "secs": 2.8,
+        "steps": 1000
+      },
+      {
+        "loss": 2.4821,
+        "secs": 4.3,
+        "steps": 1200
+      }
+    ],
+    "agent2": [
+      {
+        "loss": 3.8651,
+        "secs": 2.7,
+        "steps": 1000
+      },
+      {
+        "loss": 2.2741,
+        "secs": 4.7,
+        "steps": 1200
+      }
+    ]
+  }
+}
