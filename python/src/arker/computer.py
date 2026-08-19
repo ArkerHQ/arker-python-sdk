@@ -736,20 +736,21 @@ class VM:
         ``run_id``; run() then transparently polls :meth:`get_run` until the run
         reaches a terminal state and returns the completed
         :class:`CompletedRunResult` — so a synchronous caller always receives
-        the final result. Polling is bounded by ``timeout`` (the run's kill
-        bound; ``None``/``0`` ⇒ the 3600s default) plus a margin; if that budget
-        is exceeded run() raises an :class:`ArkerError` with code ``"timeout"``
-        (the run keeps executing server-side — poll :meth:`get_run` to retrieve
-        it).
+        the final result. Polling mirrors the server: if you passed a ``timeout``
+        (a real kill bound) polling stops shortly after it and raises an
+        :class:`ArkerError` with code ``"timeout"``; if you passed none, the run
+        is unbounded server-side and run() waits for it. Use ``background=True``
+        if you want control back immediately.
 
         Pass ``background=True`` to skip the wait entirely: run() returns the
         running :class:`BackgroundRunResult` immediately and you manage polling
         yourself via :meth:`get_run`.
 
         ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
-        time the command may run before the host kills it. ``None`` (default)
-        applies the server default (3600 seconds);
-        ``0`` opts out of any kill (unbounded). It is NOT the HTTP wait window,
+        time the command may run before the host kills it. ``None`` (the default)
+        and ``0`` both mean NO kill bound — the command runs until it finishes.
+        There is no hidden server-side default; the contract maps both to "no
+        deadline", and the guest agent runs with no deadline of its own. It is NOT the HTTP wait window,
         so ``background=True`` runs should leave it unset (or set a real kill
         bound) — a small ``timeout`` would kill the run, not just background it.
 
@@ -816,21 +817,32 @@ class VM:
         that outlived its sync window. Bounded by ``timeout`` (the run's kill
         bound) plus a margin; raises an :class:`ArkerError` with code
         ``"timeout"`` if the budget is exceeded."""
-        kill_bound_s = timeout if (timeout is not None and timeout > 0) else DEFAULT_RUN_TIMEOUT_S
-        budget_s = kill_bound_s + RUN_POLL_MARGIN_S
-        deadline = time.monotonic() + budget_s
+        # A run with no kill bound is UNBOUNDED SERVER-SIDE: the contract maps
+        # `None` and `0` alike to no deadline (RunRequest::resolved_timeout), the
+        # worker passes that straight through, and the guest agent uses
+        # SHELL_EXEC_TIMEOUT_MS = 0. So inventing a client-side 3600s give-up
+        # made run() raise "timeout" on a job the platform was still happily
+        # running — the opposite of what the caller asked for by omitting a bound.
+        #
+        # Now the client mirrors the server: a bound was requested -> poll until
+        # it (plus a margin) elapses; no bound -> poll until the run is terminal.
+        # A caller who does not want to wait forever has two better options than a
+        # surprise deadline: pass `timeout` (a real kill bound, so the RUN ends
+        # too) or `background=True` and poll get_run() themselves.
+        bounded = timeout is not None and timeout > 0
+        deadline = time.monotonic() + timeout + RUN_POLL_MARGIN_S if bounded else None
         delay = RUN_POLL_INITIAL_S
         while True:
             time.sleep(delay)
             run = self.get_run(run_id)
             if run.state in TERMINAL_RUN_STATES:
                 return _run_to_completed_result(run)
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise ArkerError(
                     "timeout",
-                    f"run {run_id} did not reach a terminal state within "
-                    f'{int(budget_s)}s; it continues server-side — poll '
-                    f'get_run("{run_id}") to retrieve it',
+                    f"run {run_id} did not reach a terminal state within its "
+                    f"{int(timeout)}s timeout plus margin; it continues "
+                    f'server-side — poll get_run("{run_id}") to retrieve it',
                     0,
                 )
             delay = min(RUN_POLL_MAX_S, delay * RUN_POLL_BACKOFF)
