@@ -126,6 +126,8 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
     placement = {
         "provider": "provider-two",
         "region": "region-two",
+        # The catalog always carries an endpoint, and the contract now says so.
+        "endpoint": "https://provider-two-region-two.arker.ai/",
     }
     t.add_json(
         lambda method, url: method == "GET"

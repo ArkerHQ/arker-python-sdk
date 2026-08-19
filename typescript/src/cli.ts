@@ -69,9 +69,11 @@ type OptionSpec =
   | { type: "boolean" }
   | { type: "string"; values?: readonly string[] }
   | { type: "integer"; min: number; max?: number }
-  // Fractional, for `--vgpu 0.25`. `min` is EXCLUSIVE: zero is not a GPU, and
-  // the server refuses it rather than rounding it up to a servable slice.
-  | { type: "number"; min: number; max: number };
+  // Fractional, for `--vgpu 0.25`. `min` is INCLUSIVE when a `step` is given
+  // (the smallest rung is a legal value); exclusive otherwise. `step` states a
+  // ladder the server enforces, so we can refuse the same values it would
+  // rather than spending a round trip on a 400.
+  | { type: "number"; min: number; max: number; step?: number };
 
 type OptionSpecs = Record<string, OptionSpec>;
 
@@ -97,7 +99,8 @@ const FORK_RESOURCE_OPTIONS: OptionSpecs = {
   ...RESOURCE_OPTIONS,
   "gpu-sms": { type: "integer", min: 1 },
   "gpu-vram-mib": { type: "integer", min: 1 },
-  vgpu: { type: "number", min: 0, max: 1 },
+  // Eighths of one card, matching `multipleOf: 0.125` in the API contract.
+  vgpu: { type: "number", min: 0.125, max: 1, step: 0.125 },
 };
 
 const RUN_OPTIONS: OptionSpecs = {
@@ -397,8 +400,19 @@ function parseOption(
     if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(value) || !Number.isFinite(parsed)) {
       die(`parameter "${name}" must be a number`);
     }
-    if (parsed <= spec.min || parsed > spec.max) {
-      die(`parameter "${name}" must be > ${spec.min} and <= ${spec.max}`);
+    if (spec.step === undefined) {
+      if (parsed <= spec.min || parsed > spec.max) {
+        die(`parameter "${name}" must be > ${spec.min} and <= ${spec.max}`);
+      }
+    } else {
+      // Every rung is a power-of-two fraction, so this is exact — no epsilon.
+      const rungs = [];
+      for (let v = spec.min; v <= spec.max + spec.step / 2; v += spec.step) {
+        rungs.push(v);
+      }
+      if (!rungs.includes(parsed)) {
+        die(`parameter "${name}" must be one of: ${rungs.join(", ")}`);
+      }
     }
     flags[name] = parsed;
   } else {
@@ -1249,7 +1263,7 @@ function usage(_command?: string): void {
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource overrides",
       "  arker fork <vm> --platform <token[,token...]>  pin the fork to a compute platform",
-      "  arker fork <vm> --vgpu 0.25                    size the GPU as a fraction of one card",
+      "  arker fork <vm> --vgpu 0.25                    size the GPU in eighths of a card (0.125 … 1)",
       "  arker fork <vm> --gpu-vram-mib N --gpu-sms N   size GPU resources in hardware units",
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",

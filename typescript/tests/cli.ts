@@ -263,8 +263,10 @@ async function testForkForwardsVgpu(): Promise<void> {
     },
   );
 
-  // Out of range and non-numeric must fail before any request is made.
-  for (const value of ["0", "1.5", "-0.5", "half"]) {
+  // Off the ladder, out of range, and non-numeric must all fail before any
+  // request is made — the server enforces eighths, so spending a round trip to
+  // be told so is pure latency.
+  for (const value of ["0", "1.5", "-0.5", "half", "0.3", "0.2", "0.0625"]) {
     await withCapturedServer(
       (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
       async (baseUrl, requests) => {
