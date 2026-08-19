@@ -1,5 +1,5 @@
 /**
- * Behavioral conformance test for VM.syncDir (ARK-268).
+ * Behavioral conformance test for VM.syncDir.
  *
  * Exercises the SDK's rsync-style directory sync end-to-end against a live VM:
  *   fork -> full sync -> repeat (delta=0) -> edit one file (delta=1) ->

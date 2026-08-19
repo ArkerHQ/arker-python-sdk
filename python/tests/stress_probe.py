@@ -1,5 +1,5 @@
 """Stress probe — measures real failure rate and latency profile of
-read/write operations against the staging deploy.
+read/write operations against a live deployment.
 
 Usage:
 
@@ -138,8 +138,8 @@ def main() -> None:
 
     try:
         # Phase 1: write tiny files at increasing path indices. Each write
-        # takes the chunk fast-path (one chunk, [0,size)) → 1 server-side
-        # PUT to the final blob key + 1 state.log CAS append.
+        # takes the chunk fast-path (one chunk, [0,size)) — one request, and
+        # the write is visible to reads as soon as it returns.
         def write_one(i: int) -> None:
             payload = f"hello-{i:04d}".encode()
             vm.sync(f"/home/user/probe-{i:04d}.txt", payload)
@@ -153,14 +153,15 @@ def main() -> None:
         run_phase("READ 30× tiny files (inline)", read_one, N, trace)
 
         # Phase 3: alternating write/read on a single path. Most stressful
-        # because each op contends on state.log CAS for one VM.
+        # because every op on this VM serializes against the others touching
+        # the same path.
         def alt(i: int) -> None:
             if i % 2 == 0:
                 vm.sync("/home/user/alt.txt", f"v{i}".encode())
             else:
                 vm.sync("/home/user/alt.txt")
 
-        run_phase("ALTERNATE write/read same path (CAS-contention probe)", alt, N, trace)
+        run_phase("ALTERNATE write/read same path (contention probe)", alt, N, trace)
 
         # Phase 4: medium writes — exercise the multi-chunk path.
         def med_write(i: int) -> None:

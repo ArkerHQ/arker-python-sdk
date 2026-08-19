@@ -248,7 +248,7 @@ def test_fork_tolerates_unknown_response_fields() -> None:
 
     Servers add response fields additively; a client pinned to an earlier
     version has to keep working. This previously raised
-    `TypeError: Vm contains fields outside openapi.json: hostname, keep_alive`
+    `TypeError: Vm contains fields outside openapi.json: ...`
     and broke `fork()` outright against a newer deployment.
     """
     t = FakeTransport()
@@ -267,7 +267,7 @@ def test_fork_tolerates_unknown_response_fields() -> None:
             "network": {},
             # fields a future server adds that this SDK has never heard of
             "hostname": "vm_child.aws-us-west-2.arker.app",
-            "keep_alive": True,
+            "some_future_flag": True,
             "some_field_from_the_future": {"nested": [1, 2, 3]},
         },
     )
@@ -805,9 +805,9 @@ def test_read_presigned_follows_url() -> None:
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/sync"),
         200,
-        {"ok": True, "op": "read", "path": "/home/user/big", "size": 5, "presigned_url": "https://s3.invalid/file", "expires_in": 900, "method": "GET"},
+        {"ok": True, "op": "read", "path": "/home/user/big", "size": 5, "presigned_url": "https://storage.invalid/file", "expires_in": 900, "method": "GET"},
     )
-    t.add_raw(lambda method, url: method == "GET" and url == "https://s3.invalid/file", 200, b"hello")
+    t.add_raw(lambda method, url: method == "GET" and url == "https://storage.invalid/file", 200, b"hello")
 
     with use_transport(t):
         assert client().vm("vm_1").sync("/home/user/big") == b"hello"

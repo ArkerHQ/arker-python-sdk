@@ -161,7 +161,6 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
     },
   );
 
@@ -280,7 +279,6 @@ async function testForkOmitsUnconfiguredCapabilities(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
     },
   );
 
@@ -444,7 +442,6 @@ async function testConfiguredPlacementRoutesNamedSourcesToMainEndpoint(): Promis
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
     },
   );
 
@@ -601,14 +598,10 @@ async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
         status: 200,
         total_ms: 12.5,
         queue_ms: 1.5,
-        lambda_call_ms: 0,
-        lambda_duration_ms: 0,
         executor_duration_ms: 10,
         executor_kind: "vm",
         executor_cpu_ms: 8,
         executor_mem_mb: 64,
-        lambda_cpu_ms: 0,
-        lambda_mem_mb: 0,
         vm_vcpus: 2,
         vm_memory_mib: 4096,
         path: "/v1/vms/vm_1/runs",
@@ -675,7 +668,6 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
         public: true,
         state: "idle",
         sessions: [],
-        tunnels: [],
         network: { ssh_public_keys: [] },
         max_vcpus: 8,
         max_memory_mib: 32768,
@@ -710,7 +702,6 @@ async function testForkSendsDurableFlag(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
     },
   );
 
@@ -757,7 +748,6 @@ async function testRunStatusReturnsRetryCount(): Promise<void> {
       stderr: "",
       stderr_encoding: "utf-8",
       exit_code: 0,
-      tunnels: [],
       retry_count: 2,
     },
   );
@@ -1033,7 +1023,7 @@ await testForkSendsDurableFlag();
 await testRunSendsIdempotencyKeyHeader();
 await testRunStatusReturnsRetryCount();
 async function testConnectPtyPassesCancelTtlSecs(): Promise<void> {
-  // ARK-120: cancelTtlSecs must surface as the `cancel_ttl_secs` query param so
+  // cancelTtlSecs must surface as the `cancel_ttl_secs` query param so
   // the server auto-cancels (destroys) the PTY run after that idle window.
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -1434,14 +1424,14 @@ async function testSyncStreamFastPathSkipsTheExtractRun(): Promise<void> {
   assert.ok(stream, "syncDir must try /sync-stream first");
   assert.equal(stream!.headers["content-type"], "application/octet-stream", "body must go raw, not base64 JSON");
 
-  // Params ride in the query string: the auth middleware strips x-arker-* from
-  // untrusted callers and would erase them as headers.
+  // Params ride in the query string, not as headers, so they reach the VM
+  // reliably regardless of what strips custom headers along the way.
   const qs = new URL(stream!.url).searchParams;
   assert.equal(qs.get("path"), "/home/user/p");
   assert.equal(qs.get("extract"), "tar.gz");
   assert.ok(Number(qs.get("size")) > 0, "size must be the tarball byte length");
 
-  // The whole point: no second round-trip through the user run scheduler.
+  // The whole point: no second round-trip to run the extraction as a command.
   assert.equal(fetch.calls.filter((c) => c.url.endsWith("/runs")).length, 0, "fast path must not issue an extract run");
   cleanup();
 }
@@ -1471,8 +1461,9 @@ await testSyncStreamErrorsOtherThan404DoNotFallBack();
 
 // ── syncDir assumeEmpty ──────────────────────────────────────────────
 // The manifest exists to avoid re-sending unchanged files. Into a fresh
-// directory it is guaranteed empty, so the round-trip costs ~184ms to learn
-// nothing — on exactly the first-sync path we lose to E2B on.
+// directory it is guaranteed empty, so the round-trip costs real latency to
+// learn nothing — on exactly the first-sync path where every millisecond
+// matters most.
 
 async function testAssumeEmptySkipsTheManifestRoundTrip(): Promise<void> {
   const fs = await import("node:fs");

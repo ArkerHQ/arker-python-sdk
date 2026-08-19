@@ -7,7 +7,7 @@
  *
  *   bun run build   # produces dist/ (connectPty needs the optional `ws` dep)
  *   ARKER_API_KEY=ark_live_... \
- *   ARKER_BASE_URL=http://<worker>:8080/api  (or ARKER_REGION=us-west-2) \
+ *   ARKER_BASE_URL=http://<host>:8080/api  (or ARKER_REGION=us-west-2) \
  *   ARKER_SOURCE_VM=<source-name> ARKER_SOURCE_ORG_ID=<source-org> \
  *   bun tests/conformance/pty-roundtrip.ts
  *
@@ -59,10 +59,10 @@ function driver(pty: PtyConnection) {
 }
 
 /** Open a PTY on `sessionId`, wait until the shell echoes (is live).
- *  Reconnecting to a paused/suspended VM, the host restores the runtime during
- *  the WS attach, so a fresh attempt may need a moment to settle. We retry the
- *  whole connectPty (a real client reopens), let each attempt settle, then
- *  probe patiently on it before giving up. */
+ *  Reconnecting to a suspended VM can take a moment while it resumes, so a
+ *  fresh attempt may need a moment to settle. We retry the whole connectPty
+ *  (a real client reopens), let each attempt settle, then probe patiently on
+ *  it before giving up. */
 async function live(vmId: string, sessionId: string, opts: Record<string, unknown> = {}): Promise<{ pty: PtyConnection; d: ReturnType<typeof driver> } | null> {
   for (let attempt = 0; attempt < 8; attempt++) {
     let pty: PtyConnection;
