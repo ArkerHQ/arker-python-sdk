@@ -1065,7 +1065,6 @@ export class VM {
   readonly last_active_at?: Vm["last_active_at"];
   readonly root_source_vm_id?: Vm["root_source_vm_id"];
   readonly root_source_vm_name?: Vm["root_source_vm_name"];
-  readonly worker_id?: string | null;
   readonly sessions?: Vm["sessions"];
 
   constructor(client: Arker, vmId: string, baseUrl = client._baseUrlFor(vmId), data?: Vm) {

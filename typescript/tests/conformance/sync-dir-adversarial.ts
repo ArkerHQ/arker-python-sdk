@@ -1,5 +1,5 @@
 /**
- * Adversarial conformance test for VM.syncDir (ARK-268).
+ * Adversarial conformance test for VM.syncDir.
  *
  * Drives the real SDK syncDir with BIG and SMALL payloads while the VM runs a
  * concurrent network+compute+write workload, and asserts the running-VM sync

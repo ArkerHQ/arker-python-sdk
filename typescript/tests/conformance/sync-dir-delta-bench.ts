@@ -1,5 +1,5 @@
 /**
- * Throughput bench for VM.syncDir DELTA path (ARK-268).
+ * Throughput bench for VM.syncDir DELTA path.
  *
  * The companion of sync-dir-bench.ts (which measures the FULL first-push). This
  * one measures the incremental/rsync-style path — the reason syncDir exists:
@@ -15,11 +15,11 @@
  *
  * ── REQUIRES IMMEDIATELY-CONSISTENT FILE LISTINGS ───────────────────────────
  * The `sent=0` repeat only holds once the VM's reported file listing reflects
- * its most recent writes immediately. On a backend where the listing lags recent
- * writes, a back-to-back second syncDir re-sends everything (sent=N) and this
- * bench fails the `sent=0` assertion by design — that failure IS the signal the
- * target host does not yet report listings consistently. See sync-dir-bench.ts's
- * header for the full story.
+ * its most recent writes immediately. If the listing lags recent writes, a
+ * back-to-back second syncDir re-sends everything (sent=N) and this bench
+ * fails the `sent=0` assertion by design — that failure IS the signal that
+ * file listings are not yet immediately consistent after a write in this
+ * environment. See sync-dir-bench.ts's header for the full story.
  *
  * SKIP-tolerant: with ARKER_API_KEY / ARKER_BASE_URL unset it prints SKIP and
  * exits 0. Self-cleaning: it tracks the VM ids it forks and deletes only those.
@@ -113,8 +113,8 @@ async function main(): Promise<void> {
     assert(
       repeat.sent === 0,
       `repeat (delta) sync: expected sent=0, got sent=${repeat.sent} skipped=${repeat.skipped} — ` +
-        `the server manifest-freshness fix is likely NOT deployed on this host ` +
-        `(op="manifest" returned a stale/empty manifest, so unchanged files re-sent). See header.`,
+        `this environment's file listings are likely not yet immediately ` +
+        `consistent after a write, so unchanged files were re-sent. See header.`,
     );
     const deltaFilesPerS = totalFiles / Math.max(repeatS, 1e-6);
     const speedup = fullS / Math.max(repeatS, 1e-6);

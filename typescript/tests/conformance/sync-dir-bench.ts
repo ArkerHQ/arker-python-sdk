@@ -1,5 +1,5 @@
 /**
- * Throughput bench for VM.syncDir FULL-sync (ARK-268).
+ * Throughput bench for VM.syncDir FULL-sync.
  *
  * Measures the SDK's rsync-style directory sync on a first/full push: a tree of
  * ~3000 small files + a few large ones, forked onto a live VM, timed end-to-end
@@ -9,11 +9,11 @@
  * (N round-trips). The batch collapses N round-trips to ~2, which is the whole
  * point of the method (the ~6.6s→~2.4s story at this scale).
  *
- * FULL-sync ONLY. The delta/repeat throughput bench is intentionally NOT here:
- * on some backends the VM's reported file listing can lag its most recent
- * writes by a couple of seconds, so a back-to-back second syncDir re-sends
- * everything (sent=N, skipped=0) instead of nothing. Re-enable a delta bench
- * once the listing is immediately consistent after a write on the target host.
+ * FULL-sync ONLY. The delta/repeat throughput bench lives separately in
+ * sync-dir-delta-bench.ts: a back-to-back second syncDir can occasionally
+ * re-send everything instead of nothing if the VM's file listing hasn't yet
+ * caught up with the most recent writes — see that file's header for how it
+ * handles this.
  *
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://host:8080/api \
  *   ARKER_SOURCE_VM=<source-name> bun tests/conformance/sync-dir-bench.ts

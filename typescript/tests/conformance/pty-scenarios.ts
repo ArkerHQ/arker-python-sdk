@@ -10,11 +10,11 @@
  *   - large output integrity (ordered + complete, no loss at moderate volume)
  *   - concurrent independent PTY sessions (two shells, isolated state)
  *   - cancel_ttl: an idle PTY auto-cancels and the shell is destroyed
- *   - exec-before-PTY corner case (#42): run() on a session, then attach a PTY
+ *   - exec-before-PTY corner case: run() on a session, then attach a PTY
  *   - reconnect after the VM has gone idle keeps the same shell
  *
  *   bun run build
- *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://<worker>:8080/api \
+ *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://<host>:8080/api \
  *   ARKER_SOURCE_VM=<source-name> ARKER_SOURCE_ORG_ID=<source-org> bun tests/conformance/pty-scenarios.ts
  *
  * Exits non-zero on any failure. Self-cleans the VM it forks.
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
       }
     }
 
-    // ---- 7) exec-before-PTY corner case (#42): run() then attach a PTY ----
+    // ---- 7) exec-before-PTY corner case: run() then attach a PTY ----
     {
       const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
@@ -221,9 +221,9 @@ async function main(): Promise<void> {
     }
 
     // ---- 8) cancel_ttl: an idle ATTACHED PTY auto-cancels + destroys the shell ----
-    //   Semantics (ARK-120 Phase D): while attached, if there's no PTY I/O for
-    //   cancel_ttl_secs the bridge cancels the run and DESTROYS the shell (the WS
-    //   closes server-side). This is NOT a detach timer — it fires on the live conn.
+    //   While attached, if there's no PTY I/O for cancel_ttl_secs the server
+    //   cancels the run and DESTROYS the shell (the WS closes server-side).
+    //   This is NOT a detach timer — it fires on the live connection.
     {
       const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
