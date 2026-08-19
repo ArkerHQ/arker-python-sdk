@@ -52,12 +52,17 @@ def log(msg: str) -> None:
 
 
 def begin_config(vgpu: float) -> None:
-    _state.update(vgpu=vgpu, t0=time.time(), turns=[], marks={})
+    _state.update(vgpu=vgpu, t0=time.time(), turns=[], marks={}, prep_ready=None)
     log(f"=== {label_for(vgpu)}: {AGENTS} agents x {vgpu:g} vGPU, {TURNS} turns each ===")
 
 
 def wall_seconds() -> int:
     return round(time.time() - _state["t0"])
+
+
+def prep_ready() -> None:
+    """Mark the end of setup: prep is installed, agents are about to fork."""
+    _state["prep_ready"] = time.time() - _state["t0"]
 
 
 def turn_started(agent: str, turn: int) -> None:
@@ -81,6 +86,9 @@ def turn_done(agent: str, turn: int, tsv: str, stdout: str = "") -> None:
             "start": submitted - _state["t0"],
             "queued": queued,
             "end": time.time() - _state["t0"],
+            # seconds the training run itself took, from results.tsv — the rest
+            # of the turn is the agent thinking (model latency, edits, reads)
+            "train_s": runs[-1]["secs"] if runs else None,
             "loss": runs[-1]["loss"] if runs else None,
         })
         _save_partial()
@@ -182,6 +190,8 @@ def save_summary(vgpu: float, agents: dict) -> dict:
         "experiments": len(every),
         "gpu_seconds": round(sum(r["secs"] for r in every), 1),
         "best_loss": min((r["loss"] for r in every), default=None),
+        "prep_ready_s": _state.get("prep_ready"),
+        "timeline": _state["turns"],
         "per_agent": agents,
     }
     (RUN / f"{label}.json").write_text(json.dumps(summary, indent=2))
@@ -214,6 +224,8 @@ def _save_partial() -> None:
         "cost_usd": round(GPUS_ON_HOST * wall / 3600 * USD_PER_GPU_HOUR, 2),
         "experiments": len(losses),
         "best_loss": min(losses, default=None),
+        "prep_ready_s": _state.get("prep_ready"),
+        "timeline": turns,
         "per_agent": per_agent,
     }, indent=2))
 
@@ -261,11 +273,10 @@ def _draw_progress() -> None:
     ax_t.set_yticks(range(len(names)))
     ax_t.set_yticklabels(names, fontsize=9)
     ax_t.set_xlabel("seconds since config start", fontsize=9)
-    # A turn's bar starts when the turn is submitted, not when the GPU is
-    # granted: a run parks in admission until a slice frees, so waiting shows
-    # up as a LONGER BAR, never as a gap. Two agents given the same work at
-    # the same time, one bar twice the other's = that one queued.
-    ax_t.set_title(f"time actually running on the GPU — {AGENTS} x {vgpu:g} vGPU",
+    # The bar is the whole turn once it was granted a slice — the agent calling
+    # the model, editing, and the training run. The slice is held throughout;
+    # only part of it is compute. Queueing is excluded (see `queued`).
+    ax_t.set_title(f"time running — {AGENTS} x {vgpu:g} vGPU",
                    fontsize=10)
     ax_t.grid(axis="x", alpha=.25)
     ax_t.set_axisbelow(True)
@@ -295,6 +306,72 @@ def _draw_progress() -> None:
     fig.tight_layout(rect=[0, 0, 1, .90])
     fig.savefig(RUN / f"progress-{label_for(vgpu)}.png", dpi=140)
     plt.close(fig)
+
+
+def timeline(folder: str | None = None) -> None:
+    """One figure, every config in the run folder stacked: a setup phase, then
+    one row per agent showing each turn — dark where the training run held the
+    GPU, light where the agent was waiting on the model. Reads the saved JSON,
+    so it redraws long after the run."""
+    plt = _plt()
+    where = pathlib.Path(folder) if folder else newest_run()
+    loaded = [json.loads(f.read_text()) for f in sorted(where.glob("vgpu*.json"))]
+    loaded = [d for d in loaded if d.get("timeline")]
+    if not loaded:
+        sys.exit(f"no timeline data in {where} — rerun to record it")
+    loaded.sort(key=lambda d: d["vgpu"])
+
+    # one panel per config, heights proportional to the agents they show
+    fig, axes = plt.subplots(len(loaded), 1, figsize=(13, 2.4 + 1.5 * len(loaded)),
+                             squeeze=False)
+    span = max(max(t["end"] for t in d["timeline"]) for d in loaded)
+    for ax, d in zip((a[0] for a in axes), loaded):
+        dark, light = ("#2b7bba", "#bcd8ec") if d["vgpu"] < 1 else ("#c1553b", "#f2cdc4")
+        names = sorted({t["agent"] for t in d["timeline"]})
+        rows = ["setup"] + names
+
+        setup_end = d.get("prep_ready_s") or 0
+        ax.barh(0, setup_end, left=0, height=.5, color="#c9ced4")
+        ax.text(setup_end + span * .006, 0, "agents fork", va="center", fontsize=7.5,
+                color="#555")
+
+        for t in d["timeline"]:
+            y = rows.index(t["agent"])
+            began = t["start"] + t.get("queued", 0.0)
+            ax.barh(y, t["end"] - began, left=began, height=.55, color=light)
+            train = t.get("train_s")
+            if train:                       # the part that actually held the GPU
+                ax.barh(y, train, left=t["end"] - train, height=.55, color=dark)
+        for i, a in enumerate(names, start=1):
+            last = max((t for t in d["timeline"] if t["agent"] == a), key=lambda t: t["end"])
+            best = min((t["loss"] for t in d["timeline"]
+                        if t["agent"] == a and t["loss"] is not None), default=None)
+            if best is not None:
+                ax.text(last["end"] + span * .006, i, f"{best:.4f}", va="center", fontsize=8)
+
+        ax.set_yticks(range(len(rows)))
+        ax.set_yticklabels(rows, fontsize=9)
+        ax.invert_yaxis()
+        ax.set_xlim(0, span * 1.08)
+        ax.grid(axis="x", alpha=.25)
+        ax.set_axisbelow(True)
+        ax.set_title(f"{d['agents']} agents x {d['vgpu']:g} vGPU   —   "
+                     f"{d['wall_s']}s · ${d['cost_usd']} · {d['experiments']} experiments",
+                     fontsize=10, loc="left")
+
+    axes[-1][0].set_xlabel("seconds since the config started", fontsize=9)
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in ("#c9ced4", "#2b7bba", "#bcd8ec")]
+    fig.legend(handles, ["setup (prep + forks)", "on GPU (the training run)",
+                         "agent alive, waiting on the model"],
+               loc="upper right", fontsize=8, frameon=False)
+    total = sum(d["experiments"] for d in loaded)
+    fig.suptitle(f"Same {total // len(loaded)} experiments per config, same host: "
+                 f"slicing vs whole GPUs", fontsize=11.5, x=.02, ha="left")
+    fig.tight_layout(rect=[0, 0, 1, .92])
+    out = where / "timeline.png"
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    print(f"wrote {out}")
 
 
 def newest_run() -> pathlib.Path:

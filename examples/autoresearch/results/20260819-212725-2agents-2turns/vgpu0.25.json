@@ -1,0 +1,78 @@
+{
+  "config": "vgpu0.25",
+  "vgpu": 0.25,
+  "agents": 2,
+  "turns": 2,
+  "wall_s": 105,
+  "in_progress": false,
+  "turns_done": 4,
+  "cost_usd": 0.16,
+  "experiments": 4,
+  "gpu_seconds": 19.4,
+  "best_loss": 1.7176,
+  "prep_ready_s": 51.63001322746277,
+  "timeline": [
+    {
+      "agent": "agent1",
+      "turn": 1,
+      "start": 55.320810317993164,
+      "queued": 0.06975483894348145,
+      "end": 80.08160710334778,
+      "train_s": 3.7,
+      "loss": 3.6545
+    },
+    {
+      "agent": "agent2",
+      "turn": 1,
+      "start": 55.331974267959595,
+      "queued": 1.0585908889770508,
+      "end": 82.04438018798828,
+      "train_s": 4.5,
+      "loss": 3.6029
+    },
+    {
+      "agent": "agent2",
+      "turn": 2,
+      "start": 82.13454008102417,
+      "queued": 0.0,
+      "end": 103.32865524291992,
+      "train_s": 5.6,
+      "loss": 1.7176
+    },
+    {
+      "agent": "agent1",
+      "turn": 2,
+      "start": 80.3672890663147,
+      "queued": 0.023276090621948242,
+      "end": 104.17441511154175,
+      "train_s": 5.6,
+      "loss": 1.7176
+    }
+  ],
+  "per_agent": {
+    "agent1": [
+      {
+        "loss": 3.6545,
+        "secs": 3.7,
+        "steps": 1000
+      },
+      {
+        "loss": 1.7176,
+        "secs": 5.6,
+        "steps": 1200
+      }
+    ],
+    "agent2": [
+      {
+        "loss": 3.6029,
+        "secs": 4.5,
+        "steps": 1200
+      },
+      {
+        "loss": 1.7176,
+        "secs": 5.6,
+        "steps": 1200
+      }
+    ]
+  }
+}

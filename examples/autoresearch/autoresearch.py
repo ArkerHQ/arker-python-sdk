@@ -35,8 +35,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from lab import (AGENTS, PLATFORM, READ_RESULTS, RUN, SETUP_STAGES, STAGE_PREFIX,
-                 TURNS, VGPUS, WRITE_TASK, begin_config, chart, log, parse_runs,
-                 save_summary, turn_command, turn_done, turn_started)
+                 TURNS, VGPUS, WRITE_TASK, begin_config, chart, log, parse_runs, timeline,
+                 prep_ready, save_summary, turn_command, turn_done, turn_started)
 
 
 def prepare(ark) -> object:
@@ -53,6 +53,7 @@ def prepare(ark) -> object:
             f"{out[-1][:70] if out else ''}")
 
     prep.run(WRITE_TASK)   # every agent inherits it by forking
+    prep_ready()
     log(f"prep ready — forking {AGENTS} agents")
     return prep
 
@@ -103,3 +104,4 @@ if __name__ == "__main__":
     for vgpu in VGPUS:
         run_config(vgpu)
     chart(str(RUN))
+    timeline(str(RUN))
