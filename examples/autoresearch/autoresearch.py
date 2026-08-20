@@ -42,7 +42,7 @@ from lab import (AGENTS, PLATFORM, READ_RESULTS, RUN, SETUP_STAGES, STAGE_PREFIX
 def prepare(ark) -> object:
     """Fork one VM and install the toolchain on it. Every agent forks from this."""
     prep = ark.fork(source_vm_name="ubuntu-gpu", platforms=[PLATFORM], name="prep",
-                    vgpu=0.25, vcpu_count=2, memory_mib=15360, disk_mib=51200)
+                    vgpu=0.25, vcpu_count=2, memory_mib=16384, disk_mib=102400)
     log(f"prep {prep.id[-6:]} forked — installing the toolchain")
 
     for i, (name, script) in enumerate(SETUP_STAGES, 1):
@@ -61,7 +61,7 @@ def prepare(ark) -> object:
 def run_agent(ark, prep, n: int, vgpu: float) -> list[dict]:
     """One agent: fork off prep, run TURNS turns, hand back its experiments."""
     vm = ark.fork(source=prep, name=f"agent{n}", vgpu=vgpu,
-                  vcpu_count=2, memory_mib=15360, disk_mib=51200)
+                  vcpu_count=2, memory_mib=16384, disk_mib=102400)
     for turn in range(1, TURNS + 1):
         turn_started(f"agent{n}", turn)
         # queueing_timeout is the only bound here: on a contended host the run
