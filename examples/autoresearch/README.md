@@ -29,16 +29,12 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 
 # smoke test: 2 agents, 2 turns each, ~5 minutes
 AGENTS=2 TURNS=2 VGPUS=0.25 \
-  uv run --with ../../python --with matplotlib python autoresearch.py
+  uv run --with arker --with matplotlib python autoresearch.py
 
 # the real comparison: quarter-slices vs whole cards
 AGENTS=4 TURNS=8 VGPUS=0.25,1.0 \
-  uv run --with ../../python --with matplotlib python autoresearch.py
+  uv run --with arker --with matplotlib python autoresearch.py
 ```
-
-`--with ../../python` runs against this checkout. The published `arker` on PyPI does not
-accept `vgpu=` yet — with `--with arker` the first `fork()` raises
-`TypeError: unexpected keyword argument 'vgpu'`.
 
 `VGPUS` is the whole interface: each fraction runs as its own config, one after the
 other, and the comparison chart is drawn at the end.
@@ -112,8 +108,8 @@ for a card at all.
 runs done separately, point them at the same folder:
 
 ```bash
-RUN_DIR=results/compare VGPUS=0.25 uv run --with ../../python --with matplotlib python autoresearch.py
-RUN_DIR=results/compare VGPUS=1.0  uv run --with ../../python --with matplotlib python autoresearch.py
+RUN_DIR=results/compare VGPUS=0.25 uv run --with arker --with matplotlib python autoresearch.py
+RUN_DIR=results/compare VGPUS=1.0  uv run --with arker --with matplotlib python autoresearch.py
 ```
 
 The second run draws `comparison.png` across whatever it finds there. To redraw without
