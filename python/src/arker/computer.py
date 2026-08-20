@@ -86,6 +86,7 @@ from .generated.api_models import (
     SyncWriteResult,
     Vm,
     VmNetwork,
+    ResourcesInput,
     VmResources,
 )
 
@@ -431,11 +432,14 @@ class Arker:
         ``{"policies": []}``, which clears to allow-all rather than inheriting.
         Pass ``ssh_public_keys`` to authorize keys on the new VM.
 
-        ``vgpu`` sizes a GPU as a fraction of one card, where ``1`` is the whole
-        card: ``vgpu=0.25`` on an L40S is 35 SMs and 11517 MiB. ``gpu_sms`` and
-        ``gpu_vram_mib`` size the same slice in hardware units instead; set one
-        style or the other, not both. The VM reports the resolved ``gpu_sms``
-        and ``gpu_vram_mib`` either way.
+        ``vgpu`` sizes a GPU in eighths of one card: ``0.125``, ``0.25``,
+        ``0.375``, ``0.5``, ``0.625``, ``0.75``, ``0.875``, or ``1``. Anything
+        between two steps is refused. It is a fraction of whichever card serves
+        the fork, so the same value is a different slice per platform —
+        ``vgpu=0.25`` is 35 SMs and 11517 MiB on an L40S, and rather more on a
+        B200. ``gpu_sms`` and ``gpu_vram_mib`` set the same slice in hardware
+        units instead; set one style or the other, not both. The VM reports the
+        resolved ``gpu_sms`` and ``gpu_vram_mib`` either way.
 
         ``layers`` selects which layers of the source the child inherits. Omit
         it for the default full fork (``["disk", "memory"]``): the child inherits
@@ -474,12 +478,12 @@ class Arker:
         # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
         # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
         # platform's max is a 400 from the server, not a silent clamp.
-        resources: VmResources | None = None
+        resources: ResourcesInput | None = None
         if any(
             v is not None
             for v in (vcpu_count, memory_mib, disk_mib, vgpu, gpu_vram_mib, gpu_sms)
         ):
-            resources = VmResources(
+            resources = ResourcesInput(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
@@ -871,9 +875,9 @@ class VM:
         SSH keys (``network.ssh_public_keys``) via ``PATCH /v1/vms/{id}``.
         Pass ``None`` or an empty description to clear it. Omit
         ``description`` to leave it unchanged. Returns the updated :class:`Vm`."""
-        resources: VmResources | None = None
+        resources: ResourcesInput | None = None
         if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
-            resources = VmResources(
+            resources = ResourcesInput(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
