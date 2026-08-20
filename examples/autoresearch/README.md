@@ -56,7 +56,6 @@ AGENTS=4 TURNS=8 VGPUS=0.25,1.0 \
 | `AGENTS`           | `4`                    | agents per config                               |
 | `TURNS`            | `8`                    | turns per agent                                 |
 | `PLATFORM`         | `x86_64-h100sxm`       | must match a platform `ubuntu-gpu` is baked for |
-| `USD_PER_GPU_HOUR` | `2.69`                 | priced against `AGENTS x vgpu` for the estimate |
 | `RUN_DIR`          | new timestamped folder | write into an existing folder instead           |
 
 
@@ -160,15 +159,15 @@ uv run --with matplotlib python -c \
 `vgpu<x>.json` matching the current `VGPUS`, so three-way comparisons work the same way:
 `VGPUS=0.25,0.5,1.0`.
 
-One caveat: only compare configs run on the **same host**. Wall clock and cost are the
-point of the chart, and they are not comparable across machines — a pod far from the
+One caveat: only compare configs run on the **same host**. Wall clock is the
+point of the chart, and it is not comparable across machines — a pod far from the
 snapshot store pays a cold-start tax that dwarfs the effect being measured.
 
 ## Notes
 
 **Quality does not depend on the slice.** The task is seeded, so the same hyperparameters
 give the same `val_loss` on a 0.25 slice and a whole card. What changes is throughput:
-the fractions differ in wall clock and cost, not in the answer they find. With few turns
+the fractions differ in wall clock, not in the answer they find. With few turns
 the `best val loss` bars will still differ — that is which hyperparameters the agent
 happened to try, not the hardware.
 

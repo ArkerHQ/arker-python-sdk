@@ -14,7 +14,6 @@ import time
 AGENTS = int(os.environ.get("AGENTS", 4))
 TURNS = int(os.environ.get("TURNS", 8))
 PLATFORM = os.environ.get("PLATFORM", "x86_64-h100sxm")
-USD_PER_GPU_HOUR = float(os.environ.get("USD_PER_GPU_HOUR", 2.69))
 
 HERE = pathlib.Path(__file__).parent
 RESULTS = HERE / "results"
@@ -184,9 +183,6 @@ def save_summary(vgpu: float, agents: dict) -> dict:
         "wall_s": wall,
         "in_progress": False,
         "turns_done": AGENTS * TURNS,
-        # billed on the GPU actually asked for: every agent holds its fraction
-        # for as long as the config runs
-        "cost_usd": round(AGENTS * vgpu * wall / 3600 * USD_PER_GPU_HOUR, 2),
         "experiments": len(every),
         "gpu_seconds": round(sum(r["secs"] for r in every), 1),
         "best_loss": min((r["loss"] for r in every), default=None),
@@ -196,7 +192,7 @@ def save_summary(vgpu: float, agents: dict) -> dict:
     }
     (RUN / f"{label}.json").write_text(json.dumps(summary, indent=2))
     log(f"{label}: {summary['experiments']} experiments in {wall}s, "
-        f"${summary['cost_usd']}, best {summary['best_loss']}")
+        f"best {summary['best_loss']}")
     log(f"wrote {RUN / f'{label}.json'}")
     return summary
 
@@ -221,7 +217,6 @@ def _save_partial() -> None:
         "in_progress": len(turns) < AGENTS * TURNS,
         "turns_done": len(turns),
         "wall_s": wall,
-        "cost_usd": round(AGENTS * vgpu * wall / 3600 * USD_PER_GPU_HOUR, 2),
         "experiments": len(losses),
         "best_loss": min(losses, default=None),
         "prep_ready_s": _state.get("prep_ready"),
@@ -356,7 +351,7 @@ def timeline(folder: str | None = None) -> None:
         ax.grid(axis="x", alpha=.25)
         ax.set_axisbelow(True)
         ax.set_title(f"{d['agents']} agents x {d['vgpu']:g} vGPU   —   "
-                     f"{d['wall_s']}s · ${d['cost_usd']} · {d['experiments']} experiments",
+                     f"{d['wall_s']}s · {d['experiments']} experiments",
                      fontsize=10, loc="left")
 
     axes[-1][0].set_xlabel("seconds since the config started", fontsize=9)
@@ -395,10 +390,9 @@ def chart(folder: str | None = None) -> None:
     colors = {v: palette[min(i, len(palette) - 1)] for i, v in enumerate(sorted(loaded))}
     labels = {v: f"{AGENTS} x {v:g} vGPU" for v in loaded}
 
-    fig, ax = plt.subplots(1, 3, figsize=(11, 3.4))
+    fig, ax = plt.subplots(1, 2, figsize=(7.4, 3.4))
     for i, (key, title, fmt) in enumerate([
         ("wall_s", "wall clock (s)", "{:.0f}"),
-        ("cost_usd", "GPU cost (USD)", "${:.2f}"),
         ("best_loss", "best val loss", "{:.4f}"),
     ]):
         names = sorted(loaded)
