@@ -14,7 +14,6 @@ import time
 AGENTS = int(os.environ.get("AGENTS", 4))
 TURNS = int(os.environ.get("TURNS", 8))
 PLATFORM = os.environ.get("PLATFORM", "x86_64-h100sxm")
-GPUS_ON_HOST = int(os.environ.get("GPUS_ON_HOST", 2))   # for the cost estimate
 USD_PER_GPU_HOUR = float(os.environ.get("USD_PER_GPU_HOUR", 2.69))
 
 HERE = pathlib.Path(__file__).parent
@@ -185,8 +184,9 @@ def save_summary(vgpu: float, agents: dict) -> dict:
         "wall_s": wall,
         "in_progress": False,
         "turns_done": AGENTS * TURNS,
-        # the whole host is rented for the run, whatever fraction the agents used
-        "cost_usd": round(GPUS_ON_HOST * wall / 3600 * USD_PER_GPU_HOUR, 2),
+        # billed on the GPU actually asked for: every agent holds its fraction
+        # for as long as the config runs
+        "cost_usd": round(AGENTS * vgpu * wall / 3600 * USD_PER_GPU_HOUR, 2),
         "experiments": len(every),
         "gpu_seconds": round(sum(r["secs"] for r in every), 1),
         "best_loss": min((r["loss"] for r in every), default=None),
@@ -221,7 +221,7 @@ def _save_partial() -> None:
         "in_progress": len(turns) < AGENTS * TURNS,
         "turns_done": len(turns),
         "wall_s": wall,
-        "cost_usd": round(GPUS_ON_HOST * wall / 3600 * USD_PER_GPU_HOUR, 2),
+        "cost_usd": round(AGENTS * vgpu * wall / 3600 * USD_PER_GPU_HOUR, 2),
         "experiments": len(losses),
         "best_loss": min(losses, default=None),
         "prep_ready_s": _state.get("prep_ready"),

@@ -56,8 +56,7 @@ AGENTS=4 TURNS=8 VGPUS=0.25,1.0 \
 | `AGENTS`           | `4`                    | agents per config                               |
 | `TURNS`            | `8`                    | turns per agent                                 |
 | `PLATFORM`         | `x86_64-h100sxm`       | must match a platform `ubuntu-gpu` is baked for |
-| `GPUS_ON_HOST`     | `2`                    | for the cost estimate only                      |
-| `USD_PER_GPU_HOUR` | `2.69`                 | for the cost estimate only                      |
+| `USD_PER_GPU_HOUR` | `2.69`                 | priced against `AGENTS x vgpu` for the estimate |
 | `RUN_DIR`          | new timestamped folder | write into an existing folder instead           |
 
 
