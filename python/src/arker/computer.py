@@ -816,6 +816,23 @@ class VM:
         running :class:`BackgroundRunResult` immediately and you manage polling
         yourself via :meth:`get_run`.
 
+        Arker's run interface works like a terminal. Sessions are tabs: each
+        keeps its own state — working directory, environment, shell history —
+        and each handles one run at a time. Run sequential commands in a single
+        session; session 0 is the default, and every caller that omits both
+        ``session_id`` and ``session_idx`` shares it.
+
+        For a long-running task, start it with ``background=True`` in a session
+        of its own, so later work does not interrupt it::
+
+            vm.run("nginx -g 'daemon off;'", background=True, session_idx=5)
+            vm.run("echo hello")   # tab 0 — leaves the server alone
+
+        Create a session with :meth:`create_session`, which also lets you set
+        its starting ``cwd`` and ``env``. Distinct sessions run concurrently.
+        ``session_id`` names an existing session and 404s if it is gone, so it
+        comes from :meth:`create_session` or from the run response.
+
         ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
         time the command may run before the host kills it. Per the contract,
         omitting it and passing ``0`` mean THE SAME THING — no limit; the run is
@@ -827,8 +844,26 @@ class VM:
 
         ``time_to_background`` is the HTTP sync window in seconds: how long the call
         blocks inline before backgrounding the run and returning a pollable
-        ``run_id``. ``None`` (default) = 120. It does not bound command
+        ``run_id``. ``None`` (default) = 300, matching the server's
+        ``DEFAULT_TIME_TO_BACKGROUND``. It does not bound command
         runtime — that is ``timeout``.
+
+        READING THE RESULT. ``exit_code`` is annotated ``int`` but is ``None``
+        when a PROMPT ended the run rather than the command's own completion —
+        a REPL turn genuinely has no exit status. Expect it when you passed
+        ``end_symbol``, or when the command was itself a REPL launch such as
+        ``python3``. If you did neither and still get ``None``, an interpreter
+        left running by an EARLIER run in that tab received your command as
+        keystrokes: its output is in ``stdout`` and your command never reached
+        bash. Send ``exit()``, pass ``end_symbol="none"``, or use a different
+        ``session_idx``. Test success with ``exit_code == 0``, which is False
+        for ``None`` — checking ``!= 0`` would read a REPL turn as a failure.
+
+        ``stdout``/``stderr`` are decoded text; ``stdout_bytes``/``stderr_bytes``
+        carry the raw bytes for output that is not valid UTF-8 (the service
+        base64-encodes those and this SDK decodes them for you). ``stderr`` is
+        the program's own error output; ``fail_reason`` is the platform
+        explaining a ``state == "failed"`` run, and the two are not the same.
         """
         if network is not None:
             raise ArkerError(
