@@ -147,7 +147,10 @@ RUN_POLL_MAX_S = 3.0
 RUN_POLL_BACKOFF = 1.5
 # Slack beyond the run's kill bound before we stop polling and raise a timeout.
 RUN_POLL_MARGIN_S = 30.0
-# Server default kill bound (seconds) used when ``timeout`` is unset or 0 (disabled).
+# CLIENT-side polling budget (seconds) used when ``timeout`` is unset or 0.
+# This is NOT a server kill bound — the service leaves such runs unbounded
+# (openapi RunRequest.timeout: "Omitted means no limit"). When this budget
+# expires the SDK stops waiting and raises; the run continues server-side.
 DEFAULT_RUN_TIMEOUT_S = 3600
 # Terminal run states — RunState ("running" | "completed" | "failed" |
 # "cancelled") minus the sole non-terminal "running".
@@ -801,20 +804,24 @@ class VM:
         ``run_id``; run() then transparently polls :meth:`get_run` until the run
         reaches a terminal state and returns the completed
         :class:`CompletedRunResult` — so a synchronous caller always receives
-        the final result. Polling is bounded by ``timeout`` (the run's kill
-        bound; ``None``/``0`` ⇒ the 3600s default) plus a margin; if that budget
-        is exceeded run() raises an :class:`ArkerError` with code ``"timeout"``
-        (the run keeps executing server-side — poll :meth:`get_run` to retrieve
-        it).
+        the final result. Polling is bounded by ``timeout`` when you set one,
+        and otherwise by a CLIENT-side budget of 3600s — that budget is this
+        SDK giving up waiting, NOT a server kill bound. Either way, if the
+        budget is exceeded run() raises an :class:`ArkerError` with code
+        ``"timeout"`` and the run KEEPS EXECUTING server-side — poll
+        :meth:`get_run` to retrieve it, or pass an explicit ``timeout`` if you
+        want the host to actually stop it.
 
         Pass ``background=True`` to skip the wait entirely: run() returns the
         running :class:`BackgroundRunResult` immediately and you manage polling
         yourself via :meth:`get_run`.
 
         ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
-        time the command may run before the host kills it. ``None`` (default)
-        applies the server default (3600 seconds);
-        ``0`` opts out of any kill (unbounded). It is NOT the HTTP wait window,
+        time the command may run before the host kills it. Per the contract,
+        omitting it and passing ``0`` mean THE SAME THING — no limit; the run is
+        killed only if you set a positive ``timeout``. There is no 3600s server
+        default: an unset ``timeout`` leaves the run unbounded on the host, so a
+        runaway command runs until something else stops it. It is NOT the HTTP wait window,
         so ``background=True`` runs should leave it unset (or set a real kill
         bound) — a small ``timeout`` would kill the run, not just background it.
 

@@ -1135,10 +1135,13 @@ export class VM {
    * with a `run_id`; run() then transparently polls {@link getRun} until the
    * run reaches a terminal state and resolves to the completed run — so a
    * synchronous caller always receives the final result. Polling is bounded
-   * by the run's `timeout` (its kill bound, default 3600s; `0`/unset ⇒ the
-   * default) plus a margin; if that budget is exceeded run() throws an
-   * ArkerError with code `"timeout"` (the run keeps executing server-side —
-   * poll {@link getRun} to retrieve it).
+   * by `timeout` when you set one, and otherwise by a CLIENT-side budget of
+   * 3600s — that budget is this SDK giving up waiting, NOT a server kill
+   * bound. Per the contract, omitting `timeout` and passing `0` mean the same
+   * thing: no limit, so the host never kills the run. If the budget is
+   * exceeded run() throws an ArkerError with code `"timeout"` and the run
+   * KEEPS EXECUTING server-side — poll {@link getRun} to retrieve it, or pass
+   * an explicit `timeout` if you want the host to actually stop it.
    *
    * Pass `background: true` to skip the wait entirely: run() returns the
    * running acknowledgement (`{ type: "background", runId }`) immediately and
