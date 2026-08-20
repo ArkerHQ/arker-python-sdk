@@ -28,5 +28,4 @@ typescript/dist-types/
 
 # Example run outputs
 *-screenshot.png
-examples/autoresearch/results/
 checkpoint-*.png
