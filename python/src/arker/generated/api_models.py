@@ -15,7 +15,7 @@ class HealthResponse:
 
 @dataclass(frozen=True)
 class RegionPlacement:
-    provider: Literal['aws', 'azure', 'arker', 'gcp']
+    provider: str
     region: str
     endpoint: str
 
@@ -88,7 +88,7 @@ SessionState: TypeAlias = VmState
 RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
 
 
-Provider: TypeAlias = Literal['aws', 'azure', 'arker', 'gcp']
+Provider: TypeAlias = str
 
 
 Port: TypeAlias = int
@@ -439,8 +439,8 @@ class Filesystem:
     owner_org_id: str
     created_at: str
     size_bytes: int | None = None
-    region: str | None = 'us-west-2'
-    provider: Provider | None = 'aws'
+    region: str | None = None
+    provider: Provider | None = None
 
 
 @dataclass(frozen=True)

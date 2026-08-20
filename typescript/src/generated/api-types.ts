@@ -512,11 +512,8 @@ export interface components {
             timestamp: string;
         };
         RegionPlacement: {
-            /**
-             * @description Public provider for the placement.
-             * @enum {string}
-             */
-            provider: "aws" | "azure" | "arker" | "gcp";
+            /** @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it. */
+            provider: string;
             /** @description Provider region identifier. */
             region: string;
             /**
@@ -590,11 +587,8 @@ export interface components {
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /**
-         * @description Public provider containing the resource.
-         * @enum {string}
-         */
-        Provider: "aws" | "azure" | "arker" | "gcp";
+        /** @description Infrastructure provider currently hosting the resource. */
+        Provider: string;
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {
             /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
@@ -1442,15 +1436,9 @@ export interface components {
             created_at: string;
             /** @description Resource size in bytes. */
             size_bytes?: number | null;
-            /**
-             * @description Region containing the resource or activity.
-             * @default us-west-2
-             */
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /**
-             * @description Public provider containing the filesystem.
-             * @default aws
-             */
+            /** @description Public provider containing the filesystem. */
             provider?: components["schemas"]["Provider"] | null;
         };
         ListFilesystemsResponse: {

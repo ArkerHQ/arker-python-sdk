@@ -124,8 +124,12 @@ def test_explicit_vm_handle_uses_placement_endpoint() -> None:
 def test_list_regions_uses_public_control_plane_catalog() -> None:
     t = FakeTransport()
     placement = {
+        # Values the SDK has never heard of, on purpose: this test is the
+        # forward-compat guarantee that a provider/region added after this
+        # release still decodes. `endpoint` is required by the contract.
         "provider": "provider-two",
         "region": "region-two",
+        "endpoint": "https://region-two.example.com/api",
     }
     t.add_json(
         lambda method, url: method == "GET"
