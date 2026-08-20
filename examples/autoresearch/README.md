@@ -84,21 +84,24 @@ in the bar — it is annotated beside it as `(+26s queued)`. The right panel tra
 
 ## What queueing looks like
 
-Two agents at `1.0` on a 2-GPU host, both submitted at the same instant. `prep` still
-held 0.25 of one card, so only one whole card was free — from the worker log:
+Every turn prints how long it took and how much of that was spent parked waiting for a
+GPU slice — from a real 2 × 0.25 run on a busy host:
 
 ```
-20:20:53.652  agent A asks 81559 MiB, 142729 free   -> assigned
-20:20:53.718  agent B asks 81559 MiB,  61170 free   -> parked
-20:21:19.497  prep suspended (30s idle TTL) — its 0.25 released
-20:21:19.727  agent B granted after 26009 ms
+[21:00:27] agent1 turn 1/2 done in 50s, 3s queued — val_loss no run recorded
+[21:00:31] agent2 turn 1/2 done in 54s, 2s queued — val_loss no run recorded
+[21:01:22] agent2 turn 2/2 done in 51s — val_loss 3.6545
+[21:02:46] agent1 turn 2/2 done in 139s, 94s queued — val_loss 1.5267
 ```
 
-Client-side that is agent B's first turn taking 52s against agent A's 30s — same work,
-the difference spent parked. Note what freed the card: `prep` had no more runs to finish,
-so it held its slice until the 30-second idle-suspend TTL expired. Nobody starves; a
-4 × 1.0 run on a 2-GPU host still finishes every turn, with the third agent waiting 83s
-for a card at all.
+Agent1's last turn took nearly three times as long as its first, and the `94s queued`
+says why: the work was identical, the wait was for a slice. The VM stamps the moment it
+begins executing, and the script subtracts that from when it submitted the run — so the
+queue wait is measured, not guessed. `queueing_timeout` on `run()` is what makes a run
+park instead of failing.
+
+A turn that reports no queueing but still ran long is the agent thinking, not the
+platform: model latency, edits and reads all happen inside the same turn.
 
 ## Comparing two runs
 
@@ -130,11 +133,6 @@ measured.
 give the same `val_loss` on a 0.25 slice and a whole card. Only throughput changes. With
 few turns the `best val loss` bars still differ — that is which hyperparameters the agent
 happened to try, not the hardware.
-
-**Turn time is the contention signal.** `run()` passes `queueing_timeout`, so a run parks
-until a slice frees rather than failing. The client cannot see the moment a slice is
-granted, so a wait shows up only as a longer turn. The worker log has the real story
-(`ADMIT_ENTRY`, `gpu_reclaim`, `budget[gpu_vram] acquire ... wait_ms`).
 
 **prep holds a slice too.** It forks with `vgpu=0.25` for the install and keeps that
 slice until it suspends — with no further runs to trigger a handover, that means waiting
