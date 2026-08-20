@@ -106,7 +106,6 @@ const FORK_RESOURCE_OPTIONS: OptionSpecs = {
 const RUN_OPTIONS: OptionSpecs = {
   ...GLOBAL_OPTIONS,
   acquire: { type: "string" },
-  background: { type: "boolean" },
   "queueing-timeout": { type: "integer", min: 0 },
   release: { type: "string" },
   "session-id": { type: "string" },
@@ -217,7 +216,6 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     ...PAGINATION_OPTIONS,
     ...FORK_RESOURCE_OPTIONS,
     acquire: { type: "string" },
-    background: { type: "boolean" },
     description: { type: "string" },
     name: { type: "string" },
     "no-disk": { type: "boolean" },
@@ -682,7 +680,6 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
   if (!command) die("missing command to run");
   const sessionIdx = numFlag(args, "session-idx");
   const result: RunResult = await client.vm(vmId).run(command, {
-    background: boolFlag(args, "background"),
     timeout: numFlag(args, "timeout"),
     time_to_background: numFlag(args, "time-to-background"),
     queueing_timeout: numFlag(args, "queueing-timeout"),
@@ -1310,9 +1307,8 @@ function usage(_command?: string): void {
       "Run flags:",
       "  --session-id <ulid>        run in a specific existing session",
       "  --session-idx <n>          run in the session at this index (default 0)",
-      "  --background               return a run id instead of blocking",
       "  --timeout <seconds>             exec/kill bound in seconds (omitted or 0 = unbounded)",
-      "  --time-to-background <seconds>  sync window before returning a run id (default 30)",
+      "  --time-to-background <seconds>  sync window; 0 returns a run id immediately (default 120)",
       "  --queueing-timeout <seconds>    queue up to this long instead of failing fast (also a fork flag)",
       "  --acquire <list>           warm resources before the run (cpu,memory,disk)",
       "  --release <list>           release resources after the run (cpu,memory,disk)",

@@ -272,9 +272,9 @@ class BackgroundRunResult:
     type: str = "background"
 
 
-# Result of VM.run(). A synchronous call (``background`` unset/False) always
+# Result of VM.run(). A synchronous call (``time_to_background`` not zero) always
 # returns a CompletedRunResult — if the run outlives its sync window run()
-# polls it to completion under the hood. Only an explicit ``background=True``
+# polls it to completion under the hood. Only explicit ``time_to_background=0``
 # yields a BackgroundRunResult (the running ack, returned immediately for the
 # caller to poll via VM.get_run()).
 RunResult = CompletedRunResult | BackgroundRunResult
@@ -737,7 +737,6 @@ class VM:
         *,
         session_id: str | None = None,
         session_idx: int | None = None,
-        background: bool | None = None,
         timeout: int | None = None,
         time_to_background: int | None = None,
         queueing_timeout: int | None = None,
@@ -763,18 +762,17 @@ class VM:
         bound) plus a margin; if that budget is exceeded run() raises an
         :class:`ArkerError` with code ``"timeout"`` (the run keeps executing
         server-side — poll :meth:`get_run` to retrieve it). With no ``timeout``
-        the run is unbounded server-side and the poll is unbounded with it;
-        pass ``background=True`` if you do not want to wait.
+        the run is unbounded server-side and the poll is unbounded with it.
 
-        Pass ``background=True`` to skip the wait entirely: run() returns the
-        running :class:`BackgroundRunResult` immediately and you manage polling
-        yourself via :meth:`get_run`.
+        Pass ``time_to_background=0`` to skip the wait entirely: run() returns
+        the running :class:`BackgroundRunResult` immediately and you manage
+        polling yourself via :meth:`get_run`.
 
         ``timeout`` is the execution/kill bound in seconds: the maximum
         wall-clock time the command may run before the host kills it. ``None``
         (default) and ``0`` both mean unbounded — the run is killed only if you
-        set a ``timeout``. It is NOT the HTTP wait window, so ``background=True``
-        runs should leave it unset (or set a real kill bound) — a small
+        set a ``timeout``. It is NOT the HTTP wait window, so backgrounded runs
+        should leave it unset (or set a real kill bound) — a small
         ``timeout`` would kill the run, not just background it.
 
         ``time_to_background`` is the HTTP sync window in seconds: how long the call
@@ -803,7 +801,6 @@ class VM:
             command=command,
             session_id=session_id,
             session_idx=session_idx,
-            background=background,
             timeout=timeout,
             time_to_background=time_to_background,
             queueing_timeout=queueing_timeout,
@@ -828,8 +825,8 @@ class VM:
         # The server backgrounds a run that outlived its sync window. When the
         # caller did NOT request background, poll get_run() to a terminal state
         # and hand back the completed run so the synchronous call is
-        # transparent. background=True is a pure pass-through — return the ack.
-        if isinstance(result, BackgroundRunResult) and background is not True:
+        # transparent. Explicit zero is a pure pass-through — return the ack.
+        if isinstance(result, BackgroundRunResult) and time_to_background != 0:
             return self._await_run(result.run_id, timeout)
         return result
 

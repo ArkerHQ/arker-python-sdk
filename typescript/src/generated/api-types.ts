@@ -180,7 +180,7 @@ export interface paths {
         put?: never;
         /**
          * Run a command
-         * @description Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` when they are unavailable in the selected region or provider.
+         * @description Run a command. Set `time_to_background` to `0` to return a pollable run immediately after successful dispatch. A positive value bounds the synchronous wait, and omission uses the default window. A run that is still executing when the response is sent returns **202 Accepted** with a `run_id`; only a run that finished returns 200. Control requests do not accept `time_to_background`. `timeout` is the separate execution and kill bound.
          */
         post: operations["createRun"];
         delete?: never;
@@ -889,14 +889,9 @@ export interface components {
             session_idx?: number | null;
             /** @description Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op). */
             command?: string;
-            /**
-             * @description When true, return immediately with a run ID and continue execution in the background.
-             * @default false
-             */
-            background?: boolean;
             /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
-            /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime — that is timeout. */
+            /** @description Maximum time in seconds to wait synchronously for completion. Set `0` to return a pollable run immediately after successful dispatch. A positive value waits up to that many seconds before returning a running response. Omission uses the service default. This field is invalid on control requests (`signal`, acquire-only, or release-only). Independent of `timeout`, which bounds execution and can kill the run. */
             time_to_background?: number | null;
             /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. Independent of `timeout` (execution bound) and `time_to_background` (sync window). */
             queueing_timeout?: number | null;
@@ -1983,6 +1978,15 @@ export interface operations {
         responses: {
             /** @description Run result. */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResponse"];
+                };
+            };
+            /** @description Accepted — the run is still executing. The body carries `run_id` and `state: "running"`, not output; poll `GET /v1/vms/{id}/runs/{run_id}` for the result. Returned for `time_to_background: 0` and whenever the command outstays `time_to_background`. A 2xx here means the request was accepted, not that the work is done. */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

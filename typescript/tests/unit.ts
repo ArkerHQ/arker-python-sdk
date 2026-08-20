@@ -411,8 +411,8 @@ async function testRunPollBudgetIsUnboundedWithoutACallerTimeout(): Promise<void
   assert.equal(runPollBudgetMs(-1), null);
 }
 
-async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
-  // background:true is a pure pass-through — run() returns the running ack
+async function testExplicitZeroReturnsAckWithoutPolling(): Promise<void> {
+  // time_to_background:0 is a pure pass-through — run() returns the running ack
   // immediately and never polls getRun().
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -421,13 +421,13 @@ async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
     { run_id: "run_bg", state: "running" },
   );
 
-  const result = await client(fetch).vm("vm_1").run("sleep 999", { background: true });
+  const result = await client(fetch).vm("vm_1").run("sleep 999", { time_to_background: 0 });
 
   assert.equal(result.type, "background");
   assert.equal((result as { runId: string }).runId, "run_bg");
   // Only the POST — no polling.
   assert.equal(fetch.calls.length, 1);
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "sleep 999", background: true });
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "sleep 999", time_to_background: 0 });
 }
 
 async function testConfiguredPlacementRoutesNamedSourcesToMainEndpoint(): Promise<void> {
@@ -1018,7 +1018,7 @@ await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();
 await testRunPollBudgetIsUnboundedWithoutACallerTimeout();
-await testBackgroundTrueReturnsAckWithoutPolling();
+await testExplicitZeroReturnsAckWithoutPolling();
 await testConfiguredPlacementRoutesNamedSourcesToMainEndpoint();
 testArbitraryProviderBuildsEndpoint();
 testPlacementRequiresSeparateProviderAndRegion();

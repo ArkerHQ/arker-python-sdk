@@ -141,7 +141,8 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
     const result = await runCli(baseUrl, [
       "run",
-      "--background",
+      "--time-to-background",
+      "0",
       "--timeout",
       "1000",
       "vm_1",
@@ -152,7 +153,7 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
     assert.deepEqual(requests, [{
       method: "POST",
       url: "/api/v1/vms/vm_1/runs",
-      body: { background: true, timeout: 1000, command: "npm --version" },
+      body: { time_to_background: 0, timeout: 1000, command: "npm --version" },
     }]);
   });
 }
@@ -198,17 +199,26 @@ async function testUnknownRunOptionBeforeCommandFails(): Promise<void> {
   });
 }
 
+async function testRemovedBackgroundOptionFailsBeforeRequest(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["run", "--background", "vm_1", "echo", "ok"]);
+    assert.equal(result.code, 1);
+    assert.equal(requests.length, 0);
+    assert.match(result.stderr, /unknown parameter "background"/);
+  });
+}
+
 async function testNestedRunStopsAtRemoteCommand(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
-    const result = await runCli(baseUrl, ["vms", "run", "--background", "vm_1", "npm", "--version"]);
+    const result = await runCli(baseUrl, ["vms", "run", "--time-to-background", "0", "vm_1", "npm", "--version"]);
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(requests[0]?.body, { background: true, command: "npm --version" });
+    assert.deepEqual(requests[0]?.body, { time_to_background: 0, command: "npm --version" });
   });
 }
 
 async function testKnownButIrrelevantNestedOptionsFail(): Promise<void> {
   for (const args of [
-    ["vms", "get", "--background", "vm_1"],
+    ["vms", "get", "--timeout", "1", "vm_1"],
     ["runs", "get", "--state", "failed", "vm_1", "run_1"],
     ["sessions", "get", "--cwd", "/tmp", "vm_1", "session_1"],
     ["syncs", "rm", "--path", "/mnt", "vm_1", "sync_1"],
@@ -889,6 +899,7 @@ await testRunOptionAfterVmBeforeCommand();
 await testRunOptionSeparator();
 await testRunPreservesArgumentBoundaries();
 await testUnknownRunOptionBeforeCommandFails();
+await testRemovedBackgroundOptionFailsBeforeRequest();
 await testNestedRunStopsAtRemoteCommand();
 await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
