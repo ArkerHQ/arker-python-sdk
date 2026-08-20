@@ -25,10 +25,8 @@ VGPUS = [float(v) for v in os.environ.get("VGPUS", "0.25,1.0").split(",") if v.s
 def label_for(vgpu: float) -> str:
     return f"vgpu{vgpu:g}"
 
-# One folder per invocation. RUN_DIR lets `both` reuse a folder across two
-# processes, and lets you point a rerun at an existing one.
-RUN = pathlib.Path(os.environ.get("RUN_DIR") or
-                   RESULTS / f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{AGENTS}agents-{TURNS}turns")
+# One folder per invocation, holding every config in this run.
+RUN = RESULTS / f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{AGENTS}agents-{TURNS}turns"
 
 _log_lock = threading.Lock()
 _chart_lock = threading.Lock()
