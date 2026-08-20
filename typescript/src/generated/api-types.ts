@@ -718,6 +718,10 @@ export interface components {
             source_vm_name?: string | null;
             /** @description OCI image reference to fork from — for example `ubuntu:24.04`, `ghcr.io/org/image:v1`, or `image@sha256:...`. An unqualified name resolves against Docker Hub. Give a bare reference, not a URI. The new VM boots a rootfs converted from that image rather than from an existing VM, so neither `source_vm_id` nor `source_vm_name` is given. */
             image?: string | null;
+            /** @description Dockerfile source to build and fork from, as raw Dockerfile text (not a path, not a URL). Exclusive with source_vm_id, source_vm_name and image. Supports a single-stage build using FROM, RUN, ADD (URL source only), ENV, WORKDIR, USER, EXPOSE, ENTRYPOINT, CMD, ARG, and LABEL; anything outside that set (multi-stage builds, an ARG-substituted FROM, COPY, or any other directive) is rejected with a 400 naming the problem. FROM resolves through the same pull/convert pipeline a bare `image` fork uses; every other instruction executes as a real operation against the resulting VM (RUN runs for real, ENV/WORKDIR persist onto the delivered session) rather than inside a build container — the new VM inherits nothing from a source VM, the same fields `image` honours (`policies`, `ssh_public_keys`, `description`) are honoured here too, and the same fields are refused (`layers`, `platforms`, `durable`, `public`, GPU resources). */
+            dockerfile?: string | null;
+            /** @description Request nested virtualization support (the guest's own /dev/kvm works) for a new VM forked from `image` or `dockerfile`. Omit or pass false for no nested virt, the default. This selects a hypervisor backend capable of serving it internally — backend selection itself is never a direct customer choice — and returns a 400 naming the reason if this host cannot serve it, rather than silently creating a VM that cannot do nested virt despite the request. */
+            nestedvirt?: boolean | null;
             /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
             source_org_id?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
@@ -760,14 +764,22 @@ export interface components {
             source_vm_id: string;
             source_vm_name?: null;
             image?: null;
+            dockerfile?: null;
         } | {
             source_vm_id?: null;
             source_vm_name: string;
             image?: null;
+            dockerfile?: null;
         } | {
             source_vm_id?: null;
             source_vm_name?: null;
             image: string;
+            dockerfile?: null;
+        } | {
+            source_vm_id?: null;
+            source_vm_name?: null;
+            image?: null;
+            dockerfile: string;
         });
         Session: {
             /** @description Unique session identifier. */

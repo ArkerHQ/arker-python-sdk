@@ -655,6 +655,23 @@ export interface ForkSource {
    * The image's Docker `ENV` is not applied to runs, so a tool outside the
    * default `PATH` needs its prefix added once; it persists for the session. */
   image?: string;
+  /** Raw Dockerfile text (not a path, not a URL) to build and fork from
+   * instead of forking an existing VM. Exclusive with the VM selectors above
+   * and with `image`.
+   *
+   * Supports a single-stage build using `FROM`, `RUN`, `ADD` (URL source
+   * only), `ENV`, `WORKDIR`, `USER`, `EXPOSE`, `ENTRYPOINT`, `CMD`, `ARG`,
+   * and `LABEL`; anything outside that set (multi-stage builds, an
+   * ARG-substituted `FROM`, `COPY`, or any other directive) is rejected with
+   * a 400 naming the problem. `FROM` resolves through the same
+   * pull/convert pipeline a bare `image` fork uses; every other instruction
+   * executes as a real operation against the resulting VM — `RUN` runs for
+   * real, `ENV`/`WORKDIR` persist onto the delivered session — rather than
+   * inside a build container. The new VM inherits nothing from a source VM:
+   * the same fields `image` honours (`policies`, `ssh_public_keys`,
+   * `description`) are honoured here too, and the same fields are refused
+   * (`layers`, `platforms`, `durable`, `public`, GPU resources). */
+  dockerfile?: string;
 }
 
 export class Arker {
@@ -741,22 +758,29 @@ export class Arker {
    * processes, no environment, no shell state).
    *
    *     fork(sourceName, { layers: ["disk"] })      // disk-only, cold boot
+   *
+   * `nestedvirt` requests nested virtualization (the guest's own `/dev/kvm`
+   * works) for a VM forked from `image` or `dockerfile`. Omit it or pass
+   * `false` for no nested virt, the default; `true` selects a hypervisor
+   * backend capable of serving it and fails with a 400 naming the reason if
+   * the current host cannot.
    */
   async fork(
-    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">>),
-    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">> = {},
+    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">>),
+    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> = {},
   ): Promise<VM> {
     // Normalize the source: a name string, a VM handle (use its id), or a
     // ForkSource object.
     const src: ForkSource &
-      Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">> =
+      Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> =
       typeof source === "string"
         ? { sourceVmName: source, ...opts }
         : source instanceof VM
           ? { sourceVmId: source.id, ...opts }
           : source;
     rejectRemovedNetworkInputs("fork", src);
-    // `image` is a third source, exclusive with the two VM selectors.
+    // `image` and `dockerfile` are a third and fourth source, each exclusive
+    // with the two VM selectors and with each other.
     if (src.image && (src.sourceVmId || src.sourceVmName)) {
       throw new ArkerError(
         "bad_request",
@@ -764,10 +788,24 @@ export class Arker {
         400,
       );
     }
-    if (!src.sourceVmId && !src.sourceVmName && !src.image) {
+    if (src.dockerfile && (src.sourceVmId || src.sourceVmName)) {
       throw new ArkerError(
         "bad_request",
-        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, or image)",
+        "fork: pass a source VM or a dockerfile, not both",
+        400,
+      );
+    }
+    if (src.image && src.dockerfile) {
+      throw new ArkerError(
+        "bad_request",
+        "fork: pass an image or a dockerfile, not both",
+        400,
+      );
+    }
+    if (!src.sourceVmId && !src.sourceVmName && !src.image && !src.dockerfile) {
+      throw new ArkerError(
+        "bad_request",
+        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, image, or dockerfile)",
         400,
       );
     }
@@ -813,6 +851,7 @@ export class Arker {
       sourceVmName: _sourceVmName,
       sourceOrgId: _sourceOrgId,
       image: _image,
+      dockerfile: _dockerfile,
       ...passthrough
     } = src as ForkSource & Record<string, unknown>;
     delete passthrough.vcpu_count;
@@ -836,24 +875,31 @@ export class Arker {
       policies: src.policies,
       queueing_timeout: src.queueing_timeout,
     };
-    const body: ForkRequest = src.image
+    const body: ForkRequest = src.dockerfile
       ? {
           ...requestOptions,
-          image: src.image,
+          dockerfile: src.dockerfile,
           source_vm_id: null,
           source_vm_name: null,
         }
-      : src.sourceVmId
+      : src.image
         ? {
             ...requestOptions,
-            source_vm_id: src.sourceVmId,
+            image: src.image,
+            source_vm_id: null,
             source_vm_name: null,
           }
-        : {
-            ...requestOptions,
-            source_vm_id: null,
-            source_vm_name: src.sourceVmName!,
-          };
+        : src.sourceVmId
+          ? {
+              ...requestOptions,
+              source_vm_id: src.sourceVmId,
+              source_vm_name: null,
+            }
+          : {
+              ...requestOptions,
+              source_vm_id: null,
+              source_vm_name: src.sourceVmName!,
+            };
     const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
     const vm = await this._request<Vm>(
       "POST",

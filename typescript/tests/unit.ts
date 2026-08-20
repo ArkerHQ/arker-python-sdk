@@ -223,6 +223,72 @@ async function testForkRejectsImageAlongsideASourceVm(): Promise<void> {
   assert.equal(fetch.calls.length, 0, "a refused fork must not reach the network");
 }
 
+// `dockerfile` is a fourth fork source, exclusive with the VM selectors and
+// with `image` — the service models all four as a `oneOf`.
+async function testForkFromDockerfileSendsOnlyTheDockerfile(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    { vm_id: "vm_df", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  );
+
+  const dockerfile = "FROM ubuntu:24.04\nRUN apt-get update\nENV FOO=bar\n";
+  await client(fetch).fork({ dockerfile, name: "from-dockerfile" });
+
+  const body = JSON.parse(fetch.calls[0]!.body!);
+  assert.equal(body.dockerfile, dockerfile, "dockerfile must reach the wire");
+  assert.equal(body.name, "from-dockerfile");
+  assert.equal(body.source_vm_id, null, "no VM selector may accompany a dockerfile");
+  assert.equal(body.source_vm_name, null, "no VM selector may accompany a dockerfile");
+}
+
+async function testForkFromImageWithNestedvirtSendsBoth(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    { vm_id: "vm_nested", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  );
+
+  await client(fetch).fork({ image: "ubuntu:24.04", nestedvirt: true });
+
+  const body = JSON.parse(fetch.calls[0]!.body!);
+  assert.equal(body.image, "ubuntu:24.04");
+  assert.equal(body.nestedvirt, true, "nestedvirt must reach the wire");
+}
+
+async function testForkRejectsDockerfileAlongsideASourceVm(): Promise<void> {
+  const fetch = new FakeFetch();
+  for (const src of [
+    { dockerfile: "FROM ubuntu:24.04\n", sourceVmName: "base" },
+    { dockerfile: "FROM ubuntu:24.04\n", sourceVmId: "vm_abc" },
+  ]) {
+    let threw = false;
+    try {
+      await client(fetch).fork(src);
+    } catch (err) {
+      threw = true;
+      assert.equal((err as { code?: string }).code, "bad_request");
+    }
+    assert.equal(threw, true, `${JSON.stringify(src)} must be refused before any request`);
+  }
+  assert.equal(fetch.calls.length, 0, "a refused fork must not reach the network");
+}
+
+async function testForkRejectsDockerfileAlongsideAnImage(): Promise<void> {
+  const fetch = new FakeFetch();
+  let threw = false;
+  try {
+    await client(fetch).fork({ image: "ubuntu:24.04", dockerfile: "FROM ubuntu:24.04\n" });
+  } catch (err) {
+    threw = true;
+    assert.equal((err as { code?: string }).code, "bad_request");
+  }
+  assert.equal(threw, true, "image+dockerfile must be refused before any request");
+  assert.equal(fetch.calls.length, 0, "a refused fork must not reach the network");
+}
+
 async function testForkDropsNonContractKeys(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -1052,6 +1118,10 @@ await testForkForwardsContractFieldsItDoesNotEnumerate();
 await testForkDropsNonContractKeys();
 await testForkFromImageSendsOnlyTheImage();
 await testForkRejectsImageAlongsideASourceVm();
+await testForkFromDockerfileSendsOnlyTheDockerfile();
+await testForkFromImageWithNestedvirtSendsBoth();
+await testForkRejectsDockerfileAlongsideASourceVm();
+await testForkRejectsDockerfileAlongsideAnImage();
 await testForkOmitsSourceOrgWhenNotExplicit();
 await testForkOmitsUnconfiguredCapabilities();
 await testRemovedNetworkInputsFailBeforeRequests();

@@ -859,6 +859,8 @@ class ForkRequest1:
     source_vm_id: str
     source_vm_name: None = None
     image: None = None
+    dockerfile: None = None
+    nestedvirt: bool | None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -880,6 +882,8 @@ class ForkRequest2:
     source_vm_name: str
     source_vm_id: None = None
     image: None = None
+    dockerfile: None = None
+    nestedvirt: bool | None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -901,6 +905,8 @@ class ForkRequest3:
     image: str
     source_vm_id: None = None
     source_vm_name: None = None
+    dockerfile: None = None
+    nestedvirt: bool | None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -917,7 +923,30 @@ class ForkRequest3:
     resources: ResourcesInput | None = None
 
 
-ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2 | ForkRequest3
+@dataclass(frozen=True)
+class ForkRequest4:
+    dockerfile: str
+    source_vm_id: None = None
+    source_vm_name: None = None
+    image: None = None
+    nestedvirt: bool | None = None
+    source_org_id: str | None = None
+    name: str | None = None
+    description: str | None = None
+    public: bool | None = None
+    ssh_public_keys: list[str] | None = None
+    disk: bool | None = None
+    durable: bool | None = None
+    network: dict[str, Any] | None = None
+    egress: dict[str, Any] | None = None
+    platforms: list[str] | None = None
+    layers: list[Literal['disk', 'memory']] | None = None
+    queueing_timeout: int | None = None
+    policies: PolicyWriteRequest | None = None
+    resources: ResourcesInput | None = None
+
+
+ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2 | ForkRequest3 | ForkRequest4
 
 
 @dataclass(frozen=True)

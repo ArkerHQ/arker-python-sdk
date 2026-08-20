@@ -281,6 +281,90 @@ def test_fork_rejects_an_image_passed_positionally_and_by_keyword() -> None:
     assert excinfo.value.code == "bad_request"
 
 
+def test_fork_from_dockerfile_sends_only_the_dockerfile() -> None:
+    """`dockerfile` is a fourth source: no VM selector or `image` accompanies it.
+
+    The service's schema models the four sources as a `oneOf`, so a body
+    carrying `dockerfile` alongside a selector or `image` fails to decode
+    there.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        {
+            "vm_id": "vm_from_dockerfile",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    dockerfile = "FROM ubuntu:24.04\nRUN apt-get update\nENV FOO=bar\n"
+    with use_transport(t):
+        vm = client().fork(dockerfile=dockerfile, name="from-dockerfile")
+
+    assert vm.id == "vm_from_dockerfile"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {"dockerfile": dockerfile, "name": "from-dockerfile"}
+
+
+def test_fork_from_image_with_nestedvirt_sends_both() -> None:
+    """`nestedvirt` rides alongside `image` (or `dockerfile`) untouched."""
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        {
+            "vm_id": "vm_nested",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        vm = client().fork(image="ubuntu:24.04", nestedvirt=True)
+
+    assert vm.id == "vm_nested"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {"image": "ubuntu:24.04", "nestedvirt": True}
+
+
+def test_fork_rejects_a_dockerfile_alongside_a_source_vm() -> None:
+    for kwargs in (
+        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_name": "base"},
+        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_id": "vm_abc"},
+    ):
+        with pytest.raises(sdk.ArkerError) as excinfo:
+            client().fork(**kwargs)  # type: ignore[arg-type]
+        assert excinfo.value.code == "bad_request"
+
+
+def test_fork_rejects_a_dockerfile_alongside_an_image() -> None:
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork(image="ubuntu:24.04", dockerfile="FROM ubuntu:24.04\n")
+    assert excinfo.value.code == "bad_request"
+
+
+def test_fork_rejects_a_dockerfile_passed_positionally_and_by_keyword() -> None:
+    # The positional form resolves to `source_vm_name`, so this is the same
+    # collision as above arriving by a different route.
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork("base", dockerfile="FROM ubuntu:24.04\n")
+    assert excinfo.value.code == "bad_request"
+
+
 def test_fork_rejects_legacy_id_response() -> None:
     """A response missing the fields we REQUIRE is still an error.
 

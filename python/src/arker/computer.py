@@ -43,6 +43,7 @@ from .generated.api_models import (
     ForkRequest1,
     ForkRequest2,
     ForkRequest3,
+    ForkRequest4,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -392,6 +393,8 @@ class Arker:
         source_vm_name: str | None = None,
         source_org_id: str | None = None,
         image: str | None = None,
+        dockerfile: str | None = None,
+        nestedvirt: bool | None = None,
         name: str | None = None,
         description: str | None = None,
         public: bool | None = None,
@@ -447,6 +450,29 @@ class Arker:
 
               vm.run('export PATH=/opt/conda/bin:$PATH; python -c "import torch"')
 
+        - ``fork(dockerfile="FROM ubuntu:24.04\\nRUN apt-get update")`` — build
+          and fork from raw Dockerfile text (not a path, not a URL). Exclusive
+          with the VM selectors and with ``image``. Supports a single-stage
+          build using ``FROM``, ``RUN``, ``ADD`` (URL source only), ``ENV``,
+          ``WORKDIR``, ``USER``, ``EXPOSE``, ``ENTRYPOINT``, ``CMD``, ``ARG``,
+          and ``LABEL``; anything outside that set (multi-stage builds, an
+          ARG-substituted ``FROM``, ``COPY``, or any other directive) is
+          rejected with a 400 naming the problem. ``FROM`` resolves through the
+          same pull/convert pipeline a bare ``image`` fork uses; every other
+          instruction executes as a real operation against the resulting VM —
+          ``RUN`` runs for real, ``ENV``/``WORKDIR`` persist onto the delivered
+          session — rather than inside a build container. The new VM inherits
+          nothing from a source VM: the same fields ``image`` honours
+          (``policies``, ``ssh_public_keys``, ``description``) are honoured
+          here too, and the same fields are refused (``layers``, ``platforms``,
+          ``durable``, ``public``, GPU resources).
+
+        ``nestedvirt`` requests nested virtualization (the guest's own
+        ``/dev/kvm`` works) for a VM forked from ``image`` or ``dockerfile``.
+        Omit it or pass ``False`` for no nested virt, the default; ``True``
+        selects a hypervisor backend capable of serving it and fails with a
+        400 naming the reason if the current host cannot.
+
         ``source_org_id`` is sent only when supplied explicitly. The service
         resolves omitted ownership from its current source catalog and the
         caller's organization. It is irrelevant when forking by id. ``name``
@@ -492,11 +518,16 @@ class Arker:
                 source_vm_name = source
             else:
                 raise ArkerError("bad_request", "fork source must be a VM or a source-name string", 400)
-        # `image` is a third source, exclusive with the two VM selectors.
+        # `image` and `dockerfile` are a third and fourth source, each
+        # exclusive with the two VM selectors and with each other.
         if image and (source_vm_id or source_vm_name):
             raise ArkerError("bad_request", "fork: pass a source VM or an image, not both", 400)
-        if not source_vm_id and not source_vm_name and not image:
-            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, source_vm_id, or image)", 400)
+        if dockerfile and (source_vm_id or source_vm_name):
+            raise ArkerError("bad_request", "fork: pass a source VM or a dockerfile, not both", 400)
+        if image and dockerfile:
+            raise ArkerError("bad_request", "fork: pass an image or a dockerfile, not both", 400)
+        if not source_vm_id and not source_vm_name and not image and not dockerfile:
+            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, source_vm_id, image, or dockerfile)", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
         if network is not None or egress is not None:
@@ -544,12 +575,16 @@ class Arker:
             resources=resources,
             policies=policy_doc,
             queueing_timeout=queueing_timeout,
+            nestedvirt=nestedvirt,
         )
         body = (
             # Truthiness, matching the exclusivity checks above and the TS SDK:
-            # `image=""` is caller error, and treating it as "an image was
-            # given" would discard a `source_vm_name` the caller did supply.
-            ForkRequest3(image=image, **request_options)
+            # `image=""`/`dockerfile=""` is caller error, and treating either as
+            # "a source was given" would discard a `source_vm_name` the caller
+            # did supply.
+            ForkRequest4(dockerfile=dockerfile, **request_options)
+            if dockerfile
+            else ForkRequest3(image=image, **request_options)
             if image
             else ForkRequest1(source_vm_id=source_vm_id, **request_options)
             if source_vm_id is not None
