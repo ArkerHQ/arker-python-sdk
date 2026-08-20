@@ -20,7 +20,8 @@ Three Arker calls carry the whole thing:
 
 
 `autoresearch.py` is those calls and the concurrency around them. Everything else — the
-task, the prep recipe, the run folder, the logging, the charts — is in `helper.py`.
+task, the prep recipe, the run folder, the logging — is in `helper.py`, and the three
+charts are in `charts.py`.
 
 ## Setup
 
@@ -152,7 +153,7 @@ whatever it finds there. To redraw without running anything:
 
 ```bash
 uv run --with matplotlib python -c \
-  "import helper; helper.chart('results/compare')"
+  "import charts; charts.chart('results/compare')"
 ```
 
 `chart()` with no argument uses the newest folder under `results/`. It picks up any

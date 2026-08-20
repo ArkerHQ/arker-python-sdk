@@ -25,7 +25,7 @@ card over as each run finishes, with no orchestration from this script. Same
 experiments, same hardware; the chart shows what that costs in wall clock.
 
 Everything that is not an Arker call — the task, the prep recipe, the run
-folder, the logging, the chart — lives in helper.py.
+folder, the logging — lives in helper.py; the charts live in charts.py.
 
 Demo code: the success path only. On a busy host these calls can return a
 retryable 503; production callers should retry it (the SDK already polls
@@ -34,9 +34,10 @@ background acks for you).
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from charts import chart, timeline
 from helper import (AGENTS, PLATFORM, READ_RESULTS, RUN, SETUP_STAGES, STAGE_PREFIX,
-                 TURNS, VGPUS, WRITE_TASK, begin_config, chart, log, parse_runs, timeline,
-                 prep_ready, save_summary, turn_command, turn_done, turn_started)
+                    TURNS, VGPUS, WRITE_TASK, begin_config, log, parse_runs,
+                    prep_ready, save_summary, turn_command, turn_done, turn_started)
 
 
 def prepare(ark) -> object:
