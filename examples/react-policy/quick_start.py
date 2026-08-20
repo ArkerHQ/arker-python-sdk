@@ -97,14 +97,14 @@ def main() -> None:
         print(f"   $ arker policies set $VM  # allow public inbound on :{APP_PORT}")
         print(f"   $ arker sessions create $VM --cwd {REMOTE_APP}")
         print(
-            "   $ arker run --session-id $SESSION --background --timeout 0"
+            "   $ arker run --session-id $SESSION --time-to-background 0 --timeout 0"
             ' $VM "exec node server.mjs"'
         )
         session = vm.create_session(cwd=REMOTE_APP)
         server = vm.run(
             "exec node server.mjs",
             session_id=session.session_id,
-            background=True,
+            time_to_background=0,
             timeout=0,
             policies=PUBLIC_POLICY,
         )

@@ -479,10 +479,10 @@ export interface BackgroundRunResult {
 }
 
 /**
- * Result of {@link VM.run}. A synchronous call (`background` unset/false)
+ * Result of {@link VM.run}. A synchronous call (`time_to_background` not zero)
  * always resolves to a {@link CompletedRunResult} — if the run outlives its
  * sync window run() polls it to completion under the hood. Only an explicit
- * `background: true` yields a {@link BackgroundRunResult} (the running ack,
+ * `time_to_background: 0` yields a {@link BackgroundRunResult} (the running ack,
  * returned immediately for the caller to poll via {@link VM.getRun}).
  */
 export type RunResult = CompletedRunResult | BackgroundRunResult;
@@ -1070,18 +1070,17 @@ export class VM {
    * exceeded run() throws an ArkerError with code `"timeout"` (the run keeps
    * executing server-side — poll {@link getRun} to retrieve it). With no
    * `timeout` the run is unbounded server-side and the poll is unbounded with
-   * it; pass `background: true` if you do not want to wait.
+   * it.
    *
-   * Pass `background: true` to skip the wait entirely: run() returns the
+   * Pass `time_to_background: 0` to skip the wait entirely: run() returns the
    * running acknowledgement (`{ type: "background", runId }`) immediately and
    * you manage polling yourself via {@link getRun}.
    *
    * `queueing_timeout` (seconds) queues instead of failing fast: retries
    * until the window elapses, then surfaces the error. Omitted/`0` = fail fast.
    */
-  async run(command: string, options?: RunOptions & { background?: false | null }): Promise<CompletedRunResult>;
-  async run(command: string, options: RunOptions & { background: true }): Promise<BackgroundRunResult>;
-  async run(command: string, options?: RunOptions): Promise<RunResult>;
+  async run(command: string, options: RunOptions & { time_to_background: 0 }): Promise<BackgroundRunResult>;
+  async run(command: string, options?: RunOptions): Promise<CompletedRunResult>;
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
     rejectRemovedNetworkInputs("run", options);
     const { idempotencyKey, ...body } = options;
@@ -1099,8 +1098,8 @@ export class VM {
     // The server backgrounds a run that outlived its sync window. When the
     // caller did NOT request background, poll getRun() to a terminal state
     // and hand back the completed run so the synchronous call is transparent.
-    // background:true is a pure pass-through — return the ack immediately.
-    if (result.type === "background" && options.background !== true) {
+    // Explicit zero is a pure pass-through — return the ack immediately.
+    if (result.type === "background" && options.time_to_background !== 0) {
       return this._awaitRun(result.runId, options.timeout);
     }
     return result;

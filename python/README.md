@@ -108,7 +108,7 @@ For long-running or non-idempotent work, fork with `durable=True` and pass an id
 import uuid
 
 vm = ar.fork(os.environ["ARKER_SOURCE_VM"], durable=True)
-vm.run("python3 train.py", background=True, idempotency_key=str(uuid.uuid4()))
+vm.run("python3 train.py", time_to_background=0, idempotency_key=str(uuid.uuid4()))
 ```
 
 If the host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Backends without durability raise `ArkerError(code="unsupported_operation")`.

@@ -925,7 +925,6 @@ class RunRequest:
     session_id: str | None = None
     session_idx: int | None = None
     command: str | None = None
-    background: bool | None = False
     timeout: int | None = None
     time_to_background: int | None = None
     queueing_timeout: int | None = None

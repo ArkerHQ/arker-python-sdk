@@ -48,7 +48,7 @@ arker policies set "$VM" >/dev/null <<'JSON'
 JSON
 
 SESSION=$(arker sessions create "$VM" --cwd /workspace/react-policy | jq -r .session_id)
-arker run --session-id "$SESSION" --background --timeout 0 \
+arker run --session-id "$SESSION" --time-to-background 0 --timeout 0 \
   "$VM" "exec node server.mjs"
 
 echo "https://$VM-8080.aws-$ARKER_REGION.arker.app"

@@ -546,8 +546,8 @@ def test_sync_run_polls_backgrounded_run_to_completion(monkeypatch) -> None:
     assert [c["method"] for c in t.calls] == ["POST", "GET", "GET"]
 
 
-def test_background_true_returns_ack_without_polling(monkeypatch) -> None:
-    # background=True is a pure pass-through — run() returns the running ack
+def test_explicit_zero_returns_ack_without_polling(monkeypatch) -> None:
+    # time_to_background=0 is a pure pass-through — run() returns the running ack
     # immediately and never polls get_run().
     slept: list[float] = []
     monkeypatch.setattr(sdk.time, "sleep", lambda s: slept.append(s))
@@ -559,14 +559,19 @@ def test_background_true_returns_ack_without_polling(monkeypatch) -> None:
     )
 
     with use_transport(t):
-        result = client().vm("vm_1").run("sleep 999", background=True)
+        result = client().vm("vm_1").run("sleep 999", time_to_background=0)
 
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_bg"
     # Only the POST — no polling, no sleeping.
     assert [c["method"] for c in t.calls] == ["POST"]
     assert slept == []
-    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 999", "background": True}
+    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 999", "time_to_background": 0}
+
+
+def test_removed_background_argument_is_rejected() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'background'"):
+        client().vm("vm_1").run("sleep 999", background=True)  # type: ignore[call-arg]
 
 
 def test_run_sends_policies() -> None:
@@ -719,12 +724,12 @@ def test_background_run_response() -> None:
     )
 
     with use_transport(t):
-        result = client().vm("vm_1").run("sleep 10", background=True)
+        result = client().vm("vm_1").run("sleep 10", time_to_background=0)
 
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_1"
     assert result.state == "running"
-    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "background": True}
+    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "time_to_background": 0}
 
 
 def test_flat_error_response_is_rejected_as_malformed() -> None:

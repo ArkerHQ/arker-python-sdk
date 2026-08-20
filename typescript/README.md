@@ -93,7 +93,7 @@ For long-running or non-idempotent work, fork with `durable: true` and pass an i
 
 ```ts
 const vm = await ar.fork(process.env.ARKER_SOURCE_VM!, { durable: true });
-await vm.run("python3 train.py", { background: true, idempotencyKey: crypto.randomUUID() });
+await vm.run("python3 train.py", { time_to_background: 0, idempotencyKey: crypto.randomUUID() });
 ```
 
 If the host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Backends without durability return `ArkerError` code `unsupported_operation`.

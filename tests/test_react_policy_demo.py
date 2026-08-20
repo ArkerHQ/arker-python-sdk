@@ -69,7 +69,7 @@ class FakeVM:
                 stdout=b"build output\n",
                 stderr=b"build failed\n" if self.build_exit_code else b"",
             )
-        if kwargs.get("background"):
+        if kwargs.get("time_to_background") == 0:
             return SimpleNamespace(run_id="run_test")
         if "--connect-timeout" in command:
             return SimpleNamespace(exit_code=28, stdout=b"", stderr=b"")
@@ -142,7 +142,7 @@ def test_python_demo_runs_the_documented_sdk_flow(
     assert server_command == "exec node server.mjs"
     assert server_options == {
         "session_id": "session_test",
-        "background": True,
+        "time_to_background": 0,
         "timeout": 0,
         "policies": PUBLIC_POLICY,
     }
