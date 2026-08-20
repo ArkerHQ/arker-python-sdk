@@ -654,9 +654,19 @@ export interface ForkSource {
    *     await arker.fork({ image: "pytorch/pytorch:latest",
    *                        platforms: ["icelake"] });
    *
-   * The image's Docker `ENV` is not applied to runs, so a tool outside the
-   * default `PATH` needs its prefix added once; it persists for the session. */
+   * The image's `ENV`, `USER` and `WORKDIR` ARE applied, so a tool on the
+   * image's own `PATH` runs without a prefix and the first run starts in the
+   * image's working directory. `CMD`/`ENTRYPOINT` are recorded but NOT
+   * started — a VM whose entrypoint was running would be busy from birth,
+   * which blocks idle suspend. Start the workload yourself when you want it. */
   image?: string;
+  /** Dockerfile source, built on the host and then forked like any other
+   * image. Exclusive with `image` and with the VM selectors. */
+  dockerfile?: string;
+  /** Credentials for a private registry. Applies to `image` and `dockerfile`
+   * only (including a private *base* image in a Dockerfile). They authorize
+   * one pull, are not stored, and a child fork of the result needs none. */
+  registryAuth?: { username: string; password: string };
 }
 
 export class Arker {
@@ -745,31 +755,49 @@ export class Arker {
    *     fork(sourceName, { layers: ["disk"] })      // disk-only, cold boot
    */
   async fork(
-    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">>),
-    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">> = {},
+    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">>),
+    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> = {},
   ): Promise<VM> {
     // Normalize the source: a name string, a VM handle (use its id), or a
     // ForkSource object.
     const src: ForkSource &
-      Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image">> =
+      Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> =
       typeof source === "string"
         ? { sourceVmName: source, ...opts }
         : source instanceof VM
           ? { sourceVmId: source.id, ...opts }
           : source;
     rejectRemovedNetworkInputs("fork", src);
-    // `image` is a third source, exclusive with the two VM selectors.
-    if (src.image && (src.sourceVmId || src.sourceVmName)) {
+    // `image` and `dockerfile` are two further sources, each exclusive with
+    // the VM selectors and with each other. A body naming more than one
+    // decodes as no variant of the contract's `oneOf`.
+    if (src.image && src.dockerfile) {
       throw new ArkerError(
         "bad_request",
-        "fork: pass a source VM or an image, not both",
+        "fork: pass an image or a dockerfile, not both",
         400,
       );
     }
-    if (!src.sourceVmId && !src.sourceVmName && !src.image) {
+    if ((src.image || src.dockerfile) && (src.sourceVmId || src.sourceVmName)) {
       throw new ArkerError(
         "bad_request",
-        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, or image)",
+        "fork: pass a source VM or an image/dockerfile, not both",
+        400,
+      );
+    }
+    if (!src.sourceVmId && !src.sourceVmName && !src.image && !src.dockerfile) {
+      throw new ArkerError(
+        "bad_request",
+        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, image, or dockerfile)",
+        400,
+      );
+    }
+    // Credentials authorize a registry pull. With no pull to perform they
+    // would be sent for nothing, so refuse rather than quietly drop them.
+    if (src.registryAuth && !src.image && !src.dockerfile) {
+      throw new ArkerError(
+        "bad_request",
+        "fork: registryAuth applies to an image or dockerfile fork",
         400,
       );
     }
@@ -815,6 +843,8 @@ export class Arker {
       sourceVmName: _sourceVmName,
       sourceOrgId: _sourceOrgId,
       image: _image,
+      dockerfile: _dockerfile,
+      registryAuth: _registryAuth,
       ...passthrough
     } = src as ForkSource & Record<string, unknown>;
     delete passthrough.vcpu_count;
@@ -836,6 +866,8 @@ export class Arker {
       resources,
       // Omit to inherit the source's policy; pass a document to replace it.
       policies: src.policies,
+      // Only present for image/dockerfile forks; refused above otherwise.
+      ...(src.registryAuth ? { registry_auth: src.registryAuth } : {}),
     };
     const body: ForkRequest = src.image
       ? {
@@ -844,6 +876,13 @@ export class Arker {
           source_vm_id: null,
           source_vm_name: null,
         }
+      : src.dockerfile
+        ? {
+            ...requestOptions,
+            dockerfile: src.dockerfile,
+            source_vm_id: null,
+            source_vm_name: null,
+          }
       : src.sourceVmId
         ? {
             ...requestOptions,
@@ -1043,7 +1082,12 @@ export class VM {
   readonly max_vcpus?: Vm["max_vcpus"];
   readonly max_memory_mib?: Vm["max_memory_mib"];
   readonly min_memory_mib?: Vm["min_memory_mib"];
-  readonly started_at?: Vm["started_at"];
+  /** @deprecated The service no longer returns this field, so it is
+   * always undefined. Kept to avoid a breaking change; use `created_at`. */
+  readonly started_at?: string | null;
+  /** When the VM was last active. This is the field the service actually
+   * populates (it replaced `started_at` in ARK-453). */
+  readonly last_active_at?: Vm["last_active_at"];
   readonly root_source_vm_id?: Vm["root_source_vm_id"];
   readonly root_source_vm_name?: Vm["root_source_vm_name"];
   readonly worker_id?: string | null;

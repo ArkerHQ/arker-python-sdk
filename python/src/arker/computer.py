@@ -42,6 +42,7 @@ from .generated.api_models import (
     ForkRequest1,
     ForkRequest2,
     ForkRequest3,
+    ForkRequest4,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -61,6 +62,7 @@ from .generated.api_models import (
     PatchSessionResponse,
     PatchVmRequest,
     PolicyDoc,
+    RegistryAuth,
     PtyTicketResponse,
     RegionPlacement,
     Run,
@@ -378,6 +380,8 @@ class Arker:
         source_vm_name: str | None = None,
         source_org_id: str | None = None,
         image: str | None = None,
+        dockerfile: str | None = None,
+        registry_auth: "RegistryAuth | dict[str, str] | None" = None,
         name: str | None = None,
         description: str | None = None,
         public: bool | None = None,
@@ -425,11 +429,28 @@ class Arker:
               vm = arker.fork(image="pytorch/pytorch:latest",
                               platforms=["icelake"])
 
-          The image's Docker ``ENV`` is not applied to runs, so a tool that
-          lives outside the default ``PATH`` needs its prefix added once — it
-          persists for the rest of the session::
+          The image's ``ENV``, ``USER`` and ``WORKDIR`` ARE applied, so a tool
+          on the image's own ``PATH`` runs without a prefix and the first run
+          starts in the image's working directory::
 
-              vm.run('export PATH=/opt/conda/bin:$PATH; python -c "import torch"')
+              vm.run('python -c "import torch"')   # /opt/conda/bin is on PATH
+
+          ``CMD``/``ENTRYPOINT`` are recorded but deliberately NOT started.
+          A VM whose entrypoint was running would be busy from birth, which
+          blocks idle suspend; start the workload yourself when you want it::
+
+              vm.run("nginx -g 'daemon off;' &")
+
+        - ``fork(dockerfile="FROM ubuntu:24.04\nRUN ...")`` — build from a
+          Dockerfile instead of pulling a single image. Each instruction runs
+          on the host and the result is forked like any other image.
+
+        ``registry_auth={"username": ..., "password": ...}`` supplies
+        credentials for a private registry, and applies to the ``image`` and
+        ``dockerfile`` sources only (including a private *base* image in a
+        Dockerfile). Credentials authorize one pull; they are not stored, and a
+        child fork of the resulting VM needs none. Passing them without an
+        image or dockerfile is refused rather than silently ignored.
 
         ``source_org_id`` is sent only when supplied explicitly. The service
         resolves omitted ownership from its current source catalog and the
@@ -463,11 +484,19 @@ class Arker:
                 source_vm_name = source
             else:
                 raise ArkerError("bad_request", "fork source must be a VM or a source-name string", 400)
-        # `image` is a third source, exclusive with the two VM selectors.
-        if image and (source_vm_id or source_vm_name):
-            raise ArkerError("bad_request", "fork: pass a source VM or an image, not both", 400)
-        if not source_vm_id and not source_vm_name and not image:
-            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, source_vm_id, or image)", 400)
+        # `image` and `dockerfile` are two further sources, each exclusive
+        # with the VM selectors and with each other. A body naming more than
+        # one decodes as no variant of the contract's `oneOf`.
+        if image and dockerfile:
+            raise ArkerError("bad_request", "fork: pass an image or a dockerfile, not both", 400)
+        if (image or dockerfile) and (source_vm_id or source_vm_name):
+            raise ArkerError("bad_request", "fork: pass a source VM or an image/dockerfile, not both", 400)
+        if not source_vm_id and not source_vm_name and not image and not dockerfile:
+            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, source_vm_id, image, or dockerfile)", 400)
+        # Credentials authorize a registry pull. With no pull to perform they
+        # would be sent for nothing, so refuse rather than quietly drop them.
+        if registry_auth is not None and not (image or dockerfile):
+            raise ArkerError("bad_request", "fork: registry_auth applies to an image or dockerfile fork", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
         if network is not None or egress is not None:
@@ -498,6 +527,13 @@ class Arker:
             if policies is not None
             else None
         )
+        auth = (
+            registry_auth
+            if isinstance(registry_auth, RegistryAuth)
+            else _decode_model(RegistryAuth, registry_auth)
+            if registry_auth is not None
+            else None
+        )
         request_options = dict(
             source_org_id=source_org_id,
             name=name,
@@ -513,6 +549,7 @@ class Arker:
             layers=layers,
             resources=resources,
             policies=policy_doc,
+            registry_auth=auth,
         )
         body = (
             # Truthiness, matching the exclusivity checks above and the TS SDK:
@@ -520,6 +557,8 @@ class Arker:
             # given" would discard a `source_vm_name` the caller did supply.
             ForkRequest3(image=image, **request_options)
             if image
+            else ForkRequest4(dockerfile=dockerfile, **request_options)
+            if dockerfile
             else ForkRequest1(source_vm_id=source_vm_id, **request_options)
             if source_vm_id is not None
             else ForkRequest2(source_vm_name=source_vm_name, **request_options)
@@ -709,7 +748,11 @@ class VM:
     max_vcpus: int | None
     max_memory_mib: int | None
     min_memory_mib: int | None
+    # The service replaced `started_at` with `last_active_at` in ARK-453
+    # (arker-app #1070). `started_at` is kept so existing callers keep
+    # importing, but nothing populates it any more — read `last_active_at`.
     started_at: str | None
+    last_active_at: str | None
     sessions: list[Session] | None
 
     def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, data: Vm | None = None) -> None:

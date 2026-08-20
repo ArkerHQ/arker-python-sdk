@@ -281,6 +281,91 @@ def test_fork_rejects_an_image_passed_positionally_and_by_keyword() -> None:
     assert excinfo.value.code == "bad_request"
 
 
+def _fork_response(vm_id: str) -> dict:
+    return {
+        "vm_id": vm_id,
+        "owner_org_id": "owner",
+        "created_at": "now",
+        "description": None,
+        "public": False,
+        "state": "idle",
+        "sessions": [session()],
+        "network": {},
+        "resources": {},
+    }
+
+
+def test_fork_from_a_private_image_sends_registry_auth() -> None:
+    """Credentials ride with the pull they authorize, and nothing else.
+
+    The service performs the pull as the authorization check, so the body must
+    carry the image AND the credentials together — a pull attempted without
+    them fails as `not found`, which reads to the caller as a typo rather than
+    a permission problem.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        _fork_response("vm_private"),
+    )
+
+    with use_transport(t):
+        vm = client().fork(
+            image="ghcr.io/org/private:v1",
+            registry_auth={"username": "u", "password": "p"},
+        )
+
+    assert vm.id == "vm_private"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {
+        "image": "ghcr.io/org/private:v1",
+        "registry_auth": {"username": "u", "password": "p"},
+    }
+
+
+def test_fork_from_a_dockerfile_sends_only_the_dockerfile() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        _fork_response("vm_dockerfile"),
+    )
+
+    with use_transport(t):
+        vm = client().fork(dockerfile="FROM ubuntu:24.04\nRUN echo hi\n")
+
+    assert vm.id == "vm_dockerfile"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {"dockerfile": "FROM ubuntu:24.04\nRUN echo hi\n"}
+
+
+def test_fork_rejects_an_image_and_a_dockerfile_together() -> None:
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork(image="ubuntu:24.04", dockerfile="FROM ubuntu:24.04\n")
+    assert excinfo.value.code == "bad_request"
+
+
+def test_fork_rejects_a_dockerfile_alongside_a_source_vm() -> None:
+    for kwargs in (
+        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_name": "base"},
+        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_id": "vm_abc"},
+    ):
+        with pytest.raises(sdk.ArkerError) as excinfo:
+            client().fork(**kwargs)  # type: ignore[arg-type]
+        assert excinfo.value.code == "bad_request"
+
+
+def test_fork_refuses_registry_auth_without_something_to_pull() -> None:
+    """Silently dropping them would send credentials nowhere and look fine."""
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork(
+            source_vm_name="base",
+            registry_auth={"username": "u", "password": "p"},
+        )
+    assert excinfo.value.code == "bad_request"
+
+
 def test_fork_rejects_legacy_id_response() -> None:
     """A response missing the fields we REQUIRE is still an error.
 

@@ -109,7 +109,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -140,7 +140,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -152,7 +152,7 @@ export interface paths {
         get: operations["getVmPolicies"];
         /**
          * Replace a VM network policy
-         * @description Replace the complete network policy of a mutable VM owned by the authenticated caller and apply it to the running VM. Golden templates are immutable.
+         * @description Replace the complete network policy of a mutable VM owned by the authenticated caller and apply it to the running VM. Public base VMs are immutable.
          */
         put: operations["putVmPolicies"];
         post?: never;
@@ -167,7 +167,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -180,7 +180,7 @@ export interface paths {
         put?: never;
         /**
          * Run a command
-         * @description Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` when they are unavailable in the selected region or provider.
+         * @description Run a command. Foreground execution is the portable baseline. Set `background` to return a pollable run immediately. A run that is still executing when the response is sent returns **202 Accepted** with a `run_id`; only a run that finished returns 200. A request with `signal` targets the selected persistent session's foreground process group, does not execute `command`, and returns an acknowledgement without a run id. Optional session, signal, resource-lifecycle, policy, and per-run resource controls may return `unsupported_operation` when they are unavailable in the selected region or provider.
          */
         post: operations["createRun"];
         delete?: never;
@@ -194,7 +194,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Run identifier. */
                 run_id: components["parameters"]["RunId"];
@@ -223,7 +223,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -250,7 +250,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -296,7 +296,7 @@ export interface paths {
             };
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -321,7 +321,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -346,7 +346,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -377,7 +377,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Filesystem mount identifier. */
                 sync_id: components["parameters"]["SyncId"];
@@ -402,7 +402,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -429,7 +429,7 @@ export interface paths {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -512,11 +512,8 @@ export interface components {
             timestamp: string;
         };
         RegionPlacement: {
-            /**
-             * @description Public provider for the placement.
-             * @enum {string}
-             */
-            provider: "aws" | "azure" | "arker" | "gcp";
+            /** @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it. */
+            provider: string;
             /** @description Provider region identifier. */
             region: string;
             /**
@@ -590,11 +587,8 @@ export interface components {
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /**
-         * @description Public provider containing the resource.
-         * @enum {string}
-         */
-        Provider: "aws" | "azure" | "arker" | "gcp";
+        /** @description Infrastructure provider currently hosting the resource. */
+        Provider: string;
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {
             /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
@@ -718,6 +712,10 @@ export interface components {
             source_vm_name?: string | null;
             /** @description OCI image reference to fork from — for example `ubuntu:24.04`, `ghcr.io/org/image:v1`, or `image@sha256:...`. An unqualified name resolves against Docker Hub. Give a bare reference, not a URI. The new VM boots a rootfs converted from that image rather than from an existing VM, so neither `source_vm_id` nor `source_vm_name` is given. */
             image?: string | null;
+            /** @description Dockerfile source to build and fork from, as raw Dockerfile text (not a path, not a URL). Exclusive with source_vm_id, source_vm_name and image. Supports a single-stage build using FROM, RUN, ADD (URL source only), ENV, WORKDIR, USER, EXPOSE, ENTRYPOINT, CMD, ARG, and LABEL; anything outside that set (multi-stage builds, an ARG-substituted FROM, COPY, or any other directive) is rejected with a 400 naming the problem. FROM resolves through the same pull/convert pipeline a bare `image` fork uses; every other instruction executes as a real operation against the resulting VM (RUN runs for real, ENV/WORKDIR persist onto the delivered session) rather than inside a build container — the new VM inherits nothing from a source VM, the same fields `image` honours (`policies`, `ssh_public_keys`, `description`) are honoured here too, and the same fields are refused (`layers`, `platforms`, `durable`, `public`, GPU resources). */
+            dockerfile?: string | null;
+            /** @description Request nested virtualization support (the guest's own /dev/kvm works) for a new VM forked from `image` or `dockerfile`. Omit or pass false for no nested virt, the default. This selects a hypervisor backend capable of serving it internally — backend selection itself is never a direct customer choice — and returns a 400 naming the reason if this host cannot serve it, rather than silently creating a VM that cannot do nested virt despite the request. */
+            nestedvirt?: boolean | null;
             /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
             source_org_id?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
@@ -755,19 +753,29 @@ export interface components {
             /** @description Network policy stored and enforced before the new VM first runs. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. A non-empty document denies unmatched outbound traffic, so include outbound rules needed during setup. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
             /** @description Resource shape for the new VM. */
-            resources?: components["schemas"]["VmResources"] | null;
+            resources?: components["schemas"]["ResourcesInput"] | null;
+            /** @description Optional credentials for `image`. Ignored when forking from a source VM, which has no registry to authenticate against. */
+            registry_auth?: components["schemas"]["RegistryAuth"] | null;
         } & ({
             source_vm_id: string;
             source_vm_name?: null;
             image?: null;
+            dockerfile?: null;
         } | {
             source_vm_id?: null;
             source_vm_name: string;
             image?: null;
+            dockerfile?: null;
         } | {
             source_vm_id?: null;
             source_vm_name?: null;
             image: string;
+            dockerfile?: null;
+        } | {
+            source_vm_id?: null;
+            source_vm_name?: null;
+            image?: null;
+            dockerfile: string;
         });
         Session: {
             /** @description Unique session identifier. */
@@ -823,12 +831,12 @@ export interface components {
             /** @description Name of the root source VM. Populated together with `root_source_vm_id`. */
             root_source_vm_name?: string | null;
             state: components["schemas"]["VmState"];
-            /** @description Region containing the resource or activity. */
+            /** @description Customer-facing service region containing the VM. */
             region?: string | null;
             /** @description Public provider containing the VM. */
             provider?: components["schemas"]["Provider"] | null;
-            /** @description RFC 3339 timestamp when execution or the session started. */
-            started_at?: string | null;
+            /** @description RFC 3339 timestamp of the machine's most recent activity — a run, an SSH session, an open tunnel, a resume, or being used as the source of a fork. Recorded when a stretch of activity begins and refreshed at most once a minute while it continues, so it is a recent-activity marker rather than a precise heartbeat. Null if the machine has not been active since it was created. */
+            last_active_at?: string | null;
             /** @description The VM's network object — SSH keys only. Inbound reachability and per-port exposure are derived from `policies`, not from this object. */
             network: components["schemas"]["VmNetwork"];
             /** @description Hard vCPU ceiling for a fork of this VM. Requesting more fails the run. */
@@ -839,7 +847,7 @@ export interface components {
             max_memory_mib?: number | null;
             /** @description Non-hotpluggable base memory (MiB). */
             min_memory_mib?: number | null;
-            /** @description GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A golden is GPU-agnostic and may be offered on several GPUs at once, so this is a list — clients pick the entry matching the platform they intend to request. */
+            /** @description GPU sizing bounds for each GPU platform this VM can be forked onto; absent when it has no GPU platform. A base VM is GPU-agnostic and may be offered on several GPUs at once, so this is a list — clients pick the entry matching the platform they intend to request. */
             gpu_platforms?: components["schemas"]["GpuPlatformLimits"][] | null;
             /** @description Smallest disk size (MiB) accepted for this VM. `0` means nodisk. */
             min_disk_mib?: number | null;
@@ -894,9 +902,17 @@ export interface components {
              * @default false
              */
             background?: boolean;
-            /** @description Maximum command runtime in seconds. Omitted defaults to 3,600 seconds. Set to 0 to disable the runtime limit. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
+            /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
-            /** @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and returning a pollable run_id. Omitted defaults to 120. Does not bound command runtime — that is timeout. */
+            /**
+             * @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and answering **202** with a pollable `run_id`. Omitted defaults to **300**.
+             *
+             *     Does not bound how long the command runs — that is `timeout`.
+             *
+             *     `0` is REJECTED with `bad_request`. It reads as both "background immediately" and "never background", and nothing in the request distinguishes them, so the platform would have to guess. Use `background: true` to start a run in the background and receive a `run_id` straight away.
+             *
+             *     Values above ~350 are not useful: the load balancer cuts an idle connection there, so the caller gets a transport error instead of a clean 202.
+             */
             time_to_background?: number | null;
             /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. Independent of `timeout` (execution bound) and `time_to_background` (sync window). */
             queueing_timeout?: number | null;
@@ -958,8 +974,18 @@ export interface components {
              * @enum {string}
              */
             stderr_encoding: "utf-8" | "base64";
-            /** @description Process exit code. Null when no process completed. */
-            exit_code: number;
+            /**
+             * @description The command's exit status, or `null` when there is none.
+             *
+             *     `null` means a PROMPT ended this run rather than the command's own completion marker, so nothing exited and there is no status to report. A REPL turn genuinely has none: `print(6 * 7)` does not exit with anything.
+             *
+             *     Expected when you passed `end_symbol`, or when the command was itself a REPL launch such as `python3`.
+             *
+             *     If you did NEITHER, an interpreter left running by an earlier run in this session received your command as keystrokes, answered with its own error, and returned to its prompt — which is the prompt that ended the run. Its output is in `stdout`. **The command never reached Bash.** Send `exit()` to leave the interpreter, pass `end_symbol: "none"` to force Bash for one run, or use a different `session_idx`.
+             *
+             *     This was previously a fabricated `0`, which a caller checking `exit_code == 0` read as success for a command that never ran. The key is always present, so `null` is an explicit answer rather than an omission.
+             */
+            exit_code: number | null;
             /** @description Execution mode selected by the service, when reported. */
             dispatch?: string | null;
             /** @description Requested total memory in MiB when this run included a memory override. Absent when no override was requested. */
@@ -1430,15 +1456,9 @@ export interface components {
             created_at: string;
             /** @description Resource size in bytes. */
             size_bytes?: number | null;
-            /**
-             * @description Region containing the resource or activity.
-             * @default us-west-2
-             */
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /**
-             * @description Public provider containing the filesystem.
-             * @default aws
-             */
+            /** @description Public provider containing the filesystem. */
             provider?: components["schemas"]["Provider"] | null;
         };
         ListFilesystemsResponse: {
@@ -1455,6 +1475,7 @@ export interface components {
             /** @description Customer-defined resource name. */
             name: string;
         };
+        /** @description Resources a VM actually holds. GPU values are per-GPU; see `gpu_count` for the VM's total. */
         VmResources: {
             /** @description Virtual CPU allocation. */
             vcpu?: number | null;
@@ -1462,10 +1483,23 @@ export interface components {
             memory_mib?: number | null;
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
-            /** @description Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default. */
+            /** @description Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default, or use `vgpu` to size by fraction instead. */
             gpu_sms?: number | null;
             /** @description GPU memory available to the VM, in MiB, on EACH of its GPUs (a per-GPU value; see `gpu_count`). Only valid for GPU platforms. Omit to use the platform default. */
             gpu_vram_mib?: number | null;
+            /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Only valid for GPU platforms; requesting more GPUs than the serving host carries returns 400. Omit for a single GPU (absent means 1). */
+            gpu_count?: number | null;
+        };
+        /** @description Resource shape a caller asks for. GPU size is set with `vgpu`, in eighths of one card; the resolved per-GPU `gpu_sms`/`gpu_vram_mib` are reported back on the machine. */
+        ResourcesInput: {
+            /** @description Virtual CPU allocation. */
+            vcpu?: number | null;
+            /** @description Memory allocation in mebibytes. */
+            memory_mib?: number | null;
+            /** @description Disk allocation in mebibytes. */
+            disk_mib?: number | null;
+            /** @description Fraction of one physical GPU to allocate, in eighths of a card: 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, or 1. Resolved against the serving platform's GPU (`vgpu: 0.25` on `x86_64-l40s` is 35 SMs and 11517 MiB), so the same fraction is a different amount of silicon on a different card — see the per-platform table in the docs. Mutually exclusive with `gpu_sms` and `gpu_vram_mib`, and not valid with `gpu_count` above 1. Request-only: responses report the resolved `gpu_sms`/`gpu_vram_mib` and never this field. */
+            vgpu?: number | null;
             /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Only valid for GPU platforms; requesting more GPUs than the serving host carries returns 400. Omit for a single GPU (absent means 1). */
             gpu_count?: number | null;
         };
@@ -1489,7 +1523,7 @@ export interface components {
             /** @description Replace the VM description. Null or a blank string clears it; omit this field to leave it unchanged. */
             description?: string | null;
             /** @description CPU, memory, and disk configuration. */
-            resources?: components["schemas"]["VmResources"] | null;
+            resources?: components["schemas"]["ResourcesInput"] | null;
             /** @description SSH access configuration for the VM. */
             network?: components["schemas"]["NetworkInput"] | null;
             /** @description Complete network policy replacement for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
@@ -1541,12 +1575,26 @@ export interface components {
             vram_mib: components["schemas"]["GpuResourceBand"];
             sms: components["schemas"]["GpuResourceBand"];
         };
-        /** @description GPU sizing bands for one compatible platform, from the goldens.toml `[[gpu_platform]]` catalog. Present on a `CompatiblePlatform` entry only when that platform has a GPU; absent means the platform has none. Bands are per GPU. */
+        /** @description GPU sizing bands for one compatible platform, from the platform catalog. Present on a `CompatiblePlatform` entry only when that platform has a GPU; absent means the platform has none. Bands are per GPU. */
         PlatformGpuLimits: {
             /** @description Human-readable GPU model for display, e.g. `NVIDIA L40S`. Never parse this for sizing — use the bands. */
             name?: string | null;
             vram_mib: components["schemas"]["GpuResourceBand"];
             sms: components["schemas"]["GpuResourceBand"];
+        };
+        /**
+         * @description Credentials for pulling `image` from a private registry. Used only for this one pull and never stored. Redacted from logs and telemetry.
+         *
+         *     For AWS ECR use username `AWS` with the output of `aws ecr get-login-password`; for Google Artifact Registry use `oauth2accesstoken` with an access token; for Docker Hub or GHCR use your username and a personal access token. Short-lived tokens are fine — the pull happens once, at fork time.
+         */
+        RegistryAuth: {
+            /** @description Registry username, e.g. `AWS` for ECR. */
+            username: string;
+            /**
+             * Format: password
+             * @description Registry password or token. Write-only: never returned by any endpoint and redacted wherever the request body is logged.
+             */
+            password: string;
         };
     };
     responses: {
@@ -1582,7 +1630,7 @@ export interface components {
     parameters: {
         /** @description Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict. */
         IdempotencyKey: string;
-        /** @description VM identifier. */
+        /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
         VmId: string;
         /** @description Run identifier. */
         RunId: string;
@@ -1691,7 +1739,7 @@ export interface operations {
                 cursor?: components["parameters"]["Cursor"];
                 /** @description Maximum items per page. Service caps may apply. */
                 limit?: components["parameters"]["Limit"];
-                /** @description Narrow to a single region (e.g. `us-west-2`). When omitted, the response aggregates across every configured region. */
+                /** @description Narrow to a customer-facing service region (e.g. `us-west`). When omitted, the response aggregates across every configured service region. */
                 region?: string;
                 /** @description Narrow results to a provider. */
                 provider?: components["schemas"]["Provider"];
@@ -1783,7 +1831,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1807,7 +1855,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1831,7 +1879,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1860,7 +1908,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1884,7 +1932,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1925,7 +1973,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1952,7 +2000,7 @@ export interface operations {
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -1963,8 +2011,17 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Run result. */
+            /** @description The run finished inside the synchronous window. `state` is terminal and `exit_code` is the command's real status. */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunResponse"];
+                };
+            };
+            /** @description Accepted — the run is still executing. The body carries `run_id` and `state: "running"`, not output; poll `GET /v1/vms/{id}/runs/{run_id}` for the result. Returned for `background: true` and whenever the command outstays `time_to_background`. A 2xx here means the request was accepted, not that the work is done. */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1982,7 +2039,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Run identifier. */
                 run_id: components["parameters"]["RunId"];
@@ -2009,7 +2066,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Run identifier. */
                 run_id: components["parameters"]["RunId"];
@@ -2043,7 +2100,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -2068,7 +2125,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -2098,7 +2155,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -2125,7 +2182,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -2152,7 +2209,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -2196,7 +2253,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -2224,7 +2281,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Session identifier. */
                 sid: components["parameters"]["SessionId"];
@@ -2260,7 +2317,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -2284,7 +2341,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -2314,7 +2371,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
                 /** @description Filesystem mount identifier. */
                 sync_id: components["parameters"]["SyncId"];
@@ -2340,7 +2397,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
@@ -2379,7 +2436,7 @@ export interface operations {
             };
             header?: never;
             path: {
-                /** @description VM identifier. */
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
                 id: components["parameters"]["VmId"];
             };
             cookie?: never;
