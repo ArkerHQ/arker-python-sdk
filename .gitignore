@@ -29,3 +29,6 @@ typescript/dist-types/
 # Example run outputs
 *-screenshot.png
 checkpoint-*.png
+
+# Claude Code scratch: session dirs and agent worktrees (embedded git repos).
+.claude/
