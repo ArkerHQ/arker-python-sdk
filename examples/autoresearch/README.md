@@ -40,12 +40,10 @@ AGENTS=4 TURNS=8 VGPUS=0.25,1.0 \
 other, and the comparison chart is drawn at the end.
 
 | variable | default | |
-| --------- | ---------------------- | --- |
-| `VGPUS`   | `0.25,1.0`             | GPU fractions to run, in order |
-| `AGENTS`  | `4`                    | agents per config |
-| `TURNS`   | `8`                    | turns per agent |
-| `PLATFORM`| `x86_64-h100sxm`       | must match a platform `ubuntu-gpu` is baked for |
-| `RUN_DIR` | new timestamped folder | write into an existing folder instead |
+| -------- | ---------- | --- |
+| `VGPUS`  | `0.25,1.0` | GPU fractions to run, in order |
+| `AGENTS` | `4`        | agents per config |
+| `TURNS`  | `8`        | turns per agent |
 
 ## What you see
 
