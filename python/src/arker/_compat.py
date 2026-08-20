@@ -72,7 +72,11 @@ def run_command(vm: VM, command: str, *, timeout: int | None = None) -> CommandR
     return CommandResult(
         stdout=result.stdout,
         stderr=result.stderr,
-        exit_code=result.exit_code,
+        # CommandResult.exit_code is `int` in the shape we emulate, so "no
+        # status" cannot be expressed and a prompt-ended run reports 0. That
+        # ambiguity is confined to this compat surface; CompletedRunResult
+        # keeps the None.
+        exit_code=result.exit_code if result.exit_code is not None else 0,
     )
 
 

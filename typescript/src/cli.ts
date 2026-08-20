@@ -658,7 +658,7 @@ interface PrintableRun {
    * carries the exact bytes: decoding here would corrupt binary output. */
   stdout: Uint8Array;
   stderr: Uint8Array;
-  exitCode: number;
+  exitCode: number | null;
   failReason?: string | null;
   memoryRequestedMib?: number | null;
   memoryAchievedMib?: number | null;
@@ -717,7 +717,12 @@ function printCompletedRun(result: PrintableRun, json: boolean): void {
   process.exitCode = runExitCode(result.state, result.exitCode);
 }
 
-function runExitCode(state: string, exitCode: number): number {
+function runExitCode(state: string, exitCode: number | null): number {
+  // A process exit code is what the CLI must hand back to the shell, and a
+  // prompt-ended run has none. 0 is the closest true answer: the run reached a
+  // prompt without failing. The distinction survives in --json, which carries
+  // the null.
+  if (exitCode === null) return state === "failed" ? 1 : 0;
   if (state === "failed" && exitCode === 0) return 1;
   return exitCode;
 }

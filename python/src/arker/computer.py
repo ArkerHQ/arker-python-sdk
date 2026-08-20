@@ -241,7 +241,21 @@ class CompletedRunResult:
     stderr: str
     stdout_bytes: bytes
     stderr_bytes: bytes
-    exit_code: int
+    #: The command's exit status, or ``None`` when there is none.
+    #:
+    #: ``None`` means a PROMPT ended the run rather than the command's own
+    #: completion marker, so nothing exited. A REPL turn has no exit status:
+    #: ``print(6 * 7)`` does not exit with anything. Expected when you passed
+    #: ``end_symbol``, or when the command was itself a REPL launch such as
+    #: ``python3``. If you did neither, an interpreter left running by an
+    #: earlier run in this session received your command as keystrokes and
+    #: answered with its own error — it is in ``stdout``, and the command never
+    #: reached Bash.
+    #:
+    #: Distinct from a NEGATIVE exit code, which means a process did exist but
+    #: its status was lost (interrupted, evicted, timed out). ``None`` = nothing
+    #: ever exited; negative = something exited unobserved.
+    exit_code: int | None
     run_id: str | None = None  # present for executed runs; None for operation acks
     state: str = "completed"   # "completed" | "failed"; mirrors the run-status (Run) shape
     # System failure explanation when state is "failed"; distinct from
@@ -2105,6 +2119,10 @@ def _terminal_state(state: str | None, exit_code: int | None) -> str:
     killed or the compute was lost — which is ``"failed"``. Keeps the
     synchronous run result and :meth:`VM.get_run` reporting the same state for
     the same run.
+
+    ``None`` is NOT a failure and must not be conflated with a negative code: it
+    means a prompt ended the run, which is a normal completion that simply has
+    no status. Nothing exited, so nothing failed.
     """
     if exit_code is not None and exit_code < 0:
         return "failed"

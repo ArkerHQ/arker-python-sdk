@@ -136,7 +136,11 @@ class ArkerComputeSandbox implements SandboxInterface {
     const commandResult = {
       stdout: result.stdout,
       stderr: result.stderr,
-      exitCode: result.exitCode,
+      // CommandResult.exitCode is `number` in the interface we are emulating,
+      // so "no status" cannot be expressed here and a prompt-ended run reports
+      // 0. That is the old ambiguity, confined to this compat surface; the
+      // native RunResult keeps the null.
+      exitCode: result.exitCode ?? 0,
       durationMs: Date.now() - startTime,
     };
     emitFinalOutput(commandResult, options);

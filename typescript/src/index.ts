@@ -462,7 +462,20 @@ export interface CompletedRunResult {
   /** Exactly what the command wrote — use these when the output is not text. */
   stdoutBytes: Uint8Array;
   stderrBytes: Uint8Array;
-  exitCode: number;
+  /** The command's exit status, or `null` when there is none.
+   *
+   * `null` means a PROMPT ended the run rather than the command's own
+   * completion marker, so nothing exited. A REPL turn has no exit status:
+   * `print(6 * 7)` does not exit with anything. Expected when you passed
+   * `endSymbol`, or when the command was itself a REPL launch like `python3`.
+   * If you did neither, an interpreter left running by an earlier run in this
+   * session ate your command and answered with its own error — it is in
+   * `stdout`, and the command never reached Bash.
+   *
+   * Distinct from a NEGATIVE exit code, which means a process did exist but
+   * its status was lost (interrupted, evicted, timed out). `null` = nothing
+   * ever exited; negative = something exited unobserved. */
+  exitCode: number | null;
   /** System failure explanation when `state` is "failed". Distinct from
    * `stderr` (the program's own error output); null otherwise. */
   failReason?: string | null;
@@ -1014,7 +1027,10 @@ export class VM {
   readonly max_vcpus?: Vm["max_vcpus"];
   readonly max_memory_mib?: Vm["max_memory_mib"];
   readonly min_memory_mib?: Vm["min_memory_mib"];
-  readonly started_at?: Vm["started_at"];
+  /** Renamed by the platform from `started_at`. The constructor does
+   *  `Object.assign(this, data)`, so this arrived untyped while the declared
+   *  `started_at` resolved to undefined on every VM. */
+  readonly last_active_at?: Vm["last_active_at"];
   readonly root_source_vm_id?: Vm["root_source_vm_id"];
   readonly root_source_vm_name?: Vm["root_source_vm_name"];
   readonly worker_id?: string | null;
@@ -2173,8 +2189,12 @@ function withoutUndefined(value: unknown): unknown {
  * A negative `exitCode` means no process status was obtained — the run was
  * killed or the compute was lost — which is `"failed"`. Keeps the synchronous
  * run result and `getRun()` reporting the same state for the same run. */
-function terminalRunState(state: unknown, exitCode: number): string {
-  if (exitCode < 0) return "failed";
+function terminalRunState(state: unknown, exitCode: number | null): string {
+  // null is not a failure: a prompt ended the run, which is a normal
+  // completion with no status. Only a NEGATIVE code means a process existed
+  // and its status was lost. Written out because `null < 0` is false only by
+  // coercion, and relying on that hides the intent.
+  if (exitCode !== null && exitCode < 0) return "failed";
   return typeof state === "string" ? state : "completed";
 }
 
@@ -2185,7 +2205,10 @@ function parseRunResponse(payload: unknown): RunResult {
     const stdoutEncoding = stringField(body.stdout_encoding, "run response.stdout_encoding");
     const stderr = stringValue(body.stderr, "run response.stderr");
     const stderrEncoding = stringField(body.stderr_encoding, "run response.stderr_encoding");
-    const exitCode = numberField(body.exit_code, "run response.exit_code");
+    // NOT numberField: that throws ArkerError("internal") on a null, which
+    // would report the platform as broken because the caller's session had an
+    // interpreter in it. null is a documented value here.
+    const exitCode = nullableNumberField(body.exit_code, "run response.exit_code");
     return {
       type: "completed",
       runId: typeof body.run_id === "string" ? body.run_id : undefined,
@@ -2423,6 +2446,13 @@ function stringValue(value: unknown, context: string): string {
 function numberField(value: unknown, context: string): number {
   if (typeof value !== "number") throw new ArkerError("internal", `${context} must be a number`, 200);
   return value;
+}
+
+/** Like numberField, but `null` is a valid answer rather than a fault.
+ *  Still rejects undefined/strings/objects — the key must be present. */
+function nullableNumberField(value: unknown, context: string): number | null {
+  if (value === null || typeof value === "number") return value;
+  throw new ArkerError("internal", `${context} must be a number or null`, 200);
 }
 
 function optionalNumberOrNull(value: unknown): number | null | undefined {
