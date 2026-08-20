@@ -4,7 +4,7 @@ Several agents tune a small GPT at once, each on its own slice of a shared H100,
 the run shows what GPU slicing buys you.
 
 Each agent gets a VM, and each turn is: read `results.tsv` for what has been tried →
-edit the `HYPERPARAMS` block in `train_small.py` → train → record `val_loss`. Run it at
+edit the `HYPERPARAMS` block in `train.py` → train → record `val_loss`. Run it at
 `0.25` vGPU and four agents share one card and genuinely run at the same time; run it at
 `1.0` and each agent wants a whole card, so on a 2-GPU host they queue — the platform
 hands the card over as each turn finishes, with no orchestration from the script.
@@ -20,7 +20,7 @@ Three Arker calls carry the whole thing:
 
 
 `autoresearch.py` is those calls and the concurrency around them. Everything else — the
-task, the prep recipe, the run folder, the logging, the charts — is in `lab.py`.
+task, the prep recipe, the run folder, the logging, the charts — is in `helper.py`.
 
 ## Setup
 
@@ -154,7 +154,7 @@ whatever it finds there. To redraw without running anything:
 
 ```bash
 uv run --with matplotlib python -c \
-  "import lab; lab.chart('results/compare')"
+  "import helper; helper.chart('results/compare')"
 ```
 
 `chart()` with no argument uses the newest folder under `results/`. It picks up any
@@ -188,6 +188,6 @@ delays the first agent by ~26s.
 503, and nothing here retries or cleans up after a crash. If a run dies partway, its VMs
 are still alive and holding slices — list and delete them before the next run.
 
-**GPU model matters.** `train_small.py` is small enough to run anywhere, but the
+**GPU model matters.** `train.py` is small enough to run anywhere, but the
 timings quoted above are H100 (sm90) via `ubuntu-gpu` on `x86_64-h100sxm`. On another
 GPU the wall-clock numbers move, so do not compare across GPU models.

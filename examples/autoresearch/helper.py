@@ -112,19 +112,19 @@ SETUP_STAGES = [
 ]
 
 PROMPT = (
-    "You are tuning ~/lab/train_small.py to minimise val_loss. Check results.tsv for what "
+    "You are tuning ~/lab/train.py to minimise val_loss. Check results.tsv for what "
     "has been tried, edit ONLY the HYPERPARAMS block, then run: "
-    ".venv/bin/python train_small.py . Exactly one run this turn, then stop. "
+    ".venv/bin/python train.py . Exactly one run this turn, then stop. "
     "IMPORTANT: your tool call is killed at 30 s and importing torch alone costs ~10-15 s, "
     "so keep STEPS <= 1200 - a run that is killed records NOTHING and wastes the turn."
 )
 
-TASK = (HERE / "train_small.py").read_text()
+TASK = (HERE / "train.py").read_text()
 
 # Shell snippets the agent VMs run. Kept here so autoresearch.py shows the
 # Arker call, not the bash.
 WRITE_TASK = (f"export HOME=/home/user; mkdir -p ~/lab && cd ~/lab && "
-              f"cat > train_small.py <<'EOF'\n{TASK}\nEOF")
+              f"cat > train.py <<'EOF'\n{TASK}\nEOF")
 READ_RESULTS = "export HOME=/home/user; cat ~/lab/results.tsv"
 SETTLE = "sleep 45"  # let prep's disk settle before forking off it
 
