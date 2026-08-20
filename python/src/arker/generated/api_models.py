@@ -183,6 +183,7 @@ class CompletedRunResponse:
     stderr: str
     stderr_encoding: Literal['utf-8', 'base64']
     exit_code: int | None
+    session_id: str | None = None
     run_id: str | None = None
     state: str | None = None
     dispatch: str | None = None
@@ -195,6 +196,7 @@ class CompletedRunResponse:
 @dataclass(frozen=True)
 class BackgroundRunResponse:
     run_id: str
+    session_id: str | None = None
     state: str | None = None
 
 

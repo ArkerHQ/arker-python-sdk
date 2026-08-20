@@ -462,6 +462,10 @@ export interface CompletedRunResult {
   stdoutBytes: Uint8Array;
   stderrBytes: Uint8Array;
   exitCode: number;
+  /** The session this run used. A run always occupies exactly one, and it
+   * cannot otherwise be learned: `sessionIdx` is find-or-create and the id is
+   * assigned server-side. Null for operation acks, which run no command. */
+  sessionId?: string | null;
   /** System failure explanation when `state` is "failed". Distinct from
    * `stderr` (the program's own error output); null otherwise. */
   failReason?: string | null;
@@ -476,6 +480,9 @@ export interface CompletedRunResult {
 export interface BackgroundRunResult {
   type: "background";
   runId: string;
+  /** The session this run is executing in — how to find a backgrounded
+   * process again without guessing the index it landed on. */
+  sessionId?: string | null;
   /** Lifecycle state — "running". */
   state: string;
 }
@@ -2260,6 +2267,7 @@ function parseRunResponse(payload: unknown): RunResult {
       stdoutBytes: decodeBytes(stdout, stdoutEncoding),
       stderrBytes: decodeBytes(stderr, stderrEncoding),
       exitCode,
+      sessionId: typeof body.session_id === "string" ? body.session_id : null,
       failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
       memoryRequestedMib: optionalNumberOrNull(body.memory_requested_mib),
       memoryAchievedMib: optionalNumberOrNull(body.memory_achieved_mib),
@@ -2270,6 +2278,7 @@ function parseRunResponse(payload: unknown): RunResult {
     return {
       type: "background",
       runId: body.run_id,
+      sessionId: typeof body.session_id === "string" ? body.session_id : null,
       state: typeof body.state === "string" ? body.state : "running",
     };
   }

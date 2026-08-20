@@ -247,6 +247,10 @@ class CompletedRunResult:
     stderr_bytes: bytes
     exit_code: int
     run_id: str | None = None  # present for executed runs; None for operation acks
+    # The session this run used. A run always occupies exactly one, and it could
+    # not otherwise be learned: `session_idx` is find-or-create and `session_id`
+    # is assigned server-side. None for operation acks, which run no command.
+    session_id: str | None = None
     state: str = "completed"   # "completed" | "failed"; mirrors the run-status (Run) shape
     # System failure explanation when state is "failed"; distinct from
     # stderr (the program's own error output). None otherwise.
@@ -260,6 +264,10 @@ class CompletedRunResult:
 @dataclasses.dataclass(frozen=True)
 class BackgroundRunResult:
     run_id: str
+    # The session this run is executing in. Matters most on THIS shape: a
+    # backgrounded process outlives the call, and this is how you find it again
+    # to inspect or stop it without guessing the index it landed on.
+    session_id: str | None = None
     state: str = "running"
     type: str = "background"
 
@@ -816,22 +824,26 @@ class VM:
         running :class:`BackgroundRunResult` immediately and you manage polling
         yourself via :meth:`get_run`.
 
+        Output is available WHILE a run is still going: poll :meth:`get_run` on
+        a ``running`` run and its ``stdout`` grows as the command writes, so a
+        long task can be followed live instead of read only at the end.
+
         Arker's run interface works like a terminal. Sessions are tabs: each
         keeps its own state — working directory, environment, shell history —
-        and each handles one run at a time. Run sequential commands in a single
-        session; session 0 is the default, and every caller that omits both
-        ``session_id`` and ``session_idx`` shares it.
+        and each handles one run at a time. Create one with
+        :meth:`create_session`, which also sets its starting ``cwd`` and
+        ``env``, then pass its id::
 
-        For a long-running task, start it with ``background=True`` in a session
-        of its own, so later work does not interrupt it::
+            server = vm.create_session()
+            vm.run("nginx -g 'daemon off;'", background=True,
+                   session_id=server.session_id)
+            vm.run("echo hello")   # the default session — the server is untouched
 
-            vm.run("nginx -g 'daemon off;'", background=True, session_idx=5)
-            vm.run("echo hello")   # tab 0 — leaves the server alone
-
-        Create a session with :meth:`create_session`, which also lets you set
-        its starting ``cwd`` and ``env``. Distinct sessions run concurrently.
-        ``session_id`` names an existing session and 404s if it is gone, so it
-        comes from :meth:`create_session` or from the run response.
+        Run sequential commands in one session; for a long-running task, start
+        it with ``background=True`` in a session of its own so later work does
+        not interrupt it. Distinct sessions run concurrently. Omitting
+        ``session_id`` uses the VM's default session, which every caller that
+        omits it shares.
 
         ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
         time the command may run before the host kills it. Per the contract,
@@ -2183,6 +2195,7 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(response, CompletedRunResponse):
         return CompletedRunResult(
             stdout=_as_text(_decode_bytes(response.stdout, response.stdout_encoding)),
+            session_id=getattr(response, "session_id", None),
             stderr=_as_text(_decode_bytes(response.stderr, response.stderr_encoding)),
             stdout_bytes=_decode_bytes(response.stdout, response.stdout_encoding),
             stderr_bytes=_decode_bytes(response.stderr, response.stderr_encoding),
@@ -2198,6 +2211,7 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(response, BackgroundRunResponse):
         return BackgroundRunResult(
             run_id=response.run_id,
+            session_id=getattr(response, "session_id", None),
             state=response.state or "running",
         )
 

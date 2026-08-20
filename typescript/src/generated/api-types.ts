@@ -893,19 +893,19 @@ export interface components {
         RunRequest: {
             /** @description Target an EXISTING session by id. A session that no longer exists is a 404 — unlike `session_idx`, this never creates one. Takes precedence over `session_idx` when both are sent. */
             session_id?: string | null;
-            /** @description Zero-based session index within the VM. Selects a shell SLOT on the VM, FIND-OR-CREATE: if no session occupies this index one is created. Use distinct indexes to run commands CONCURRENTLY on one VM — a per-session lock means two runs targeting the same session serialise. Omitting BOTH `session_id` and `session_idx` targets index 0, the VM's default shell, so unrelated callers that both omit them share one shell and therefore one working directory, environment, and lock. */
+            /** @description Arker's run interface works like a terminal: sessions are tabs, each keeps its own state — working directory, environment, shell history — and each handles one run at a time. Run sequential commands in a single session; session 0 is the default, and every caller that omits both `session_id` and `session_idx` shares it. For a long-running task, start it with `background: true` in a session of its own, so later work does not interrupt it. Create a session with `POST /v1/vms/{id}/sessions`, which also lets you set its starting directory and environment. Distinct sessions run concurrently. */
             session_idx?: number | null;
             /** @description Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op). */
             command?: string;
             /**
-             * @description When true, return immediately with a run ID and continue execution in the background.
+             * @description When true, return immediately with a run ID and continue execution in the background. Give it its own `session_idx`: a session handles one run at a time, so a long-running process started on a shared session will not survive later work there.
              * @default false
              */
             background?: boolean;
             /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
             /**
-             * @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and answering **202** with a pollable `run_id`. Omitted defaults to **300**.
+             * @description Sync window in seconds: how long the HTTP call blocks before backgrounding the run and answering **202** with a pollable `run_id`. So `POST /runs` blocks until this window closes and then hands back a `run_id` to poll; the SDKs do that polling for you, which is why `vm.run()` returns the finished result. Omitted defaults to **300**.
              *
              *     Does not bound how long the command runs — that is `timeout`.
              *
@@ -956,6 +956,8 @@ export interface components {
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
+            /** @description The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command. */
+            session_id?: string | null;
             /** @description The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record. */
             run_id?: string | null;
             /** @description Lifecycle state — "completed" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape. */
@@ -1001,6 +1003,8 @@ export interface components {
             memory_backend?: "file" | "uffd" | null;
         };
         BackgroundRunResponse: {
+            /** @description The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command. */
+            session_id?: string | null;
             /** @description Unique run identifier. */
             run_id: string;
             /** @description Lifecycle state — "running" for a backgrounded run. */
