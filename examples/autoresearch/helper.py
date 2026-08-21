@@ -100,17 +100,21 @@ def turn_done(agent: str, turn: int, tsv: str, stdout: str = "") -> None:
 # from autoresearch.py so each one is a readable line there rather than a wall
 # of bash.
 #
-# A run() that names no session lands in session 0, the VM's default shell,
-# and that shell is stateful: the exports and the cwd below are still in place
-# for every later run — and, because sessions survive a fork, for every agent
-# forked off prep. So the environment is set once, here, and nothing after it
-# re-exports or re-cds. Multi-command stages chain with && rather than set -e,
-# which does not carry between runs.
+# Every run() is its own process: on GPU platforms nothing carries from one
+# call to the next — not exported variables, not the working directory — so
+# each command below is prefixed with ENV and stands on its own.
+#
 # OPENROUTER_API_KEY is deliberately a placeholder: `pi` refuses to start
 # without one set, but the real key never reaches the VM — the policy on each
 # agent fork injects the real one into its requests. See run_agent().
-SETUP_SHELL = ("export PATH=/usr/local/bin:$PATH HOME=/home/user"
-               " OPENROUTER_API_KEY=injected-by-policy; mkdir -p ~/lab; cd ~/lab")
+# NODE_EXTRA_CA_CERTS is what lets `pi` talk to openrouter.ai at all. The
+# policy rewrite runs through a MITM proxy whose CA is installed in the VM's
+# system trust store — curl and python pick it up from there, but node ships
+# its own bundle and ignores the system one, so it must be pointed at it.
+ENV = ("export PATH=/usr/local/bin:$PATH HOME=/home/user "
+       "OPENROUTER_API_KEY=injected-by-policy "
+       "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt; "
+       "mkdir -p ~/lab; cd ~/lab; ")
 
 INSTALL_UV = ("curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
               " && uv venv")
@@ -125,8 +129,7 @@ PROMPT = (
     "You are tuning ~/lab/train.py to minimise val_loss. Check results.tsv for what "
     "has been tried, edit ONLY the HYPERPARAMS block, then run: "
     ".venv/bin/python train.py . Exactly one run this turn, then stop. "
-    "IMPORTANT: your tool call is killed at 30 s and importing torch alone costs ~10-15 s, "
-    "so keep STEPS <= 1200 - a run that is killed records NOTHING and wastes the turn."
+    "IMPORTANT: keep STEPS <= 1200."
 )
 
 TASK = (HERE / "train.py").read_text()
