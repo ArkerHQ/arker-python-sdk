@@ -42,6 +42,8 @@ from .generated.api_models import (
     FilesystemCreateRequest,
     ForkRequest1,
     ForkRequest2,
+    ForkRequest3,
+    ForkRequest4,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -61,6 +63,7 @@ from .generated.api_models import (
     PatchSessionResponse,
     PatchVmRequest,
     PolicyDoc,
+    RegistryAuth,
     PtyTicketResponse,
     RegionPlacement,
     Run,
@@ -146,6 +149,12 @@ RUN_POLL_MAX_S = 3.0
 RUN_POLL_BACKOFF = 1.5
 # Slack beyond the run's kill bound before we stop polling and raise a timeout.
 RUN_POLL_MARGIN_S = 30.0
+# An unbounded wait is not an infinite one. What still ends it is the SERVICE
+# becoming unreachable: this many CONSECUTIVE failed status checks. Any
+# answered check resets the counter (a run reported as still ``running`` is a
+# successful check), so a long-running command and a transient network blip
+# both survive; only a service that has stopped responding raises.
+RUN_POLL_MAX_CONSECUTIVE_FAILURES = 10
 
 
 def run_poll_budget_s(timeout: int | None) -> float | None:
@@ -255,6 +264,10 @@ class CompletedRunResult:
     stderr_bytes: bytes
     exit_code: int
     run_id: str | None = None  # present for executed runs; None for operation acks
+    # The session this run used. A run always occupies exactly one, and it could
+    # not otherwise be learned: `session_idx` is find-or-create and `session_id`
+    # is assigned server-side. None for operation acks, which run no command.
+    session_id: str | None = None
     state: str = "completed"   # "completed" | "failed"; mirrors the run-status (Run) shape
     # System failure explanation when state is "failed"; distinct from
     # stderr (the program's own error output). None otherwise.
@@ -268,6 +281,10 @@ class CompletedRunResult:
 @dataclasses.dataclass(frozen=True)
 class BackgroundRunResult:
     run_id: str
+    # The session this run is executing in. Matters most on THIS shape: a
+    # backgrounded process outlives the call, and this is how you find it again
+    # to inspect or stop it without guessing the index it landed on.
+    session_id: str | None = None
     state: str = "running"
     type: str = "background"
 
@@ -390,6 +407,9 @@ class Arker:
         source_vm_id: str | None = None,
         source_vm_name: str | None = None,
         source_org_id: str | None = None,
+        image: str | None = None,
+        dockerfile: str | None = None,
+        registry_auth: "RegistryAuth | dict[str, str] | None" = None,
         name: str | None = None,
         description: str | None = None,
         public: bool | None = None,
@@ -419,6 +439,48 @@ class Arker:
         - ``fork(source_vm_id="vm_abc...")`` — fork by global id.
         - ``fork(source_vm_name="base", source_org_id="org_...")`` — fork a
           named VM in a specific org (it must be ``public``).
+        - ``fork(image="ubuntu:24.04")`` — create a VM from an OCI image
+          instead of an existing VM. A bare reference, never a URI: an
+          unqualified name resolves against Docker Hub, so ``ubuntu:24.04`` is
+          ``docker.io/library/ubuntu:24.04`` and ``ghcr.io/org/img:v1`` is not.
+          Exclusive with the VM selectors. The image is pulled and converted on
+          the host, so the first fork of an image is slow (tens of seconds) and
+          later ones reuse the cached layers. Inputs that only mean something
+          relative to a source VM (``layers``, ``public`` and the GPU fields)
+          are rejected by the service rather than silently ignored.
+
+          ``platforms`` MATTERS here, and is served. The image is pulled for
+          the architecture of whatever host the request lands on, so an image
+          published only for amd64 (``pytorch/pytorch``, for one) fails on an
+          arm64 host: it converts and boots, then the guest cannot execute
+          anything in its own filesystem. Pin an x86 platform for such an
+          image::
+
+              vm = arker.fork(image="pytorch/pytorch:latest",
+                              platforms=["icelake"])
+
+          The image's ``ENV``, ``USER`` and ``WORKDIR`` ARE applied, so a tool
+          on the image's own ``PATH`` runs without a prefix and the first run
+          starts in the image's working directory::
+
+              vm.run('python -c "import torch"')   # /opt/conda/bin is on PATH
+
+          ``CMD``/``ENTRYPOINT`` are recorded but deliberately NOT started.
+          A VM whose entrypoint was running would be busy from birth, which
+          blocks idle suspend; start the workload yourself when you want it::
+
+              vm.run("nginx -g 'daemon off;' &")
+
+        - ``fork(dockerfile="FROM ubuntu:24.04\nRUN ...")`` — build from a
+          Dockerfile instead of pulling a single image. Each instruction runs
+          on the host and the result is forked like any other image.
+
+        ``registry_auth={"username": ..., "password": ...}`` supplies
+        credentials for a private registry, and applies to the ``image`` and
+        ``dockerfile`` sources only (including a private *base* image in a
+        Dockerfile). Credentials authorize one pull; they are not stored, and a
+        child fork of the resulting VM needs none. Passing them without an
+        image or dockerfile is refused rather than silently ignored.
 
         ``source_org_id`` is sent only when supplied explicitly. The service
         resolves omitted ownership from its current source catalog and the
@@ -465,8 +527,19 @@ class Arker:
                 source_vm_name = source
             else:
                 raise ArkerError("bad_request", "fork source must be a VM or a source-name string", 400)
-        if not source_vm_id and not source_vm_name:
-            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, or source_vm_id)", 400)
+        # `image` and `dockerfile` are two further sources, each exclusive
+        # with the VM selectors and with each other. A body naming more than
+        # one decodes as no variant of the contract's `oneOf`.
+        if image and dockerfile:
+            raise ArkerError("bad_request", "fork: pass an image or a dockerfile, not both", 400)
+        if (image or dockerfile) and (source_vm_id or source_vm_name):
+            raise ArkerError("bad_request", "fork: pass a source VM or an image/dockerfile, not both", 400)
+        if not source_vm_id and not source_vm_name and not image and not dockerfile:
+            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, source_vm_id, image, or dockerfile)", 400)
+        # Credentials authorize a registry pull. With no pull to perform they
+        # would be sent for nothing, so refuse rather than quietly drop them.
+        if registry_auth is not None and not (image or dockerfile):
+            raise ArkerError("bad_request", "fork: registry_auth applies to an image or dockerfile fork", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
         if network is not None or egress is not None:
@@ -498,6 +571,13 @@ class Arker:
             if policies is not None
             else None
         )
+        auth = (
+            registry_auth
+            if isinstance(registry_auth, RegistryAuth)
+            else _decode_model(RegistryAuth, registry_auth)
+            if registry_auth is not None
+            else None
+        )
         request_options = dict(
             source_org_id=source_org_id,
             name=name,
@@ -513,10 +593,18 @@ class Arker:
             layers=layers,
             resources=resources,
             policies=policy_doc,
+            registry_auth=auth,
             queueing_timeout=queueing_timeout,
         )
         body = (
-            ForkRequest1(source_vm_id=source_vm_id, **request_options)
+            # Truthiness, matching the exclusivity checks above and the TS SDK:
+            # `image=""` is caller error, and treating it as "an image was
+            # given" would discard a `source_vm_name` the caller did supply.
+            ForkRequest3(image=image, **request_options)
+            if image
+            else ForkRequest4(dockerfile=dockerfile, **request_options)
+            if dockerfile
+            else ForkRequest1(source_vm_id=source_vm_id, **request_options)
             if source_vm_id is not None
             else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )
@@ -768,6 +856,36 @@ class VM:
         the running :class:`BackgroundRunResult` immediately and you manage
         polling yourself via :meth:`get_run`.
 
+        Output is available WHILE a run is still going: poll :meth:`get_run` on
+        a ``running`` run and its ``stdout`` grows as the command writes, so a
+        long task can be followed live instead of read only at the end.
+
+        Arker's run interface works like a terminal. Sessions are tabs: each
+        keeps its own state — working directory, environment, shell history —
+        and each handles one run at a time. Create one with
+        :meth:`create_session`, which also sets its starting ``cwd`` and
+        ``env``, then pass its id::
+
+            server = vm.create_session()
+            vm.run("nginx -g 'daemon off;'", time_to_background=0,
+                   session_id=server.session_id)
+            vm.run("echo hello")   # the default session — the server is untouched
+
+        Run sequential commands in one session; for a long-running task, start
+        it with ``time_to_background=0`` in a session of its own so later work does
+        not interrupt it. Distinct sessions run concurrently. Omitting
+        ``session_id`` uses the VM's default session, which every caller that
+        omits it shares.
+
+        ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
+        time the command may run before the host kills it. Per the contract,
+        omitting it and passing ``0`` mean THE SAME THING — no limit; the run is
+        killed only if you set a positive ``timeout``. There is no 3600s server
+        default: an unset ``timeout`` leaves the run unbounded on the host, so a
+        runaway command runs until something else stops it. It is NOT the HTTP wait window,
+        so backgrounded runs should leave it unset (or set a real kill
+        bound) — a small ``timeout`` would kill the run, not just background it.
+
         ``timeout`` is the execution/kill bound in seconds: the maximum
         wall-clock time the command may run before the host kills it. ``None``
         (default) and ``0`` both mean unbounded — the run is killed only if you
@@ -777,9 +895,26 @@ class VM:
 
         ``time_to_background`` is the HTTP sync window in seconds: how long the call
         blocks inline before backgrounding the run and returning a pollable
-        ``run_id``. ``None`` (default) = 120. It does not bound command
+        ``run_id``. ``None`` (default) = 300, matching the server's
+        ``DEFAULT_TIME_TO_BACKGROUND``. It does not bound command
         runtime — that is ``timeout``.
 
+        READING THE RESULT. ``exit_code`` is annotated ``int`` but is ``None``
+        when a PROMPT ended the run rather than the command's own completion —
+        a REPL turn genuinely has no exit status. Expect it when you passed
+        ``end_symbol``, or when the command was itself a REPL launch such as
+        ``python3``. If you did neither and still get ``None``, an interpreter
+        left running by an EARLIER run in that tab received your command as
+        keystrokes: its output is in ``stdout`` and your command never reached
+        bash. Send ``exit()``, pass ``end_symbol="none"``, or use a different
+        ``session_idx``. Test success with ``exit_code == 0``, which is False
+        for ``None`` — checking ``!= 0`` would read a REPL turn as a failure.
+
+        ``stdout``/``stderr`` are decoded text; ``stdout_bytes``/``stderr_bytes``
+        carry the raw bytes for output that is not valid UTF-8 (the service
+        base64-encodes those and this SDK decodes them for you). ``stderr`` is
+        the program's own error output; ``fail_reason`` is the platform
+        explaining a ``state == "failed"`` run, and the two are not the same.
         ``queueing_timeout`` (seconds) queues instead of failing fast: retries
         until the window elapses, then surfaces the error. ``None``/``0`` =
         fail fast.
@@ -844,9 +979,24 @@ class VM:
         budget_s = run_poll_budget_s(timeout)
         deadline = None if budget_s is None else time.monotonic() + budget_s
         delay = RUN_POLL_INITIAL_S
+        consecutive_failures = 0
         while True:
             time.sleep(delay)
-            run = self.get_run(run_id)
+            try:
+                run = self.get_run(run_id)
+            except ArkerError as e:
+                consecutive_failures += 1
+                if consecutive_failures >= RUN_POLL_MAX_CONSECUTIVE_FAILURES:
+                    raise ArkerError(
+                        "unavailable",
+                        f"run {run_id}: {consecutive_failures} consecutive poll "
+                        f"failures (last: {e.code}); the run may still be going "
+                        f'server-side — poll get_run("{run_id}") to retrieve it',
+                        0,
+                    ) from e
+                delay = min(RUN_POLL_MAX_S, delay * RUN_POLL_BACKOFF)
+                continue
+            consecutive_failures = 0
             if run.state in TERMINAL_RUN_STATES:
                 return _run_to_completed_result(run)
             if deadline is not None and time.monotonic() >= deadline:
@@ -1910,11 +2060,10 @@ def _decode_model(model: type[Model], payload: dict[str, Any]) -> Model:
     """Decode a response model, IGNORING fields this SDK does not know.
 
     Forward compatibility is the point. Adding a field to a response is an
-    additive, non-breaking change on the server — but this decoder used to
-    raise `TypeError: ... contains fields outside openapi.json` for any
-    unrecognised key, which made every such addition break EVERY already
-    released SDK at once. A client pinned to an older version could not even
-    `fork()` against a newer deployment.
+    additive, non-breaking change on the server — but this decoder used to raise
+    a `TypeError` for any unrecognised key, which made every such addition break
+    every already released version of this SDK at once. A client pinned to an
+    older version could not even `fork()` against a newer deployment.
 
     The strictness was protecting against a legacy/incorrect response SHAPE
     (see `test_fork_rejects_legacy_id_response`, where the server returns
@@ -2128,6 +2277,7 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(response, CompletedRunResponse):
         return CompletedRunResult(
             stdout=_as_text(_decode_bytes(response.stdout, response.stdout_encoding)),
+            session_id=getattr(response, "session_id", None),
             stderr=_as_text(_decode_bytes(response.stderr, response.stderr_encoding)),
             stdout_bytes=_decode_bytes(response.stdout, response.stdout_encoding),
             stderr_bytes=_decode_bytes(response.stderr, response.stderr_encoding),
@@ -2143,6 +2293,7 @@ def _run_response(payload: dict[str, Any]) -> RunResult:
     if isinstance(response, BackgroundRunResponse):
         return BackgroundRunResult(
             run_id=response.run_id,
+            session_id=getattr(response, "session_id", None),
             state=response.state or "running",
         )
 

@@ -15,7 +15,7 @@ class HealthResponse:
 
 @dataclass(frozen=True)
 class RegionPlacement:
-    provider: Literal['aws', 'azure', 'arker', 'gcp']
+    provider: str
     region: str
     endpoint: str
 
@@ -88,7 +88,7 @@ SessionState: TypeAlias = VmState
 RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
 
 
-Provider: TypeAlias = Literal['aws', 'azure', 'arker', 'gcp']
+Provider: TypeAlias = str
 
 
 Port: TypeAlias = int
@@ -182,7 +182,8 @@ class CompletedRunResponse:
     stdout_encoding: Literal['utf-8', 'base64']
     stderr: str
     stderr_encoding: Literal['utf-8', 'base64']
-    exit_code: int
+    exit_code: int | None
+    session_id: str | None = None
     run_id: str | None = None
     state: str | None = None
     dispatch: str | None = None
@@ -195,6 +196,7 @@ class CompletedRunResponse:
 @dataclass(frozen=True)
 class BackgroundRunResponse:
     run_id: str
+    session_id: str | None = None
     state: str | None = None
 
 
@@ -439,8 +441,8 @@ class Filesystem:
     owner_org_id: str
     created_at: str
     size_bytes: int | None = None
-    region: str | None = 'us-west-2'
-    provider: Provider | None = 'aws'
+    region: str | None = None
+    provider: Provider | None = None
 
 
 @dataclass(frozen=True)
@@ -516,6 +518,12 @@ class PlatformGpuLimits:
     vram_mib: GpuResourceBand
     sms: GpuResourceBand
     name: str | None = None
+
+
+@dataclass(frozen=True)
+class RegistryAuth:
+    username: str
+    password: str
 
 
 @dataclass(frozen=True)
@@ -859,6 +867,8 @@ class ForkRequest1:
     source_vm_id: str
     source_vm_name: None = None
     image: None = None
+    dockerfile: None = None
+    nestedvirt: bool | None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -873,6 +883,7 @@ class ForkRequest1:
     queueing_timeout: int | None = None
     policies: PolicyWriteRequest | None = None
     resources: ResourcesInput | None = None
+    registry_auth: RegistryAuth | None = None
 
 
 @dataclass(frozen=True)
@@ -880,6 +891,8 @@ class ForkRequest2:
     source_vm_name: str
     source_vm_id: None = None
     image: None = None
+    dockerfile: None = None
+    nestedvirt: bool | None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -894,6 +907,7 @@ class ForkRequest2:
     queueing_timeout: int | None = None
     policies: PolicyWriteRequest | None = None
     resources: ResourcesInput | None = None
+    registry_auth: RegistryAuth | None = None
 
 
 @dataclass(frozen=True)
@@ -901,6 +915,8 @@ class ForkRequest3:
     image: str
     source_vm_id: None = None
     source_vm_name: None = None
+    dockerfile: None = None
+    nestedvirt: bool | None = None
     source_org_id: str | None = None
     name: str | None = None
     description: str | None = None
@@ -915,9 +931,34 @@ class ForkRequest3:
     queueing_timeout: int | None = None
     policies: PolicyWriteRequest | None = None
     resources: ResourcesInput | None = None
+    registry_auth: RegistryAuth | None = None
 
 
-ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2 | ForkRequest3
+@dataclass(frozen=True)
+class ForkRequest4:
+    dockerfile: str
+    source_vm_id: None = None
+    source_vm_name: None = None
+    image: None = None
+    nestedvirt: bool | None = None
+    source_org_id: str | None = None
+    name: str | None = None
+    description: str | None = None
+    public: bool | None = None
+    ssh_public_keys: list[str] | None = None
+    disk: bool | None = None
+    durable: bool | None = None
+    network: dict[str, Any] | None = None
+    egress: dict[str, Any] | None = None
+    platforms: list[str] | None = None
+    layers: list[Literal['disk', 'memory']] | None = None
+    queueing_timeout: int | None = None
+    policies: PolicyWriteRequest | None = None
+    resources: ResourcesInput | None = None
+    registry_auth: RegistryAuth | None = None
+
+
+ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2 | ForkRequest3 | ForkRequest4
 
 
 @dataclass(frozen=True)

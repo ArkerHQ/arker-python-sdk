@@ -625,7 +625,7 @@
         },
         "responses": {
           "200": {
-            "description": "Run result.",
+            "description": "The run finished inside the synchronous window. `state` is terminal and `exit_code` is the command's real status.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1691,13 +1691,13 @@
         "properties": {
           "provider": {
             "type": "string",
-            "enum": [
+            "description": "Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it.",
+            "examples": [
               "aws",
               "azure",
               "arker",
               "gcp"
-            ],
-            "description": "Public provider for the placement."
+            ]
           },
           "region": {
             "type": "string",
@@ -1879,13 +1879,13 @@
       },
       "Provider": {
         "type": "string",
-        "enum": [
+        "description": "Infrastructure provider currently hosting the resource.",
+        "examples": [
           "aws",
           "azure",
           "arker",
           "gcp"
-        ],
-        "description": "Public provider containing the resource."
+        ]
       },
       "PolicyWriteRequest": {
         "type": "object",
@@ -2228,6 +2228,9 @@
               },
               "image": {
                 "type": "null"
+              },
+              "dockerfile": {
+                "type": "null"
               }
             }
           },
@@ -2244,6 +2247,9 @@
               },
               "image": {
                 "type": "null"
+              },
+              "dockerfile": {
+                "type": "null"
               }
             }
           },
@@ -2259,6 +2265,28 @@
                 "type": "null"
               },
               "image": {
+                "type": "string"
+              },
+              "dockerfile": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "required": [
+              "dockerfile"
+            ],
+            "properties": {
+              "source_vm_id": {
+                "type": "null"
+              },
+              "source_vm_name": {
+                "type": "null"
+              },
+              "image": {
+                "type": "null"
+              },
+              "dockerfile": {
                 "type": "string"
               }
             }
@@ -2285,6 +2313,20 @@
               "null"
             ],
             "description": "OCI image reference to fork from — for example `ubuntu:24.04`, `ghcr.io/org/image:v1`, or `image@sha256:...`. An unqualified name resolves against Docker Hub. Give a bare reference, not a URI. The new VM boots a rootfs converted from that image rather than from an existing VM, so neither `source_vm_id` nor `source_vm_name` is given."
+          },
+          "dockerfile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Dockerfile source to build and fork from, as raw Dockerfile text (not a path, not a URL). Exclusive with source_vm_id, source_vm_name and image. Supports a single-stage build using FROM, RUN, ADD (URL source only), ENV, WORKDIR, USER, EXPOSE, ENTRYPOINT, CMD, ARG, and LABEL; anything outside that set (multi-stage builds, an ARG-substituted FROM, COPY, or any other directive) is rejected with a 400 naming the problem. FROM resolves through the same pull/convert pipeline a bare `image` fork uses; every other instruction executes as a real operation against the resulting VM (RUN runs for real, ENV/WORKDIR persist onto the delivered session) rather than inside a build container — the new VM inherits nothing from a source VM, the same fields `image` honours (`policies`, `ssh_public_keys`, `description`) are honoured here too, and the same fields are refused (`layers`, `platforms`, `durable`, `public`, GPU resources)."
+          },
+          "nestedvirt": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Request nested virtualization support (the guest's own /dev/kvm works) for a new VM forked from `image` or `dockerfile`. Omit or pass false for no nested virt, the default. This selects a hypervisor backend capable of serving it internally — backend selection itself is never a direct customer choice — and returns a 400 naming the reason if this host cannot serve it, rather than silently creating a VM that cannot do nested virt despite the request."
           },
           "source_org_id": {
             "type": [
@@ -2408,6 +2450,15 @@
               }
             ],
             "description": "Resource shape for the new VM."
+          },
+          "registry_auth": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RegistryAuth"
+              }
+            ],
+            "nullable": true,
+            "description": "Optional credentials for `image`. Ignored when forking from a source VM, which has no registry to authenticate against."
           }
         }
       },
@@ -2956,6 +3007,13 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "session_id": {
+            "description": "The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "run_id": {
             "description": "The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record.",
             "type": [
@@ -2992,8 +3050,11 @@
             "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "exit_code": {
-            "description": "Process exit code. Null when no process completed.",
-            "type": "integer"
+            "description": "The command's exit status, or `null` when there is none.\n\n`null` means a PROMPT ended this run rather than the command's own completion marker, so nothing exited and there is no status to report. A REPL turn genuinely has none: `print(6 * 7)` does not exit with anything.\n\nExpected when you passed `end_symbol`, or when the command was itself a REPL launch such as `python3`.\n\nIf you did NEITHER, an interpreter left running by an earlier run in this session received your command as keystrokes, answered with its own error, and returned to its prompt — which is the prompt that ended the run. Its output is in `stdout`. **The command never reached Bash.** Send `exit()` to leave the interpreter, pass `end_symbol: \"none\"` to force Bash for one run, or use a different `session_idx`.\n\nThis was previously a fabricated `0`, which a caller checking `exit_code == 0` read as success for a command that never ran. The key is always present, so `null` is an explicit answer rather than an omission.",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "dispatch": {
             "description": "Execution mode selected by the service, when reported.",
@@ -3041,6 +3102,13 @@
         ],
         "additionalProperties": false,
         "properties": {
+          "session_id": {
+            "description": "The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "run_id": {
             "description": "Unique run identifier.",
             "type": "string"
@@ -4369,8 +4437,7 @@
             "type": [
               "string",
               "null"
-            ],
-            "default": "us-west-2"
+            ]
           },
           "provider": {
             "description": "Public provider containing the filesystem.",
@@ -4381,8 +4448,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": "aws"
+            ]
           }
         }
       },
@@ -4797,6 +4863,27 @@
           },
           "sms": {
             "$ref": "#/components/schemas/GpuResourceBand"
+          }
+        }
+      },
+      "RegistryAuth": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "username",
+          "password"
+        ],
+        "description": "Credentials for pulling `image` from a private registry. Used only for this one pull and never stored. Redacted from logs and telemetry.\n\nFor AWS ECR use username `AWS` with the output of `aws ecr get-login-password`; for Google Artifact Registry use `oauth2accesstoken` with an access token; for Docker Hub or GHCR use your username and a personal access token. Short-lived tokens are fine — the pull happens once, at fork time.",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "Registry username, e.g. `AWS` for ECR."
+          },
+          "password": {
+            "type": "string",
+            "description": "Registry password or token. Write-only: never returned by any endpoint and redacted wherever the request body is logged.",
+            "writeOnly": true,
+            "format": "password"
           }
         }
       }

@@ -194,6 +194,12 @@ const DEFAULT_RETRY_JITTER_MS = 50;
 const RUN_POLL_INITIAL_MS = 500;
 const RUN_POLL_MAX_MS = 3_000;
 const RUN_POLL_BACKOFF = 1.5;
+// An unbounded wait is not an infinite one. What still ends it is the SERVICE
+// becoming unreachable: this many CONSECUTIVE failed status checks. Any
+// answered check resets the counter (a run reported as still `running` is a
+// successful check), so a long-running command and a transient network blip
+// both survive; only a service that has stopped responding throws.
+const RUN_POLL_MAX_CONSECUTIVE_FAILURES = 10;
 // Terminal run states — RunState ("running" | "completed" | "failed" |
 // "cancelled") minus the sole non-terminal "running".
 const TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
@@ -460,6 +466,10 @@ export interface CompletedRunResult {
   stdoutBytes: Uint8Array;
   stderrBytes: Uint8Array;
   exitCode: number;
+  /** The session this run used. A run always occupies exactly one, and it
+   * cannot otherwise be learned: `sessionIdx` is find-or-create and the id is
+   * assigned server-side. Null for operation acks, which run no command. */
+  sessionId?: string | null;
   /** System failure explanation when `state` is "failed". Distinct from
    * `stderr` (the program's own error output); null otherwise. */
   failReason?: string | null;
@@ -474,6 +484,9 @@ export interface CompletedRunResult {
 export interface BackgroundRunResult {
   type: "background";
   runId: string;
+  /** The session this run is executing in — how to find a backgrounded
+   * process again without guessing the index it landed on. */
+  sessionId?: string | null;
   /** Lifecycle state — "running". */
   state: string;
 }
@@ -632,6 +645,39 @@ export interface ForkSource {
   sourceVmId?: ForkRequest["source_vm_id"];
   sourceVmName?: ForkRequest["source_vm_name"];
   sourceOrgId?: ForkRequest["source_org_id"];
+  /** OCI image to create the VM from instead of forking an existing VM —
+   * `ubuntu:24.04`, `ghcr.io/org/img:v1`, `img@sha256:...`. A bare reference,
+   * never a URI; an unqualified name resolves against Docker Hub. Exclusive
+   * with the VM selectors above.
+   *
+   * The image is pulled and converted on the host, so the first fork of a
+   * given image takes tens of seconds and later ones reuse the cached layers.
+   * Inputs that only mean something relative to a source VM (`layers`,
+   * `public`, GPU fields) are rejected by the service rather than silently
+   * ignored.
+   *
+   * `platforms` MATTERS here, and is served. The image is pulled for the
+   * architecture of whatever host the request lands on, so an image published
+   * only for amd64 (`pytorch/pytorch`, for one) fails on an arm64 host: it
+   * converts and boots, then the guest cannot execute anything in its own
+   * filesystem. Pin an x86 platform for such an image:
+   *
+   *     await arker.fork({ image: "pytorch/pytorch:latest",
+   *                        platforms: ["icelake"] });
+   *
+   * The image's `ENV`, `USER` and `WORKDIR` ARE applied, so a tool on the
+   * image's own `PATH` runs without a prefix and the first run starts in the
+   * image's working directory. `CMD`/`ENTRYPOINT` are recorded but NOT
+   * started — a VM whose entrypoint was running would be busy from birth,
+   * which blocks idle suspend. Start the workload yourself when you want it. */
+  image?: string;
+  /** Dockerfile source, built on the host and then forked like any other
+   * image. Exclusive with `image` and with the VM selectors. */
+  dockerfile?: string;
+  /** Credentials for a private registry. Applies to `image` and `dockerfile`
+   * only (including a private *base* image in a Dockerfile). They authorize
+   * one pull, are not stored, and a child fork of the result needs none. */
+  registryAuth?: { username: string; password: string };
 }
 
 export class Arker {
@@ -720,22 +766,49 @@ export class Arker {
    *     fork(sourceName, { layers: ["disk"] })      // disk-only, cold boot
    */
   async fork(
-    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">>),
-    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> = {},
+    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">>),
+    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> = {},
   ): Promise<VM> {
     // Normalize the source: a name string, a VM handle (use its id), or a
     // ForkSource object.
-    const src: ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id">> =
+    const src: ForkSource &
+      Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> =
       typeof source === "string"
         ? { sourceVmName: source, ...opts }
         : source instanceof VM
           ? { sourceVmId: source.id, ...opts }
           : source;
     rejectRemovedNetworkInputs("fork", src);
-    if (!src.sourceVmId && !src.sourceVmName) {
+    // `image` and `dockerfile` are two further sources, each exclusive with
+    // the VM selectors and with each other. A body naming more than one
+    // decodes as no variant of the contract's `oneOf`.
+    if (src.image && src.dockerfile) {
       throw new ArkerError(
         "bad_request",
-        "fork requires a source (a name, a VM, sourceVmName, or sourceVmId)",
+        "fork: pass an image or a dockerfile, not both",
+        400,
+      );
+    }
+    if ((src.image || src.dockerfile) && (src.sourceVmId || src.sourceVmName)) {
+      throw new ArkerError(
+        "bad_request",
+        "fork: pass a source VM or an image/dockerfile, not both",
+        400,
+      );
+    }
+    if (!src.sourceVmId && !src.sourceVmName && !src.image && !src.dockerfile) {
+      throw new ArkerError(
+        "bad_request",
+        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, image, or dockerfile)",
+        400,
+      );
+    }
+    // Credentials authorize a registry pull. With no pull to perform they
+    // would be sent for nothing, so refuse rather than quietly drop them.
+    if (src.registryAuth && !src.image && !src.dockerfile) {
+      throw new ArkerError(
+        "bad_request",
+        "fork: registryAuth applies to an image or dockerfile fork",
         400,
       );
     }
@@ -780,6 +853,9 @@ export class Arker {
       sourceVmId: _sourceVmId,
       sourceVmName: _sourceVmName,
       sourceOrgId: _sourceOrgId,
+      image: _image,
+      dockerfile: _dockerfile,
+      registryAuth: _registryAuth,
       ...passthrough
     } = src as ForkSource & Record<string, unknown>;
     delete passthrough.vcpu_count;
@@ -801,19 +877,35 @@ export class Arker {
       resources,
       // Omit to inherit the source's policy; pass a document to replace it.
       policies: src.policies,
+      // Only present for image/dockerfile forks; refused above otherwise.
+      ...(src.registryAuth ? { registry_auth: src.registryAuth } : {}),
       queueing_timeout: src.queueing_timeout,
     };
-    const body: ForkRequest = src.sourceVmId
+    const body: ForkRequest = src.image
       ? {
           ...requestOptions,
-          source_vm_id: src.sourceVmId,
+          image: src.image,
+          source_vm_id: null,
           source_vm_name: null,
         }
-      : {
-          ...requestOptions,
-          source_vm_id: null,
-          source_vm_name: src.sourceVmName!,
-        };
+      : src.dockerfile
+        ? {
+            ...requestOptions,
+            dockerfile: src.dockerfile,
+            source_vm_id: null,
+            source_vm_name: null,
+          }
+      : src.sourceVmId
+        ? {
+            ...requestOptions,
+            source_vm_id: src.sourceVmId,
+            source_vm_name: null,
+          }
+        : {
+            ...requestOptions,
+            source_vm_id: null,
+            source_vm_name: src.sourceVmName!,
+          };
     const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
     const vm = await this._request<Vm>(
       "POST",
@@ -1096,7 +1188,7 @@ export class VM {
     );
     const result = parseRunResponse(response);
     // The server backgrounds a run that outlived its sync window. When the
-    // caller did NOT request background, poll getRun() to a terminal state
+    // caller did NOT ask to skip the wait, poll getRun() to a terminal state
     // and hand back the completed run so the synchronous call is transparent.
     // Explicit zero is a pure pass-through — return the ack immediately.
     if (result.type === "background" && options.time_to_background !== 0) {
@@ -1180,9 +1272,28 @@ export class VM {
     // budgetMs and deadline are null together, so the throw below can read
     // budgetMs without a non-null assertion.
     let delay = RUN_POLL_INITIAL_MS;
+    let consecutiveFailures = 0;
     for (;;) {
       await sleep(delay);
-      const run = await this.getRun(runId);
+      let run: RunRecord;
+      try {
+        run = await this.getRun(runId);
+      } catch (error) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= RUN_POLL_MAX_CONSECUTIVE_FAILURES) {
+          const code = error instanceof ArkerError ? error.code : "unavailable";
+          throw new ArkerError(
+            "unavailable",
+            `run ${runId}: ${consecutiveFailures} consecutive poll failures ` +
+              `(last: ${code}); the run may still be going server-side — poll ` +
+              `getRun(${JSON.stringify(runId)}) to retrieve it`,
+            0,
+          );
+        }
+        delay = Math.min(RUN_POLL_MAX_MS, Math.ceil(delay * RUN_POLL_BACKOFF));
+        continue;
+      }
+      consecutiveFailures = 0;
       if (TERMINAL_RUN_STATES.has(run.state)) return runToCompletedResult(run);
       if (budgetMs !== null && deadline !== null && Date.now() >= deadline) {
         throw new ArkerError(
@@ -2198,6 +2309,7 @@ function parseRunResponse(payload: unknown): RunResult {
       stdoutBytes: decodeBytes(stdout, stdoutEncoding),
       stderrBytes: decodeBytes(stderr, stderrEncoding),
       exitCode,
+      sessionId: typeof body.session_id === "string" ? body.session_id : null,
       failReason: typeof body.fail_reason === "string" ? body.fail_reason : null,
       memoryRequestedMib: optionalNumberOrNull(body.memory_requested_mib),
       memoryAchievedMib: optionalNumberOrNull(body.memory_achieved_mib),
@@ -2208,6 +2320,7 @@ function parseRunResponse(payload: unknown): RunResult {
     return {
       type: "background",
       runId: body.run_id,
+      sessionId: typeof body.session_id === "string" ? body.session_id : null,
       state: typeof body.state === "string" ? body.state : "running",
     };
   }

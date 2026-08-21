@@ -513,10 +513,13 @@ export interface components {
         };
         RegionPlacement: {
             /**
-             * @description Public provider for the placement.
-             * @enum {string}
+             * @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it.
+             * @example aws
+             * @example azure
+             * @example arker
+             * @example gcp
              */
-            provider: "aws" | "azure" | "arker" | "gcp";
+            provider: string;
             /** @description Provider region identifier. */
             region: string;
             /**
@@ -591,10 +594,13 @@ export interface components {
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
         /**
-         * @description Public provider containing the resource.
-         * @enum {string}
+         * @description Infrastructure provider currently hosting the resource.
+         * @example aws
+         * @example azure
+         * @example arker
+         * @example gcp
          */
-        Provider: "aws" | "azure" | "arker" | "gcp";
+        Provider: string;
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {
             /** @description Ordered network policy rules. An empty list allows all outbound traffic and permits inbound traffic to any guest port after Arker authentication. In a non-empty document, unmatched outbound traffic is denied. If no inbound rules are present, inbound access keeps the authenticated default; explicit inbound allow rules restrict exposure to their listed ports. */
@@ -718,6 +724,10 @@ export interface components {
             source_vm_name?: string | null;
             /** @description OCI image reference to fork from — for example `ubuntu:24.04`, `ghcr.io/org/image:v1`, or `image@sha256:...`. An unqualified name resolves against Docker Hub. Give a bare reference, not a URI. The new VM boots a rootfs converted from that image rather than from an existing VM, so neither `source_vm_id` nor `source_vm_name` is given. */
             image?: string | null;
+            /** @description Dockerfile source to build and fork from, as raw Dockerfile text (not a path, not a URL). Exclusive with source_vm_id, source_vm_name and image. Supports a single-stage build using FROM, RUN, ADD (URL source only), ENV, WORKDIR, USER, EXPOSE, ENTRYPOINT, CMD, ARG, and LABEL; anything outside that set (multi-stage builds, an ARG-substituted FROM, COPY, or any other directive) is rejected with a 400 naming the problem. FROM resolves through the same pull/convert pipeline a bare `image` fork uses; every other instruction executes as a real operation against the resulting VM (RUN runs for real, ENV/WORKDIR persist onto the delivered session) rather than inside a build container — the new VM inherits nothing from a source VM, the same fields `image` honours (`policies`, `ssh_public_keys`, `description`) are honoured here too, and the same fields are refused (`layers`, `platforms`, `durable`, `public`, GPU resources). */
+            dockerfile?: string | null;
+            /** @description Request nested virtualization support (the guest's own /dev/kvm works) for a new VM forked from `image` or `dockerfile`. Omit or pass false for no nested virt, the default. This selects a hypervisor backend capable of serving it internally — backend selection itself is never a direct customer choice — and returns a 400 naming the reason if this host cannot serve it, rather than silently creating a VM that cannot do nested virt despite the request. */
+            nestedvirt?: boolean | null;
             /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
             source_org_id?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
@@ -756,18 +766,28 @@ export interface components {
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
             /** @description Resource shape for the new VM. */
             resources?: components["schemas"]["ResourcesInput"] | null;
+            /** @description Optional credentials for `image`. Ignored when forking from a source VM, which has no registry to authenticate against. */
+            registry_auth?: components["schemas"]["RegistryAuth"] | null;
         } & ({
             source_vm_id: string;
             source_vm_name?: null;
             image?: null;
+            dockerfile?: null;
         } | {
             source_vm_id?: null;
             source_vm_name: string;
             image?: null;
+            dockerfile?: null;
         } | {
             source_vm_id?: null;
             source_vm_name?: null;
             image: string;
+            dockerfile?: null;
+        } | {
+            source_vm_id?: null;
+            source_vm_name?: null;
+            image?: null;
+            dockerfile: string;
         });
         Session: {
             /** @description Unique session identifier. */
@@ -935,6 +955,8 @@ export interface components {
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
+            /** @description The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command. */
+            session_id?: string | null;
             /** @description The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record. */
             run_id?: string | null;
             /** @description Lifecycle state — "completed" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape. */
@@ -953,8 +975,18 @@ export interface components {
              * @enum {string}
              */
             stderr_encoding: "utf-8" | "base64";
-            /** @description Process exit code. Null when no process completed. */
-            exit_code: number;
+            /**
+             * @description The command's exit status, or `null` when there is none.
+             *
+             *     `null` means a PROMPT ended this run rather than the command's own completion marker, so nothing exited and there is no status to report. A REPL turn genuinely has none: `print(6 * 7)` does not exit with anything.
+             *
+             *     Expected when you passed `end_symbol`, or when the command was itself a REPL launch such as `python3`.
+             *
+             *     If you did NEITHER, an interpreter left running by an earlier run in this session received your command as keystrokes, answered with its own error, and returned to its prompt — which is the prompt that ended the run. Its output is in `stdout`. **The command never reached Bash.** Send `exit()` to leave the interpreter, pass `end_symbol: "none"` to force Bash for one run, or use a different `session_idx`.
+             *
+             *     This was previously a fabricated `0`, which a caller checking `exit_code == 0` read as success for a command that never ran. The key is always present, so `null` is an explicit answer rather than an omission.
+             */
+            exit_code: number | null;
             /** @description Execution mode selected by the service, when reported. */
             dispatch?: string | null;
             /** @description Requested total memory in MiB when this run included a memory override. Absent when no override was requested. */
@@ -970,6 +1002,8 @@ export interface components {
             memory_backend?: "file" | "uffd" | null;
         };
         BackgroundRunResponse: {
+            /** @description The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command. */
+            session_id?: string | null;
             /** @description Unique run identifier. */
             run_id: string;
             /** @description Lifecycle state — "running" for a backgrounded run. */
@@ -1425,15 +1459,9 @@ export interface components {
             created_at: string;
             /** @description Resource size in bytes. */
             size_bytes?: number | null;
-            /**
-             * @description Region containing the resource or activity.
-             * @default us-west-2
-             */
+            /** @description Region containing the resource or activity. */
             region?: string | null;
-            /**
-             * @description Public provider containing the filesystem.
-             * @default aws
-             */
+            /** @description Public provider containing the filesystem. */
             provider?: components["schemas"]["Provider"] | null;
         };
         ListFilesystemsResponse: {
@@ -1560,6 +1588,20 @@ export interface components {
             name?: string | null;
             vram_mib: components["schemas"]["GpuResourceBand"];
             sms: components["schemas"]["GpuResourceBand"];
+        };
+        /**
+         * @description Credentials for pulling `image` from a private registry. Used only for this one pull and never stored. Redacted from logs and telemetry.
+         *
+         *     For AWS ECR use username `AWS` with the output of `aws ecr get-login-password`; for Google Artifact Registry use `oauth2accesstoken` with an access token; for Docker Hub or GHCR use your username and a personal access token. Short-lived tokens are fine — the pull happens once, at fork time.
+         */
+        RegistryAuth: {
+            /** @description Registry username, e.g. `AWS` for ECR. */
+            username: string;
+            /**
+             * Format: password
+             * @description Registry password or token. Write-only: never returned by any endpoint and redacted wherever the request body is logged.
+             */
+            password: string;
         };
     };
     responses: {
@@ -1976,7 +2018,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Run result. */
+            /** @description The run finished inside the synchronous window. `state` is terminal and `exit_code` is the command's real status. */
             200: {
                 headers: {
                     [name: string]: unknown;

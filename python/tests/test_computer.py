@@ -123,8 +123,12 @@ def test_explicit_vm_handle_uses_placement_endpoint() -> None:
 
 def test_list_regions_uses_public_control_plane_catalog() -> None:
     t = FakeTransport()
+    # `endpoint` is required, so a placement missing it is not a shape the
+    # service can return. `provider` is deliberately NOT a closed set — see
+    # tests/test_openapi_enforcement.py; a pinned SDK must not reject the first
+    # placement on a provider added after its release.
     placement = {
-        "provider": "provider-two",
+        "provider": "aws",
         "region": "region-two",
         # The catalog always carries an endpoint, and the contract now says so.
         "endpoint": "https://provider-two-region-two.arker.ai/",
@@ -139,8 +143,9 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
     with use_transport(t):
         regions = client().list_regions()
 
-    assert regions.regions[0].provider == "provider-two"
+    assert regions.regions[0].provider == "aws"
     assert regions.regions[0].region == "region-two"
+    assert regions.regions[0].endpoint == "https://provider-two-region-two.arker.ai/"
 
 
 def test_discover_regions_requires_no_configured_client() -> None:
@@ -226,6 +231,142 @@ def test_fork_omits_source_org_when_not_explicit() -> None:
     assert vm.id == "vm_named_source"
     body = json.loads(t.calls[0]["body"])
     assert body == {"source_vm_name": "catalog-template"}
+
+
+def test_fork_from_image_sends_only_the_image() -> None:
+    """`image` is a third source: no VM selector is sent alongside it.
+
+    The service's schema models the three sources as a `oneOf`, so a body
+    carrying both `image` and a selector fails to decode there. Sending a
+    stray `source_vm_name: null` would be harmless, but sending a real one
+    would turn a registry pull into a fork of someone's VM.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        {
+            "vm_id": "vm_from_image",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        vm = client().fork(image="ubuntu:24.04", name="from-image")
+
+    assert vm.id == "vm_from_image"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {"image": "ubuntu:24.04", "name": "from-image"}
+
+
+def test_fork_rejects_an_image_alongside_a_source_vm() -> None:
+    for kwargs in (
+        {"image": "ubuntu:24.04", "source_vm_name": "base"},
+        {"image": "ubuntu:24.04", "source_vm_id": "vm_abc"},
+    ):
+        with pytest.raises(sdk.ArkerError) as excinfo:
+            client().fork(**kwargs)  # type: ignore[arg-type]
+        assert excinfo.value.code == "bad_request"
+
+
+def test_fork_rejects_an_image_passed_positionally_and_by_keyword() -> None:
+    # The positional form resolves to `source_vm_name`, so this is the same
+    # collision as above arriving by a different route.
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork("base", image="ubuntu:24.04")
+    assert excinfo.value.code == "bad_request"
+
+
+def _fork_response(vm_id: str) -> dict:
+    return {
+        "vm_id": vm_id,
+        "owner_org_id": "owner",
+        "created_at": "now",
+        "description": None,
+        "public": False,
+        "state": "idle",
+        "sessions": [session()],
+        "network": {},
+        "resources": {},
+    }
+
+
+def test_fork_from_a_private_image_sends_registry_auth() -> None:
+    """Credentials ride with the pull they authorize, and nothing else.
+
+    The service performs the pull as the authorization check, so the body must
+    carry the image AND the credentials together — a pull attempted without
+    them fails as `not found`, which reads to the caller as a typo rather than
+    a permission problem.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        _fork_response("vm_private"),
+    )
+
+    with use_transport(t):
+        vm = client().fork(
+            image="ghcr.io/org/private:v1",
+            registry_auth={"username": "u", "password": "p"},
+        )
+
+    assert vm.id == "vm_private"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {
+        "image": "ghcr.io/org/private:v1",
+        "registry_auth": {"username": "u", "password": "p"},
+    }
+
+
+def test_fork_from_a_dockerfile_sends_only_the_dockerfile() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        _fork_response("vm_dockerfile"),
+    )
+
+    with use_transport(t):
+        vm = client().fork(dockerfile="FROM ubuntu:24.04\nRUN echo hi\n")
+
+    assert vm.id == "vm_dockerfile"
+    body = json.loads(t.calls[0]["body"])
+    assert body == {"dockerfile": "FROM ubuntu:24.04\nRUN echo hi\n"}
+
+
+def test_fork_rejects_an_image_and_a_dockerfile_together() -> None:
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork(image="ubuntu:24.04", dockerfile="FROM ubuntu:24.04\n")
+    assert excinfo.value.code == "bad_request"
+
+
+def test_fork_rejects_a_dockerfile_alongside_a_source_vm() -> None:
+    for kwargs in (
+        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_name": "base"},
+        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_id": "vm_abc"},
+    ):
+        with pytest.raises(sdk.ArkerError) as excinfo:
+            client().fork(**kwargs)  # type: ignore[arg-type]
+        assert excinfo.value.code == "bad_request"
+
+
+def test_fork_refuses_registry_auth_without_something_to_pull() -> None:
+    """Silently dropping them would send credentials nowhere and look fine."""
+    with pytest.raises(sdk.ArkerError) as excinfo:
+        client().fork(
+            source_vm_name="base",
+            registry_auth={"username": "u", "password": "p"},
+        )
+    assert excinfo.value.code == "bad_request"
 
 
 def test_fork_rejects_legacy_id_response() -> None:
@@ -1791,3 +1932,197 @@ def test_run_poll_budget_is_unbounded_without_a_caller_timeout() -> None:
     # Negative is nonsense the API would reject; treat it as unbounded rather
     # than as an instantly-expired deadline.
     assert sdk.run_poll_budget_s(-1) is None
+
+# ── run(): what bounds the wait, and what does not ──────────────────────────
+# `timeout` is the SERVER-side kill bound (run_command.rs: "timeout: N kills the
+# command after N seconds; zero is unbounded"). The SDK used to substitute a
+# 3600s client deadline when it was unset, which raised `timeout` on runs the
+# service was still executing — an hour-long stall on a deliberately unbounded
+# server run. These pin the corrected contract in both directions.
+
+def test_unset_timeout_never_gives_up_on_a_still_running_run(monkeypatch) -> None:
+    """No `timeout` = no client deadline. The poll loop must keep waiting.
+
+    Fails on the old code, which raised after its 3600s budget: here the clock
+    is advanced past that budget while every poll answers 200 `running`.
+    """
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    clock = {"t": 0.0}
+    # Each read jumps an hour, so any surviving 3600s-style deadline trips fast.
+    def fake_monotonic() -> float:
+        clock["t"] += 3600.0
+        return clock["t"]
+    monkeypatch.setattr(sdk.time, "monotonic", fake_monotonic)
+
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_srv", "state": "running"},
+    )
+    running = {"run_id": "run_srv", "state": "running", "started_at": "now",
+               "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
+               "stderr": "", "stderr_encoding": "utf-8"}
+    for _ in range(25):  # far more polls than any hour-based budget would allow
+        t.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_srv"),
+            200, running,
+        )
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_srv"),
+        200, {**running, "state": "completed", "exit_code": 0, "stdout": "bye\n"},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("node server.js")
+
+    assert result.state == "completed"
+    assert result.stdout == "bye\n"
+    # It really did keep polling rather than bailing early.
+    assert sum(1 for c in t.calls if c["method"] == "GET") == 26
+
+
+def test_explicit_timeout_still_bounds_the_wait(monkeypatch) -> None:
+    """Setting `timeout` must still produce a bounded wait and a `timeout` error.
+
+    Removing the default must not remove the knob — without this, "no timeouts"
+    could be implemented by never timing out at all and nothing would notice.
+    """
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    clock = {"t": 0.0}
+    def fake_monotonic() -> float:
+        clock["t"] += 5.0
+        return clock["t"]
+    monkeypatch.setattr(sdk.time, "monotonic", fake_monotonic)
+
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_bound", "state": "running"},
+    )
+    for _ in range(60):
+        t.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_bound"),
+            200, {"run_id": "run_bound", "state": "running", "started_at": "now",
+                  "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
+                  "stderr": "", "stderr_encoding": "utf-8"},
+        )
+
+    with use_transport(t), pytest.raises(sdk.ArkerError) as excinfo:
+        client().vm("vm_1").run("sleep 999", timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    # The message must tell the caller the run survives server-side.
+    assert "run_bound" in str(excinfo.value)
+
+
+def test_polling_gives_up_when_the_service_stops_answering(monkeypatch) -> None:
+    """An unbounded wait still ends if the SERVICE goes away — but only then."""
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_gone", "state": "running"},
+    )
+    for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES + 2):
+        t.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_gone"),
+            503, {"error": {"code": "unavailable", "message": "service temporarily unavailable"}},
+        )
+
+    with use_transport(t), pytest.raises(sdk.ArkerError) as excinfo:
+        client().vm("vm_1").run("node server.js")
+
+    assert excinfo.value.code == "unavailable"
+    assert "consecutive poll failures" in str(excinfo.value)
+
+
+def test_a_poll_blip_does_not_end_an_unbounded_wait(monkeypatch) -> None:
+    """A 200 resets the failure count, so a blip mid-run is survivable.
+
+    This is the difference between "the service is gone" and "one request lost".
+    """
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_blip", "state": "running"},
+    )
+    is_get = lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_blip")
+    running = {"run_id": "run_blip", "state": "running", "started_at": "now",
+               "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
+               "stderr": "", "stderr_encoding": "utf-8"}
+    # Blip, recover, blip again — never MAX consecutive — then finish.
+    for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES - 1):
+        t.add_json(is_get, 503, {"error": {"code": "unavailable", "message": "blip"}})
+    t.add_json(is_get, 200, running)
+    for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES - 1):
+        t.add_json(is_get, 503, {"error": {"code": "unavailable", "message": "blip"}})
+    t.add_json(is_get, 200, {**running, "state": "completed", "exit_code": 0, "stdout": "ok\n"})
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("node server.js")
+
+    assert result.state == "completed"
+    assert result.stdout == "ok\n"
+
+
+def test_time_to_background_zero_matches_background_true(monkeypatch) -> None:
+    """The two spellings of "don't wait" must behave identically.
+
+    openapi.json: `background` is a "DEPRECATED alias for `time_to_background`;
+    `true` is exactly `time_to_background: 0`". The SDK used to poll for the
+    canonical field and pass through for the alias, so the alias behaved UNLIKE
+    the thing it aliases. A caller starting a server with `time_to_background=0`
+    got its run id from the server and then blocked in the client forever.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(sdk.time, "sleep", lambda s: slept.append(s))
+
+    def ack_only() -> FakeTransport:
+        t = FakeTransport()
+        t.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+            200, {"run_id": "run_srv", "state": "running"},
+        )
+        # Deliberately script NO get_run: any poll would 404 and fail loudly,
+        # which is what we want — it proves no polling happened.
+        return t
+
+    t1 = ack_only()
+    with use_transport(t1):
+        r1 = client().vm("vm_1").run("node server.js", time_to_background=0)
+    t2 = ack_only()
+    with use_transport(t2):
+        r2 = client().vm("vm_1").run("node server.js", time_to_background=0)
+
+    assert isinstance(r1, sdk.BackgroundRunResult), "ttb=0 must return the ack, not poll"
+    assert isinstance(r2, sdk.BackgroundRunResult)
+    assert r1.state == r2.state == "running"
+    # Neither made a single get_run call.
+    assert [c["method"] for c in t1.calls] == ["POST"]
+    assert [c["method"] for c in t2.calls] == ["POST"]
+    assert slept == [], f"neither spelling should sleep/poll; slept={slept}"
+
+
+def test_the_default_sync_path_still_polls_to_completion(monkeypatch) -> None:
+    """Guard the other direction: honouring ttb=0 must not stop the DEFAULT
+    synchronous run() from polling a backgrounded run to a terminal state."""
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_d", "state": "running"},
+    )
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_d"),
+        200, {"run_id": "run_d", "state": "completed", "started_at": "now", "exit_code": 0,
+              "stdout": "fin\n", "stdout_encoding": "utf-8", "stderr": "",
+              "stderr_encoding": "utf-8"},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("sleep 1")
+
+    assert isinstance(result, sdk.CompletedRunResult)
+    assert result.stdout == "fin\n"
+    assert [c["method"] for c in t.calls] == ["POST", "GET"]

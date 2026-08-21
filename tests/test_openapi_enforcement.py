@@ -204,10 +204,17 @@ def test_provider_and_region_contract_values_are_open_ended() -> None:
     contract = json.loads((REPO_ROOT / "contract/openapi.json").read_text())
     schemas = contract["components"]["schemas"]
 
-    assert schemas["Provider"] == {
-        "type": "string",
-        "description": "Infrastructure provider currently hosting the resource.",
-    }
+    # `examples` is documentation, not validation: it names the providers we
+    # serve today without closing the set, so codegen still emits a plain string
+    # and a provider added after a client's release cannot make it reject a
+    # response. `enum`/`default` WOULD close it, and stay forbidden below.
+    provider_schema = schemas["Provider"]
+    assert set(provider_schema) <= {"type", "description", "examples"}
+    assert provider_schema["type"] == "string"
+    assert (
+        provider_schema["description"]
+        == "Infrastructure provider currently hosting the resource."
+    )
     assert schemas["RegionPlacement"]["properties"]["provider"]["type"] == "string"
 
     def check_placement_fields(value: object) -> None:
