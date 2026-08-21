@@ -1605,45 +1605,6 @@ def test_plain_pty_env_is_overridable() -> None:
     assert sig.parameters["env"].default is None
 
 
-def test_fork_sends_gpu_resources() -> None:
-    """GPU sizing rides the same `resources` object as vcpu/memory/disk.
-
-    The contract folds every resource into one `VmResources`, so a GPU request
-    must not introduce a second shape — it is `resources.gpu_vram_mib` /
-    `resources.gpu_sms` alongside the CPU fields, and unset fields are pruned.
-    """
-    t = FakeTransport()
-    t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
-        200,
-        {
-            "vm_id": "vm_child",
-            "owner_org_id": "owner",
-            "created_at": "now",
-            "description": None,
-            "public": False,
-            "state": "idle",
-            "sessions": [],
-            "network": {},
-            "resources": {},
-        },
-    )
-
-    with use_transport(t):
-        client().fork(
-            source_vm_id="gpu-source-vm-id",
-            platforms=["x86_64-l40s"],
-            gpu_vram_mib=24576,
-            gpu_sms=8,
-        )
-
-    assert json.loads(t.calls[0]["body"]) == {
-        "source_vm_id": "gpu-source-vm-id",
-        "platforms": ["x86_64-l40s"],
-        "resources": {"gpu_vram_mib": 24576, "gpu_sms": 8},
-    }
-
-
 def test_fork_sends_vgpu_as_the_only_resource() -> None:
     """`vgpu` alone must reach the wire, and reach it as a float.
 
@@ -1703,11 +1664,11 @@ def test_fork_mixes_gpu_and_cpu_resources() -> None:
     )
 
     with use_transport(t):
-        client().fork(source_vm_id="gpu-source-vm-id", vcpu_count=4, gpu_vram_mib=8192)
+        client().fork(source_vm_id="gpu-source-vm-id", vcpu_count=4, vgpu=0.5)
 
     assert json.loads(t.calls[0]["body"]) == {
         "source_vm_id": "gpu-source-vm-id",
-        "resources": {"vcpu": 4, "gpu_vram_mib": 8192},
+        "resources": {"vcpu": 4, "vgpu": 0.5},
     }
 
 

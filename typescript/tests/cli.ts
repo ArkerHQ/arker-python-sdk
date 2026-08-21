@@ -240,8 +240,6 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
     { args: ["run", "--time-to-background", "1.5", "vm_1", "echo", "ok"], flag: "time-to-background" },
     { args: ["ls", "--limit", "1001"], flag: "limit" },
     { args: ["fork", "--vcpu", "256", "source-vm"], flag: "vcpu" },
-    { args: ["fork", "--gpu-vram-mib", "0", "source-vm"], flag: "gpu-vram-mib" },
-    { args: ["fork", "--gpu-sms", "1.5", "source-vm"], flag: "gpu-sms" },
     { args: ["update", "--memory-mib", "Infinity", "vm_1"], flag: "memory-mib" },
     { args: ["shell", "--rows", "0", "vm_1"], flag: "rows" },
     { args: ["run", "--timeout=", "vm_1", "echo", "ok"], flag: "timeout" },
@@ -288,7 +286,11 @@ async function testForkForwardsVgpu(): Promise<void> {
   }
 }
 
-async function testForkForwardsGpuResourceOptions(): Promise<void> {
+/// `ResourcesInput` is `deny_unknown_fields`, so an UNKNOWN key fails the fork
+/// even when its value is null. The retired per-card fields were sent as nulls
+/// on every fork, which is why `--vcpu` alone was rejected too; a null on a
+/// known field is fine and still means "inherit from the source".
+async function testForkOmitsRetiredGpuResourceKeys(): Promise<void> {
   await withCapturedServer(
     (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
     async (baseUrl, requests) => {
@@ -296,10 +298,8 @@ async function testForkForwardsGpuResourceOptions(): Promise<void> {
         "fork",
         "--platform",
         "x86_64-l40s",
-        "--gpu-vram-mib",
-        "24576",
-        "--gpu-sms",
-        "8",
+        "--vgpu",
+        "0.25",
         "source-vm",
       ]);
 
@@ -315,14 +315,7 @@ async function testForkForwardsGpuResourceOptions(): Promise<void> {
           public: null,
           durable: null,
           platforms: ["x86_64-l40s"],
-          resources: {
-            vcpu: null,
-            memory_mib: null,
-            disk_mib: null,
-            vgpu: null,
-            gpu_vram_mib: 24576,
-            gpu_sms: 8,
-          },
+          resources: { vcpu: null, memory_mib: null, disk_mib: null, vgpu: 0.25 },
         },
       }]);
     },
@@ -903,7 +896,7 @@ await testRemovedBackgroundOptionFailsBeforeRequest();
 await testNestedRunStopsAtRemoteCommand();
 await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
-await testForkForwardsGpuResourceOptions();
+await testForkOmitsRetiredGpuResourceKeys();
 await testForkForwardsVgpu();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();

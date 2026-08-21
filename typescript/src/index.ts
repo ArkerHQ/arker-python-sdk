@@ -317,6 +317,7 @@ export type PortSpec = NonNullable<PolicyMatch["ports"]>[number];
 export type ForkRequest = ApiSchema<"ForkRequest">;
 export type ForkOptions = ForkRequest;
 export type VmResources = ApiSchema<"VmResources">;
+export type ResourcesInput = ApiSchema<"ResourcesInput">;
 export type VmNetwork = ApiSchema<"VmNetwork">;
 export type NetworkInput = ApiSchema<"NetworkInput">;
 export type Session = ApiSchema<"Session">;
@@ -828,7 +829,7 @@ export class Arker {
       memory_mib?: number | null;
       disk_mib?: number | null;
     };
-    const resources: VmResources | null =
+    const resources: ResourcesInput | null =
       src.resources ??
       (legacy.vcpu_count != null || legacy.memory_mib != null || legacy.disk_mib != null
         ? {
@@ -1818,10 +1819,10 @@ export class VM {
   async update(
     request:
       | PatchVmRequest
-      | (VmResources & Pick<PatchVmRequest, "network">),
+      | (ResourcesInput & Pick<PatchVmRequest, "network">),
   ): Promise<Vm> {
     const r = request as PatchVmRequest &
-      VmResources & { resources?: VmResources | null };
+      ResourcesInput & { resources?: ResourcesInput | null };
     const body: PatchVmRequest =
       r.resources !== undefined || (r.vcpu === undefined && r.memory_mib === undefined && r.disk_mib === undefined)
         ? {
