@@ -512,7 +512,13 @@ export interface components {
             timestamp: string;
         };
         RegionPlacement: {
-            /** @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it. */
+            /**
+             * @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it.
+             * @example aws
+             * @example azure
+             * @example arker
+             * @example gcp
+             */
             provider: string;
             /** @description Provider region identifier. */
             region: string;
@@ -587,7 +593,13 @@ export interface components {
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /** @description Infrastructure provider currently hosting the resource. */
+        /**
+         * @description Infrastructure provider currently hosting the resource.
+         * @example aws
+         * @example azure
+         * @example arker
+         * @example gcp
+         */
         Provider: string;
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {

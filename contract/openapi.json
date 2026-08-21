@@ -1691,7 +1691,13 @@
         "properties": {
           "provider": {
             "type": "string",
-            "description": "Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it."
+            "description": "Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it.",
+            "examples": [
+              "aws",
+              "azure",
+              "arker",
+              "gcp"
+            ]
           },
           "region": {
             "type": "string",
@@ -1873,7 +1879,13 @@
       },
       "Provider": {
         "type": "string",
-        "description": "Infrastructure provider currently hosting the resource."
+        "description": "Infrastructure provider currently hosting the resource.",
+        "examples": [
+          "aws",
+          "azure",
+          "arker",
+          "gcp"
+        ]
       },
       "PolicyWriteRequest": {
         "type": "object",
