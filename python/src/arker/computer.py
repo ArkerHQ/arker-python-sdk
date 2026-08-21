@@ -12,6 +12,7 @@ import dataclasses
 import gzip
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -88,6 +89,7 @@ from .generated.api_models import (
     SyncWriteResult,
     Vm,
     VmNetwork,
+    ResourcesInput,
     VmResources,
 )
 
@@ -112,10 +114,11 @@ CHUNK_SIZE = 4 * 1024 * 1024
 # blob path, where resumable multipart genuinely earns its double transfer.
 INLINE_WRITE_LIMIT = 16 * 1024 * 1024
 
-# Largest body `/sync-stream` accepts through the public edge, which buffers and
-# caps proxied bodies. Measured against a live endpoint: 64 MiB returns 200,
-# 72 MiB returns 413 `payload_too_large` — the limit is exact and fails loudly,
-# never truncating.
+# Largest body `/sync-stream` accepts through the public edge. The router
+# buffers proxied bodies and caps them (DEFAULT_PROXY_BODY_LIMIT in
+# server side), which overrides the worker's own disabled limit. Measured
+# against a live env: 64 MiB returns 200, 72 MiB returns 413
+# `payload_too_large` — the limit is exact and fails loudly, never truncating.
 STREAM_MAX_BYTES = 64 * 1024 * 1024
 
 # Below this a compressibility sample is not worth taking; above it sync_dir
@@ -146,17 +149,25 @@ RUN_POLL_MAX_S = 3.0
 RUN_POLL_BACKOFF = 1.5
 # Slack beyond the run's kill bound before we stop polling and raise a timeout.
 RUN_POLL_MARGIN_S = 30.0
-# A run with no ``timeout`` is unbounded by design: the service does not kill it,
-# so this client does not impose a deadline of its own either. ``timeout`` is the
-# single knob — set it for a bound, omit it and the run may take as long as it
-# takes.
-#
-# What still ends an unbounded wait is the SERVICE becoming unreachable: this
-# many CONSECUTIVE failed status checks. Any answered check resets the counter
-# (a run reported as still ``running`` is a successful check), so a long-running
-# command and a transient network blip both survive; only a service that has
-# stopped responding raises.
+# An unbounded wait is not an infinite one. What still ends it is the SERVICE
+# becoming unreachable: this many CONSECUTIVE failed status checks. Any
+# answered check resets the counter (a run reported as still ``running`` is a
+# successful check), so a long-running command and a transient network blip
+# both survive; only a service that has stopped responding raises.
 RUN_POLL_MAX_CONSECUTIVE_FAILURES = 10
+
+
+def run_poll_budget_s(timeout: int | None) -> float | None:
+    """How long run()'s poll may wait for a backgrounded run, in seconds —
+    ``None`` for no limit.
+
+    An unset or ``0`` timeout is unbounded server-side, so the poll is
+    unbounded too: giving up at a client-side deadline the caller never asked
+    for would abandon a run that is still going.
+    """
+    if timeout is None or timeout <= 0:
+        return None
+    return timeout + RUN_POLL_MARGIN_S
 # Terminal run states — RunState ("running" | "completed" | "failed" |
 # "cancelled") minus the sole non-terminal "running".
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
@@ -169,6 +180,7 @@ RETRYABLE_CODES = {
     "unavailable",
     "bad_gateway",
     "stale_route",
+    "capacity_unavailable",
 }
 TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -277,9 +289,9 @@ class BackgroundRunResult:
     type: str = "background"
 
 
-# Result of VM.run(). A synchronous call (``background`` unset/False) always
+# Result of VM.run(). A synchronous call (``time_to_background`` not zero) always
 # returns a CompletedRunResult — if the run outlives its sync window run()
-# polls it to completion under the hood. Only an explicit ``background=True``
+# polls it to completion under the hood. Only explicit ``time_to_background=0``
 # yields a BackgroundRunResult (the running ack, returned immediately for the
 # caller to poll via VM.get_run()).
 RunResult = CompletedRunResult | BackgroundRunResult
@@ -408,12 +420,14 @@ class Arker:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        vgpu: float | None = None,
         gpu_vram_mib: int | None = None,
         gpu_sms: int | None = None,
         durable: bool | None = None,
         platforms: list[str] | None = None,
         layers: list[str] | None = None,
         policies: PolicyDoc | dict[str, Any] | None = None,
+        queueing_timeout: int | None = None,
     ) -> "VM":
         """Create a new VM by forking from a source.
 
@@ -480,6 +494,15 @@ class Arker:
         ``{"policies": []}``, which clears to allow-all rather than inheriting.
         Pass ``ssh_public_keys`` to authorize keys on the new VM.
 
+        ``vgpu`` sizes a GPU in eighths of one card: ``0.125``, ``0.25``,
+        ``0.375``, ``0.5``, ``0.625``, ``0.75``, ``0.875``, or ``1``. Anything
+        between two steps is refused. It is a fraction of whichever card serves
+        the fork, so the same value is a different slice per platform —
+        ``vgpu=0.25`` is 35 SMs and 11517 MiB on an L40S, and rather more on a
+        B200. ``gpu_sms`` and ``gpu_vram_mib`` set the same slice in hardware
+        units instead; set one style or the other, not both. The VM reports the
+        resolved ``gpu_sms`` and ``gpu_vram_mib`` either way.
+
         ``layers`` selects which layers of the source the child inherits. Omit
         it for the default full fork (``["disk", "memory"]``): the child inherits
         both the filesystem and a copy of the source's live RAM, so it resumes
@@ -489,6 +512,10 @@ class Arker:
         (installed packages, checked-out source, files the parent wrote);
         nothing in memory does (no inherited processes, no environment, no
         shell state).
+
+        ``queueing_timeout`` (seconds) queues instead of failing fast: retries
+        until the window elapses, then surfaces the error. ``None``/``0`` =
+        fail fast.
         """
         # Positional source: a VM handle (use its id) or a name string.
         if source is not None:
@@ -524,15 +551,16 @@ class Arker:
         # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
         # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
         # platform's max is a 400 from the server, not a silent clamp.
-        resources: VmResources | None = None
+        resources: ResourcesInput | None = None
         if any(
             v is not None
-            for v in (vcpu_count, memory_mib, disk_mib, gpu_vram_mib, gpu_sms)
+            for v in (vcpu_count, memory_mib, disk_mib, vgpu, gpu_vram_mib, gpu_sms)
         ):
-            resources = VmResources(
+            resources = ResourcesInput(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
+                vgpu=vgpu,
                 gpu_vram_mib=gpu_vram_mib,
                 gpu_sms=gpu_sms,
             )
@@ -566,6 +594,7 @@ class Arker:
             resources=resources,
             policies=policy_doc,
             registry_auth=auth,
+            queueing_timeout=queueing_timeout,
         )
         body = (
             # Truthiness, matching the exclusivity checks above and the TS SDK:
@@ -580,7 +609,9 @@ class Arker:
             else ForkRequest2(source_vm_name=source_vm_name, **request_options)
         )
         base_url = source.base_url if isinstance(source, VM) else self._base_url
-        payload = self._request("POST", "/v1/fork", body, base_url=base_url)
+        payload = self._request(
+            "POST", "/v1/fork", body, base_url=base_url, max_queueing_s=queueing_timeout
+        )
         info = _vm_info(payload)
         # Child lives on the host the fork was posted to.
         return VM(self, info.vm_id, base_url, info)
@@ -690,9 +721,10 @@ class Arker:
             cursor=cursor, limit=limit, name_prefix=name_prefix
         )
         path = _build_query("/v1/filesystems", parameters)
-        # Filesystems are region-scoped, so this goes to the regional endpoint
-        # (base_url) rather than the control plane, which does not serve
-        # /v1/filesystems.
+        # Filesystems are region-scoped. Route to
+        # the regional endpoint (base_url) rather than the control plane: the
+        # control-plane path (arker.ai → api_proxy_bash) does not route
+        # /v1/filesystems, while the regional endpoint serves it.
         payload = self._request("GET", path, base_url=self._base_url)
         return _decode_model(ListFilesystemsResponse, payload)
 
@@ -715,6 +747,7 @@ class Arker:
         *,
         base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        max_queueing_s: int | None = None,
     ) -> dict[str, Any]:
         return _request_json(
             method,
@@ -724,6 +757,7 @@ class Arker:
             retry=self._retry,
             api_key=self._api_key,
             extra_headers=extra_headers,
+            max_queueing_s=max_queueing_s,
         )
 
     def _retry_delay(self, attempt: int) -> float:
@@ -763,10 +797,6 @@ class VM:
     max_vcpus: int | None
     max_memory_mib: int | None
     min_memory_mib: int | None
-    # The service replaced `started_at` with `last_active_at` in ARK-453
-    # (arker-app #1070). `started_at` is kept so existing callers keep
-    # importing, but nothing populates it any more — read `last_active_at`.
-    started_at: str | None
     last_active_at: str | None
     sessions: list[Session] | None
 
@@ -795,9 +825,9 @@ class VM:
         *,
         session_id: str | None = None,
         session_idx: int | None = None,
-        background: bool | None = None,
         timeout: int | None = None,
         time_to_background: int | None = None,
+        queueing_timeout: int | None = None,
         end_symbol: str | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
@@ -816,17 +846,15 @@ class VM:
         ``run_id``; run() then transparently polls :meth:`get_run` until the run
         reaches a terminal state and returns the completed
         :class:`CompletedRunResult` — so a synchronous caller always receives
-        the final result. Polling is bounded by ``timeout`` when you set one,
-        and otherwise by a CLIENT-side budget of 3600s — that budget is this
-        SDK giving up waiting, NOT a server kill bound. Either way, if the
-        budget is exceeded run() raises an :class:`ArkerError` with code
-        ``"timeout"`` and the run KEEPS EXECUTING server-side — poll
-        :meth:`get_run` to retrieve it, or pass an explicit ``timeout`` if you
-        want the host to actually stop it.
+        the final result. Polling is bounded by ``timeout`` (the run's kill
+        bound) plus a margin; if that budget is exceeded run() raises an
+        :class:`ArkerError` with code ``"timeout"`` (the run keeps executing
+        server-side — poll :meth:`get_run` to retrieve it). With no ``timeout``
+        the run is unbounded server-side and the poll is unbounded with it.
 
-        Pass ``background=True`` to skip the wait entirely: run() returns the
-        running :class:`BackgroundRunResult` immediately and you manage polling
-        yourself via :meth:`get_run`.
+        Pass ``time_to_background=0`` to skip the wait entirely: run() returns
+        the running :class:`BackgroundRunResult` immediately and you manage
+        polling yourself via :meth:`get_run`.
 
         Output is available WHILE a run is still going: poll :meth:`get_run` on
         a ``running`` run and its ``stdout`` grows as the command writes, so a
@@ -839,12 +867,12 @@ class VM:
         ``env``, then pass its id::
 
             server = vm.create_session()
-            vm.run("nginx -g 'daemon off;'", background=True,
+            vm.run("nginx -g 'daemon off;'", time_to_background=0,
                    session_id=server.session_id)
             vm.run("echo hello")   # the default session — the server is untouched
 
         Run sequential commands in one session; for a long-running task, start
-        it with ``background=True`` in a session of its own so later work does
+        it with ``time_to_background=0`` in a session of its own so later work does
         not interrupt it. Distinct sessions run concurrently. Omitting
         ``session_id`` uses the VM's default session, which every caller that
         omits it shares.
@@ -855,8 +883,15 @@ class VM:
         killed only if you set a positive ``timeout``. There is no 3600s server
         default: an unset ``timeout`` leaves the run unbounded on the host, so a
         runaway command runs until something else stops it. It is NOT the HTTP wait window,
-        so ``background=True`` runs should leave it unset (or set a real kill
+        so backgrounded runs should leave it unset (or set a real kill
         bound) — a small ``timeout`` would kill the run, not just background it.
+
+        ``timeout`` is the execution/kill bound in seconds: the maximum
+        wall-clock time the command may run before the host kills it. ``None``
+        (default) and ``0`` both mean unbounded — the run is killed only if you
+        set a ``timeout``. It is NOT the HTTP wait window, so backgrounded runs
+        should leave it unset (or set a real kill bound) — a small
+        ``timeout`` would kill the run, not just background it.
 
         ``time_to_background`` is the HTTP sync window in seconds: how long the call
         blocks inline before backgrounding the run and returning a pollable
@@ -880,6 +915,9 @@ class VM:
         base64-encodes those and this SDK decodes them for you). ``stderr`` is
         the program's own error output; ``fail_reason`` is the platform
         explaining a ``state == "failed"`` run, and the two are not the same.
+        ``queueing_timeout`` (seconds) queues instead of failing fast: retries
+        until the window elapses, then surfaces the error. ``None``/``0`` =
+        fail fast.
         """
         if network is not None:
             raise ArkerError(
@@ -898,9 +936,9 @@ class VM:
             command=command,
             session_id=session_id,
             session_idx=session_idx,
-            background=background,
             timeout=timeout,
             time_to_background=time_to_background,
+            queueing_timeout=queueing_timeout,
             end_symbol=end_symbol,
             vcpu_count=vcpu_count,
             memory_mib=memory_mib,
@@ -917,20 +955,13 @@ class VM:
             body,
             base_url=self.base_url,
             extra_headers=headers,
+            max_queueing_s=queueing_timeout,
         ))
         # The server backgrounds a run that outlived its sync window. When the
-        # caller did NOT ask to skip the wait, poll get_run() to a terminal state
-        # and hand back the completed run so the synchronous call is transparent.
-        #
-        # BOTH spellings of "don't wait" are honoured. Measured against the live
-        # service, ``background=True`` and ``time_to_background=0`` both answer
-        # 202 with a run id in ~0.2s, so the two must behave identically here —
-        # starting a long-lived process (a server, a watcher) with either one
-        # returns its run id instead of waiting for a command that is not meant
-        # to finish. (``openapi.json`` still documents ``0`` as a ``bad_request``;
-        # the deployed service accepts it, so the description is stale.)
-        asked_not_to_wait = background is True or time_to_background == 0
-        if isinstance(result, BackgroundRunResult) and not asked_not_to_wait:
+        # caller did NOT request background, poll get_run() to a terminal state
+        # and hand back the completed run so the synchronous call is
+        # transparent. Explicit zero is a pure pass-through — return the ack.
+        if isinstance(result, BackgroundRunResult) and time_to_background != 0:
             return self._await_run(result.run_id, timeout)
         return result
 
@@ -938,22 +969,15 @@ class VM:
         """Poll :meth:`get_run` until the run reaches a terminal state, then
         return it as a :class:`CompletedRunResult`. Backs the transparent
         synchronous :meth:`run`: invoked only when the server backgrounds a run
-        that outlived its sync window. Bounded by ``timeout`` (the run's kill
-        bound) plus a margin; raises an :class:`ArkerError` with code
-        ``"timeout"`` if the budget is exceeded."""
-        # Two different failures, deliberately kept apart:
-        #
-        #   HOW LONG THE COMMAND RUNS is the service's decision. ``timeout`` is a
-        #   server-side kill bound; omitting it means the run is unbounded, so
-        #   this loop waits with it rather than imposing a deadline the service
-        #   does not honour.
-        #
-        #   WHETHER THE SERVICE IS REACHABLE is this client's decision. If the
-        #   status checks themselves keep failing, waiting forever helps nobody,
-        #   so give up after consecutive failures. One success resets the count.
-        bounded = timeout is not None and timeout > 0
-        budget_s = (timeout + RUN_POLL_MARGIN_S) if bounded else None
-        deadline = (time.monotonic() + budget_s) if bounded else None
+        that outlived its sync window.
+
+        Bounded by ``timeout`` (the run's kill bound) plus a margin, so the
+        poll outlives the server-side kill and reports its outcome. An unset or
+        ``0`` timeout is unbounded server-side, so the poll is unbounded too —
+        giving up at a client-side deadline the caller never asked for would
+        abandon a run that is still going."""
+        budget_s = run_poll_budget_s(timeout)
+        deadline = None if budget_s is None else time.monotonic() + budget_s
         delay = RUN_POLL_INITIAL_S
         consecutive_failures = 0
         while True:
@@ -998,9 +1022,9 @@ class VM:
         SSH keys (``network.ssh_public_keys``) via ``PATCH /v1/vms/{id}``.
         Pass ``None`` or an empty description to clear it. Omit
         ``description`` to leave it unchanged. Returns the updated :class:`Vm`."""
-        resources: VmResources | None = None
+        resources: ResourcesInput | None = None
         if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
-            resources = VmResources(
+            resources = ResourcesInput(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
@@ -1791,6 +1815,7 @@ def _request_json(
     retry: RetryOptions,
     api_key: str | None = None,
     extra_headers: dict[str, str] | None = None,
+    max_queueing_s: int | None = None,
 ) -> dict[str, Any]:
     url = base_url + path
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
@@ -1799,46 +1824,65 @@ def _request_json(
             if value is not None:
                 headers[key] = value
     data = None
+    payload_dict: Any = None
 
     if body is not None:
         headers["content-type"] = "application/json"
-        data = json.dumps(_drop_none(body)).encode("utf-8")
+        payload_dict = _drop_none(body)
+        data = json.dumps(payload_dict).encode("utf-8")
 
-    last_status = 0
-    last_text = ""
-    last_error: dict[str, Any] | None = None
+    # queueing_timeout swaps the retry budget from attempt count to wall-clock
+    # window; retry=False (attempts = 1) still means exactly one request.
+    deadline = (
+        time.monotonic() + max_queueing_s
+        if max_queueing_s and retry.attempts > 1
+        else None
+    )
 
-    for attempt in range(retry.attempts):
+    attempt = 0
+    while True:
+        if deadline is not None and attempt > 0 and isinstance(payload_dict, dict):
+            # Retries re-send the remaining window.
+            remaining = max(1, math.ceil(deadline - time.monotonic()))
+            data = json.dumps({**payload_dict, "queueing_timeout": remaining}).encode("utf-8")
         try:
             status, raw = _http(method, url, headers, data)
         except httpx.RequestError as error:
-            if attempt < retry.attempts - 1:
-                time.sleep(_retry_delay(retry, attempt))
+            delay = _retry_delay(retry, attempt)
+            if _can_retry_again(retry, attempt, deadline, delay):
+                time.sleep(delay)
+                attempt += 1
                 continue
             raise ArkerError("unavailable", str(error), 0) from error
 
         text = raw.decode("utf-8", "replace")
         payload = _parse_json(text)
         parsed_error = _extract_error(payload)
-        last_status = status
-        last_text = text
-        last_error = parsed_error
 
-        if _is_retryable(status, parsed_error) and attempt < retry.attempts - 1:
-            time.sleep(_retry_delay(retry, attempt, parsed_error))
-            continue
+        if _is_retryable(status, parsed_error):
+            delay = _retry_delay(retry, attempt, parsed_error)
+            if _can_retry_again(retry, attempt, deadline, delay):
+                time.sleep(delay)
+                attempt += 1
+                continue
 
         if parsed_error:
             raise ArkerError(parsed_error["code"], parsed_error["message"], status)
         if status >= 400:
-            raise ArkerError("internal", last_text[:300] or f"HTTP {status}", status)
+            raise ArkerError("internal", text[:300] or f"HTTP {status}", status)
         if not isinstance(payload, dict):
             raise ArkerError("internal", "response must be a JSON object", status)
         return payload
 
-    if last_error:
-        raise ArkerError(last_error["code"], last_error["message"], last_status)
-    raise ArkerError("internal", last_text[:300] or f"HTTP {last_status}", last_status)
+
+def _can_retry_again(
+    retry: RetryOptions, attempt: int, deadline: float | None, delay_s: float
+) -> bool:
+    """No window: the attempt count is the budget. With one: the retry's
+    sleep must still land inside the window."""
+    if deadline is not None:
+        return time.monotonic() + delay_s < deadline
+    return attempt < retry.attempts - 1
 
 
 def _retry_delay(
@@ -1858,7 +1902,9 @@ def _retry_delay(
             hint = min(float(hint), retry.max_delay_s)
         return float(hint) + jitter
     max_delay = DEFAULT_RETRY_MAX_DELAY_S if retry.max_delay_s is None else retry.max_delay_s
-    base = min(max_delay, retry.base_delay_s * (2 ** attempt))
+    # A queueing window leaves the attempt count unbounded; cap the exponent so
+    # the doubling stays convertible to float. It is long past max_delay by 32.
+    base = min(max_delay, retry.base_delay_s * (2 ** min(attempt, 32)))
     return base + jitter
 
 

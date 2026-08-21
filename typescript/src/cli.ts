@@ -36,11 +36,15 @@ import { bridgePty } from "./cli-pty.js";
 import type {
   PolicyDoc,
   RunRecord,
+  RunSignal,
   VM,
   RunResult,
   Vm,
   ListVmsParameters,
 } from "./index.js";
+
+/** Signals the service accepts, per RunRequest.signal in the OpenAPI contract. */
+const RUN_SIGNALS = ["SIGINT", "SIGTERM", "SIGKILL", "SIGHUP"] as const;
 
 // Version string for `--version` and the help header. Read from the
 // published package.json (dist/cli.js → ../package.json) so it never
@@ -64,7 +68,12 @@ interface ParsedArgs {
 type OptionSpec =
   | { type: "boolean" }
   | { type: "string"; values?: readonly string[] }
-  | { type: "integer"; min: number; max?: number };
+  | { type: "integer"; min: number; max?: number }
+  // Fractional, for `--vgpu 0.25`. `min` is INCLUSIVE when a `step` is given
+  // (the smallest rung is a legal value); exclusive otherwise. `step` states a
+  // ladder the server enforces, so we can refuse the same values it would
+  // rather than spending a round trip on a 400.
+  | { type: "number"; min: number; max: number; step?: number };
 
 type OptionSpecs = Record<string, OptionSpec>;
 
@@ -90,12 +99,14 @@ const FORK_RESOURCE_OPTIONS: OptionSpecs = {
   ...RESOURCE_OPTIONS,
   "gpu-sms": { type: "integer", min: 1 },
   "gpu-vram-mib": { type: "integer", min: 1 },
+  // Eighths of one card, matching `multipleOf: 0.125` in the API contract.
+  vgpu: { type: "number", min: 0.125, max: 1, step: 0.125 },
 };
 
 const RUN_OPTIONS: OptionSpecs = {
   ...GLOBAL_OPTIONS,
   acquire: { type: "string" },
-  background: { type: "boolean" },
+  "queueing-timeout": { type: "integer", min: 0 },
   release: { type: "string" },
   "session-id": { type: "string" },
   "session-idx": { type: "integer", min: 0 },
@@ -119,6 +130,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     "no-disk": { type: "boolean" },
     platform: { type: "string" },
     public: { type: "boolean" },
+    "queueing-timeout": { type: "integer", min: 0 },
     "source-org-id": { type: "string" },
     "source-vm-id": { type: "string" },
     "source-vm-name": { type: "string" },
@@ -127,9 +139,17 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   list: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
+    public: { type: "boolean" },
+    "source-org-id": { type: "string" },
     state: { type: "string", values: ["idle", "running"] },
   },
-  ls: {},
+  ls: {
+    ...GLOBAL_OPTIONS,
+    ...PAGINATION_OPTIONS,
+    public: { type: "boolean" },
+    "source-org-id": { type: "string" },
+    state: { type: "string", values: ["idle", "running"] },
+  },
   rm: GLOBAL_OPTIONS,
   run: RUN_OPTIONS,
   runs: {
@@ -140,8 +160,11 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
   sessions: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
+    cols: { type: "integer", min: 1 },
     cwd: { type: "string" },
+    rows: { type: "integer", min: 1 },
     state: { type: "string", values: ["idle", "running"] },
+    "timeout-secs": { type: "integer", min: 0 },
   },
   shell: {
     ...GLOBAL_OPTIONS,
@@ -164,7 +187,19 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     help: { type: "boolean" },
     json: { type: "boolean" },
   },
-  sync: GLOBAL_OPTIONS,
+  signal: {
+    ...GLOBAL_OPTIONS,
+    "session-id": { type: "string" },
+    "session-idx": { type: "integer", min: 0 },
+  },
+  sync: {
+    ...GLOBAL_OPTIONS,
+    read: { type: "boolean" },
+  },
+  "sync-dir": {
+    ...GLOBAL_OPTIONS,
+    "assume-empty": { type: "boolean" },
+  },
   syncs: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
@@ -181,12 +216,12 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     ...PAGINATION_OPTIONS,
     ...FORK_RESOURCE_OPTIONS,
     acquire: { type: "string" },
-    background: { type: "boolean" },
     description: { type: "string" },
     name: { type: "string" },
     "no-disk": { type: "boolean" },
     platform: { type: "string" },
     public: { type: "boolean" },
+    "queueing-timeout": { type: "integer", min: 0 },
     release: { type: "string" },
     "session-id": { type: "string" },
     "session-idx": { type: "integer", min: 0 },
@@ -246,7 +281,13 @@ function validateInvocationOptions(command: string, args: ParsedArgs): void {
   if (command === "vms") {
     context = `vms ${subcommand ?? "ls"}`;
     if (subcommand === undefined || subcommand === "ls" || subcommand === "list") {
-      allowed = { ...GLOBAL_OPTIONS, ...PAGINATION_OPTIONS, state: { type: "string" } };
+      allowed = {
+        ...GLOBAL_OPTIONS,
+        ...PAGINATION_OPTIONS,
+        public: { type: "boolean" },
+        "source-org-id": { type: "string" },
+        state: { type: "string" },
+      };
     } else if (subcommand === "fork") {
       allowed = COMMAND_OPTIONS.fork!;
     } else if (subcommand === "run") {
@@ -267,7 +308,14 @@ function validateInvocationOptions(command: string, args: ParsedArgs): void {
       ? { ...GLOBAL_OPTIONS, ...PAGINATION_OPTIONS, state: { type: "string" } }
       : subcommand === "create"
         ? { ...GLOBAL_OPTIONS, cwd: { type: "string" } }
-        : GLOBAL_OPTIONS;
+        : subcommand === "update"
+          ? {
+              ...GLOBAL_OPTIONS,
+              cols: { type: "integer", min: 1 },
+              rows: { type: "integer", min: 1 },
+              "timeout-secs": { type: "integer", min: 0 },
+            }
+          : GLOBAL_OPTIONS;
   } else if (command === "syncs") {
     context = `syncs ${subcommand ?? ""}`.trim();
     allowed = subcommand === "ls" || subcommand === "list"
@@ -345,6 +393,26 @@ function parseOption(
       die(`parameter "${name}" must be one of: ${spec.values.join(", ")}`);
     }
     flags[name] = value;
+  } else if (spec.type === "number") {
+    const parsed = Number(value);
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(value) || !Number.isFinite(parsed)) {
+      die(`parameter "${name}" must be a number`);
+    }
+    if (spec.step === undefined) {
+      if (parsed <= spec.min || parsed > spec.max) {
+        die(`parameter "${name}" must be > ${spec.min} and <= ${spec.max}`);
+      }
+    } else {
+      // Every rung is a power-of-two fraction, so this is exact — no epsilon.
+      const rungs = [];
+      for (let v = spec.min; v <= spec.max + spec.step / 2; v += spec.step) {
+        rungs.push(v);
+      }
+      if (!rungs.includes(parsed)) {
+        die(`parameter "${name}" must be one of: ${rungs.join(", ")}`);
+      }
+    }
+    flags[name] = parsed;
   } else {
     if (!/^[+-]?\d+$/.test(value)) {
       die(`parameter "${name}" must be an integer`);
@@ -482,6 +550,11 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
         provider: args.flags.provider as ListVmsParameters["provider"],
         region: args.flags.region as string | undefined,
         state: args.flags.state as "idle" | "running" | undefined,
+        // Same two flags fork already takes: `--source-org-id ArkerHQ
+        // --public` is the public template catalog. Without them the listing
+        // stays scoped to the caller's own org.
+        org_id: args.flags["source-org-id"] as string | undefined,
+        public: boolFlag(args, "public"),
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
       });
@@ -544,7 +617,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   if (!sourceVmId && !sourceVmName) {
     die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]\n" +
         "       [--platform <token[,token...]>] [--vcpu N] [--memory-mib N] [--disk-mib N]\n" +
-        "       [--gpu-vram-mib N] [--gpu-sms N] [--no-disk]");
+        "       [--vgpu F] [--gpu-vram-mib N] [--gpu-sms N] [--no-disk]");
   }
 
   // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
@@ -566,13 +639,15 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const diskMib = numFlag(args, "disk-mib");
   const gpuVramMib = numFlag(args, "gpu-vram-mib");
   const gpuSms = numFlag(args, "gpu-sms");
-  const hasResources = [vcpu, memoryMib, diskMib, gpuVramMib, gpuSms]
+  const vgpu = numFlag(args, "vgpu");
+  const hasResources = [vcpu, memoryMib, diskMib, gpuVramMib, gpuSms, vgpu]
     .some((value) => value !== undefined);
   const resources = hasResources
     ? {
         vcpu: vcpu ?? null,
         memory_mib: memoryMib ?? null,
         disk_mib: diskMib ?? null,
+        vgpu: vgpu ?? null,
         gpu_vram_mib: gpuVramMib ?? null,
         gpu_sms: gpuSms ?? null,
       }
@@ -583,6 +658,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   // exposed on the CLI yet.
   const disk = boolFlag(args, "no-disk") ? false : undefined;
 
+  const queueingTimeout = numFlag(args, "queueing-timeout");
   const computer = await client.fork({
     sourceVmId,
     sourceVmName,
@@ -593,6 +669,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     ...(platforms && platforms.length > 0 ? { platforms } : {}),
     ...(resources ? { resources } : {}),
     ...(disk !== undefined ? { disk } : {}),
+    ...(queueingTimeout !== undefined ? { queueing_timeout: queueingTimeout } : {}),
   });
   out({ vm_id: computer.id });
 }
@@ -603,9 +680,9 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
   if (!command) die("missing command to run");
   const sessionIdx = numFlag(args, "session-idx");
   const result: RunResult = await client.vm(vmId).run(command, {
-    background: boolFlag(args, "background"),
     timeout: numFlag(args, "timeout"),
     time_to_background: numFlag(args, "time-to-background"),
+    queueing_timeout: numFlag(args, "queueing-timeout"),
     acquire: args.flags.acquire as string | undefined,
     release: args.flags.release as string | undefined,
     session_id: args.flags["session-id"] as string | undefined,
@@ -769,9 +846,64 @@ async function cmdSessions(args: ParsedArgs, client: Arker): Promise<void> {
       else { err("delete failed"); process.exitCode = 1; }
       return;
     }
+    case "update": {
+      if (!vm) die("usage: arker sessions update <vm_id> <session_id> [--cols N] [--rows N] [--timeout-secs N]");
+      const sid = rest[1] ?? die("missing session_id");
+      const cols = numFlag(args, "cols");
+      const rows = numFlag(args, "rows");
+      const timeoutSecs = numFlag(args, "timeout-secs");
+      if (cols === undefined && rows === undefined && timeoutSecs === undefined) {
+        die("sessions update: pass at least one of --cols, --rows, --timeout-secs");
+      }
+      out(
+        await client.vm(vm).updateSession(sid, {
+          ...(cols !== undefined ? { cols } : {}),
+          ...(rows !== undefined ? { rows } : {}),
+          ...(timeoutSecs !== undefined ? { timeoutSecs } : {}),
+        }),
+      );
+      return;
+    }
     default:
-      die(`usage: arker sessions <ls|get|create|rm> ...`);
+      die(`usage: arker sessions <ls|get|create|rm|update> ...`);
   }
+}
+
+// Signal the foreground process group of a persistent session, which is a
+// distinct operation from `run`: the service delivers the signal instead of
+// executing a command.
+async function cmdSignal(args: ParsedArgs, client: Arker): Promise<void> {
+  const vm = args.positional[0] ?? die("usage: arker signal <vm_id> <SIGINT|SIGTERM|SIGKILL|SIGHUP> [--session-id ID] [--session-idx N]");
+  const raw = args.positional[1] ?? die("missing signal");
+  const signal = raw.toUpperCase();
+  if (!(RUN_SIGNALS as readonly string[]).includes(signal)) {
+    die(`unknown signal ${raw} (expected one of: ${RUN_SIGNALS.join(", ")})`);
+  }
+  const sessionId = args.flags["session-id"] as string | undefined;
+  const sessionIdx = numFlag(args, "session-idx");
+  const result = await client.vm(vm).signal(signal as RunSignal, {
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(sessionIdx !== undefined ? { sessionIdx } : {}),
+  });
+  if (args.flags.json) return out(result);
+  if (result.stdout) output.write(result.stdout);
+  if (result.stderr) err(result.stderr);
+  process.exitCode = result.exitCode ?? 0;
+}
+
+// Recursive local -> VM directory sync. `sync` moves one file; this moves a
+// tree, and only the files whose contents differ.
+async function cmdSyncDir(args: ParsedArgs, client: Arker): Promise<void> {
+  const vm = args.positional[0] ?? die("usage: arker sync-dir <vm_id> <local_dir> <remote_dir> [--assume-empty]");
+  const localDir = args.positional[1] ?? die("missing local_dir");
+  const remoteDir = args.positional[2] ?? die("missing remote_dir");
+  if (!existsSync(localDir)) die(`no such directory: ${localDir}`);
+  const result = await client.vm(vm).syncDir(localDir, remoteDir, {
+    ...(args.flags["assume-empty"] ? { assumeEmpty: true } : {}),
+  });
+  if (args.flags.json) return out(result);
+  out(`synced ${result.sent} file(s), skipped ${result.skipped}, ${result.bytesSent} byte(s) to ${remoteDir}`);
+  if (result.manifestTruncated) err("warning: remote manifest was truncated; sync stayed correct but re-sent files beyond the cap");
 }
 
 // Policies are a whole-document GET/PUT, so `set` replaces the document. It is
@@ -858,23 +990,55 @@ async function cmdSyncs(args: ParsedArgs, client: Arker): Promise<void> {
   }
 }
 
-// File I/O on a VM: read (no data) or write (inline arg or piped stdin).
+const SYNC_USAGE =
+  "usage: arker sync <vm_id> <path> [data|-]   (omit data to read; - or a pipe writes stdin)";
+
+/** How long a piped-but-silent stdin is given to prove it is a writer before
+ *  `arker sync` refuses to guess. Only reached when the arguments alone leave
+ *  the direction open. */
+const STDIN_DIRECTION_GRACE_MS = 2000;
+
+// File I/O on a VM. Direction comes from the arguments, mirroring the SDK's
+// `sync(path)` = read / `sync(path, data)` = write overloads. stdin is only
+// consulted when the arguments leave it open, and never blocks indefinitely.
 async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
-  const vm = args.positional[0] ?? die("usage: arker sync <vm_id> <path> [data]   (omit data to read; or pipe stdin to write)");
+  const vm = args.positional[0] ?? die(SYNC_USAGE);
   const path = args.positional[1] ?? die("missing path");
   const inline = args.positional[2];
-  if (inline !== undefined) {
-    await client.vm(vm).sync(path, inline);
-    out(`wrote ${Buffer.byteLength(inline)} bytes to ${path}`);
+
+  const write = async (data: Uint8Array | string): Promise<void> => {
+    await client.vm(vm).sync(path, data);
+    const n = typeof data === "string" ? Buffer.byteLength(data) : data.length;
+    out(`wrote ${n} bytes to ${path}`);
+  };
+
+  if (args.flags.read) {
+    if (inline !== undefined) die("sync: --read takes no data argument");
+    output.write(await client.vm(vm).sync(path));
     return;
   }
-  if (stdinHasDataSource()) {
-    const buf = await readAllStdin();
-    await client.vm(vm).sync(path, buf);
-    out(`wrote ${buf.length} bytes to ${path}`);
-    return;
+  // Explicit stdin write: the user said so, so wait as long as it takes.
+  if (inline === "-") return write(await readAllStdin());
+  if (inline !== undefined) return write(inline);
+
+  switch (stdinKind()) {
+    case "file":
+      // A `< file` redirect is unambiguous and ends at EOF.
+      return write(await readAllStdin());
+    case "stream": {
+      const piped = await readAllStdinWithFirstByteDeadline(STDIN_DIRECTION_GRACE_MS);
+      if (piped === null) {
+        return die(
+          `sync: stdin is an open pipe that sent nothing in ${STDIN_DIRECTION_GRACE_MS}ms, so read-vs-write is ambiguous.\n` +
+            `  to read:  arker sync ${vm} ${path} --read\n` +
+            `  to write: <producer> | arker sync ${vm} ${path} -`,
+        );
+      }
+      return write(piped);
+    }
+    default:
+      output.write(await client.vm(vm).sync(path));
   }
-  output.write(await client.vm(vm).sync(path));
 }
 
 async function cmdUpdate(args: ParsedArgs, client: Arker): Promise<void> {
@@ -1034,14 +1198,48 @@ async function readAllStdin(): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-function stdinHasDataSource(): boolean {
-  if (input.isTTY) return false;
+/** How stdin is attached. This is the only thing that can disambiguate a bare
+ *  `arker sync <vm> <path>`: read the file back, or write what is piped in.
+ *
+ *  The distinction that matters is whether draining is guaranteed to finish.
+ *  A `< file` redirect ends at EOF. A pipe or socket does not: a script that
+ *  inherits stdin from a parent nobody ever closes hands us a descriptor that
+ *  stays open forever, and draining it blocks with no output and no error. */
+function stdinKind(): "tty" | "file" | "stream" | "none" {
+  if (input.isTTY) return "tty";
   try {
     const stat = fstatSync(0);
-    return stat.isFIFO() || stat.isFile() || stat.isSocket();
+    if (stat.isFile()) return "file";
+    if (stat.isFIFO() || stat.isSocket()) return "stream";
+    return "none";
   } catch {
-    return false;
+    return "none";
   }
+}
+
+function stdinHasDataSource(): boolean {
+  const kind = stdinKind();
+  return kind === "file" || kind === "stream";
+}
+
+/** Drain stdin, giving up if the FIRST byte never arrives. Returns null when
+ *  nothing had been read by the deadline — the descriptor is idle and the
+ *  caller cannot tell read from write. Once any data arrives the remainder is
+ *  read unbounded: a slow producer is legitimate, a silent one is not
+ *  actionable. */
+async function readAllStdinWithFirstByteDeadline(ms: number): Promise<Uint8Array | null> {
+  const chunks: Buffer[] = [];
+  const drained = (async () => {
+    for await (const chunk of input) chunks.push(chunk as Buffer);
+  })();
+  const deadline = new Promise<"deadline">((resolve) => {
+    const timer = setTimeout(() => resolve("deadline"), ms);
+    if (typeof timer.unref === "function") timer.unref();
+  });
+  const first = await Promise.race([drained.then(() => "drained" as const), deadline]);
+  if (first === "deadline" && chunks.length === 0) return null;
+  await drained;
+  return new Uint8Array(Buffer.concat(chunks));
 }
 
 function usage(_command?: string): void {
@@ -1062,7 +1260,8 @@ function usage(_command?: string): void {
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource overrides",
       "  arker fork <vm> --platform <token[,token...]>  pin the fork to a compute platform",
-      "  arker fork <vm> --gpu-vram-mib N --gpu-sms N   size GPU resources for the fork",
+      "  arker fork <vm> --vgpu 0.25                    size the GPU in eighths of a card (0.125 … 1)",
+      "  arker fork <vm> --gpu-vram-mib N --gpu-sms N   size GPU resources in hardware units",
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
@@ -1072,11 +1271,16 @@ function usage(_command?: string): void {
       "Resources:",
       "  arker regions                                  list available public placements",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
+      "  arker vms ls --source-org-id ArkerHQ --public  list the public VM catalog",
       "  arker runs        <ls|get|rm> <vm_id> ...",
-      "  arker sessions    <ls|get|create|rm> <vm_id> ...",
+      "  arker sessions    <ls|get|create|rm|update> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
-      "  arker sync <vm_id> <path> [data]            read or write a file",
+      "  arker sync <vm_id> <path> [data|-]          read a file, or write data/stdin",
+      "  arker sync <vm_id> <path> --read            read a file, ignoring stdin",
+      "  arker sync-dir <vm_id> <local> <remote>     sync a directory into the VM",
+      "  arker signal <vm_id> <SIGINT|SIGTERM|SIGKILL|SIGHUP>",
+      "                                              signal a session's foreground group",
       "",
       "Flags:",
       "  --region <region>          (or env ARKER_REGION)",
@@ -1084,6 +1288,11 @@ function usage(_command?: string): void {
       "  --json                     emit JSON instead of tabular output",
       "  -h, --help                 show help without connecting",
       "  -v, --version              show version without connecting",
+      "",
+      "List flags (arker vms ls):",
+      "  --source-org-id <org>      list that org's VMs (only ArkerHQ, with --public)",
+      "  --public                   restrict the listing to public VMs",
+      "  --state <idle|running>     filter by VM state",
       "",
       "Fork flags:",
       "  --description <text>       short description for the new VM",
@@ -1098,9 +1307,9 @@ function usage(_command?: string): void {
       "Run flags:",
       "  --session-id <ulid>        run in a specific existing session",
       "  --session-idx <n>          run in the session at this index (default 0)",
-      "  --background               return a run id instead of blocking",
-      "  --timeout <seconds>             exec/kill bound in seconds (0 = unbounded; server default 3600)",
-      "  --time-to-background <seconds>  sync window before returning a run id (default 30)",
+      "  --timeout <seconds>             exec/kill bound in seconds (omitted or 0 = unbounded)",
+      "  --time-to-background <seconds>  sync window; 0 returns a run id immediately (default 120)",
+      "  --queueing-timeout <seconds>    queue up to this long instead of failing fast (also a fork flag)",
       "  --acquire <list>           warm resources before the run (cpu,memory,disk)",
       "  --release <list>           release resources after the run (cpu,memory,disk)",
       "",
@@ -1150,8 +1359,12 @@ async function main(): Promise<void> {
         return await cmdFork(args, client);
       case "run":
         return await cmdRun(args, client);
+      case "signal":
+        return await cmdSignal(args, client);
       case "sync":
         return await cmdSync(args, client);
+      case "sync-dir":
+        return await cmdSyncDir(args, client);
       case "syncs":
         return await cmdSyncs(args, client);
       case "policies":

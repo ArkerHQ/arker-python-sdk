@@ -78,7 +78,7 @@ async function main(): Promise<void> {
       `seq 1 50000 | sha256sum >/dev/null; ` +
       `c=$(curl -s -m5 -o /dev/null -w "%{http_code}" ${netUrl} 2>/dev/null); ` +
       `[ "$c" = 200 ] && n=$((n+1)); done; echo WL_DONE lines=$i net200=$n`;
-    const bg = await vm.run(workload, { background: true });
+    const bg = await vm.run(workload, { time_to_background: 0 });
     console.log(`concurrent workload runId=${bg.runId} (network+compute+write, ~${workloadSecs}s)`);
 
     const timed = async (label: string, fn: () => Promise<SyncDirResult>): Promise<SyncDirResult> => {

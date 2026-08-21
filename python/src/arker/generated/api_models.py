@@ -477,6 +477,8 @@ class ResourcesInput:
     memory_mib: int | None = None
     disk_mib: int | None = None
     vgpu: float | None = None
+    gpu_sms: int | None = None
+    gpu_vram_mib: int | None = None
     gpu_count: int | None = None
 
 
@@ -964,7 +966,6 @@ class RunRequest:
     session_id: str | None = None
     session_idx: int | None = None
     command: str | None = None
-    background: bool | None = False
     timeout: int | None = None
     time_to_background: int | None = None
     queueing_timeout: int | None = None

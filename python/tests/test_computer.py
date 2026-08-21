@@ -123,12 +123,15 @@ def test_explicit_vm_handle_uses_placement_endpoint() -> None:
 
 def test_list_regions_uses_public_control_plane_catalog() -> None:
     t = FakeTransport()
-    # `provider` is a closed set in the contract and `endpoint` is required;
-    # a placement missing either is not a shape the service can return.
+    # `endpoint` is required, so a placement missing it is not a shape the
+    # service can return. `provider` is deliberately NOT a closed set — see
+    # tests/test_openapi_enforcement.py; a pinned SDK must not reject the first
+    # placement on a provider added after its release.
     placement = {
         "provider": "aws",
         "region": "region-two",
-        "endpoint": "https://aws-region-two.arker.ai",
+        # The catalog always carries an endpoint, and the contract now says so.
+        "endpoint": "https://provider-two-region-two.arker.ai/",
     }
     t.add_json(
         lambda method, url: method == "GET"
@@ -142,7 +145,7 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
 
     assert regions.regions[0].provider == "aws"
     assert regions.regions[0].region == "region-two"
-    assert regions.regions[0].endpoint == "https://aws-region-two.arker.ai"
+    assert regions.regions[0].endpoint == "https://provider-two-region-two.arker.ai/"
 
 
 def test_discover_regions_requires_no_configured_client() -> None:
@@ -684,8 +687,8 @@ def test_sync_run_polls_backgrounded_run_to_completion(monkeypatch) -> None:
     assert [c["method"] for c in t.calls] == ["POST", "GET", "GET"]
 
 
-def test_background_true_returns_ack_without_polling(monkeypatch) -> None:
-    # background=True is a pure pass-through — run() returns the running ack
+def test_explicit_zero_returns_ack_without_polling(monkeypatch) -> None:
+    # time_to_background=0 is a pure pass-through — run() returns the running ack
     # immediately and never polls get_run().
     slept: list[float] = []
     monkeypatch.setattr(sdk.time, "sleep", lambda s: slept.append(s))
@@ -697,14 +700,19 @@ def test_background_true_returns_ack_without_polling(monkeypatch) -> None:
     )
 
     with use_transport(t):
-        result = client().vm("vm_1").run("sleep 999", background=True)
+        result = client().vm("vm_1").run("sleep 999", time_to_background=0)
 
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_bg"
     # Only the POST — no polling, no sleeping.
     assert [c["method"] for c in t.calls] == ["POST"]
     assert slept == []
-    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 999", "background": True}
+    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 999", "time_to_background": 0}
+
+
+def test_removed_background_argument_is_rejected() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'background'"):
+        client().vm("vm_1").run("sleep 999", background=True)  # type: ignore[call-arg]
 
 
 def test_run_sends_policies() -> None:
@@ -857,12 +865,12 @@ def test_background_run_response() -> None:
     )
 
     with use_transport(t):
-        result = client().vm("vm_1").run("sleep 10", background=True)
+        result = client().vm("vm_1").run("sleep 10", time_to_background=0)
 
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_1"
     assert result.state == "running"
-    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "background": True}
+    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "time_to_background": 0}
 
 
 def test_flat_error_response_is_rejected_as_malformed() -> None:
@@ -1636,6 +1644,45 @@ def test_fork_sends_gpu_resources() -> None:
     }
 
 
+def test_fork_sends_vgpu_as_the_only_resource() -> None:
+    """`vgpu` alone must reach the wire, and reach it as a float.
+
+    It is the one resource arg that is not an int, so it has to be in the
+    "any of these were passed" guard as well as the VmResources construction —
+    miss the guard and `resources` is dropped entirely and the caller silently
+    gets a whole card.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "network": {},
+            "resources": {},
+        },
+    )
+
+    with use_transport(t):
+        client().fork(
+            source_vm_id="gpu-source-vm-id",
+            platforms=["x86_64-l40s"],
+            vgpu=0.25,
+        )
+
+    assert json.loads(t.calls[0]["body"]) == {
+        "source_vm_id": "gpu-source-vm-id",
+        "platforms": ["x86_64-l40s"],
+        "resources": {"vgpu": 0.25},
+    }
+
+
 def test_fork_mixes_gpu_and_cpu_resources() -> None:
     """CPU and GPU fields coexist in the single resources object."""
     t = FakeTransport()
@@ -1781,6 +1828,110 @@ def test_retry_after_hint_drives_the_actual_sleep() -> None:
     assert time.monotonic() - started >= 0.045
     assert len(t.calls) == 2
 
+
+def _unavailable_body(retry_after_s: float) -> dict[str, Any]:
+    return {"error": {
+        "code": "unavailable", "message": "at capacity",
+        "retry_after": retry_after_s, "timestamp": "2026-01-01T00:00:00.000Z",
+    }}
+
+
+def _completed_run_body() -> dict[str, Any]:
+    return {"run_id": "run_q", "state": "completed", "exit_code": 0,
+            "stdout": "ok", "stdout_encoding": "utf-8",
+            "stderr": "", "stderr_encoding": "utf-8"}
+
+
+def _queueing_client(**retry: Any) -> sdk.Arker:
+    return sdk.Arker(
+        api_key="ark_live_test",
+        base_url="https://test.invalid/api",
+        retry={"base_delay_s": 0.001, "jitter_s": 0.0, **retry},
+    )
+
+
+def test_queueing_timeout_retries_past_the_attempt_cap() -> None:
+    # The window is the budget: three failures exceed attempts=2, still succeeds.
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
+    for _ in range(3):
+        t.add_json(predicate, 503, _unavailable_body(0.05))
+    t.add_json(predicate, 200, _completed_run_body())
+
+    with use_transport(t):
+        result = _queueing_client(attempts=2).vm("vm_1").run("echo ok", queueing_timeout=30)
+    assert result.exit_code == 0
+    assert len(t.calls) == 4, "the window must outlast attempts=2"
+
+
+def test_queueing_window_drains_then_surfaces_unavailable() -> None:
+    # 3s window, 1.1s hints: bodies re-send the remaining window (3, 2, 1),
+    # then the error surfaces without sleeping past the deadline.
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
+    for _ in range(3):
+        t.add_json(predicate, 503, _unavailable_body(1.1))
+
+    started = time.monotonic()
+    with use_transport(t):
+        with pytest.raises(sdk.ArkerError) as error:
+            _queueing_client(attempts=4).vm("vm_1").run("true", queueing_timeout=3)
+    elapsed = time.monotonic() - started
+    assert error.value.code == "unavailable"
+    assert error.value.status == 503
+    assert [json.loads(c["body"])["queueing_timeout"] for c in t.calls] == [3, 2, 1]
+    assert 2.0 <= elapsed < 5.0, f"waited {elapsed}s"
+
+
+def test_queueing_timeout_respects_retry_false() -> None:
+    # retry=False = exactly one request, window or not.
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
+    t.add_json(predicate, 503, _unavailable_body(0.05))
+
+    with use_transport(t):
+        with pytest.raises(sdk.ArkerError) as error:
+            client().vm("vm_1").run("true", queueing_timeout=30)
+    assert error.value.code == "unavailable"
+    assert len(t.calls) == 1
+
+
+def test_fork_forwards_queueing_timeout() -> None:
+    # fork() builds its body from an explicit kwarg list — pin that the field
+    # survives it. The retry mechanics are shared with run and tested there.
+    t = FakeTransport()
+    t.add_json(lambda method, url: method == "POST" and url.endswith("/v1/fork"), 200, {
+        "vm_id": "vm_child", "owner_org_id": "owner", "created_at": "now",
+        "description": None, "public": False, "state": "idle",
+        "sessions": [session()], "network": {}, "resources": {},
+    })
+
+    with use_transport(t):
+        client().fork("ubuntu", queueing_timeout=30)
+    assert json.loads(t.calls[0]["body"])["queueing_timeout"] == 30
+
+
+def test_backoff_survives_an_unbounded_attempt_count() -> None:
+    # A queueing window uncaps attempts, so the backoff exponent grows without
+    # limit; base_delay_s * 2**attempt must not overflow the float multiply.
+    retry = sdk.RetryOptions(attempts=4, base_delay_s=0.2, jitter_s=0.0)
+    assert sdk._retry_delay(retry, 5000) == sdk.DEFAULT_RETRY_MAX_DELAY_S
+
+
+def test_run_poll_budget_is_unbounded_without_a_caller_timeout() -> None:
+    # The poll budget exists to outlive the server-side kill and report its
+    # outcome. There is no server-side kill without a caller ``timeout``
+    # (absent and ``0`` are both unbounded), so there is nothing to outlive and
+    # the poll must not invent a deadline — abandoning a run that is still
+    # going is worse than waiting.
+    assert sdk.run_poll_budget_s(None) is None
+    assert sdk.run_poll_budget_s(0) is None
+    # A caller-set bound still gets the kill bound plus the 30s margin.
+    assert sdk.run_poll_budget_s(5) == 5 + sdk.RUN_POLL_MARGIN_S
+    assert sdk.run_poll_budget_s(3600) == 3600 + sdk.RUN_POLL_MARGIN_S
+    # Negative is nonsense the API would reject; treat it as unbounded rather
+    # than as an instantly-expired deadline.
+    assert sdk.run_poll_budget_s(-1) is None
 
 # ── run(): what bounds the wait, and what does not ──────────────────────────
 # `timeout` is the SERVER-side kill bound (run_command.rs: "timeout: N kills the
@@ -1942,7 +2093,7 @@ def test_time_to_background_zero_matches_background_true(monkeypatch) -> None:
         r1 = client().vm("vm_1").run("node server.js", time_to_background=0)
     t2 = ack_only()
     with use_transport(t2):
-        r2 = client().vm("vm_1").run("node server.js", background=True)
+        r2 = client().vm("vm_1").run("node server.js", time_to_background=0)
 
     assert isinstance(r1, sdk.BackgroundRunResult), "ttb=0 must return the ack, not poll"
     assert isinstance(r2, sdk.BackgroundRunResult)

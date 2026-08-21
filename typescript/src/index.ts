@@ -5,6 +5,7 @@
  * Arker endpoints, or pass baseUrl directly for internal/dev targets.
  */
 
+import { runPollBudgetMs } from "./internal/run-poll.js";
 import type { components, operations } from "./generated/api-types.js";
 
 type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
@@ -16,7 +17,7 @@ export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
  * Size at which the router stops buffering a `/sync-stream` body and forwards
- * it as a stream (`DEFAULT_PROXY_BODY_LIMIT` in arkerd-router). Measured before
+ * it as a stream (a server-side proxy body limit). Measured before
  * that change landed: 64 MiB returned 200, 72 MiB returned 413
  * `payload_too_large`.
  *
@@ -93,7 +94,7 @@ interface StatCacheFile {
 }
 
 /**
- * Pull arkerd's `{error:{code,message}}` envelope off a failed response.
+ * Pull the `{error:{code,message}}` envelope off a failed response.
  * Shared so every transfer path reports failures identically — the sync call
  * sites previously each parsed errors their own way.
  */
@@ -193,18 +194,11 @@ const DEFAULT_RETRY_JITTER_MS = 50;
 const RUN_POLL_INITIAL_MS = 500;
 const RUN_POLL_MAX_MS = 3_000;
 const RUN_POLL_BACKOFF = 1.5;
-// Slack beyond the run's kill bound before we stop polling and surface a timeout.
-const RUN_POLL_MARGIN_MS = 30_000;
-// A run with no `timeout` is unbounded by design: the service does not kill it,
-// so this client does not impose a deadline of its own either. `timeout` is the
-// single knob — set it for a bound, omit it and the run may take as long as it
-// takes.
-//
-// What still ends an unbounded wait is the SERVICE becoming unreachable: this
-// many CONSECUTIVE failed status checks. Any answered check resets the counter
-// (a run reported as still `running` is a successful check), so a long-running
-// command and a transient network blip both survive; only a service that has
-// stopped responding throws.
+// An unbounded wait is not an infinite one. What still ends it is the SERVICE
+// becoming unreachable: this many CONSECUTIVE failed status checks. Any
+// answered check resets the counter (a run reported as still `running` is a
+// successful check), so a long-running command and a transient network blip
+// both survive; only a service that has stopped responding throws.
 const RUN_POLL_MAX_CONSECUTIVE_FAILURES = 10;
 // Terminal run states — RunState ("running" | "completed" | "failed" |
 // "cancelled") minus the sole non-terminal "running".
@@ -214,6 +208,7 @@ const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
   "unavailable",
   "bad_gateway",
   "stale_route",
+  "capacity_unavailable",
 ]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -497,10 +492,10 @@ export interface BackgroundRunResult {
 }
 
 /**
- * Result of {@link VM.run}. A synchronous call (`background` unset/false)
+ * Result of {@link VM.run}. A synchronous call (`time_to_background` not zero)
  * always resolves to a {@link CompletedRunResult} — if the run outlives its
  * sync window run() polls it to completion under the hood. Only an explicit
- * `background: true` yields a {@link BackgroundRunResult} (the running ack,
+ * `time_to_background: 0` yields a {@link BackgroundRunResult} (the running ack,
  * returned immediately for the caller to poll via {@link VM.getRun}).
  */
 export type RunResult = CompletedRunResult | BackgroundRunResult;
@@ -884,6 +879,7 @@ export class Arker {
       policies: src.policies,
       // Only present for image/dockerfile forks; refused above otherwise.
       ...(src.registryAuth ? { registry_auth: src.registryAuth } : {}),
+      queueing_timeout: src.queueing_timeout,
     };
     const body: ForkRequest = src.image
       ? {
@@ -911,7 +907,14 @@ export class Arker {
             source_vm_name: src.sourceVmName!,
           };
     const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
-    const vm = await this._request<Vm>("POST", "/v1/fork", body, baseUrl);
+    const vm = await this._request<Vm>(
+      "POST",
+      "/v1/fork",
+      body,
+      baseUrl,
+      undefined,
+      src.queueing_timeout,
+    );
     const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
     return new VM(this, vmId, baseUrl, vm);
@@ -974,10 +977,10 @@ export class Arker {
     return new VM(this, vmId, baseUrl, data);
   }
 
-  // ── Filesystems (region-scoped, served by arkerd directly) ──────────
+  // ── Filesystems (region-scoped) ────────────────────────────────────
   // Route to the regional endpoint (baseUrl), not the control plane: the
   // control-plane path (arker.ai → api_proxy_bash) does not route
-  // /v1/filesystems, while the regional NLB → arkerd serves the full CRUD.
+  // /v1/filesystems, while the regional endpoint serves the full CRUD.
   async listFilesystems(opts: ListFilesystemsOptions = {}): Promise<ListFilesystemsResponse> {
     const query: ListFilesystemsParameters = {
       cursor: opts.cursor, limit: opts.limit, name_prefix: opts.namePrefix,
@@ -1004,6 +1007,7 @@ export class Arker {
     body?: unknown,
     baseUrl = this.baseUrl,
     extraHeaders?: Record<string, string | undefined>,
+    maxQueueingSecs?: number | null,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -1022,6 +1026,7 @@ export class Arker {
       this.fetchImpl,
       this.http2,
       this.retry,
+      maxQueueingSecs ?? undefined,
     );
   }
 
@@ -1098,11 +1103,6 @@ export class VM {
   readonly max_vcpus?: Vm["max_vcpus"];
   readonly max_memory_mib?: Vm["max_memory_mib"];
   readonly min_memory_mib?: Vm["min_memory_mib"];
-  /** @deprecated The service no longer returns this field, so it is
-   * always undefined. Kept to avoid a breaking change; use `created_at`. */
-  readonly started_at?: string | null;
-  /** When the VM was last active. This is the field the service actually
-   * populates (it replaced `started_at` in ARK-453). */
   readonly last_active_at?: Vm["last_active_at"];
   readonly root_source_vm_id?: Vm["root_source_vm_id"];
   readonly root_source_vm_name?: Vm["root_source_vm_name"];
@@ -1136,7 +1136,14 @@ export class VM {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
     } as ForkRequest;
-    const vm = await this._client._request<Vm>("POST", "/v1/fork", merged, this.baseUrl);
+    const vm = await this._client._request<Vm>(
+      "POST",
+      "/v1/fork",
+      merged,
+      this.baseUrl,
+      undefined,
+      merged.queueing_timeout,
+    );
     const vmId = vm.vm_id;
     // The child is forked on the same compute host as the source, so it lives
     // on the same base URL (this.baseUrl) — not whatever the id alone implies.
@@ -1150,27 +1157,22 @@ export class VM {
    * (`time_to_background`, default 120s) the API returns a background ack
    * with a `run_id`; run() then transparently polls {@link getRun} until the
    * run reaches a terminal state and resolves to the completed run — so a
-   * synchronous caller always receives the final result. Polling is bounded by
-   * `timeout` when you set one. Omitting `timeout` (or passing `0`, the same
-   * thing) means NO limit — the host never kills the run, and this client does
-   * not impose a deadline the service would not honour, so run() waits as long
-   * as the command takes. What still ends the wait is the service going
-   * unreachable: after 10 consecutive failed status checks run() throws
-   * `"unavailable"`. Any answered check resets that count, so a transient blip
-   * is survived.
+   * synchronous caller always receives the final result. Polling is bounded
+   * by the run's `timeout` (its kill bound) plus a margin; if that budget is
+   * exceeded run() throws an ArkerError with code `"timeout"` (the run keeps
+   * executing server-side — poll {@link getRun} to retrieve it). With no
+   * `timeout` the run is unbounded server-side and the poll is unbounded with
+   * it.
    *
-   * When a bounded run exceeds its budget run() throws an ArkerError with code
-   * `"timeout"` and the run KEEPS EXECUTING server-side — poll {@link getRun}
-   * to retrieve it.
+   * Pass `time_to_background: 0` to skip the wait entirely: run() returns the
+   * running acknowledgement (`{ type: "background", runId }`) immediately and
+   * you manage polling yourself via {@link getRun}.
    *
-   * To skip the wait entirely, pass `background: true` OR `time_to_background:
-   * 0` — they are equivalent. run() returns the running acknowledgement
-   * (`{ type: "background", runId }`) immediately and you poll {@link getRun}
-   * yourself.
+   * `queueing_timeout` (seconds) queues instead of failing fast: retries
+   * until the window elapses, then surfaces the error. Omitted/`0` = fail fast.
    */
-  async run(command: string, options?: RunOptions & { background?: false | null }): Promise<CompletedRunResult>;
-  async run(command: string, options: RunOptions & { background: true }): Promise<BackgroundRunResult>;
-  async run(command: string, options?: RunOptions): Promise<RunResult>;
+  async run(command: string, options: RunOptions & { time_to_background: 0 }): Promise<BackgroundRunResult>;
+  async run(command: string, options?: RunOptions): Promise<CompletedRunResult>;
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
     rejectRemovedNetworkInputs("run", options);
     const { idempotencyKey, ...body } = options;
@@ -1182,19 +1184,14 @@ export class VM {
       request,
       this.baseUrl,
       headers,
+      options.queueing_timeout,
     );
     const result = parseRunResponse(response);
     // The server backgrounds a run that outlived its sync window. When the
     // caller did NOT ask to skip the wait, poll getRun() to a terminal state
     // and hand back the completed run so the synchronous call is transparent.
-    //
-    // BOTH spellings of "don't wait" are honoured. Measured against the live
-    // service, `background: true` and `time_to_background: 0` both answer 202
-    // with a run id in ~0.2s, so the two must behave identically here —
-    // starting a long-lived process (a server, a watcher) with either one
-    // returns its run id instead of waiting for something not meant to finish.
-    const askedNotToWait = options.background === true || options.time_to_background === 0;
-    if (result.type === "background" && !askedNotToWait) {
+    // Explicit zero is a pure pass-through — return the ack immediately.
+    if (result.type === "background" && options.time_to_background !== 0) {
       return this._awaitRun(result.runId, options.timeout);
     }
     return result;
@@ -1261,23 +1258,19 @@ export class VM {
    * Poll {@link getRun} until the run reaches a terminal state, then return it
    * as a {@link CompletedRunResult}. Backs the transparent synchronous run():
    * invoked only when the server backgrounds a run that outlived its sync
-   * window. Bounded by `timeoutSecs` (the run's kill bound) plus a margin;
-   * throws `"timeout"` if the budget is exceeded.
+   * window.
+   *
+   * Bounded by `timeoutSecs` (the run's kill bound) plus a margin, so the poll
+   * outlives the server-side kill and reports its outcome. An unset or `0`
+   * timeout is unbounded server-side, so the poll is unbounded too — giving up
+   * at a client-side deadline the caller never asked for would abandon a run
+   * that is still going.
    */
   private async _awaitRun(runId: string, timeoutSecs?: number | null): Promise<CompletedRunResult> {
-    // Two different failures, deliberately kept apart:
-    //
-    //   HOW LONG THE COMMAND RUNS is the service's decision. `timeout` is a
-    //   server-side kill bound; omitting it means the run is unbounded, so this
-    //   loop waits with it rather than imposing a deadline the service does not
-    //   honour.
-    //
-    //   WHETHER THE SERVICE IS REACHABLE is this client's decision. If the
-    //   status checks themselves keep failing, waiting forever helps nobody, so
-    //   give up after consecutive failures. One success resets the count.
-    const bounded = typeof timeoutSecs === "number" && timeoutSecs > 0;
-    const budgetMs = bounded ? timeoutSecs! * 1000 + RUN_POLL_MARGIN_MS : undefined;
-    const deadline = budgetMs === undefined ? undefined : Date.now() + budgetMs;
+    const budgetMs = runPollBudgetMs(timeoutSecs);
+    const deadline = budgetMs === null ? null : Date.now() + budgetMs;
+    // budgetMs and deadline are null together, so the throw below can read
+    // budgetMs without a non-null assertion.
     let delay = RUN_POLL_INITIAL_MS;
     let consecutiveFailures = 0;
     for (;;) {
@@ -1302,10 +1295,10 @@ export class VM {
       }
       consecutiveFailures = 0;
       if (TERMINAL_RUN_STATES.has(run.state)) return runToCompletedResult(run);
-      if (deadline !== undefined && Date.now() >= deadline) {
+      if (budgetMs !== null && deadline !== null && Date.now() >= deadline) {
         throw new ArkerError(
           "timeout",
-          `run ${runId} did not reach a terminal state within ${Math.round(budgetMs! / 1000)}s; ` +
+          `run ${runId} did not reach a terminal state within ${Math.round(budgetMs / 1000)}s; ` +
             `it continues server-side — poll getRun(${JSON.stringify(runId)}) to retrieve it`,
           0,
         );
@@ -1533,7 +1526,7 @@ export class VM {
   }
 
   /** One-round-trip directory upload: stream a gzip tar to `/sync-stream` and
-   * let arkerd untar it IN THE GUEST before responding.
+   * let the server untar it IN THE GUEST before responding.
    *
    * Params ride in the query string, not headers: the auth middleware strips
    * `x-arker-*` from untrusted callers and would erase them.
@@ -1633,7 +1626,7 @@ export class VM {
   /**
    * Decide whether gzip earns its keep for this file set.
    *
-   * The guest pays for decompression: arkerd measures gunzip at ~3.4x a plain
+   * The guest pays for decompression: gunzip measures ~3.4x a plain
    * untar (294ms vs 86ms for 2000 files), so gzipping an already-compressed
    * tree (images, video, archives, binaries) is a pure loss at both ends. Source
    * trees, by contrast, compress ~4:1 and are well worth it.
@@ -2386,6 +2379,7 @@ async function requestJson<T>(
   fetchImpl: FetchLike,
   http2: boolean,
   retry: RetryConfig,
+  maxQueueingSecs?: number,
 ): Promise<T> {
   const headers = { ...requestHeaders };
   let requestBody: string | undefined;
@@ -2394,11 +2388,24 @@ async function requestJson<T>(
     requestBody = JSON.stringify(withoutUndefined(body));
   }
 
-  let lastStatus = 0;
-  let lastText = "";
-  let lastError: ParsedError | undefined;
+  // queueing_timeout swaps the retry budget from attempt count to wall-clock
+  // window; retry: false (attempts = 1) still means exactly one request.
+  const queueingDeadline =
+    maxQueueingSecs !== undefined && maxQueueingSecs > 0 && retry.attempts > 1
+      ? Date.now() + maxQueueingSecs * 1000
+      : undefined;
 
-  for (let attempt = 0; attempt < retry.attempts; attempt++) {
+  for (let attempt = 0; ; attempt++) {
+    if (queueingDeadline !== undefined && attempt > 0 && isObject(body)) {
+      // Retries re-send the remaining window.
+      const remainingSecs = Math.max(
+        1,
+        Math.ceil((queueingDeadline - Date.now()) / 1000),
+      );
+      requestBody = JSON.stringify(
+        withoutUndefined({ ...body, queueing_timeout: remainingSecs }),
+      );
+    }
     try {
       const { status, ok, text } = await sendRequest(
         url,
@@ -2409,13 +2416,12 @@ async function requestJson<T>(
       const payload = parseJson(text);
       const parsedError = extractError(payload);
 
-      lastStatus = status;
-      lastText = text;
-      lastError = parsedError;
-
-      if (isRetryable(status, parsedError) && attempt < retry.attempts - 1) {
-        await sleep(retryDelay(retry, attempt, parsedError));
-        continue;
+      if (isRetryable(status, parsedError)) {
+        const delay = retryDelay(retry, attempt, parsedError);
+        if (canRetryAgain(retry, attempt, queueingDeadline, delay)) {
+          await sleep(delay);
+          continue;
+        }
       }
 
       if (parsedError) {
@@ -2424,7 +2430,7 @@ async function requestJson<T>(
       if (!ok) {
         throw new ArkerError(
           "internal",
-          lastText.slice(0, 300) || `HTTP ${status}`,
+          text.slice(0, 300) || `HTTP ${status}`,
           status,
         );
       }
@@ -2432,23 +2438,27 @@ async function requestJson<T>(
       return payload as T;
     } catch (error) {
       if (error instanceof ArkerError) throw error;
-      if (attempt < retry.attempts - 1) {
-        await sleep(retryDelay(retry, attempt));
+      const delay = retryDelay(retry, attempt);
+      if (canRetryAgain(retry, attempt, queueingDeadline, delay)) {
+        await sleep(delay);
         continue;
       }
       const message = error instanceof Error ? error.message : String(error);
       throw new ArkerError("unavailable", message, 0);
     }
   }
+}
 
-  if (lastError) {
-    throw new ArkerError(lastError.code, lastError.message, lastStatus);
-  }
-  throw new ArkerError(
-    "internal",
-    lastText.slice(0, 300) || `HTTP ${lastStatus}`,
-    lastStatus,
-  );
+/** No window: the attempt count is the budget. With one: the retry's sleep
+ * must still land inside the window. */
+function canRetryAgain(
+  retry: RetryConfig,
+  attempt: number,
+  queueingDeadline: number | undefined,
+  delayMs: number,
+): boolean {
+  if (queueingDeadline !== undefined) return Date.now() + delayMs < queueingDeadline;
+  return attempt < retry.attempts - 1;
 }
 
 function parseJson(text: string): unknown {

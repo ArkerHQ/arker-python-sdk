@@ -11,6 +11,7 @@ import {
   type CompletedRunResult,
   type PtyWebSocketFactory,
 } from "../src/index.js";
+import { runPollBudgetMs } from "../src/internal/run-poll.js";
 import { isExpectedSurfaceStub } from "./helpers/surface-errors.js";
 
 type FetchCall = {
@@ -432,8 +433,25 @@ async function testSyncRunPollsBackgroundedRunToCompletion(): Promise<void> {
   assert.equal(fetch.calls[2]!.method, "GET");
 }
 
-async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
-  // background:true is a pure pass-through — run() returns the running ack
+async function testRunPollBudgetIsUnboundedWithoutACallerTimeout(): Promise<void> {
+  // The poll budget exists to outlive the server-side kill and report its
+  // outcome. There is no server-side kill without a caller `timeout` (absent
+  // and `0` are both unbounded), so there is nothing to outlive and the poll
+  // must not invent a deadline — abandoning a run that is still going is worse
+  // than waiting.
+  assert.equal(runPollBudgetMs(undefined), null);
+  assert.equal(runPollBudgetMs(null), null);
+  assert.equal(runPollBudgetMs(0), null);
+  // A caller-set bound still gets the kill bound plus the 30s margin.
+  assert.equal(runPollBudgetMs(5), 5_000 + 30_000);
+  assert.equal(runPollBudgetMs(3_600), 3_600_000 + 30_000);
+  // Negative is nonsense the API would reject; treat it as unbounded rather
+  // than as an instantly-expired deadline.
+  assert.equal(runPollBudgetMs(-1), null);
+}
+
+async function testExplicitZeroReturnsAckWithoutPolling(): Promise<void> {
+  // time_to_background:0 is a pure pass-through — run() returns the running ack
   // immediately and never polls getRun().
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -442,13 +460,13 @@ async function testBackgroundTrueReturnsAckWithoutPolling(): Promise<void> {
     { run_id: "run_bg", state: "running" },
   );
 
-  const result = await client(fetch).vm("vm_1").run("sleep 999", { background: true });
+  const result = await client(fetch).vm("vm_1").run("sleep 999", { time_to_background: 0 });
 
   assert.equal(result.type, "background");
   assert.equal((result as { runId: string }).runId, "run_bg");
   // Only the POST — no polling.
   assert.equal(fetch.calls.length, 1);
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "sleep 999", background: true });
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { command: "sleep 999", time_to_background: 0 });
 }
 
 async function testConfiguredPlacementRoutesNamedSourcesToMainEndpoint(): Promise<void> {
@@ -1040,7 +1058,8 @@ await testRemovedNetworkInputsFailBeforeRequests();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();
-await testBackgroundTrueReturnsAckWithoutPolling();
+await testRunPollBudgetIsUnboundedWithoutACallerTimeout();
+await testExplicitZeroReturnsAckWithoutPolling();
 await testConfiguredPlacementRoutesNamedSourcesToMainEndpoint();
 testArbitraryProviderBuildsEndpoint();
 testPlacementRequiresSeparateProviderAndRegion();
@@ -1376,6 +1395,98 @@ async function testRetryAfterHintDrivesTheActualSleep(): Promise<void> {
 
 await testRetryHonoursServerRetryAfter();
 await testRetryAfterHintDrivesTheActualSleep();
+
+function unavailableBody(retryAfterS: number): unknown {
+  return {
+    error: {
+      code: "unavailable",
+      message: "at capacity",
+      retry_after: retryAfterS,
+      timestamp: new Date().toISOString(),
+    },
+  };
+}
+
+async function testQueueingTimeoutRetriesPastTheAttemptCap(): Promise<void> {
+  // The window is the budget: three failures exceed attempts=2, still succeeds.
+  const runs = (m: string, u: string) => m === "POST" && u.includes("/runs");
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  fetchImpl.addJson(runs, 200, { run_id: "run_q", state: "completed", exit_code: 0, stdout: "ok", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8" });
+  const client = new Arker({
+    apiKey: "k",
+    baseUrl: "http://x",
+    fetch: fetchImpl.fetch,
+    retry: { attempts: 2, baseDelayMs: 1, jitterMs: 0 },
+  });
+  const vm = client.vm("vm-1");
+  const result = await vm.run("echo ok", { queueing_timeout: 30 });
+  assert.equal(result.type, "completed");
+  assert.equal(fetchImpl.calls.length, 4, "the window must outlast attempts=2");
+}
+
+async function testQueueingWindowDrainsThenSurfacesUnavailable(): Promise<void> {
+  // 3s window, 1.1s hints: bodies re-send the remaining window (3, 2, 1),
+  // then the error surfaces without sleeping past the deadline.
+  const runs = (m: string, u: string) => m === "POST" && u.includes("/runs");
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson(runs, 503, unavailableBody(1.1));
+  fetchImpl.addJson(runs, 503, unavailableBody(1.1));
+  fetchImpl.addJson(runs, 503, unavailableBody(1.1));
+  const client = new Arker({
+    apiKey: "k",
+    baseUrl: "http://x",
+    fetch: fetchImpl.fetch,
+    retry: { attempts: 4, baseDelayMs: 1, jitterMs: 0 },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    client.vm("vm-1").run("true", { queueing_timeout: 3 }),
+    (error: unknown) => error instanceof ArkerError && error.code === "unavailable" && error.status === 503,
+  );
+  const elapsed = Date.now() - started;
+  const sent = fetchImpl.calls.map(
+    (call) => (JSON.parse(call.body ?? "{}") as { queueing_timeout?: number }).queueing_timeout,
+  );
+  assert.deepEqual(sent, [3, 2, 1]);
+  assert.ok(elapsed >= 2_000 && elapsed < 5_000, `waited ${elapsed}ms`);
+}
+
+async function testQueueingTimeoutRespectsRetryFalse(): Promise<void> {
+  // retry: false = exactly one request, window or not.
+  const runs = (m: string, u: string) => m === "POST" && u.includes("/runs");
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson(runs, 503, unavailableBody(0.05));
+  const client = new Arker({
+    apiKey: "k",
+    baseUrl: "http://x",
+    fetch: fetchImpl.fetch,
+    retry: false,
+  });
+  await assert.rejects(
+    client.vm("vm-1").run("true", { queueing_timeout: 30 }),
+    (error: unknown) => error instanceof ArkerError && error.code === "unavailable",
+  );
+  assert.equal(fetchImpl.calls.length, 1);
+}
+
+async function testForkForwardsQueueingTimeout(): Promise<void> {
+  // fork() builds its body from an explicit allowlist — pin that the field
+  // survives it. The retry mechanics are shared with run and tested there.
+  const fetchImpl = new FakeFetch();
+  fetchImpl.addJson((m, u) => m === "POST" && u.includes("/fork"), 200, { vm_id: "vm-9", state: "running" });
+  const client = new Arker({ apiKey: "k", baseUrl: "http://x", fetch: fetchImpl.fetch, retry: false });
+  await client.fork("arkuntu", { queueing_timeout: 30 });
+  const body = JSON.parse(fetchImpl.calls[0]!.body ?? "{}") as { queueing_timeout?: number };
+  assert.equal(body.queueing_timeout, 30);
+}
+
+await testQueueingTimeoutRetriesPastTheAttemptCap();
+await testQueueingWindowDrainsThenSurfacesUnavailable();
+await testQueueingTimeoutRespectsRetryFalse();
+await testForkForwardsQueueingTimeout();
 await testRunAndGetRunAgreeOnBinaryOutput();
 await testEveryByteValueRoundTrips();
 await testUtf8WireStillYieldsBothForms();
@@ -1842,23 +1953,24 @@ async function testAPollBlipDoesNotEndAnUnboundedWait(): Promise<void> {
   assert.equal((result as CompletedRunResult).exitCode, 0);
 }
 
-async function testTimeToBackgroundZeroMatchesBackgroundTrue(): Promise<void> {
-  // Both spellings of "don't wait" must behave identically. Measured against
-  // the live service, each answers 202 with a run id in ~0.2s; the client must
-  // hand that ack straight back rather than polling a command that is not
-  // meant to finish.
-  for (const options of [{ background: true }, { time_to_background: 0 }]) {
-    const stub = pollingFetch(() => ({ status: 200, body: RUNNING_RUN }));
-    const result = await withFakeClock(() => pollingClient(stub.fetch).vm("vm_1").run("node server.js", options));
-    assert.equal(result.type, "background", `${JSON.stringify(options)} must not wait`);
-    assert.equal((result as { runId: string }).runId, "run_bg");
-    assert.equal(stub.polls, 0, `${JSON.stringify(options)} must not poll; polled ${stub.polls}`);
-    assert.equal(stub.posts, 1);
-  }
+async function testTimeToBackgroundZeroReturnsTheAckWithoutPolling(): Promise<void> {
+  // `time_to_background: 0` is the ONLY spelling of "don't wait" the SDK
+  // exposes — #89 removed `background`, and arkerd resolves the two to the same
+  // zero-length sync window anyway, so nothing is lost. Measured against the
+  // live service, ttb=0 answers 202 with a run id in ~0.2s; the client must
+  // hand that ack straight back rather than polling a command that is not meant
+  // to finish.
+  const stub = pollingFetch(() => ({ status: 200, body: RUNNING_RUN }));
+  const result = await withFakeClock(() =>
+    pollingClient(stub.fetch).vm("vm_1").run("node server.js", { time_to_background: 0 }));
+  assert.equal(result.type, "background", "ttb=0 must not wait");
+  assert.equal((result as { runId: string }).runId, "run_bg");
+  assert.equal(stub.polls, 0, `ttb=0 must not poll; polled ${stub.polls}`);
+  assert.equal(stub.posts, 1);
 }
 
 await testUnsetTimeoutNeverGivesUpOnAStillRunningRun();
 await testExplicitTimeoutStillBoundsTheWait();
 await testPollingGivesUpWhenTheServiceStopsAnswering();
 await testAPollBlipDoesNotEndAnUnboundedWait();
-await testTimeToBackgroundZeroMatchesBackgroundTrue();
+await testTimeToBackgroundZeroReturnsTheAckWithoutPolling();

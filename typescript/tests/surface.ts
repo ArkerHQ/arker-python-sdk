@@ -79,7 +79,7 @@ rec("PASS", "fork → vmId", vmId);
 const computer = arker.vm(vmId);
 await call("Computer.get", () => computer.refresh());
 await call("Computer.run(echo)", () => computer.run("echo surface-hello"));
-const bg = await call("Computer.run(background)", () => computer.run("sleep 1; echo bg", { background: true } as any)) as any;
+const bg = await call("Computer.run(background)", () => computer.run("sleep 1; echo bg", { time_to_background: 0 } as any)) as any;
 await call("Computer.update", () => computer.update({ resources: { vcpu: 2 } }), { stubOk: true });
 
 // ── Runs ────────────────────────────────────────────────────────────

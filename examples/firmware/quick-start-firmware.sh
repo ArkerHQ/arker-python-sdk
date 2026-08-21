@@ -47,7 +47,7 @@ b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 # synchronous `arker run`) because agent runs routinely exceed the 300s HTTP request cap.
 run() {
   local rid
-  rid=$(arker run "$1" "{ set +x; } 2>/dev/null; $2" --background 2>/dev/null | jq -r '.run_id // empty' 2>/dev/null || true)
+  rid=$(arker run --time-to-background 0 "$1" "{ set +x; } 2>/dev/null; $2" 2>/dev/null | jq -r '.run_id // empty' 2>/dev/null || true)
   [ -n "${rid:-}" ] && until [ "$(arker runs get "$1" "$rid" 2>/dev/null | jq -r .state 2>/dev/null)" != running ]; do sleep 3; done
   return 0
 }

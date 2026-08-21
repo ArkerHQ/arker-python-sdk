@@ -36,7 +36,7 @@ wheels = [
 
 [[package]]
 name = "arker"
-version = "0.9.0"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx", extra = ["http2"] },

@@ -141,7 +141,8 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
     const result = await runCli(baseUrl, [
       "run",
-      "--background",
+      "--time-to-background",
+      "0",
       "--timeout",
       "1000",
       "vm_1",
@@ -152,7 +153,7 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
     assert.deepEqual(requests, [{
       method: "POST",
       url: "/api/v1/vms/vm_1/runs",
-      body: { background: true, timeout: 1000, command: "npm --version" },
+      body: { time_to_background: 0, timeout: 1000, command: "npm --version" },
     }]);
   });
 }
@@ -198,17 +199,26 @@ async function testUnknownRunOptionBeforeCommandFails(): Promise<void> {
   });
 }
 
+async function testRemovedBackgroundOptionFailsBeforeRequest(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["run", "--background", "vm_1", "echo", "ok"]);
+    assert.equal(result.code, 1);
+    assert.equal(requests.length, 0);
+    assert.match(result.stderr, /unknown parameter "background"/);
+  });
+}
+
 async function testNestedRunStopsAtRemoteCommand(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
-    const result = await runCli(baseUrl, ["vms", "run", "--background", "vm_1", "npm", "--version"]);
+    const result = await runCli(baseUrl, ["vms", "run", "--time-to-background", "0", "vm_1", "npm", "--version"]);
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(requests[0]?.body, { background: true, command: "npm --version" });
+    assert.deepEqual(requests[0]?.body, { time_to_background: 0, command: "npm --version" });
   });
 }
 
 async function testKnownButIrrelevantNestedOptionsFail(): Promise<void> {
   for (const args of [
-    ["vms", "get", "--background", "vm_1"],
+    ["vms", "get", "--timeout", "1", "vm_1"],
     ["runs", "get", "--state", "failed", "vm_1", "run_1"],
     ["sessions", "get", "--cwd", "/tmp", "vm_1", "session_1"],
     ["syncs", "rm", "--path", "/mnt", "vm_1", "sync_1"],
@@ -246,6 +256,38 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
   }
 }
 
+/// `--vgpu` is the only fractional resource flag, so it exercises the number
+/// option type as well as the fork wiring — an integer-only parser would have
+/// refused `0.25` outright.
+async function testForkForwardsVgpu(): Promise<void> {
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
+    async (baseUrl, requests) => {
+      const result = await runCli(baseUrl, ["fork", "--vgpu", "0.25", "source-vm"]);
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(
+        (requests[0]!.body as { resources: { vgpu: number } }).resources.vgpu,
+        0.25,
+      );
+    },
+  );
+
+  // Off the ladder, out of range, and non-numeric must all fail before any
+  // request is made — the server enforces eighths, so spending a round trip to
+  // be told so is pure latency.
+  for (const value of ["0", "1.5", "-0.5", "half", "0.3", "0.2", "0.0625"]) {
+    await withCapturedServer(
+      (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
+      async (baseUrl, requests) => {
+        const result = await runCli(baseUrl, ["fork", "--vgpu", value, "source-vm"]);
+        assert.equal(result.code, 1, `--vgpu ${value} must be refused`);
+        assert.equal(requests.length, 0, `--vgpu ${value} must not reach the server`);
+      },
+    );
+  }
+}
+
 async function testForkForwardsGpuResourceOptions(): Promise<void> {
   await withCapturedServer(
     (_request, res) => jsonResponse(res, { vm_id: "vm_gpu" }),
@@ -277,6 +319,7 @@ async function testForkForwardsGpuResourceOptions(): Promise<void> {
             vcpu: null,
             memory_mib: null,
             disk_mib: null,
+            vgpu: null,
             gpu_vram_mib: 24576,
             gpu_sms: 8,
           },
@@ -533,6 +576,84 @@ async function testEmptyPipedInputWritesZeroBytes(): Promise<void> {
   });
 }
 
+// `-` is the explicit "write stdin" form. It exists so a caller never has to
+// rely on stdin sniffing, which cannot distinguish an idle inherited pipe from
+// a producer that has not written yet.
+async function testSyncDashWritesStdin(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {
+    results: [{ complete: true, written: true }],
+  }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/a.txt", "-"], { stdin: "hi\n" });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(stdoutText(result), "wrote 3 bytes to /tmp/a.txt\n");
+    assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/sync-stream?path=%2Ftmp%2Fa.txt&size=3");
+  });
+}
+
+// --read is the explicit "read" form: it must win even when data is piped in,
+// so a script can force the direction rather than inherit it from its parent.
+async function testSyncReadFlagIgnoresPipedStdin(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {
+    content: "aGVsbG8=",
+    encoding: "base64",
+  }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/a.txt", "--read"], { stdin: "ignored" });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(result.stdout, Buffer.from("hello"));
+    assert.deepEqual(requests, [{
+      method: "POST",
+      url: "/api/v1/vms/vm_1/sync",
+      body: { op: "read", path: "/tmp/a.txt" },
+    }]);
+  });
+}
+
+async function testSyncReadFlagRejectsDataArgument(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sync", "vm_1", "/tmp/a.txt", "data", "--read"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /--read takes no data argument/);
+    assert.equal(requests.length, 0, "must fail before touching the network");
+  });
+}
+
+async function testSignalValidatesNameBeforeRequest(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["signal", "vm_1", "SIGBOGUS"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /unknown signal SIGBOGUS/);
+    assert.equal(requests.length, 0, "must fail before touching the network");
+  });
+}
+
+async function testSignalForwardsSignalAndSession(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["signal", "vm_1", "sigterm", "--session-id", "s_1"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/runs");
+    assert.deepEqual(requests[0]?.body, { signal: "SIGTERM", session_id: "s_1" });
+  });
+}
+
+async function testSessionsUpdateForwardsPatch(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, { ok: true, session_id: "s_1" }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sessions", "update", "vm_1", "s_1", "--cols", "120", "--timeout-secs", "600"]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(requests[0]?.method, "PATCH");
+    assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/sessions/s_1");
+    assert.deepEqual(requests[0]?.body, { cols: 120, timeout_secs: 600 });
+  });
+}
+
+async function testSessionsUpdateRequiresAField(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["sessions", "update", "vm_1", "s_1"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /at least one of --cols, --rows, --timeout-secs/);
+    assert.equal(requests.length, 0, "must fail before touching the network");
+  });
+}
+
 async function testNoPipeReadsFileBytes(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, {
     content: "/wD+",
@@ -778,10 +899,12 @@ await testRunOptionAfterVmBeforeCommand();
 await testRunOptionSeparator();
 await testRunPreservesArgumentBoundaries();
 await testUnknownRunOptionBeforeCommandFails();
+await testRemovedBackgroundOptionFailsBeforeRequest();
 await testNestedRunStopsAtRemoteCommand();
 await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
 await testForkForwardsGpuResourceOptions();
+await testForkForwardsVgpu();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
 await testArbitraryProviderFlagIsAccepted();
@@ -796,6 +919,13 @@ await testRunFailureReasonIsVisible();
 await testRunsGetUsesRunFormatter();
 await testRunHumanWarnsOnPartialMemory();
 await testEmptyPipedInputWritesZeroBytes();
+await testSyncDashWritesStdin();
+await testSyncReadFlagIgnoresPipedStdin();
+await testSyncReadFlagRejectsDataArgument();
+await testSignalValidatesNameBeforeRequest();
+await testSignalForwardsSignalAndSession();
+await testSessionsUpdateForwardsPatch();
+await testSessionsUpdateRequiresAField();
 await testNoPipeReadsFileBytes();
 await testShellSetupUsesPackagedCli();
 await testShellRequiresVmOrSourceBeforeRequest();
