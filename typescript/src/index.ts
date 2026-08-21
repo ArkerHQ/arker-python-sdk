@@ -195,8 +195,17 @@ const RUN_POLL_MAX_MS = 3_000;
 const RUN_POLL_BACKOFF = 1.5;
 // Slack beyond the run's kill bound before we stop polling and surface a timeout.
 const RUN_POLL_MARGIN_MS = 30_000;
-// Server default kill bound (seconds) used when `timeout` is unset or 0 (disabled).
-const DEFAULT_RUN_TIMEOUT_SECS = 3_600;
+// A run with no `timeout` is unbounded by design: the service does not kill it,
+// so this client does not impose a deadline of its own either. `timeout` is the
+// single knob — set it for a bound, omit it and the run may take as long as it
+// takes.
+//
+// What still ends an unbounded wait is the SERVICE becoming unreachable: this
+// many CONSECUTIVE failed status checks. Any answered check resets the counter
+// (a run reported as still `running` is a successful check), so a long-running
+// command and a transient network blip both survive; only a service that has
+// stopped responding throws.
+const RUN_POLL_MAX_CONSECUTIVE_FAILURES = 10;
 // Terminal run states — RunState ("running" | "completed" | "failed" |
 // "cancelled") minus the sole non-terminal "running".
 const TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
@@ -1141,18 +1150,23 @@ export class VM {
    * (`time_to_background`, default 120s) the API returns a background ack
    * with a `run_id`; run() then transparently polls {@link getRun} until the
    * run reaches a terminal state and resolves to the completed run — so a
-   * synchronous caller always receives the final result. Polling is bounded
-   * by `timeout` when you set one, and otherwise by a CLIENT-side budget of
-   * 3600s — that budget is this SDK giving up waiting, NOT a server kill
-   * bound. Per the contract, omitting `timeout` and passing `0` mean the same
-   * thing: no limit, so the host never kills the run. If the budget is
-   * exceeded run() throws an ArkerError with code `"timeout"` and the run
-   * KEEPS EXECUTING server-side — poll {@link getRun} to retrieve it, or pass
-   * an explicit `timeout` if you want the host to actually stop it.
+   * synchronous caller always receives the final result. Polling is bounded by
+   * `timeout` when you set one. Omitting `timeout` (or passing `0`, the same
+   * thing) means NO limit — the host never kills the run, and this client does
+   * not impose a deadline the service would not honour, so run() waits as long
+   * as the command takes. What still ends the wait is the service going
+   * unreachable: after 10 consecutive failed status checks run() throws
+   * `"unavailable"`. Any answered check resets that count, so a transient blip
+   * is survived.
    *
-   * Pass `background: true` to skip the wait entirely: run() returns the
-   * running acknowledgement (`{ type: "background", runId }`) immediately and
-   * you manage polling yourself via {@link getRun}.
+   * When a bounded run exceeds its budget run() throws an ArkerError with code
+   * `"timeout"` and the run KEEPS EXECUTING server-side — poll {@link getRun}
+   * to retrieve it.
+   *
+   * To skip the wait entirely, pass `background: true` OR `time_to_background:
+   * 0` — they are equivalent. run() returns the running acknowledgement
+   * (`{ type: "background", runId }`) immediately and you poll {@link getRun}
+   * yourself.
    */
   async run(command: string, options?: RunOptions & { background?: false | null }): Promise<CompletedRunResult>;
   async run(command: string, options: RunOptions & { background: true }): Promise<BackgroundRunResult>;
@@ -1171,10 +1185,16 @@ export class VM {
     );
     const result = parseRunResponse(response);
     // The server backgrounds a run that outlived its sync window. When the
-    // caller did NOT request background, poll getRun() to a terminal state
+    // caller did NOT ask to skip the wait, poll getRun() to a terminal state
     // and hand back the completed run so the synchronous call is transparent.
-    // background:true is a pure pass-through — return the ack immediately.
-    if (result.type === "background" && options.background !== true) {
+    //
+    // BOTH spellings of "don't wait" are honoured. Measured against the live
+    // service, `background: true` and `time_to_background: 0` both answer 202
+    // with a run id in ~0.2s, so the two must behave identically here —
+    // starting a long-lived process (a server, a watcher) with either one
+    // returns its run id instead of waiting for something not meant to finish.
+    const askedNotToWait = options.background === true || options.time_to_background === 0;
+    if (result.type === "background" && !askedNotToWait) {
       return this._awaitRun(result.runId, options.timeout);
     }
     return result;
@@ -1245,18 +1265,47 @@ export class VM {
    * throws `"timeout"` if the budget is exceeded.
    */
   private async _awaitRun(runId: string, timeoutSecs?: number | null): Promise<CompletedRunResult> {
-    const killBoundSecs = timeoutSecs && timeoutSecs > 0 ? timeoutSecs : DEFAULT_RUN_TIMEOUT_SECS;
-    const budgetMs = killBoundSecs * 1000 + RUN_POLL_MARGIN_MS;
-    const deadline = Date.now() + budgetMs;
+    // Two different failures, deliberately kept apart:
+    //
+    //   HOW LONG THE COMMAND RUNS is the service's decision. `timeout` is a
+    //   server-side kill bound; omitting it means the run is unbounded, so this
+    //   loop waits with it rather than imposing a deadline the service does not
+    //   honour.
+    //
+    //   WHETHER THE SERVICE IS REACHABLE is this client's decision. If the
+    //   status checks themselves keep failing, waiting forever helps nobody, so
+    //   give up after consecutive failures. One success resets the count.
+    const bounded = typeof timeoutSecs === "number" && timeoutSecs > 0;
+    const budgetMs = bounded ? timeoutSecs! * 1000 + RUN_POLL_MARGIN_MS : undefined;
+    const deadline = budgetMs === undefined ? undefined : Date.now() + budgetMs;
     let delay = RUN_POLL_INITIAL_MS;
+    let consecutiveFailures = 0;
     for (;;) {
       await sleep(delay);
-      const run = await this.getRun(runId);
+      let run: RunRecord;
+      try {
+        run = await this.getRun(runId);
+      } catch (error) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= RUN_POLL_MAX_CONSECUTIVE_FAILURES) {
+          const code = error instanceof ArkerError ? error.code : "unavailable";
+          throw new ArkerError(
+            "unavailable",
+            `run ${runId}: ${consecutiveFailures} consecutive poll failures ` +
+              `(last: ${code}); the run may still be going server-side — poll ` +
+              `getRun(${JSON.stringify(runId)}) to retrieve it`,
+            0,
+          );
+        }
+        delay = Math.min(RUN_POLL_MAX_MS, Math.ceil(delay * RUN_POLL_BACKOFF));
+        continue;
+      }
+      consecutiveFailures = 0;
       if (TERMINAL_RUN_STATES.has(run.state)) return runToCompletedResult(run);
-      if (Date.now() >= deadline) {
+      if (deadline !== undefined && Date.now() >= deadline) {
         throw new ArkerError(
           "timeout",
-          `run ${runId} did not reach a terminal state within ${Math.round(budgetMs / 1000)}s; ` +
+          `run ${runId} did not reach a terminal state within ${Math.round(budgetMs! / 1000)}s; ` +
             `it continues server-side — poll getRun(${JSON.stringify(runId)}) to retrieve it`,
           0,
         );

@@ -1728,3 +1728,137 @@ await testStatCacheSurvivesCorruptionAndBadVersion();
 await testStatCacheIsBestEffortWhenUnwritable();
 await testStatCacheNotWrittenWhenUploadFails();
 await testCallerSuppliedCacheBypassesDisk();
+
+// ── run() wait contract ──────────────────────────────────────────────────────
+// Mirrors the Python suite. `timeout` is a SERVER-side kill bound; omitting it
+// means the run is unbounded, so this client must not impose a deadline of its
+// own. What still ends an unbounded wait is the SERVICE going unreachable.
+//
+// These drive real polling loops, so they run on a virtual clock: setTimeout
+// fires immediately while Date.now() advances by the requested delay. Without
+// it, asserting "still waiting after 3600s" would take an hour.
+async function withFakeClock<T>(fn: () => Promise<T>): Promise<T> {
+  const realSetTimeout = globalThis.setTimeout;
+  const realNow = Date.now;
+  let now = realNow();
+  (globalThis as unknown as { setTimeout: unknown }).setTimeout = ((cb: () => void, ms?: number) => {
+    now += ms ?? 0;
+    return realSetTimeout(cb, 0);
+  }) as unknown as typeof globalThis.setTimeout;
+  Date.now = () => now;
+  try {
+    return await fn();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    Date.now = realNow;
+  }
+}
+
+// A COMPLETE error envelope. `timestamp` is not decoration: without it the
+// SDK cannot parse the wire code and reports `internal`, so a fixture missing
+// it would silently exercise a path the real service never produces.
+const UNAVAILABLE_ENVELOPE = { error: { code: "unavailable", message: "slot busy", timestamp: "2026-08-21T00:00:00.000Z", retry_after: 1, retryable: true } };
+const RUNNING_RUN = { run_id: "run_bg", state: "running", started_at: "now", exit_code: null, stdout: "", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8" };
+const COMPLETED_RUN = { run_id: "run_bg", state: "completed", started_at: "now", exit_code: 0, stdout: "done\n", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8" };
+
+/** A fetch whose Nth poll response is decided by `plan` — no per-call scripting. */
+function pollingFetch(plan: (pollIndex: number) => { status: number; body: unknown }) {
+  let polls = 0;
+  const state = {
+    posts: 0,
+    get polls() { return polls; },
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const method = init?.method ?? "GET";
+      const json = (status: number, body: unknown) =>
+        new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+      if (method === "POST") {
+        state.posts += 1;
+        return json(200, { run_id: "run_bg", state: "running" });
+      }
+      const { status, body } = plan(polls++);
+      return json(status, body);
+    }) as unknown as typeof globalThis.fetch,
+  };
+  return state;
+}
+
+function pollingClient(fetch: typeof globalThis.fetch): Arker {
+  return new Arker({ apiKey: "ark_live_test", baseUrl: "https://test.invalid/api/", fetch, retry: false });
+}
+
+async function testUnsetTimeoutNeverGivesUpOnAStillRunningRun(): Promise<void> {
+  // THE regression assertion. The old client capped an unset timeout at a
+  // 3600s CLIENT-side budget and threw "timeout" on a run that was perfectly
+  // healthy. 1500 polls at the 3s cap is >4500s of virtual time — comfortably
+  // past that old budget — and it must still resolve.
+  const stub = pollingFetch((n) => ({ status: 200, body: n < 1500 ? RUNNING_RUN : COMPLETED_RUN }));
+  const result = await withFakeClock(() => pollingClient(stub.fetch).vm("vm_1").run("sleep forever"));
+  assert.equal(result.type, "completed");
+  assert.equal((result as CompletedRunResult).exitCode, 0);
+  assert.ok(stub.polls > 1500, `expected to poll past the old 3600s budget, polled ${stub.polls}`);
+}
+
+async function testExplicitTimeoutStillBoundsTheWait(): Promise<void> {
+  // Opting IN to a bound must still work: timeout=2 gives a 2s kill bound plus
+  // the 30s margin, and a run that never terminates has to throw "timeout".
+  const stub = pollingFetch(() => ({ status: 200, body: RUNNING_RUN }));
+  await assert.rejects(
+    withFakeClock(() => pollingClient(stub.fetch).vm("vm_1").run("sleep 999", { timeout: 2 })),
+    (error: unknown) => {
+      assert.ok(error instanceof ArkerError);
+      assert.equal((error as ArkerError).code, "timeout");
+      assert.match((error as ArkerError).message, /continues server-side/);
+      return true;
+    },
+  );
+}
+
+async function testPollingGivesUpWhenTheServiceStopsAnswering(): Promise<void> {
+  // An unbounded wait is not an infinite one. If the status checks themselves
+  // stop answering, waiting forever helps nobody — bail after 10 consecutive.
+  const stub = pollingFetch(() => ({ status: 503, body: UNAVAILABLE_ENVELOPE }));
+  await assert.rejects(
+    withFakeClock(() => pollingClient(stub.fetch).vm("vm_1").run("sleep 999")),
+    (error: unknown) => {
+      assert.ok(error instanceof ArkerError);
+      assert.equal((error as ArkerError).code, "unavailable");
+      assert.match((error as ArkerError).message, /10 consecutive poll failures/);
+      assert.match((error as ArkerError).message, /last: unavailable/, "the wire code must survive into the summary");
+      return true;
+    },
+  );
+  assert.equal(stub.polls, 10, `must stop at exactly 10 failures, polled ${stub.polls}`);
+}
+
+async function testAPollBlipDoesNotEndAnUnboundedWait(): Promise<void> {
+  // CONSECUTIVE is the whole point: a transient blip must not kill a healthy
+  // long-running run, and any answered check resets the counter.
+  const stub = pollingFetch((n) => {
+    if (n < 3 || (n > 3 && n < 7)) return { status: 503, body: UNAVAILABLE_ENVELOPE };
+    return { status: 200, body: n < 20 ? RUNNING_RUN : COMPLETED_RUN };
+  });
+  const result = await withFakeClock(() => pollingClient(stub.fetch).vm("vm_1").run("long job"));
+  assert.equal(result.type, "completed");
+  assert.equal((result as CompletedRunResult).exitCode, 0);
+}
+
+async function testTimeToBackgroundZeroMatchesBackgroundTrue(): Promise<void> {
+  // Both spellings of "don't wait" must behave identically. Measured against
+  // the live service, each answers 202 with a run id in ~0.2s; the client must
+  // hand that ack straight back rather than polling a command that is not
+  // meant to finish.
+  for (const options of [{ background: true }, { time_to_background: 0 }]) {
+    const stub = pollingFetch(() => ({ status: 200, body: RUNNING_RUN }));
+    const result = await withFakeClock(() => pollingClient(stub.fetch).vm("vm_1").run("node server.js", options));
+    assert.equal(result.type, "background", `${JSON.stringify(options)} must not wait`);
+    assert.equal((result as { runId: string }).runId, "run_bg");
+    assert.equal(stub.polls, 0, `${JSON.stringify(options)} must not poll; polled ${stub.polls}`);
+    assert.equal(stub.posts, 1);
+  }
+}
+
+await testUnsetTimeoutNeverGivesUpOnAStillRunningRun();
+await testExplicitTimeoutStillBoundsTheWait();
+await testPollingGivesUpWhenTheServiceStopsAnswering();
+await testAPollBlipDoesNotEndAnUnboundedWait();
+await testTimeToBackgroundZeroMatchesBackgroundTrue();

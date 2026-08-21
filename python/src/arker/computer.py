@@ -112,11 +112,10 @@ CHUNK_SIZE = 4 * 1024 * 1024
 # blob path, where resumable multipart genuinely earns its double transfer.
 INLINE_WRITE_LIMIT = 16 * 1024 * 1024
 
-# Largest body `/sync-stream` accepts through the public edge. The router
-# buffers proxied bodies and caps them (DEFAULT_PROXY_BODY_LIMIT in
-# arkerd-router), which overrides the worker's own disabled limit. Measured
-# against a live env: 64 MiB returns 200, 72 MiB returns 413
-# `payload_too_large` — the limit is exact and fails loudly, never truncating.
+# Largest body `/sync-stream` accepts through the public edge, which buffers and
+# caps proxied bodies. Measured against a live endpoint: 64 MiB returns 200,
+# 72 MiB returns 413 `payload_too_large` — the limit is exact and fails loudly,
+# never truncating.
 STREAM_MAX_BYTES = 64 * 1024 * 1024
 
 # Below this a compressibility sample is not worth taking; above it sync_dir
@@ -147,11 +146,17 @@ RUN_POLL_MAX_S = 3.0
 RUN_POLL_BACKOFF = 1.5
 # Slack beyond the run's kill bound before we stop polling and raise a timeout.
 RUN_POLL_MARGIN_S = 30.0
-# CLIENT-side polling budget (seconds) used when ``timeout`` is unset or 0.
-# This is NOT a server kill bound — the service leaves such runs unbounded
-# (openapi RunRequest.timeout: "Omitted means no limit"). When this budget
-# expires the SDK stops waiting and raises; the run continues server-side.
-DEFAULT_RUN_TIMEOUT_S = 3600
+# A run with no ``timeout`` is unbounded by design: the service does not kill it,
+# so this client does not impose a deadline of its own either. ``timeout`` is the
+# single knob — set it for a bound, omit it and the run may take as long as it
+# takes.
+#
+# What still ends an unbounded wait is the SERVICE becoming unreachable: this
+# many CONSECUTIVE failed status checks. Any answered check resets the counter
+# (a run reported as still ``running`` is a successful check), so a long-running
+# command and a transient network blip both survive; only a service that has
+# stopped responding raises.
+RUN_POLL_MAX_CONSECUTIVE_FAILURES = 10
 # Terminal run states — RunState ("running" | "completed" | "failed" |
 # "cancelled") minus the sole non-terminal "running".
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
@@ -685,10 +690,9 @@ class Arker:
             cursor=cursor, limit=limit, name_prefix=name_prefix
         )
         path = _build_query("/v1/filesystems", parameters)
-        # Filesystems are region-scoped and served by arkerd directly. Route to
-        # the regional endpoint (base_url) rather than the control plane: the
-        # control-plane path (arker.ai → api_proxy_bash) does not route
-        # /v1/filesystems, while the regional NLB → arkerd serves it.
+        # Filesystems are region-scoped, so this goes to the regional endpoint
+        # (base_url) rather than the control plane, which does not serve
+        # /v1/filesystems.
         payload = self._request("GET", path, base_url=self._base_url)
         return _decode_model(ListFilesystemsResponse, payload)
 
@@ -915,10 +919,18 @@ class VM:
             extra_headers=headers,
         ))
         # The server backgrounds a run that outlived its sync window. When the
-        # caller did NOT request background, poll get_run() to a terminal state
-        # and hand back the completed run so the synchronous call is
-        # transparent. background=True is a pure pass-through — return the ack.
-        if isinstance(result, BackgroundRunResult) and background is not True:
+        # caller did NOT ask to skip the wait, poll get_run() to a terminal state
+        # and hand back the completed run so the synchronous call is transparent.
+        #
+        # BOTH spellings of "don't wait" are honoured. Measured against the live
+        # service, ``background=True`` and ``time_to_background=0`` both answer
+        # 202 with a run id in ~0.2s, so the two must behave identically here —
+        # starting a long-lived process (a server, a watcher) with either one
+        # returns its run id instead of waiting for a command that is not meant
+        # to finish. (``openapi.json`` still documents ``0`` as a ``bad_request``;
+        # the deployed service accepts it, so the description is stale.)
+        asked_not_to_wait = background is True or time_to_background == 0
+        if isinstance(result, BackgroundRunResult) and not asked_not_to_wait:
             return self._await_run(result.run_id, timeout)
         return result
 
@@ -929,16 +941,41 @@ class VM:
         that outlived its sync window. Bounded by ``timeout`` (the run's kill
         bound) plus a margin; raises an :class:`ArkerError` with code
         ``"timeout"`` if the budget is exceeded."""
-        kill_bound_s = timeout if (timeout is not None and timeout > 0) else DEFAULT_RUN_TIMEOUT_S
-        budget_s = kill_bound_s + RUN_POLL_MARGIN_S
-        deadline = time.monotonic() + budget_s
+        # Two different failures, deliberately kept apart:
+        #
+        #   HOW LONG THE COMMAND RUNS is the service's decision. ``timeout`` is a
+        #   server-side kill bound; omitting it means the run is unbounded, so
+        #   this loop waits with it rather than imposing a deadline the service
+        #   does not honour.
+        #
+        #   WHETHER THE SERVICE IS REACHABLE is this client's decision. If the
+        #   status checks themselves keep failing, waiting forever helps nobody,
+        #   so give up after consecutive failures. One success resets the count.
+        bounded = timeout is not None and timeout > 0
+        budget_s = (timeout + RUN_POLL_MARGIN_S) if bounded else None
+        deadline = (time.monotonic() + budget_s) if bounded else None
         delay = RUN_POLL_INITIAL_S
+        consecutive_failures = 0
         while True:
             time.sleep(delay)
-            run = self.get_run(run_id)
+            try:
+                run = self.get_run(run_id)
+            except ArkerError as e:
+                consecutive_failures += 1
+                if consecutive_failures >= RUN_POLL_MAX_CONSECUTIVE_FAILURES:
+                    raise ArkerError(
+                        "unavailable",
+                        f"run {run_id}: {consecutive_failures} consecutive poll "
+                        f"failures (last: {e.code}); the run may still be going "
+                        f'server-side — poll get_run("{run_id}") to retrieve it',
+                        0,
+                    ) from e
+                delay = min(RUN_POLL_MAX_S, delay * RUN_POLL_BACKOFF)
+                continue
+            consecutive_failures = 0
             if run.state in TERMINAL_RUN_STATES:
                 return _run_to_completed_result(run)
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise ArkerError(
                     "timeout",
                     f"run {run_id} did not reach a terminal state within "
@@ -1977,11 +2014,10 @@ def _decode_model(model: type[Model], payload: dict[str, Any]) -> Model:
     """Decode a response model, IGNORING fields this SDK does not know.
 
     Forward compatibility is the point. Adding a field to a response is an
-    additive, non-breaking change on the server — but this decoder used to
-    raise `TypeError: ... contains fields outside openapi.json` for any
-    unrecognised key, which made every such addition break EVERY already
-    released SDK at once. A client pinned to an older version could not even
-    `fork()` against a newer deployment.
+    additive, non-breaking change on the server — but this decoder used to raise
+    a `TypeError` for any unrecognised key, which made every such addition break
+    every already released version of this SDK at once. A client pinned to an
+    older version could not even `fork()` against a newer deployment.
 
     The strictness was protecting against a legacy/incorrect response SHAPE
     (see `test_fork_rejects_legacy_id_response`, where the server returns

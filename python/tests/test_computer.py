@@ -1780,3 +1780,198 @@ def test_retry_after_hint_drives_the_actual_sleep() -> None:
         ).fork(source_vm_name="source-vm")
     assert time.monotonic() - started >= 0.045
     assert len(t.calls) == 2
+
+
+# ── run(): what bounds the wait, and what does not ──────────────────────────
+# `timeout` is the SERVER-side kill bound (run_command.rs: "timeout: N kills the
+# command after N seconds; zero is unbounded"). The SDK used to substitute a
+# 3600s client deadline when it was unset, which raised `timeout` on runs the
+# service was still executing — an hour-long stall on a deliberately unbounded
+# server run. These pin the corrected contract in both directions.
+
+def test_unset_timeout_never_gives_up_on_a_still_running_run(monkeypatch) -> None:
+    """No `timeout` = no client deadline. The poll loop must keep waiting.
+
+    Fails on the old code, which raised after its 3600s budget: here the clock
+    is advanced past that budget while every poll answers 200 `running`.
+    """
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    clock = {"t": 0.0}
+    # Each read jumps an hour, so any surviving 3600s-style deadline trips fast.
+    def fake_monotonic() -> float:
+        clock["t"] += 3600.0
+        return clock["t"]
+    monkeypatch.setattr(sdk.time, "monotonic", fake_monotonic)
+
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_srv", "state": "running"},
+    )
+    running = {"run_id": "run_srv", "state": "running", "started_at": "now",
+               "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
+               "stderr": "", "stderr_encoding": "utf-8"}
+    for _ in range(25):  # far more polls than any hour-based budget would allow
+        t.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_srv"),
+            200, running,
+        )
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_srv"),
+        200, {**running, "state": "completed", "exit_code": 0, "stdout": "bye\n"},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("node server.js")
+
+    assert result.state == "completed"
+    assert result.stdout == "bye\n"
+    # It really did keep polling rather than bailing early.
+    assert sum(1 for c in t.calls if c["method"] == "GET") == 26
+
+
+def test_explicit_timeout_still_bounds_the_wait(monkeypatch) -> None:
+    """Setting `timeout` must still produce a bounded wait and a `timeout` error.
+
+    Removing the default must not remove the knob — without this, "no timeouts"
+    could be implemented by never timing out at all and nothing would notice.
+    """
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    clock = {"t": 0.0}
+    def fake_monotonic() -> float:
+        clock["t"] += 5.0
+        return clock["t"]
+    monkeypatch.setattr(sdk.time, "monotonic", fake_monotonic)
+
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_bound", "state": "running"},
+    )
+    for _ in range(60):
+        t.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_bound"),
+            200, {"run_id": "run_bound", "state": "running", "started_at": "now",
+                  "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
+                  "stderr": "", "stderr_encoding": "utf-8"},
+        )
+
+    with use_transport(t), pytest.raises(sdk.ArkerError) as excinfo:
+        client().vm("vm_1").run("sleep 999", timeout=10)
+
+    assert excinfo.value.code == "timeout"
+    # The message must tell the caller the run survives server-side.
+    assert "run_bound" in str(excinfo.value)
+
+
+def test_polling_gives_up_when_the_service_stops_answering(monkeypatch) -> None:
+    """An unbounded wait still ends if the SERVICE goes away — but only then."""
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_gone", "state": "running"},
+    )
+    for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES + 2):
+        t.add_json(
+            lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_gone"),
+            503, {"error": {"code": "unavailable", "message": "service temporarily unavailable"}},
+        )
+
+    with use_transport(t), pytest.raises(sdk.ArkerError) as excinfo:
+        client().vm("vm_1").run("node server.js")
+
+    assert excinfo.value.code == "unavailable"
+    assert "consecutive poll failures" in str(excinfo.value)
+
+
+def test_a_poll_blip_does_not_end_an_unbounded_wait(monkeypatch) -> None:
+    """A 200 resets the failure count, so a blip mid-run is survivable.
+
+    This is the difference between "the service is gone" and "one request lost".
+    """
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_blip", "state": "running"},
+    )
+    is_get = lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_blip")
+    running = {"run_id": "run_blip", "state": "running", "started_at": "now",
+               "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
+               "stderr": "", "stderr_encoding": "utf-8"}
+    # Blip, recover, blip again — never MAX consecutive — then finish.
+    for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES - 1):
+        t.add_json(is_get, 503, {"error": {"code": "unavailable", "message": "blip"}})
+    t.add_json(is_get, 200, running)
+    for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES - 1):
+        t.add_json(is_get, 503, {"error": {"code": "unavailable", "message": "blip"}})
+    t.add_json(is_get, 200, {**running, "state": "completed", "exit_code": 0, "stdout": "ok\n"})
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("node server.js")
+
+    assert result.state == "completed"
+    assert result.stdout == "ok\n"
+
+
+def test_time_to_background_zero_matches_background_true(monkeypatch) -> None:
+    """The two spellings of "don't wait" must behave identically.
+
+    openapi.json: `background` is a "DEPRECATED alias for `time_to_background`;
+    `true` is exactly `time_to_background: 0`". The SDK used to poll for the
+    canonical field and pass through for the alias, so the alias behaved UNLIKE
+    the thing it aliases. A caller starting a server with `time_to_background=0`
+    got its run id from the server and then blocked in the client forever.
+    """
+    slept: list[float] = []
+    monkeypatch.setattr(sdk.time, "sleep", lambda s: slept.append(s))
+
+    def ack_only() -> FakeTransport:
+        t = FakeTransport()
+        t.add_json(
+            lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+            200, {"run_id": "run_srv", "state": "running"},
+        )
+        # Deliberately script NO get_run: any poll would 404 and fail loudly,
+        # which is what we want — it proves no polling happened.
+        return t
+
+    t1 = ack_only()
+    with use_transport(t1):
+        r1 = client().vm("vm_1").run("node server.js", time_to_background=0)
+    t2 = ack_only()
+    with use_transport(t2):
+        r2 = client().vm("vm_1").run("node server.js", background=True)
+
+    assert isinstance(r1, sdk.BackgroundRunResult), "ttb=0 must return the ack, not poll"
+    assert isinstance(r2, sdk.BackgroundRunResult)
+    assert r1.state == r2.state == "running"
+    # Neither made a single get_run call.
+    assert [c["method"] for c in t1.calls] == ["POST"]
+    assert [c["method"] for c in t2.calls] == ["POST"]
+    assert slept == [], f"neither spelling should sleep/poll; slept={slept}"
+
+
+def test_the_default_sync_path_still_polls_to_completion(monkeypatch) -> None:
+    """Guard the other direction: honouring ttb=0 must not stop the DEFAULT
+    synchronous run() from polling a backgrounded run to a terminal state."""
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
+        200, {"run_id": "run_d", "state": "running"},
+    )
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_d"),
+        200, {"run_id": "run_d", "state": "completed", "started_at": "now", "exit_code": 0,
+              "stdout": "fin\n", "stdout_encoding": "utf-8", "stderr": "",
+              "stderr_encoding": "utf-8"},
+    )
+
+    with use_transport(t):
+        result = client().vm("vm_1").run("sleep 1")
+
+    assert isinstance(result, sdk.CompletedRunResult)
+    assert result.stdout == "fin\n"
+    assert [c["method"] for c in t.calls] == ["POST", "GET"]
