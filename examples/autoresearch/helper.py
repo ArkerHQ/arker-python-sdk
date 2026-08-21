@@ -1,6 +1,6 @@
 """Everything in this demo that is NOT an Arker primitive.
 
-autoresearch.py keeps fork / run / delete and the concurrency; the task, the
+autoresearch.py keeps fork / run / policies / delete and the concurrency; the task, the
 prep recipe, the run folder, the logging and the saved summary live here, so
 that file reads as "what the platform does". The pictures are in charts.py.
 """
@@ -12,7 +12,6 @@ import time
 
 AGENTS = int(os.environ.get("AGENTS", 4))
 TURNS = int(os.environ.get("TURNS", 8))
-PLATFORM = os.environ.get("PLATFORM", "x86_64-h100sxm")
 
 HERE = pathlib.Path(__file__).parent
 RESULTS = HERE / "results"
@@ -97,18 +96,30 @@ def turn_done(agent: str, turn: int, tsv: str, stdout: str = "") -> None:
         f"— val_loss {last_loss(tsv)}")
 
 
-# Prep is run stage by stage instead of as one silent 3-minute call, so a slow
-# torch wheel or npm install is visible while it happens.
-STAGE_PREFIX = "set -e\nexport PATH=/usr/local/bin:$PATH HOME=/home/user\nmkdir -p ~/lab\n"
-SETUP_STAGES = [
-    ("uv + venv", "curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh\n"
-                  "cd ~/lab && uv venv"),
-    ("torch (cu124)", "cd ~/lab && uv pip install -q torch --index-url https://download.pytorch.org/whl/cu124"),
-    ("node 22", "curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz\n"
-                "tar -xf /tmp/node.tar.xz -C /usr/local --strip-components=1"),
-    ("pi coding agent", "npm i -g --ignore-scripts @earendil-works/pi-coding-agent"),
-    ("verify torch", "cd ~/lab && .venv/bin/python -c 'import torch; print(\"torch\", torch.__version__)'"),
-]
+# The prep VM's install steps, one shell snippet each, run as separate execs
+# from autoresearch.py so each one is a readable line there rather than a wall
+# of bash.
+#
+# A run() that names no session lands in session 0, the VM's default shell,
+# and that shell is stateful: the exports and the cwd below are still in place
+# for every later run — and, because sessions survive a fork, for every agent
+# forked off prep. So the environment is set once, here, and nothing after it
+# re-exports or re-cds. Multi-command stages chain with && rather than set -e,
+# which does not carry between runs.
+# OPENROUTER_API_KEY is deliberately a placeholder: `pi` refuses to start
+# without one set, but the real key never reaches the VM — the policy on each
+# agent fork injects the real one into its requests. See run_agent().
+SETUP_SHELL = ("export PATH=/usr/local/bin:$PATH HOME=/home/user"
+               " OPENROUTER_API_KEY=injected-by-policy; mkdir -p ~/lab; cd ~/lab")
+
+INSTALL_UV = ("curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
+              " && uv venv")
+INSTALL_TORCH = "uv pip install -q torch --index-url https://download.pytorch.org/whl/cu124"
+INSTALL_NODE = ("curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz"
+                " && tar -xf /tmp/node.tar.xz -C /usr/local --strip-components=1")
+INSTALL_AGENT = "npm i -g --ignore-scripts @earendil-works/pi-coding-agent"
+VERIFY_TORCH = ".venv/bin/python -c 'import torch; print(\"torch\", torch.__version__)'"
+
 
 PROMPT = (
     "You are tuning ~/lab/train.py to minimise val_loss. Check results.tsv for what "
@@ -120,27 +131,10 @@ PROMPT = (
 
 TASK = (HERE / "train.py").read_text()
 
-# Shell snippets the agent VMs run. Kept here so autoresearch.py shows the
-# Arker call, not the bash.
-WRITE_TASK = (f"export HOME=/home/user; mkdir -p ~/lab && cd ~/lab && "
-              f"cat > train.py <<'EOF'\n{TASK}\nEOF")
-READ_RESULTS = "export HOME=/home/user; cat ~/lab/results.tsv"
-SETTLE = "sleep 45"  # let prep's disk settle before forking off it
-
-
 # The VM prints this the instant the exec starts. Subtracting it from when we
 # submitted the run gives the time the run spent PARKED waiting for a GPU
 # slice — the one part of contention a client otherwise cannot see.
 EXEC_MARK = "ARKER_EXEC_START"
-
-
-def turn_command() -> str:
-    key = os.environ["OPENROUTER_API_KEY"]
-    return (
-        f"echo {EXEC_MARK}=$(date +%s); "
-        f"export PATH=/usr/local/bin:$PATH HOME=/home/user OPENROUTER_API_KEY={key}; cd ~/lab && "
-        f'pi --provider openrouter --model openai/gpt-5.6-luna --exclude-tools ask_question -p "{PROMPT}"'
-    )
 
 
 def exec_started_at(stdout: str) -> float | None:

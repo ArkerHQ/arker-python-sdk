@@ -16,6 +16,10 @@ Three Arker calls carry the whole thing:
 | `run()`    | each turn is one exec inside an agent's VM |
 | `delete()` | agents clean themselves up; prep goes last, since it is their parent |
 
+The OpenRouter key never enters a VM: it is passed to `fork()` as a policy secret, and
+the platform injects it into the agent's requests to `openrouter.ai`. Inside the machine
+the environment holds only a placeholder.
+
 `autoresearch.py` is those calls and the concurrency around them. The task, prep recipe
 and logging are in `helper.py`; the charts are in `charts.py`.
 
@@ -42,15 +46,15 @@ other. `AGENTS` and `TURNS` set the size of the search.
 
 ```
 results -> results/20260819-194048-4agents-2turns
-[19:40:49] prep 7VEVGY forked — installing the toolchain
-[19:41:23]   prep [2/5] torch (cu124) done — 31s
-[19:42:25] prep ready — forking 4 agents
-[19:42:29] agent1 turn 1/2 started
-[19:42:57] agent1 turn 1/2 done in 28s — val_loss 3.6545
+[19:40:49] === vgpu0.25: 4 agents x 0.25 vGPU, 2 turns each ===
+[19:44:31] prep ready — forking 4 agents
+[19:44:33] agent1 turn 1/2 started
+[19:45:01] agent1 turn 1/2 done in 28s — val_loss 3.6545
 ```
 
-Prep takes ~90s to install uv, torch, node and the agent. Every agent then forks off it
-in seconds. Everything lands in the run folder: `run.log`, a `vgpu<x>.json` per config,
+Prep takes ~4 minutes to install uv, torch, node and the agent — torch alone is ~170s of
+that, and nothing prints while it downloads. Every agent then forks off it in about a
+second. Everything lands in the run folder: `run.log`, a `vgpu<x>.json` per config,
 and three charts — `progress-vgpu<x>.png` redrawn every turn, plus `timeline.png` and
 `comparison.png` at the end. An interrupted run still leaves usable results.
 
