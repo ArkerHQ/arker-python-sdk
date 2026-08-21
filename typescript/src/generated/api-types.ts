@@ -512,13 +512,7 @@ export interface components {
             timestamp: string;
         };
         RegionPlacement: {
-            /**
-             * @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it.
-             * @example aws
-             * @example azure
-             * @example arker
-             * @example gcp
-             */
+            /** @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it. */
             provider: string;
             /** @description Provider region identifier. */
             region: string;
@@ -593,13 +587,7 @@ export interface components {
          * @enum {string}
          */
         RunState: "running" | "completed" | "failed" | "cancelled";
-        /**
-         * @description Infrastructure provider currently hosting the resource.
-         * @example aws
-         * @example azure
-         * @example arker
-         * @example gcp
-         */
+        /** @description Infrastructure provider currently hosting the resource. */
         Provider: string;
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */
         PolicyWriteRequest: {
@@ -903,16 +891,21 @@ export interface components {
             session_id: string;
         };
         RunRequest: {
-            /** @description Target an EXISTING session by id. A session that no longer exists is a 404 — unlike `session_idx`, this never creates one. Takes precedence over `session_idx` when both are sent. */
+            /** @description The session to run in. Arker's run interface works like a terminal: sessions are tabs, each keeps its own state — working directory, environment, shell history — and each handles one run at a time. Create a session with `POST /v1/vms/{id}/sessions`, which also sets its starting directory and environment, then pass its id here. Run sequential commands in one session; for a long-running task, start it with `background: true` in a session of its own so later work does not interrupt it. Distinct sessions run concurrently. A session that no longer exists is a 404. Omitted, the run uses the VM's default session, which every caller that omits it shares. */
             session_id?: string | null;
-            /** @description Zero-based session index within the VM. Selects a shell SLOT on the VM, FIND-OR-CREATE: if no session occupies this index one is created. Use distinct indexes to run commands CONCURRENTLY on one VM — a per-session lock means two runs targeting the same session serialise. Omitting BOTH `session_id` and `session_idx` targets index 0, the VM's default shell, so unrelated callers that both omit them share one shell and therefore one working directory, environment, and lock. */
+            /** @description Legacy selector: choose a session by index rather than id. Prefer `session_id`, which takes precedence when both are sent. */
             session_idx?: number | null;
             /** @description Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op). */
             command?: string;
             /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
-            /** @description Maximum time in seconds to wait synchronously for completion. Set `0` to return a pollable run immediately after successful dispatch. A positive value waits up to that many seconds before returning a running response. Omission uses the service default. This field is invalid on control requests (`signal`, acquire-only, or release-only). Independent of `timeout`, which bounds execution and can kill the run. */
+            /** @description Sync window in seconds. `0` returns a pollable command run immediately after successful dispatch without polling for completion. A positive value bounds the synchronous wait. Omission uses the 300-second default. Control requests do not accept this field. This does not bound command execution; use `timeout` for the execution and kill bound. Values above approximately 350 seconds can exceed the load balancer idle limit. */
             time_to_background?: number | null;
+            /**
+             * @deprecated
+             * @description DEPRECATED alias for `time_to_background`. `true` is exactly `time_to_background: 0` (return a pollable run immediately); `false` leaves the default sync window. Accepted for callers written before `time_to_background` became canonical. Send only one of the two — supplying both is rejected, because they can disagree. Prefer `time_to_background`, which can also bound the wait instead of only switching it off.
+             */
+            background?: boolean | null;
             /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. Independent of `timeout` (execution bound) and `time_to_background` (sync window). */
             queueing_timeout?: number | null;
             /**
@@ -1025,7 +1018,7 @@ export interface components {
             exit_code: number | null;
             /** @description Client-safe platform failure explanation when `state` is `failed`. Distinct from `stderr`, which is the program's own error output. Null for runs that ran to completion. */
             fail_reason?: string | null;
-            /** @description Standard output produced by the command. */
+            /** @description Standard output produced by the command. Available while the run is still going: poll this run and `stdout` grows as the command writes, so a long task can be followed live rather than only read at the end. */
             stdout: string;
             /**
              * @description Encoding used for stdout. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded.
@@ -1200,6 +1193,19 @@ export interface components {
             path: string;
             /** @description Region containing the resource or activity. */
             region?: string | null;
+            /**
+             * @description Whether the shared directory is mounted in the VM. Attaching the mount is asynchronous, so creating a sync always answers `attaching` and the outcome is learned by polling this resource.
+             *
+             *     `attaching` — not mounted yet. This also covers a VM that is not currently running: the sync is recorded durably and is established on its next resume. Keep polling.
+             *
+             *     `mounted` — the guest reported the filesystem live.
+             *
+             *     `failed` — this VM cannot mount it and never will, so polling is pointless; `status_detail` says why. The usual cause is an image with no way to obtain the FUSE driver — for example one with no package manager. A transient failure is NOT reported here, because it is still being retried.
+             * @enum {string|null}
+             */
+            status?: "attaching" | "mounted" | "failed" | null;
+            /** @description Why the mount will not converge. Present only when `status` is `failed`. */
+            status_detail?: string | null;
         };
         ListSyncsResponse: {
             /** @description Sync mounts matching the request. */
@@ -1493,7 +1499,7 @@ export interface components {
             /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Only valid for GPU platforms; requesting more GPUs than the serving host carries returns 400. Omit for a single GPU (absent means 1). */
             gpu_count?: number | null;
         };
-        /** @description Resource shape a caller asks for. GPU size is set with `vgpu`; `gpu_sms`/`gpu_vram_mib` are the older per-card spelling and are mutually exclusive with it. */
+        /** @description Resource shape a caller asks for. GPU size is set with `vgpu`, in eighths of one card; the resolved per-GPU `gpu_sms`/`gpu_vram_mib` are reported back on the machine. */
         ResourcesInput: {
             /** @description Virtual CPU allocation. */
             vcpu?: number | null;
@@ -1501,14 +1507,8 @@ export interface components {
             memory_mib?: number | null;
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
-            /** @description Fraction of one physical GPU to allocate, in eighths of a card: 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, or 1. Resolved against the serving platform's GPU (`vgpu: 0.25` on `x86_64-l40s` is 35 SMs and 11517 MiB), so the same fraction is a different amount of silicon on a different card — see the per-platform table in the docs. Mutually exclusive with `gpu_sms` and `gpu_vram_mib`, and not valid with `gpu_count` above 1. Request-only: responses report the resolved `gpu_sms`/`gpu_vram_mib` and never this field. */
+            /** @description Fraction of one physical GPU to allocate, in eighths of a card: 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, or 1. Resolved against the serving platform's GPU (`vgpu: 0.25` on `x86_64-l40s` is 35 SMs and 11517 MiB), so the same fraction is a different amount of silicon on a different card — see the per-platform table in the docs. Mutually exclusive with `gpu_sms` and `gpu_vram_mib`. Request-only: responses report the resolved `gpu_sms`/`gpu_vram_mib` and never this field. */
             vgpu?: number | null;
-            /** @description Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default, or use `vgpu` to size by fraction instead. */
-            gpu_sms?: number | null;
-            /** @description GPU memory available to the VM, in MiB, on EACH of its GPUs (a per-GPU value; see `gpu_count`). Only valid for GPU platforms. Omit to use the platform default. */
-            gpu_vram_mib?: number | null;
-            /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Only valid for GPU platforms; requesting more GPUs than the serving host carries returns 400. Omit for a single GPU (absent means 1). */
-            gpu_count?: number | null;
         };
         /** @description SSH key configuration for a fork or patch. Inbound reachability is controlled by the VM's policy document and reported by the policy endpoints. */
         NetworkInput: {

@@ -421,8 +421,6 @@ class Arker:
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         vgpu: float | None = None,
-        gpu_vram_mib: int | None = None,
-        gpu_sms: int | None = None,
         durable: bool | None = None,
         platforms: list[str] | None = None,
         layers: list[str] | None = None,
@@ -499,9 +497,8 @@ class Arker:
         between two steps is refused. It is a fraction of whichever card serves
         the fork, so the same value is a different slice per platform —
         ``vgpu=0.25`` is 35 SMs and 11517 MiB on an L40S, and rather more on a
-        B200. ``gpu_sms`` and ``gpu_vram_mib`` set the same slice in hardware
-        units instead; set one style or the other, not both. The VM reports the
-        resolved ``gpu_sms`` and ``gpu_vram_mib`` either way.
+        B200. The VM reports back the ``gpu_sms`` and ``gpu_vram_mib`` the
+        fraction resolved to.
 
         ``layers`` selects which layers of the source the child inherits. Omit
         it for the default full fork (``["disk", "memory"]``): the child inherits
@@ -552,17 +549,12 @@ class Arker:
         # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
         # platform's max is a 400 from the server, not a silent clamp.
         resources: ResourcesInput | None = None
-        if any(
-            v is not None
-            for v in (vcpu_count, memory_mib, disk_mib, vgpu, gpu_vram_mib, gpu_sms)
-        ):
+        if any(v is not None for v in (vcpu_count, memory_mib, disk_mib, vgpu)):
             resources = ResourcesInput(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
                 vgpu=vgpu,
-                gpu_vram_mib=gpu_vram_mib,
-                gpu_sms=gpu_sms,
             )
         policy_doc = (
             policies

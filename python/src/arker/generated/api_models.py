@@ -315,6 +315,8 @@ class Sync:
     filesystem_id: str
     path: str
     region: str | None = None
+    status: Literal['attaching', 'mounted', 'failed'] | None = None
+    status_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -477,9 +479,6 @@ class ResourcesInput:
     memory_mib: int | None = None
     disk_mib: int | None = None
     vgpu: float | None = None
-    gpu_sms: int | None = None
-    gpu_vram_mib: int | None = None
-    gpu_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -968,6 +967,7 @@ class RunRequest:
     command: str | None = None
     timeout: int | None = None
     time_to_background: int | None = None
+    background: bool | None = None
     queueing_timeout: int | None = None
     end_symbol: str | None = 'auto'
     vcpu_count: int | None = None

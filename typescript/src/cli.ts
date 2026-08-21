@@ -35,6 +35,7 @@ import {
 import { bridgePty } from "./cli-pty.js";
 import type {
   PolicyDoc,
+  ResourcesInput,
   RunRecord,
   RunSignal,
   VM,
@@ -97,8 +98,6 @@ const RESOURCE_OPTIONS: OptionSpecs = {
 
 const FORK_RESOURCE_OPTIONS: OptionSpecs = {
   ...RESOURCE_OPTIONS,
-  "gpu-sms": { type: "integer", min: 1 },
-  "gpu-vram-mib": { type: "integer", min: 1 },
   // Eighths of one card, matching `multipleOf: 0.125` in the API contract.
   vgpu: { type: "number", min: 0.125, max: 1, step: 0.125 },
 };
@@ -617,7 +616,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   if (!sourceVmId && !sourceVmName) {
     die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]\n" +
         "       [--platform <token[,token...]>] [--vcpu N] [--memory-mib N] [--disk-mib N]\n" +
-        "       [--vgpu F] [--gpu-vram-mib N] [--gpu-sms N] [--no-disk]");
+        "       [--vgpu F] [--no-disk]");
   }
 
   // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
@@ -637,19 +636,15 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const vcpu = numFlag(args, "vcpu");
   const memoryMib = numFlag(args, "memory-mib");
   const diskMib = numFlag(args, "disk-mib");
-  const gpuVramMib = numFlag(args, "gpu-vram-mib");
-  const gpuSms = numFlag(args, "gpu-sms");
   const vgpu = numFlag(args, "vgpu");
-  const hasResources = [vcpu, memoryMib, diskMib, gpuVramMib, gpuSms, vgpu]
+  const hasResources = [vcpu, memoryMib, diskMib, vgpu]
     .some((value) => value !== undefined);
-  const resources = hasResources
+  const resources: ResourcesInput | undefined = hasResources
     ? {
         vcpu: vcpu ?? null,
         memory_mib: memoryMib ?? null,
         disk_mib: diskMib ?? null,
         vgpu: vgpu ?? null,
-        gpu_vram_mib: gpuVramMib ?? null,
-        gpu_sms: gpuSms ?? null,
       }
     : undefined;
 
@@ -1260,9 +1255,8 @@ function usage(_command?: string): void {
       "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
       "                                                 fork with resource overrides",
       "  arker fork <vm> --platform <token[,token...]>  pin the fork to a compute platform",
-      "  arker fork <vm> --vgpu 0.25                    size the GPU in eighths of a card (0.125 … 1)",
-      "  arker fork <vm> --gpu-vram-mib N --gpu-sms N   size GPU resources in hardware units",
       "                                                 (e.g. icelake, graviton2; fails closed)",
+      "  arker fork <vm> --vgpu 0.25                    size the GPU in eighths of a card (0.125 … 1)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
       "  arker shell <vm_id>                            native PTY shell",
