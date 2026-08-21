@@ -338,6 +338,34 @@ async function testGlobalOptionsBeforeCommand(): Promise<void> {
   });
 }
 
+async function testVmListSerializesServerFiltersAndKeepsJsonShape(): Promise<void> {
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { vms: [], next_cursor: "next-1" }),
+    async (baseUrl, requests) => {
+      const result = await runCli(baseUrl, [
+        "vms",
+        "ls",
+        "--platform",
+        "graviton2",
+        "--created-after",
+        "2026-08-20T00:00:00-07:00",
+        "--created-before",
+        "2026-08-22T00:00:00Z",
+        "--json",
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(stdoutText(result)), {
+        vms: [],
+        next_cursor: "next-1",
+      });
+      assert.equal(
+        requests[0]?.url,
+        "/api/v1/vms?platform=graviton2&created_after=2026-08-20T00%3A00%3A00-07%3A00&created_before=2026-08-22T00%3A00%3A00Z",
+      );
+    },
+  );
+}
+
 async function testHelpAndVersionAreLocalSuccesses(): Promise<void> {
   for (const args of [["--help"], ["-h"], ["run", "--help"]]) {
     const result = await runCli(undefined, args, { authenticated: false });
@@ -906,6 +934,7 @@ await testInvalidNumbersFailBeforeRequest();
 await testForkForwardsGpuResourceOptions();
 await testForkForwardsVgpu();
 await testGlobalOptionsBeforeCommand();
+await testVmListSerializesServerFiltersAndKeepsJsonShape();
 await testHelpAndVersionAreLocalSuccesses();
 await testArbitraryProviderFlagIsAccepted();
 await testComputeCommandRequiresProviderAndRegion();

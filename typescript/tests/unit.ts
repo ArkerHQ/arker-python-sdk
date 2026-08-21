@@ -664,7 +664,7 @@ async function testListRunsUsesControlPlaneAndFilters(): Promise<void> {
 async function testListVmsPreservesForkLimitFields(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
-    (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=true&state=idle",
+    (method, url) => method === "GET" && url === "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=true&state=idle&platform=graviton2&created_after=2026-08-20T00%3A00%3A00-07%3A00&created_before=2026-08-22T00%3A00%3A00Z",
     200,
     {
       vms: [{
@@ -689,6 +689,9 @@ async function testListVmsPreservesForkLimitFields(): Promise<void> {
     org_id: "ArkerHQ",
     public: true,
     state: "idle",
+    platform: "graviton2",
+    created_after: "2026-08-20T00:00:00-07:00",
+    created_before: "2026-08-22T00:00:00Z",
   });
 
   assert.equal(result.vms[0]!.max_vcpus, 8);

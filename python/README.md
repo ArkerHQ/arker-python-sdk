@@ -42,7 +42,7 @@ ar = Arker(provider="aws", region=..., api_key=None, base_url=None, retry=None)
 ar.fork(source_vm_name)                      # source ownership is resolved by the service
 ar.fork(vm, name="child")                     # an existing VM (uses its id)
 ar.fork(source_vm_name=..., source_org_id=..., name=None, durable=False)
-ar.list_vms(state=None)
+ar.list_vms(state=None, platform=None, created_after=None, created_before=None)
 ar.list_regions()                             # available public placements
 ar.vm(vm_id, provider=..., region=...)        # placement-aware bare handle
 ar.vm(vm_id).run(command, **options)

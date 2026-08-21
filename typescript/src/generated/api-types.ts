@@ -73,7 +73,7 @@ export interface paths {
         };
         /**
          * List VMs
-         * @description List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, or lifecycle state.
+         * @description List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, lifecycle state, platform, or creation time. All filters compose with AND semantics.
          */
         get: operations["listVms"];
         put?: never;
@@ -1714,6 +1714,12 @@ export interface operations {
                 public?: boolean;
                 /** @description Filter by VM lifecycle state. */
                 state?: components["schemas"]["VmState"];
+                /** @description Match a concrete VM platform ID exactly. A public template matches when any compatible_platforms entry has this ID. */
+                platform?: string;
+                /** @description Include VMs created at or after this RFC 3339 timestamp. An explicit UTC offset is required. */
+                created_after?: string;
+                /** @description Include VMs created before this RFC 3339 timestamp. An explicit UTC offset is required. */
+                created_before?: string;
             };
             header?: never;
             path?: never;

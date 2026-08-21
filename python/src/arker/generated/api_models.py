@@ -527,6 +527,9 @@ class ListVmsParameters:
     org_id: str | None = None
     public: bool | None = None
     state: VmState | None = None
+    platform: str | None = None
+    created_after: str | None = None
+    created_before: str | None = None
 
 
 @dataclass(frozen=True)

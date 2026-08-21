@@ -74,6 +74,16 @@ import { discoverRegions } from "@arker-ai/sdk";
 const catalog = await discoverRegions();
 ```
 
+VM listings accept exact raw-platform and creation-time filters in both SDKs:
+
+```python
+ar.list_vms(platform="graviton2", created_after="2026-08-20T00:00:00Z")
+```
+
+```ts
+await ar.listVms({ platform: "graviton2", created_after: "2026-08-20T00:00:00Z" });
+```
+
 ```bash
 arker regions
 ```

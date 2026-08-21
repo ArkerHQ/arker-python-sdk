@@ -161,7 +161,7 @@
           "VMs"
         ],
         "summary": "List VMs",
-        "description": "List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, or lifecycle state.",
+        "description": "List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, lifecycle state, platform, or creation time. All filters compose with AND semantics.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Cursor"
@@ -212,6 +212,35 @@
             "description": "Filter by VM lifecycle state.",
             "schema": {
               "$ref": "#/components/schemas/VmState"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "description": "Match a concrete VM platform ID exactly. A public template matches when any compatible_platforms entry has this ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_after",
+            "required": false,
+            "description": "Include VMs created at or after this RFC 3339 timestamp. An explicit UTC offset is required.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_before",
+            "required": false,
+            "description": "Include VMs created before this RFC 3339 timestamp. An explicit UTC offset is required.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],

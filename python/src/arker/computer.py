@@ -538,6 +538,9 @@ class Arker:
         org_id: str | None = None,
         public: bool | None = None,
         state: str | None = None,
+        platform: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
     ) -> VmList:
         """Admin call — goes through the control plane so it can
         aggregate across providers and regions.
@@ -550,6 +553,9 @@ class Arker:
             org_id=org_id,
             public=public,
             state=state,
+            platform=platform,
+            created_after=created_after,
+            created_before=created_before,
         )
         path = _build_query("/v1/vms", parameters)
         payload = self._request("GET", path, base_url=self._control_base_url)

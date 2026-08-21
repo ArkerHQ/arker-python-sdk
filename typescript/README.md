@@ -62,7 +62,7 @@ const ar = new Arker({ provider: "aws", region, apiKey?, baseUrl?, retry? });
 await ar.fork(sourceVmName);                  // source ownership is resolved by the service
 await ar.fork(vm, { name: "child" });         // an existing VM (uses its id)
 await ar.fork({ sourceVmName, sourceOrgId, name?, durable? });
-await ar.listVms({ state? });
+await ar.listVms({ state?, platform?, created_after?, created_before? });
 await ar.listRegions();                       // available public placements
 ar.vm(vmId, { provider, region });            // placement-aware bare handle
 await ar.vm(vmId).run(command, options?);

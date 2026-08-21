@@ -142,6 +142,9 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     public: { type: "boolean" },
     "source-org-id": { type: "string" },
     state: { type: "string", values: ["idle", "running"] },
+    platform: { type: "string" },
+    "created-after": { type: "string" },
+    "created-before": { type: "string" },
   },
   ls: {
     ...GLOBAL_OPTIONS,
@@ -149,6 +152,9 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     public: { type: "boolean" },
     "source-org-id": { type: "string" },
     state: { type: "string", values: ["idle", "running"] },
+    platform: { type: "string" },
+    "created-after": { type: "string" },
+    "created-before": { type: "string" },
   },
   rm: GLOBAL_OPTIONS,
   run: RUN_OPTIONS,
@@ -220,6 +226,8 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     name: { type: "string" },
     "no-disk": { type: "boolean" },
     platform: { type: "string" },
+    "created-after": { type: "string" },
+    "created-before": { type: "string" },
     public: { type: "boolean" },
     "queueing-timeout": { type: "integer", min: 0 },
     release: { type: "string" },
@@ -287,6 +295,9 @@ function validateInvocationOptions(command: string, args: ParsedArgs): void {
         public: { type: "boolean" },
         "source-org-id": { type: "string" },
         state: { type: "string" },
+        platform: { type: "string" },
+        "created-after": { type: "string" },
+        "created-before": { type: "string" },
       };
     } else if (subcommand === "fork") {
       allowed = COMMAND_OPTIONS.fork!;
@@ -550,6 +561,9 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
         provider: args.flags.provider as ListVmsParameters["provider"],
         region: args.flags.region as string | undefined,
         state: args.flags.state as "idle" | "running" | undefined,
+        platform: args.flags.platform as string | undefined,
+        created_after: args.flags["created-after"] as string | undefined,
+        created_before: args.flags["created-before"] as string | undefined,
         // Same two flags fork already takes: `--source-org-id ArkerHQ
         // --public` is the public template catalog. Without them the listing
         // stays scoped to the caller's own org.
@@ -1293,6 +1307,9 @@ function usage(_command?: string): void {
       "  --source-org-id <org>      list that org's VMs (only ArkerHQ, with --public)",
       "  --public                   restrict the listing to public VMs",
       "  --state <idle|running>     filter by VM state",
+      "  --platform <id>            filter by exact raw platform ID",
+      "  --created-after <rfc3339>  include VMs created at or after this time",
+      "  --created-before <rfc3339> include VMs created before this time",
       "",
       "Fork flags:",
       "  --description <text>       short description for the new VM",
