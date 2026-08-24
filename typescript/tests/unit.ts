@@ -1979,9 +1979,9 @@ async function testAPollBlipDoesNotEndAnUnboundedWait(): Promise<void> {
 
 async function testTimeToBackgroundZeroReturnsTheAckWithoutPolling(): Promise<void> {
   // `time_to_background: 0` is the ONLY spelling of "don't wait" the SDK
-  // exposes — #89 removed `background`, and arkerd resolves the two to the same
-  // zero-length sync window anyway, so nothing is lost. Measured against the
-  // live service, ttb=0 answers 202 with a run id in ~0.2s; the client must
+  // exposes — `background` was retired, and the two mean the same zero-length
+  // sync window anyway, so nothing is lost. ttb=0 answers 202 with a run id
+  // without waiting for the command; the client must
   // hand that ack straight back rather than polling a command that is not meant
   // to finish.
   const stub = pollingFetch(() => ({ status: 200, body: RUNNING_RUN }));

@@ -1286,7 +1286,7 @@ const OPTION_HELP: Record<string, { placeholder?: string; desc: string }> = {
   "memory-mib": { placeholder: "<n>", desc: "memory in MiB" },
   name: { placeholder: "<name>", desc: "name for the new resource, scoped to your org" },
   "name-prefix": { placeholder: "<prefix>", desc: "filter by name prefix" },
-  "no-disk": { desc: "fork a memory-backed (nodisk) VM" },
+  "no-disk": { desc: "fork a memory-backed VM with no disk" },
   "no-persist": { desc: "close the remote PTY process on disconnect" },
   path: { placeholder: "<path>", desc: "filter by guest path" },
   persist: { desc: "keep the remote PTY process alive on disconnect" },

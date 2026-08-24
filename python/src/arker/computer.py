@@ -450,7 +450,7 @@ class Arker:
           ``platforms`` MATTERS here, and is served. The image is pulled for
           the architecture of whatever host the request lands on, so an image
           published only for amd64 (``pytorch/pytorch``, for one) fails on an
-          arm64 host: it converts and boots, then the guest cannot execute
+          arm64 host: it converts and boots, then the VM cannot execute
           anything in its own filesystem. Pin an x86 platform for such an
           image::
 

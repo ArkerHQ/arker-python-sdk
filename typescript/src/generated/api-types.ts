@@ -720,7 +720,7 @@ export interface components {
             image?: string | null;
             /** @description Dockerfile source to build and fork from, as raw Dockerfile text (not a path, not a URL). Exclusive with source_vm_id, source_vm_name and image. Supports a single-stage build using FROM, RUN, ADD (URL source only), ENV, WORKDIR, USER, EXPOSE, ENTRYPOINT, CMD, ARG, and LABEL; anything outside that set (multi-stage builds, an ARG-substituted FROM, COPY, or any other directive) is rejected with a 400 naming the problem. FROM resolves through the same pull/convert pipeline a bare `image` fork uses; every other instruction executes as a real operation against the resulting VM (RUN runs for real, ENV/WORKDIR persist onto the delivered session) rather than inside a build container — the new VM inherits nothing from a source VM, the same fields `image` honours (`policies`, `ssh_public_keys`, `description`) are honoured here too, and the same fields are refused (`layers`, `platforms`, `durable`, `public`, GPU resources). */
             dockerfile?: string | null;
-            /** @description Request nested virtualization for a VM forked from `image` or `dockerfile`, including access to `/dev/kvm` inside the guest. Omit this field or pass `false` to disable it. The request returns 400 when the selected placement cannot provide nested virtualization. */
+            /** @description Request nested virtualization for a VM forked from `image` or `dockerfile`, including access to `/dev/kvm` inside the VM. Omit this field or pass `false` to disable it. The request returns 400 when the selected placement cannot provide nested virtualization. */
             nestedvirt?: boolean | null;
             /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
             source_org_id?: string | null;
@@ -907,7 +907,7 @@ export interface components {
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
             /**
-             * @description Preferred guest-memory mode when this run restores the VM. `file` maps the memory image from the host page cache; `uffd` supplies pages on demand. Omit this field to let the service choose. The setting has no effect when the VM is already running, and the response reports the mode used.
+             * @description Preferred memory mode when this run restores the VM. `file` maps the memory image from the host page cache; `uffd` supplies pages on demand. Omit this field to let the service choose. The setting has no effect when the VM is already running, and the response reports the mode used.
              * @enum {string|null}
              */
             memory_backend?: "file" | "uffd" | null;
@@ -965,7 +965,7 @@ export interface components {
             /** @description True when a requested memory reduction was only partially applied. The command runs with the achieved allocation, and `memory_achieved_mib` reports that allocation. Defaults to false. */
             memory_partial?: boolean;
             /**
-             * @description Which guest-memory mode this VM is restored with: `file` maps the memory image from the host page cache, `uffd` supplies pages on demand through a userfaultfd handler. Absent when this run involved no Firecracker restore — a `brush` dispatch, or a VM that was already running. Informational only: the mode is chosen per restore from the image's resident size, and an image reconstructed from object storage always uses `uffd`, which is a correctness requirement rather than a tuning choice.
+             * @description Which memory mode this VM is restored with: `file` maps the memory image from the host page cache, `uffd` supplies pages on demand through a userfaultfd handler. Absent when this run restored nothing — the command was served without a restore, or the VM was already running. Informational only: the mode is chosen per restore from the image's resident size, and an image reconstructed from object storage always uses `uffd`, which is a correctness requirement rather than a tuning choice.
              * @enum {string|null}
              */
             memory_backend?: "file" | "uffd" | null;
