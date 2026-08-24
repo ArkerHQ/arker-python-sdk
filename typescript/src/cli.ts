@@ -244,7 +244,7 @@ interface Invocation {
 }
 
 type LocalAction =
-  | { type: "help"; command?: string }
+  | { type: "help"; command?: string; sub?: string }
   | { type: "version" };
 
 function parseInvocation(argv: string[]): Invocation | LocalAction {
@@ -268,7 +268,10 @@ function parseInvocation(argv: string[]): Invocation | LocalAction {
       ? (positional: string[]) => positional[0] === "run" && positional.length >= 3
       : undefined;
   const args = parseArgs(argv.slice(index + 1), COMMAND_OPTIONS[command]!, flags, remoteBoundary);
-  if (args.flags.help === true) return { type: "help", command };
+  if (args.flags.help === true) {
+    const sub = args.positional[0];
+    return { type: "help", command, sub: typeof sub === "string" ? sub : undefined };
+  }
   validateInvocationOptions(command, args);
   return { command, args };
 }
@@ -1237,7 +1240,233 @@ async function readAllStdinWithFirstByteDeadline(ms: number): Promise<Uint8Array
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-function usage(_command?: string): void {
+// ── Per-command help ───────────────────────────────────────────────
+
+// Placeholder + one-line description per flag. Flag names are consistent
+// across commands, so one table covers them all; the flags actually shown
+// for a command are read from COMMAND_OPTIONS, which keeps this honest when
+// a command gains an option.
+const OPTION_HELP: Record<string, { placeholder?: string; desc: string }> = {
+  acquire: { placeholder: "<list>", desc: "warm resources before the run (cpu,memory,disk)" },
+  "assume-empty": { desc: "skip the remote manifest; treat the destination as empty" },
+  "cancel-ttl": { placeholder: "<seconds>", desc: "grace period before a disconnected PTY is reaped" },
+  cols: { placeholder: "<n>", desc: "initial terminal width" },
+  command: { placeholder: "<path>", desc: "shell executable path (default: /bin/bash)" },
+  cursor: { placeholder: "<cursor>", desc: "continue from a previous page's next_cursor" },
+  cwd: { placeholder: "<path>", desc: "working directory for the session" },
+  description: { placeholder: "<text>", desc: "short description for the VM (empty clears it)" },
+  "disk-mib": { placeholder: "<n>", desc: "disk size in MiB" },
+  file: { placeholder: "<path>", desc: "read the policy document from this file" },
+  "filesystem-id": { placeholder: "<id>", desc: "filter by filesystem" },
+  "gpu-sms": { placeholder: "<n>", desc: "GPU SM count, in hardware units" },
+  "gpu-vram-mib": { placeholder: "<n>", desc: "GPU VRAM in MiB, in hardware units" },
+  help: { desc: "show help without connecting" },
+  json: { desc: "emit JSON instead of tabular output" },
+  limit: { placeholder: "<n>", desc: "max rows to return (1-1000)" },
+  "memory-mib": { placeholder: "<n>", desc: "memory in MiB" },
+  name: { placeholder: "<name>", desc: "name for the new resource, scoped to your org" },
+  "name-prefix": { placeholder: "<prefix>", desc: "filter by name prefix" },
+  "no-disk": { desc: "fork a memory-backed (nodisk) VM" },
+  "no-persist": { desc: "close the remote PTY process on disconnect" },
+  path: { placeholder: "<path>", desc: "filter by guest path" },
+  persist: { desc: "keep the remote PTY process alive on disconnect" },
+  platform: { placeholder: "<token[,token...]>", desc: "pin to a compute platform (e.g. icelake, graviton2)" },
+  provider: { placeholder: "<provider>", desc: "compute provider (or env ARKER_PROVIDER)" },
+  public: { desc: "restrict the listing to public VMs" },
+  "queueing-timeout": { placeholder: "<seconds>", desc: "queue up to this long instead of failing fast" },
+  read: { desc: "read the file, ignoring stdin" },
+  region: { placeholder: "<region>", desc: "service region (or env ARKER_REGION)" },
+  release: { placeholder: "<list>", desc: "release resources after the run (cpu,memory,disk)" },
+  rows: { placeholder: "<n>", desc: "initial terminal height" },
+  "session-id": { placeholder: "<ulid>", desc: "target a specific existing session" },
+  "session-idx": { placeholder: "<n>", desc: "target the session at this index (default 0)" },
+  "source-org-id": { placeholder: "<org>", desc: "list that org's VMs (only ArkerHQ, with --public)" },
+  "source-vm-id": { placeholder: "<id>", desc: "fork by global source VM id" },
+  "source-vm-name": { placeholder: "<name>", desc: "fork by source VM name" },
+  state: { desc: "filter by lifecycle state" },
+  timeout: { placeholder: "<seconds>", desc: "exec/kill bound in seconds (omitted or 0 = unbounded)" },
+  "time-to-background": { placeholder: "<seconds>", desc: "sync window; 0 returns a run id immediately (default 120)" },
+  vcpu: { placeholder: "<n>", desc: "vCPU count" },
+  vgpu: { placeholder: "<fraction>", desc: "GPU size in eighths of a card (0.125 - 1)" },
+  "vm-id": { placeholder: "<id>", desc: "target VM by global id" },
+};
+
+// Flags every command shares; pushed below the command's own flags so the
+// interesting ones are read first.
+const COMMON_FLAG_ORDER = ["region", "provider", "cursor", "limit", "json", "help"];
+
+interface CommandHelp {
+  synopsis: string[];
+  summary: string;
+  subs?: Record<string, string>;
+  notes?: string[];
+}
+
+const COMMAND_HELP: Record<string, CommandHelp> = {
+  filesystems: {
+    synopsis: ["arker filesystems <ls|create|get|rm> [args] [flags]"],
+    summary: "Manage filesystems. Alias: arker fs.",
+    subs: {
+      ls: "list filesystems",
+      create: "create a filesystem",
+      get: "show one filesystem",
+      rm: "delete a filesystem",
+    },
+  },
+  fork: {
+    synopsis: [
+      "arker fork <vm_name> [flags]",
+      "arker fork --source-vm-id <id> [flags]",
+      "arker fork --source-vm-name <name> --source-org-id <org> [flags]",
+    ],
+    summary: "Fork a source VM into a new VM.",
+    notes: ["Resource flags are capped by the source VM's max_vcpus / max_memory_mib / max_disk_mib."],
+  },
+  list: {
+    synopsis: ["arker ls [flags]"],
+    summary: "List VMs. Aggregates across every region unless --region or --provider narrows it.",
+    notes: [
+      "Without --limit the listing stops at the first page and prints a trailing",
+      "'# next_cursor=<n>' line; pass --limit (max 1000) or --cursor to page further.",
+    ],
+  },
+  policies: {
+    synopsis: ["arker policies <get|set> <vm_id> [flags]"],
+    summary: "Read or replace a VM's policy document.",
+    subs: { get: "show the current policy document", set: "replace it (use --file)" },
+  },
+  regions: {
+    synopsis: ["arker regions [flags]"],
+    summary: "List available public placements (provider + region + endpoint).",
+  },
+  rm: {
+    synopsis: ["arker rm <vm> [flags]"],
+    summary: "Delete a VM.",
+  },
+  run: {
+    synopsis: ["arker run [flags] <vm> <command> [args...]"],
+    summary: "Run a command in a VM session.",
+    notes: [
+      "CLI options must appear before <command>; subsequent flags are passed to the",
+      "remote command. Use -- before <command> when it itself begins with a dash.",
+    ],
+  },
+  runs: {
+    synopsis: ["arker runs <ls|get|rm> <vm_id> [args] [flags]"],
+    summary: "Inspect or cancel runs on a VM.",
+    subs: { ls: "list runs", get: "show one run", rm: "cancel a run" },
+  },
+  sessions: {
+    synopsis: ["arker sessions <ls|get|create|rm|update> <vm_id> [args] [flags]"],
+    summary: "Manage a VM's shell sessions.",
+    subs: {
+      ls: "list sessions",
+      get: "show one session",
+      create: "create a session",
+      rm: "delete a session",
+      update: "update a session's cwd/size",
+    },
+  },
+  shell: {
+    synopsis: ["arker shell <vm_id> [flags]", "arker shell --source-vm-name <name> [flags]"],
+    summary: "Open a native PTY shell, optionally forking a source VM first.",
+  },
+  signal: {
+    synopsis: ["arker signal <vm_id> <SIGINT|SIGTERM|SIGKILL|SIGHUP> [flags]"],
+    summary: "Signal a session's foreground process group.",
+  },
+  sync: {
+    synopsis: ["arker sync <vm_id> <path> [data|-] [flags]"],
+    summary: "Read a file from the VM, or write data/stdin into it.",
+  },
+  "sync-dir": {
+    synopsis: ["arker sync-dir <vm_id> <local> <remote> [flags]"],
+    summary: "Sync a local directory into the VM.",
+  },
+  syncs: {
+    synopsis: ["arker syncs <ls|create|rm> <vm_id> [args] [flags]"],
+    summary: "Manage a VM's sync mounts.",
+    subs: { ls: "list syncs", create: "create a sync", rm: "delete a sync" },
+  },
+  update: {
+    synopsis: ["arker update <vm> [flags]"],
+    summary: "Update a VM's description or resource allocation.",
+  },
+  vms: {
+    synopsis: ["arker vms <ls|get|rm|fork|run|update> [args] [flags]"],
+    summary: "Full VM resource surface; the shortcuts (ls, rm, fork, run, update) call into it.",
+    subs: {
+      ls: "list VMs",
+      get: "show one VM",
+      rm: "delete a VM",
+      fork: "fork a VM",
+      run: "run a command",
+      update: "update a VM",
+    },
+  },
+};
+
+// Shortcut commands share their help entry with the resource they alias.
+const HELP_ALIASES: Record<string, string> = { delete: "rm", fs: "filesystems", ls: "list" };
+
+function resolveHelpKey(command: string): string {
+  return HELP_ALIASES[command] ?? command;
+}
+
+function optionPlaceholder(name: string, spec: OptionSpec): string {
+  if (spec.type === "boolean") return "";
+  if (spec.type === "string" && spec.values) return `<${spec.values.join("|")}>`;
+  return OPTION_HELP[name]?.placeholder ?? (spec.type === "string" ? "<value>" : "<n>");
+}
+
+function optionLine(name: string, spec: OptionSpec): string {
+  const flag = name === "help" ? "-h, --help" : `--${name}`;
+  const left = `  ${flag} ${optionPlaceholder(name, spec)}`.trimEnd();
+  const desc = OPTION_HELP[name]?.desc ?? "";
+  if (!desc) return left;
+  return left.padEnd(34) + " " + desc;
+}
+
+function commandUsage(command: string, sub?: string): string[] {
+  const key = resolveHelpKey(command);
+  const help = COMMAND_HELP[key]!;
+  const specs = COMMAND_OPTIONS[command] ?? COMMAND_OPTIONS[key] ?? {};
+  const names = Object.keys(specs);
+  const own = names.filter((n) => !COMMON_FLAG_ORDER.includes(n)).sort();
+  const common = COMMON_FLAG_ORDER.filter((n) => names.includes(n));
+
+  const lines = [`arker v${VERSION}`, "", "Usage:"];
+  for (const line of help.synopsis) lines.push(`  ${line}`);
+  lines.push("", help.summary);
+
+  if (sub && help.subs?.[sub]) {
+    lines.push("", `Subcommand '${sub}': ${help.subs[sub]}`);
+  } else if (help.subs) {
+    lines.push("", "Subcommands:");
+    for (const [name, desc] of Object.entries(help.subs)) {
+      lines.push(`  ${name.padEnd(8)} ${desc}`);
+    }
+  }
+
+  if (own.length || common.length) {
+    lines.push("", "Flags:");
+    for (const name of [...own, ...common]) lines.push(optionLine(name, specs[name]!));
+  }
+
+  if (help.notes?.length) {
+    lines.push("");
+    for (const note of help.notes) lines.push(note);
+  }
+
+  lines.push("", "Run 'arker --help' for the full command list.");
+  return lines;
+}
+
+function usage(command?: string, sub?: string): void {
+  if (command && COMMAND_HELP[resolveHelpKey(command)]) {
+    out(commandUsage(command, sub).join("\n"));
+    return;
+  }
   out(
     [
       `arker v${VERSION}`,
@@ -1331,7 +1560,7 @@ async function main(): Promise<void> {
   const invocation = parseInvocation(process.argv.slice(2));
   if ("type" in invocation) {
     if (invocation.type === "version") out(`arker ${VERSION}`);
-    else usage(invocation.command);
+    else usage(invocation.command, invocation.sub);
     return;
   }
   const { command: cmd, args } = invocation;

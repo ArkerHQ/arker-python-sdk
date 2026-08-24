@@ -422,6 +422,35 @@ async function testRemovedSecretAndUrlFlagsFailLocally(): Promise<void> {
   }
 }
 
+async function testPerCommandHelpIsCommandSpecific(): Promise<void> {
+  const global = stdoutText(await runCli(undefined, ["--help"], { authenticated: false }));
+
+  // Every command must render its own help, not the global blob.
+  for (const command of [
+    "delete", "filesystems", "fork", "fs", "list", "ls", "policies", "regions",
+    "rm", "run", "runs", "sessions", "shell", "signal", "sync", "sync-dir",
+    "syncs", "update", "vms",
+  ]) {
+    const result = await runCli(undefined, [command, "--help"], { authenticated: false });
+    assert.equal(result.code, 0, `${command} --help should succeed`);
+    const help = stdoutText(result);
+    assert.match(help, /Usage:/);
+    assert.notEqual(help, global, `${command} --help must not be the global help`);
+    assert.match(help, /Run 'arker --help' for the full command list\./);
+  }
+
+  // The flag list is read from COMMAND_OPTIONS, so a command's own options show up.
+  const ls = stdoutText(await runCli(undefined, ["ls", "--help"], { authenticated: false }));
+  for (const flag of ["--region", "--provider", "--limit", "--cursor", "--state", "--public"]) {
+    assert.ok(ls.includes(flag), `ls --help should document ${flag}`);
+  }
+  assert.doesNotMatch(ls, /--vgpu|--no-disk/, "ls --help must not list fork-only flags");
+
+  // A recognised subcommand is called out by name.
+  const vmsLs = stdoutText(await runCli(undefined, ["vms", "ls", "--help"], { authenticated: false }));
+  assert.match(vmsLs, /Subcommand 'ls'/);
+}
+
 async function testHelpMatchesSupportedSurface(): Promise<void> {
   const result = await runCli(undefined, ["--help"], { authenticated: false });
   const help = stdoutText(result);
@@ -906,6 +935,7 @@ await testProviderOnlyVmListDoesNotRequireAComputeRegion();
 await testRegionsDiscoveryNeedsNoCredentialsOrPlacement();
 await testRemovedSecretAndUrlFlagsFailLocally();
 await testHelpMatchesSupportedSurface();
+await testPerCommandHelpIsCommandSpecific();
 await testRunJsonIncludesMemoryMetadata();
 await testRunHumanWritesArbitraryBytes();
 await testRunFailureReasonIsVisible();
