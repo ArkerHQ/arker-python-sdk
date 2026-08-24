@@ -43,37 +43,23 @@ from helper import (AGENTS, INSTALL_AGENT, INSTALL_NODE, INSTALL_TORCH, INSTALL_
                     turn_done, turn_started)
 
 
-def openrouter_policy() -> dict:
-    """The OpenRouter key goes to the platform, not the VM: stored as a policy
-    secret and spliced into the Authorization header on the way out to
-    openrouter.ai, so the key never exists inside the machine that uses it.
-
-    Applied at prep's fork as well as the agents'. The platform installs its
-    MITM CA into a VM's trust store when the VM is forked WITH a policy; a
-    policy attached while forking off a VM that had none leaves the CA absent
-    and every TLS connection to openrouter.ai fails. prep carries it so its
-    forks inherit a trust store that already has the CA.
-    """
-    return {
-        "secrets": {"OPENROUTER_API_KEY": os.environ["OPENROUTER_API_KEY"]},
-        "policies": [
-            {"type": "outbound",
-             "match": {"hosts": ["openrouter.ai"]},
-             "action": {"rewrite": {"headers": {
-                 "authorization": "Bearer ${secret:OPENROUTER_API_KEY}"}}}},
-            # A non-empty document denies every flow it does not match, and the
-            # agent still needs the rest of the internet.
-            {"type": "outbound", "action": "allow"},
-        ],
-    }
-
-
 def prepare_vm(ark: Arker) -> VM:
     """Fork one VM and install the toolchain on it. Every agent forks from this."""
     # A small slice is enough for prep: it installs, it does not train.
     prep = ark.fork(source_vm_name="ubuntu-gpu", platforms=["x86_64-h100sxm"], name="prep",
                     vgpu=0.25, vcpu_count=2, memory_mib=16384, disk_mib=102400,
-                    policies=openrouter_policy())
+                    policies={
+                        "secrets": {"OPENROUTER_API_KEY": os.environ["OPENROUTER_API_KEY"]},
+                        "policies": [
+                            {"type": "outbound",
+                             "match": {"hosts": ["openrouter.ai"]},
+                             "action": {"rewrite": {"headers": {
+                                 "authorization": "Bearer ${secret:OPENROUTER_API_KEY}"}}}},
+                            # A non-empty document denies every flow it does not
+                            # match, and the agent still needs the rest of the internet.
+                            {"type": "outbound", "action": "allow"},
+                        ],
+                    })
 
     # uv, plus the ~/lab venv that everything below installs into — ~6s
     prep.run(ENV + INSTALL_UV)
@@ -100,8 +86,7 @@ def run_agent(ark: Arker, prep: VM, n: int, vgpu: float) -> list[dict]:
         name=f"agent{n}",
         vgpu=vgpu,
         platforms=["x86_64-h100sxm"],
-        vcpu_count=2, memory_mib=16384, disk_mib=102400,
-        policies=openrouter_policy())
+        vcpu_count=2, memory_mib=16384, disk_mib=102400)
     for turn in range(1, TURNS + 1):
         turn_started(f"agent{n}", turn)
         # queueing_timeout is the only bound here: on a contended host the run
