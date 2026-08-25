@@ -1,18 +1,8 @@
-"""The pictures the run leaves behind. Nothing here talks to Arker.
-
-    progress-<config>.png   redrawn after every turn, while the run is going
-    timeline.png            every config stacked, drawn at the end
-    comparison.png          the configs side by side, drawn at the end
-
-The last two read the saved JSON, so they redraw a finished run at any time:
-
-    uv run --with matplotlib python -c "import charts; charts.timeline()"
-"""
 import json
 import pathlib
 import sys
 
-from helper import AGENTS, RESULTS, RUN, TURNS, VGPUS, label_for
+from helper import AGENTS, RUN, TURNS, VGPUS, label_for
 
 
 def _plt():
@@ -39,12 +29,6 @@ def draw_progress(state: dict) -> None:
 
     fig, (ax_t, ax_l) = plt.subplots(1, 2, figsize=(12, 3.6))
 
-    # Left: when each turn actually ran. Gaps between an agent's bars are the
-    # agent waiting for a GPU slice — this is what queueing looks like.
-    # Only the part that actually ran on the GPU is drawn: a bar starts when the
-    # VM began executing the turn, not when it was submitted. Time spent parked
-    # in admission is simply absent, so on a contended host the bars step across
-    # the page instead of all starting together.
     for t in turns:
         y = names.index(t["agent"])
         queued = t.get("queued", 0.0)
@@ -58,16 +42,12 @@ def draw_progress(state: dict) -> None:
     ax_t.set_yticks(range(len(names)))
     ax_t.set_yticklabels(names, fontsize=9)
     ax_t.set_xlabel("seconds since config start", fontsize=9)
-    # The bar is the whole turn once it was granted a slice — the agent calling
-    # the model, editing, and the training run. The slice is held throughout;
-    # only part of it is compute. Queueing is excluded (see `queued`).
     ax_t.set_title(f"time running — {AGENTS} x {vgpu:g} vGPU",
                    fontsize=10)
     ax_t.grid(axis="x", alpha=.25)
     ax_t.set_axisbelow(True)
     ax_t.invert_yaxis()
 
-    # Right: best val_loss so far, per agent, against the same clock.
     for a in names:
         pts = [t for t in turns if t["agent"] == a and t["loss"] is not None]
         if not pts:
@@ -82,8 +62,6 @@ def draw_progress(state: dict) -> None:
     ax_l.set_title("best val_loss so far", fontsize=10)
     ax_l.grid(alpha=.25)
     ax_l.set_axisbelow(True)
-    # only once some agent has a loss to plot — early turns can all be
-    # "no run recorded", and an empty legend warns
     if ax_l.get_legend_handles_labels()[1]:
         ax_l.legend(fontsize=8, frameon=False)
 
@@ -95,20 +73,19 @@ def draw_progress(state: dict) -> None:
     plt.close(fig)
 
 
-def timeline(folder: str | None = None) -> None:
+def timeline(folder: str) -> None:
     """One figure, every config in the run folder stacked: a setup phase, then
     one row per agent showing each turn — dark where the training run held the
     GPU, light where the agent was waiting on the model. Reads the saved JSON,
     so it redraws long after the run."""
     plt = _plt()
-    where = pathlib.Path(folder) if folder else newest_run()
+    where = pathlib.Path(folder)
     loaded = [json.loads(f.read_text()) for f in sorted(where.glob("vgpu*.json"))]
     loaded = [d for d in loaded if d.get("timeline")]
     if not loaded:
         sys.exit(f"no timeline data in {where} — rerun to record it")
     loaded.sort(key=lambda d: d["vgpu"])
 
-    # one panel per config, heights proportional to the agents they show
     fig, axes = plt.subplots(len(loaded), 1, figsize=(13, 2.4 + 1.5 * len(loaded)),
                              squeeze=False)
     span = max(max(t["end"] for t in d["timeline"]) for d in loaded)
@@ -127,7 +104,7 @@ def timeline(folder: str | None = None) -> None:
             began = t["start"] + t.get("queued", 0.0)
             ax.barh(y, t["end"] - began, left=began, height=.55, color=light)
             train = t.get("train_s")
-            if train:                       # the part that actually held the GPU
+            if train:
                 ax.barh(y, train, left=t["end"] - train, height=.55, color=dark)
         for i, a in enumerate(names, start=1):
             last = max((t for t in d["timeline"] if t["agent"] == a), key=lambda t: t["end"])
@@ -161,18 +138,10 @@ def timeline(folder: str | None = None) -> None:
     print(f"wrote {out}")
 
 
-def newest_run() -> pathlib.Path:
-    runs = sorted((d for d in RESULTS.glob("*") if d.is_dir() and any(d.glob("*.json"))),
-                  key=lambda d: d.name)
-    if not runs:
-        sys.exit("no results yet — run `autoresearch.py both` first")
-    return runs[-1]
-
-
-def chart(folder: str | None = None) -> None:
+def chart(folder: str) -> None:
     plt = _plt()
 
-    where = pathlib.Path(folder) if folder else newest_run()
+    where = pathlib.Path(folder)
     loaded = {v: json.loads((where / f"{label_for(v)}.json").read_text())
               for v in VGPUS if (where / f"{label_for(v)}.json").exists()}
     if not loaded:
