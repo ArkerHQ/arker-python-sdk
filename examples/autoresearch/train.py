@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""Tiny char-LM benchmark: fast enough that an agent loop is observable.
-
-Trains a small transformer on synthetic structured text and appends one row to
-results.tsv. Runs in well under a minute on a 0.25 H100, so 8 agents doing a
-few turns each finishes in minutes rather than hours.
-
-The agent's job: edit the HYPERPARAMS block, rerun, and drive val_loss down.
-"""
 # ---------------- HYPERPARAMS (the agent edits these) ----------------
 LR = 1e-4
 D_MODEL = 32
@@ -15,7 +7,7 @@ N_HEAD = 2
 STEPS = 200
 BATCH = 32
 # ---------------------------------------------------------------------
-import math, os, time, sys
+import os, time
 import torch, torch.nn as nn, torch.nn.functional as F
 
 torch.manual_seed(1234)

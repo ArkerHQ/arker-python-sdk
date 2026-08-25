@@ -1,9 +1,3 @@
-"""Everything in this demo that is NOT an Arker primitive.
-
-autoresearch.py keeps fork / run / policies / delete and the concurrency; the task, the
-prep recipe, the run folder, the logging and the saved summary live here, so
-that file reads as "what the platform does". The pictures are in charts.py.
-"""
 import json
 import os
 import pathlib
@@ -16,23 +10,17 @@ TURNS = int(os.environ.get("TURNS", 8))
 HERE = pathlib.Path(__file__).parent
 RESULTS = HERE / "results"
 
-# The GPU fractions to compare, smallest first: VGPUS="0.25,0.5,1.0".
-# Each becomes one config, saved as vgpu<value>.json in the run folder.
 VGPUS = [float(v) for v in os.environ.get("VGPUS", "0.25,1.0").split(",") if v.strip()]
 
 
 def label_for(vgpu: float) -> str:
     return f"vgpu{vgpu:g}"
 
-# One folder per invocation, holding every config in this run.
 RUN = RESULTS / f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{AGENTS}agents-{TURNS}turns"
 
 _log_lock = threading.Lock()
 _chart_lock = threading.Lock()
 
-# Live state for the config currently running: when it started, which turns
-# have finished, and when each agent's current turn began. The progress chart
-# is redrawn from this after every turn.
 _state: dict = {"vgpu": None, "t0": None, "turns": [], "marks": {}}
 
 
@@ -72,7 +60,6 @@ def turn_done(agent: str, turn: int, tsv: str, stdout: str = "") -> None:
     with _chart_lock:
         submitted = _state["marks"].get(agent, _state["t0"])
         took = time.time() - submitted
-        # queued = submitted -> the VM actually started running it
         queued = max(0.0, began - submitted) if began else 0.0
         _state["turns"].append({
             "agent": agent,
@@ -80,15 +67,10 @@ def turn_done(agent: str, turn: int, tsv: str, stdout: str = "") -> None:
             "start": submitted - _state["t0"],
             "queued": queued,
             "end": time.time() - _state["t0"],
-            # seconds the training run itself took, from results.tsv — the rest
-            # of the turn is the agent thinking (model latency, edits, reads)
             "train_s": runs[-1]["secs"] if runs else None,
             "loss": runs[-1]["loss"] if runs else None,
         })
         _save_partial()
-        # imported here, not at the top: matplotlib is only needed once a turn
-        # has finished, and the demo should fail on a bad API key long before
-        # it fails on a missing plotting library
         from charts import draw_progress
         draw_progress(_state)
     waited = f", {queued:.0f}s queued" if queued >= 1 else ""
@@ -96,37 +78,13 @@ def turn_done(agent: str, turn: int, tsv: str, stdout: str = "") -> None:
         f"— val_loss {last_loss(tsv)}")
 
 
-# The prep VM's install steps, one shell snippet each, run as separate execs
-# from autoresearch.py so each one is a readable line there rather than a wall
-# of bash.
-#
-# Every run() is its own process: on GPU platforms nothing carries from one
-# call to the next — not exported variables, not the working directory — so
-# each command below is prefixed with ENV and stands on its own.
-#
-# OPENROUTER_API_KEY is deliberately a placeholder: `pi` refuses to start
-# without one set, but the real key never reaches the VM — the policy on each
-# agent fork injects the real one into its requests. See run_agent().
-# NODE_EXTRA_CA_CERTS is what lets `pi` talk to openrouter.ai at all. The
-# policy rewrite runs through a MITM proxy whose CA is installed in the VM's
-# system trust store — curl and python pick it up from there, but node ships
-# its own bundle and ignores the system one, so it must be pointed at it.
 ENV = ("export PATH=/usr/local/bin:$PATH HOME=/home/user "
        "OPENROUTER_API_KEY=injected-by-policy "
        "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt; "
-       "mkdir -p ~/lab; cd ~/lab; ")
-
-INSTALL_UV = ("curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
-              " && uv venv")
-INSTALL_TORCH = "uv pip install -q torch --index-url https://download.pytorch.org/whl/cu124"
-INSTALL_NODE = ("curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz"
-                " && tar -xf /tmp/node.tar.xz -C /usr/local --strip-components=1")
-INSTALL_AGENT = "npm i -g --ignore-scripts @earendil-works/pi-coding-agent"
-VERIFY_TORCH = ".venv/bin/python -c 'import torch; print(\"torch\", torch.__version__)'"
-
+       "cd ~; ")
 
 PROMPT = (
-    "You are tuning ~/lab/train.py to minimise val_loss. Check results.tsv for what "
+    "You are tuning ~/train.py to minimise val_loss. Check results.tsv for what "
     "has been tried, edit ONLY the HYPERPARAMS block, then run: "
     ".venv/bin/python train.py . Exactly one run this turn, then stop. "
     "IMPORTANT: keep STEPS <= 1200."
@@ -158,7 +116,7 @@ def parse_runs(tsv: str) -> list[dict]:
         c = line.split("\t")
         if len(c) >= 10:
             try:
-                runs.append({"loss": float(c[8]), "secs": float(c[9]), "steps": int(c[5])})
+                runs.append({"loss": float(c[8]), "secs": float(c[9])})
             except ValueError:
                 pass  # header row
     return runs
@@ -179,10 +137,7 @@ def save_summary(vgpu: float, agents: dict) -> dict:
         "agents": AGENTS,
         "turns": TURNS,
         "wall_s": wall,
-        "in_progress": False,
-        "turns_done": AGENTS * TURNS,
         "experiments": len(every),
-        "gpu_seconds": round(sum(r["secs"] for r in every), 1),
         "best_loss": min((r["loss"] for r in every), default=None),
         "prep_ready_s": _state.get("prep_ready"),
         "timeline": _state["turns"],
@@ -198,7 +153,7 @@ def save_summary(vgpu: float, agents: dict) -> dict:
 def _save_partial() -> None:
     """Write vgpu<x>.json from the turns finished so far, so a run that is
     interrupted still leaves its results behind. save_summary overwrites this
-    with the full version (per-run secs and steps) when the config finishes.
+    with the full version (per-run secs) when the config finishes.
     Called with _chart_lock held."""
     vgpu, turns = _state["vgpu"], _state["turns"]
     per_agent: dict = {}
@@ -212,8 +167,6 @@ def _save_partial() -> None:
         "vgpu": vgpu,
         "agents": AGENTS,
         "turns": TURNS,
-        "in_progress": len(turns) < AGENTS * TURNS,
-        "turns_done": len(turns),
         "wall_s": wall,
         "experiments": len(losses),
         "best_loss": min(losses, default=None),

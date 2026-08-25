@@ -1,44 +1,11 @@
 #!/usr/bin/env python3
-"""Agent-driven hyperparameter search on Arker GPUs, via the Python SDK.
-
-    VGPUS=0.25          autoresearch.py    # one config: 4 agents x 0.25 vGPU
-    VGPUS=0.25,1.0      autoresearch.py    # both, one after the other, then the chart
-    AGENTS=4 TURNS=8 VGPUS=0.25,0.5,1.0 autoresearch.py
-
-VGPUS is the whole interface: each fraction runs as its own config, one at a
-time (each needs the host to itself or the comparison means nothing), and the
-chart comparing them is drawn at the end. Every turn also rewrites
-vgpu<x>.json and progress-vgpu<x>.png, so an interrupted run still leaves its
-results behind.
-
-Four things the platform does carry the whole demo:
-
-    fork()      one prep VM installs the toolchain once (~4 min); every agent
-                is a copy-on-write fork of it, ready in about a second
-    run()       each turn is one exec inside an agent's VM; every run is its
-                own process, so each command carries its own environment
-    policies=   the OpenRouter key goes to the platform, not the VM. It is
-                spliced into the agent's requests on their way out, so the key
-                never exists inside the machine that uses it
-    delete()    agents clean themselves up, prep goes last
-
-The point of comparing fractions: `vgpu=0.25` gives four agents one H100
-between them and they genuinely run at the same time; `vgpu=1.0` gives each
-agent a whole card, so on a 2-GPU host they queue — the platform hands the
-card over as each run finishes, with no orchestration from this script. Same
-experiments, same hardware; the chart shows what that costs in wall clock.
-
-Everything that is not an Arker call — the task, the prep recipe, the run
-folder, the logging — lives in helper.py; the charts live in charts.py.
-"""
 import os
 from concurrent.futures import ThreadPoolExecutor
 
 from arker import VM, Arker
 
 from charts import chart, timeline
-from helper import (AGENTS, INSTALL_AGENT, INSTALL_NODE, INSTALL_TORCH, INSTALL_UV,
-                    EXEC_MARK, PROMPT, RUN, ENV, TASK, TURNS, VERIFY_TORCH,
+from helper import (AGENTS, EXEC_MARK, PROMPT, RUN, ENV, TASK, TURNS,
                     VGPUS, begin_config, log, parse_runs, prep_ready, save_summary,
                     turn_done, turn_started)
 
@@ -55,23 +22,24 @@ def prepare_vm(ark: Arker) -> VM:
                              "match": {"hosts": ["openrouter.ai"]},
                              "action": {"rewrite": {"headers": {
                                  "authorization": "Bearer ${secret:OPENROUTER_API_KEY}"}}}},
-                            # A non-empty document denies every flow it does not
-                            # match, and the agent still needs the rest of the internet.
                             {"type": "outbound", "action": "allow"},
                         ],
                     })
 
-    # uv, plus the ~/lab venv that everything below installs into — ~6s
-    prep.run(ENV + INSTALL_UV)
-    # torch for CUDA 12.4 — ~170s, and the whole reason prep is forked once
+    # uv, plus the ~ venv that everything below installs into: ~6s
+    prep.run(ENV + "curl -fsSL https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh"
+             " && uv venv")
+    # torch for CUDA 12.4: ~170s, and the whole reason prep is forked once
     # rather than installed per agent. Nothing prints while it downloads.
-    prep.run(ENV + INSTALL_TORCH)
-    # node, which the coding agent runs on — ~17s
-    prep.run(ENV + INSTALL_NODE)
-    # the coding agent itself: what drives each turn inside the VM — ~12s
-    prep.run(ENV + INSTALL_AGENT)
-    # fail here, on prep, rather than once four agents are running — ~12s
-    prep.run(ENV + VERIFY_TORCH)
+    prep.run(ENV + "uv pip install -q torch --index-url https://download.pytorch.org/whl/cu124")
+    # node, which the coding agent runs on: ~17s
+    prep.run(ENV + "curl -fsSL -o /tmp/node.tar.xz "
+             "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz"
+             " && tar -xf /tmp/node.tar.xz -C /usr/local --strip-components=1")
+    # the coding agent itself: what drives each turn inside the VM: ~12s
+    prep.run(ENV + "npm i -g --ignore-scripts @earendil-works/pi-coding-agent")
+    # fail here, on prep, rather than once four agents are running: ~12s
+    prep.run(ENV + ".venv/bin/python -c 'import torch; print(\"torch\", torch.__version__)'")
 
     prep.run(ENV + f"cat > train.py <<'EOF'\n{TASK}\nEOF")   # agents inherit it by forking
     prep_ready()
@@ -87,18 +55,16 @@ def run_agent(ark: Arker, prep: VM, n: int, vgpu: float) -> list[dict]:
         vgpu=vgpu,
         platforms=["x86_64-h100sxm"],
         vcpu_count=2, memory_mib=16384, disk_mib=102400)
+
     for turn in range(1, TURNS + 1):
         turn_started(f"agent{n}", turn)
-        # queueing_timeout is the only bound here: on a contended host the run
-        # parks until a GPU slice frees, so a long turn means queueing, not a
-        # slow model. Execution is unbounded — demo code assumes it succeeds.
+        # queueing_timeout is the only bound here: on a contended host the run parks until a GPU slice frees, so a long turn means queueing, not a slow model.
         out = vm.run(ENV + f"echo {EXEC_MARK}=$(date +%s); pi --provider openrouter "
                      f'--model openai/gpt-5.6-luna --exclude-tools ask_question '
                      f'-p "{PROMPT}"', queueing_timeout=900).stdout
         tsv = vm.run(ENV + "cat results.tsv").stdout
-        # out carries the VM's exec-start stamp, which is how the queue wait
-        # is measured rather than guessed
-        turn_done(f"agent{n}", turn, tsv, out)   # also redraws progress-<config>.png
+        # out carries the VM's exec-start stamp, which is how the queue wait is measured
+        turn_done(f"agent{n}", turn, tsv, out)
 
     experiments = parse_runs(tsv)   # the last turn's read, already in hand
     vm.delete()
@@ -112,14 +78,14 @@ def run_config(vgpu: float) -> dict:
     ark = Arker()
     prep = prepare_vm(ark)
 
-    # All agents are submitted at once.
-    # When they ask for more GPU than the host has, the platform queues them.
+    # All agents are submitted at once. When they ask for more GPU than the host has, the platform queues them.
     with ThreadPoolExecutor(max_workers=AGENTS) as pool:
         futures = {n: pool.submit(run_agent, ark, prep, n, vgpu)
                    for n in range(1, AGENTS + 1)}
         agents = {f"agent{n}": f.result() for n, f in futures.items()}
 
-    prep.delete()  # last: the forks' parent
+    # last: the forks' parent
+    prep.delete()
     return save_summary(vgpu, agents)
 
 
