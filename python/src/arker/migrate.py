@@ -168,6 +168,16 @@ def migrate(
             vm.sync(_subst(vm_path, vars), raw.encode())
 
     # forward keys (explicit override wins over discovered environ) + recipe env
+    #
+    # NOTE: auto-discovery only ever forwards environment VARIABLES present in
+    # the source process's /proc/<pid>/environ. Tools whose default login flow
+    # stores credentials in a FILE instead (e.g. Claude Code's interactive
+    # `claude login`, which writes ~/.claude/.credentials.json rather than
+    # setting ANTHROPIC_API_KEY) are invisible to this mechanism no matter
+    # what's added to a recipe's `keys` list — there is nothing in environ to
+    # find. That case has no automatic path today; the caller must pass an
+    # explicit `keys=` override (e.g. a `claude setup-token`-minted
+    # CLAUDE_CODE_OAUTH_TOKEN) to authenticate the resumed process in the VM.
     key_env = keys or {k: environ[k] for k in spec.get("keys", []) if environ.get(k)}
     proc_env = dict(spec.get("env", {}))
     proc_env.update(key_env)

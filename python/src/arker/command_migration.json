@@ -32,7 +32,7 @@
       "place": "/root/.claude/projects/${cwd_key}/${session_id}.jsonl",
       "extra_files": { "/root/.claude.json": { "json": { "hasCompletedOnboarding": true, "projects": { "${cwd}": { "hasTrustDialogAccepted": true } } } } },
       "resume": "cd ${cwd} && claude -p --resume ${session_id} ${probe} 2>&1",
-      "keys": ["ANTHROPIC_API_KEY"]
+      "keys": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
     },
     "codex": {
       "detect": { "argv_contains": "codex" },
