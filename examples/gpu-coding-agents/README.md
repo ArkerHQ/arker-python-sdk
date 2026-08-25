@@ -1,25 +1,17 @@
-# Multiple GPU agent churn test
+# Inference engine development
 
-Eight agents each continuously fork a short-lived GPU VM, run a Claude Code
-workflow (testing features of vLLM) inside it that generates and runs tests of
-critical vLLM features, then delete the VM.
-This demonstrate how agents can utilize sliced GPU, coding harness, and credentails
-set using outbound network policies so that agents never see it.
+In this example, we launch multiple Arker VMs each with a fractional vGPU and each tasked with some unit of work in the lifecycle of inference engine development. For simplicity, each agent is given a fork of vLLM and is instructed simply to run a test.
 
-## Setup
+## Quickstart
 
 ```bash
 export ARKER_API_KEY=<your-arker-api-key>
 export ARKER_ANTHROPIC_API_KEY=sk-ant-...             # your own anthropic API key,
                                                       # injected by policy, never seen by a guest
-```
 
-## Run
-
-```bash
 ./launch.py --minutes 10 --threads 8 --tests-per-agent 3
 ```
 
-## Tear down
+## Why
 
-No need to tear down. The test harness will clean up all VMs created by the test.
+Recursive self-improvement. If inference is a critical part of your stack, there is a threshold upon which optimizing the inference engine itself becomes valuable. vGPUs provide an efficient way to deploy agents for the task of inference engine optimization itself.
