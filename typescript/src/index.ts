@@ -1582,6 +1582,14 @@ export class VM {
    *
    * `body` is a factory, not a value: a retried attempt needs a fresh body,
    * and a stream can only be consumed once.
+   *
+   * Deliberately `private`, not a second public method: the server has two
+   * write routes (`/sync`, JSON/base64; `/sync-stream`, raw octet-stream —
+   * see the route-registration comment in arker-app's `routes/mod.rs` for
+   * why both exist) but a caller of `sync()`/`syncDir()` should never need to
+   * know or choose between them. Re-verified (2026-08-25) that this stays
+   * true: no `sync-stream`/`syncStream` name appears anywhere in this
+   * package's public exports, README, or examples.
    */
   private async syncStreamPost(
     query: Record<string, string>,

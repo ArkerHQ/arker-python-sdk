@@ -1186,6 +1186,15 @@ class VM:
         so auth, content type, retry and error handling cannot drift apart
         between them. ``body`` is a factory, not a value, so a retried attempt
         gets fresh bytes.
+
+        Deliberately a private (``_``-prefixed) method, not a second public
+        one: the server has two write routes (``/sync``, JSON/base64;
+        ``/sync-stream``, raw octet-stream — see the route-registration
+        comment in arker-app's ``routes/mod.rs`` for why both exist), but a
+        caller of ``sync()``/``sync_dir()`` should never need to know or
+        choose between them. Re-verified (2026-08-25) that this stays true:
+        no ``sync_stream``/``sync-stream`` name appears anywhere in this
+        package's ``__init__.py`` exports, README, or examples.
         """
         url = f"{self.base_url}{_vm_path(self.id)}/sync-stream"
         headers = {
