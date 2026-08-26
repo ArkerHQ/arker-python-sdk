@@ -1,175 +1,242 @@
 #!/usr/bin/env python3
-"""One-touch launch: build the base VM if needed, then run the churn test.
 
-    export ARKER_API_KEY=...                   # Arker account key
-    export ARKER_ANTHROPIC_API_KEY=sk-ant-...  # injected by policy, never seen by a guest
-    ./launch.py --minutes 10 --threads 8 --tests-per-agent 3
-
-setup_base.py builds and verifies the base; run_fleet_test.py then churns agent
-sessions against it, handed over via base.json.
-
-Every VM is deleted when the test finishes — including after a failure or a
-Ctrl-C. --keep-base keeps the base for the next run to reuse.
-"""
-
-import argparse
-import json
 import os
-import subprocess
+import random
 import sys
+import threading
+import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-import arker_api as api  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import base_spec as spec  # noqa: E402
+import helpers as h  # noqa: E402
+from arker import ArkerError  # noqa: E402
 
-REQUIRED_ENV = ("ARKER_API_KEY", "ARKER_ANTHROPIC_API_KEY")
+VERIFY_TASK = (
+    "Create a file named toolcheck.py containing exactly "
+    "print('ARKER_AGENT_OK'), then run it with python3 and show the output."
+)
 
 
-def base_is_reusable():
-    """True iff base.json exists, its rewrite was verified, and the VM is live.
+# ── the base VM ─────────────────────────────────────────────────────────────
 
-    An unverified base 401s every task and a missing one 503s every fork, so
-    rebuilding beats a run that cannot progress.
+
+def build_base(ar, args, real_key):
+    """Fork the public GPU template and turn it into the image agents fork from.
     """
-    if not os.path.exists(spec.BASE_FILE):
-        return False, "no base.json"
+    base = ar.fork(
+        source_vm_name=spec.GOLDEN,
+        source_org_id=spec.GOLDEN_ORG or None,
+        name=f"{spec.PREFIX}-base",
+        platforms=spec.PLATFORMS or None,
+        policies=spec.policy_doc(real_key),
+        vcpu_count=args.vcpu,
+        memory_mib=args.memory_mib,
+        disk_mib=args.disk_mib,
+        vgpu=args.vgpu,
+    )
     try:
-        with open(spec.BASE_FILE) as f:
-            base = json.load(f)
-    except (OSError, ValueError) as e:
-        return False, f"unreadable base.json ({e})"
-    vm_id = base.get("base_vm_id")
-    if not vm_id:
-        return False, "base.json has no base_vm_id"
-    if base.get("rewrite_verified") is not True:
-        return False, "base.json rewrite_verified != true"
-    try:
-        api.get_vm(vm_id)
-    except api.ApiError as e:
-        return False, f"base VM {vm_id} unreachable ({e.status} {e.code})"
-    return True, vm_id
+        return _prepare_base(base, args, real_key)
+    except BaseException:
+        # A half-built base is no use to anyone and still holds a slice.
+        print(f"\nbase build failed — deleting {base.id}")
+        h.delete(base, attempts=10, floor=3.0)
+        raise
 
 
-def read_base_id():
-    """The base VM id setup_base.py recorded, or None."""
-    try:
-        with open(spec.BASE_FILE) as f:
-            return json.load(f).get("base_vm_id")
-    except (OSError, ValueError):
-        return None
+def _prepare_base(base, args, real_key):
+    vram_mib = h.slice_mib(base)
+
+    stored = base.get_policies()
+    if real_key in str(stored.secrets):
+        raise SystemExit("FAIL: the real key came back UNMASKED — stop.")
+
+    h.run(base, spec.ENV_SH.format(key=spec.DUMMY_KEY), session_idx=3, timeout=90)
+
+    # Detached and polled: the install far outlives a foreground run's window.
+    h.run(base, spec.detach(spec.INSTALL, "install"), session_idx=2, timeout=120)
+    rc, _ = h.wait_marker(base, "install", args.install_timeout, "install")
+    log = h.stdout_of(h.run(base, spec.collect_cmd("install", 25), session_idx=2, timeout=90))
+    if rc is None:
+        raise SystemExit(f"FAIL: install did not finish within {args.install_timeout}s.\n"
+                         + log.strip()[-1200:])
+
+    check = h.stdout_of(h.run(base, spec.TOOLCHAIN_CHECK, session_idx=2, timeout=180))
+    for missing in ("NO_CLAUDE", "NO_VLLM", "NO_MODEL"):
+        if missing in check:
+            raise SystemExit(f"FAIL: {missing} — base is not usable.")
+
+    # The agent must write AND run a file: a chat-only prompt would pass even
+    # with tools broken, and a 401 here means the rewrite never applied.
+    h.run(base, spec.detach(spec.claude_script(VERIFY_TASK, "verify"), "verify"),
+          session_idx=1, timeout=120)
+    rc, secs = h.wait_marker(base, "verify", args.verify_timeout, "verify", poll_s=15)
+    out = h.stdout_of(h.run(base, spec.collect_cmd("verify", 40), session_idx=1, timeout=90))
+    print(f"   Base VM finished after {secs}s rc={rc}")
+    print("   " + out.strip().replace("\n", "\n   ")[-1000:])
+    if "ARKER_AGENT_OK" not in out:
+        raise SystemExit(
+            "FAIL: the agent did not complete a tool-using task.\n"
+            "  401 -> the policy rewrite did not apply; check ARKER_ANTHROPIC_API_KEY.\n"
+            "  tool/permission errors -> IS_SANDBOX=1 missing from env.sh.")
+
+    h.run(base, spec.detach(spec.VLLM_SMOKE, "vllm"), session_idx=2, timeout=120)
+    rc, secs = h.wait_marker(base, "vllm", args.verify_timeout, "vllm-smoke", poll_s=15)
+    vout = h.stdout_of(h.run(base, spec.collect_cmd("vllm", 30), session_idx=2, timeout=90))
+    if spec.VLLM_OK_MARKER not in vout:
+        raise SystemExit("FAIL: vLLM did not initialize on the GPU.")
+
+    print(f"\nbase ready: {base.id} ({vram_mib} MiB slice)\n")
+    return base, vram_mib
 
 
-def delete_base(vm_id):
-    """Delete the base VM and drop the handoff file that names it.
+# ── one agent ───────────────────────────────────────────────────────────────
 
-    Runs even after a failed or interrupted churn test — the base holds a GPU
-    slice for as long as it exists.
+
+def run_agent(ar, base, policy, thread_idx, cycle, args, base_vram_mib, stop, deadline):
+    """Fork a VM off the base, run ONE agent session on it, then delete it.
     """
-    print(f"\n== delete base {vm_id} ==")
-    err = api.delete_vm_retry(vm_id, attempts=10, floor=3.0)
-    if err is not None:
-        print(f"   FAILED ({err.status} {err.code}) — it still holds a GPU slice; "
-              f"delete it manually:")
-        print(f"   python3 -c \"import arker_api as a; a.delete_vm_retry('{vm_id}')\"")
+    name = f"{spec.PREFIX}-t{thread_idx}-c{cycle}"
+    t_fork = time.time()
+    try:
+        vm = ar.fork(source_vm_id=base.id, name=name,
+                     vgpu=args.vgpu, disk_mib=args.disk_mib, policies=policy)
+    except ArkerError as e:
+        # 429 = your API concurrency limit; the fork never reached a GPU.
+        # 503 = no GPU slice free — often the previous VM's slice is still held.
+        h.ev("fork_rejected", thread=thread_idx, cycle=cycle, status=e.status,
+             code=e.code, waited=round(time.time() - t_fork, 1))
+        stop.wait(5.0 + random.random() * 5.0)
         return
-    print("   deleted")
+    h.track(vm)
+    vram_mib = h.slice_mib(vm, base_vram_mib)
+    h.ev("fork_ok", thread=thread_idx, cycle=cycle, vm_id=vm.id, name=name,
+         fork_secs=round(time.time() - t_fork, 1))
+
     try:
-        os.remove(spec.BASE_FILE)
-    except OSError:
-        pass
+        if stop.is_set() or time.time() > deadline:
+            return
+        # A different slice of the feature list per session, so the fleet is not
+        # N copies of one workload.
+        rng = random.Random(9000 + thread_idx + cycle)
+        n = rng.randint(1, max(1, args.tests_per_agent))
+        features = [spec.CRITICAL_FEATURES[(thread_idx + cycle + i) % len(spec.CRITICAL_FEATURES)]
+                    for i in range(n)]
+        agent_session(vm, thread_idx, cycle, features, args, stop, deadline, vram_mib)
+    finally:
+        # Always delete, even on interrupt — a leaked VM holds its GPU slice.
+        t_del = time.time()
+        err = h.delete(vm)
+        if err is None:
+            h.ev("deleted", thread=thread_idx, cycle=cycle, vm_id=vm.id,
+                 delete_secs=round(time.time() - t_del, 1))
+        else:
+            h.ev("delete_failed", thread=thread_idx, cycle=cycle, vm_id=vm.id,
+                 status=err.status, code=err.code)
+
+
+def agent_session(vm, thread_idx, cycle, features, args, stop, deadline, vram_mib):
+    """Launch Claude Code on the VM and wait for it to finish its tests.
+    """
+    tag = f"sess{cycle}"
+    task = spec.feature_test_task(features, vram_mib, args.per_test_budget)
+    t0 = time.time()
+    try:
+        h.run(vm, spec.detach(spec.claude_script(task, tag), tag), session_idx=1, timeout=120)
+    except ArkerError as e:
+        h.ev("task_launch_failed", thread=thread_idx, cycle=cycle,
+             vm_id=vm.id, status=e.status, code=e.code)
+        return
+    h.ev("task_launched", thread=thread_idx, cycle=cycle, vm_id=vm.id,
+         n_tests=len(features), features=features)
+
+    while not stop.is_set():
+        stop.wait(args.poll_secs)
+        elapsed = time.time() - t0
+        if elapsed > args.session_timeout or time.time() > deadline + args.grace:
+            h.ev("task_timeout", thread=thread_idx, cycle=cycle, vm_id=vm.id,
+                 features=features, waited=round(elapsed, 1))
+            return
+        try:
+            done = h.stdout_of(h.run(vm, spec.poll_cmd(tag), session_idx=4, timeout=60)).strip()
+        except ArkerError as e:
+            h.ev("poll_error", thread=thread_idx, vm_id=vm.id, status=e.status)
+            continue
+        if not done or "RUNNING" in done:
+            continue
+
+        log = ""
+        try:
+            log = h.stdout_of(h.run(vm, spec.collect_cmd(tag, 40), session_idx=4, timeout=90))
+        except ArkerError:
+            pass
+        h.ev("task_done", thread=thread_idx, cycle=cycle, vm_id=vm.id,
+             rc=done.split()[0], ok=spec.MARKER in log,
+             total_secs=round(time.time() - t0, 1),
+             features=features, out=log[-500:])
+        return
+    h.ev("task_abandoned", thread=thread_idx, cycle=cycle, vm_id=vm.id,
+         features=features, waited=round(time.time() - t0, 1))
+
+
+def iterate(ar, base, policy, thread_idx, args, base_vram_mib, stop, deadline):
+    """One thread: fork -> agent -> delete, over and over until time runs out."""
+    cycle = 0
+    while not stop.is_set() and time.time() < deadline:
+        cycle += 1
+        run_agent(ar, base, policy, thread_idx, cycle, args, base_vram_mib, stop, deadline)
+
+
+# ── the run ─────────────────────────────────────────────────────────────────
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="One-touch: build (or reuse) the base VM, then run the 8-thread churn test.")
-    # forwarded to run_fleet_test.py
-    ap.add_argument("--minutes", type=float, default=10)
-    ap.add_argument("--threads", type=int, default=8)
-    ap.add_argument("--tests-per-agent", type=int, default=3, metavar="N")
-    # forwarded to both the base build and each child fork
-    ap.add_argument("--vgpu", type=float, default=spec.VGPU,
-                    help="GPU slice as a fraction of one card, in eighths (0.125 … 1.0)")
-    ap.add_argument("--disk-mib", type=int, default=spec.DISK_MIB)
-    # base only
-    ap.add_argument("--memory-mib", type=int, default=spec.MEMORY_MIB,
-                    help="RAM for the base VM (children inherit)")
-    ap.add_argument("--rebuild-base", action="store_true",
-                    help="force a fresh base even if a verified one is reachable")
-    ap.add_argument("--keep-base", action="store_true",
-                    help="do NOT delete the base VM at the end; it keeps holding a GPU "
-                         "slice, but the next run reuses it instead of rebuilding")
-    args = ap.parse_args()
-
-    # Exported, not just defaulted in-process, so the child scripts inherit the
-    # same endpoint rather than each re-deriving it.
-    if not os.environ.get("ARKER_BASE_URL"):
-        os.environ["ARKER_BASE_URL"] = api.DEFAULT_BASE_URL
-        api.BASE = api._base_url()      # arker_api resolved BASE at import
-        print(f"ARKER_BASE_URL not set — using {api.DEFAULT_BASE_URL}")
-
-    missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
-    if missing:
+    args = h.parse_args()
+    real_key = os.environ.get("ARKER_ANTHROPIC_API_KEY", "")
+    if not real_key or not os.environ.get("ARKER_API_KEY"):
         raise SystemExit(
-            "missing env: " + ", ".join(missing) + "\n"
+            "missing env:\n"
             "  export ARKER_API_KEY=<your-arker-api-key>\n"
-            "  export ARKER_ANTHROPIC_API_KEY=sk-ant-...   # injected by policy, never seen by a guest\n"
-            f"  export ARKER_BASE_URL=...   # optional, defaults to {api.DEFAULT_BASE_URL}")
+            "  export ARKER_ANTHROPIC_API_KEY=sk-ant-...   # never reaches a guest")
 
-    py = sys.executable
+    ar = h.client()
+    policy = spec.policy_doc(real_key)
+    print(f"placement: {h.PROVIDER}/{h.REGION}\n")
 
-    # ── stage 1: base ────────────────────────────────────────────────────────
-    if args.rebuild_base:
-        reuse, why = False, "rebuild forced"
+    if args.base_vm:
+        base = ar.vm(args.base_vm).refresh()
+        base_vram_mib = h.slice_mib(base)
+        print(f"reusing base {base.id} ({base_vram_mib} MiB slice)\n")
     else:
-        reuse, why = base_is_reusable()
-    if reuse:
-        print(f"== reuse base {why} (skip build; --rebuild-base to force) ==")
-    else:
-        print(f"== build base ({why}) ==")
-        rc = subprocess.call([py, os.path.join(HERE, "setup_base.py"),
-                              "--vgpu", str(args.vgpu),
-                              "--disk-mib", str(args.disk_mib),
-                              "--memory-mib", str(args.memory_mib)])
-        if rc != 0:
-            raise SystemExit(
-                f"base build failed (exit {rc}); see the tail above — the harness will "
-                f"not run off an unverified base.\nThe partly-built base VM is left "
-                f"running so you can retry without re-installing; delete it yourself if "
-                f"you are not retrying (see README 'Tear down').")
+        base, base_vram_mib = build_base(ar, args, real_key)
 
-    # ── stage 2: churn ───────────────────────────────────────────────────────
-    base_vm_id = read_base_id()
-    print(f"\n== run churn test: {args.threads} threads x {args.minutes} min ==")
-    proc = subprocess.Popen([py, os.path.join(HERE, "run_fleet_test.py"),
-                             "--minutes", str(args.minutes),
-                             "--threads", str(args.threads),
-                             "--tests-per-agent", str(args.tests_per_agent),
-                             "--vgpu", str(args.vgpu),
-                             "--disk-mib", str(args.disk_mib)])
+    print(f"== iterate: {args.threads} agents x {args.minutes} min ==")
+    h.ev("start", threads=args.threads, minutes=args.minutes,
+         tests_per_agent=args.tests_per_agent, vgpu=args.vgpu, vram_mib=base_vram_mib)
+
+    deadline = time.time() + args.minutes * 60
+    stop = threading.Event()
+    threads = [threading.Thread(target=iterate, daemon=True,
+                                args=(ar, base, policy, i, args, base_vram_mib, stop, deadline))
+               for i in range(args.threads)]
     try:
-        try:
-            rc = proc.wait()
-        except KeyboardInterrupt:
-            # Ctrl-C already reached the child through the process group. Let it
-            # delete its own VMs before removing the base they forked from.
-            print("\ninterrupted — waiting for the churn test to delete its VMs")
-            try:
-                rc = proc.wait(timeout=300)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                rc = 130
+        for t in threads:
+            t.start()
+        while time.time() < deadline and any(t.is_alive() for t in threads):
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print("\ninterrupted — draining and deleting VMs")
     finally:
-        # ── stage 3: tear down ───────────────────────────────────────────────
-        if not base_vm_id:
-            print(f"\ncould not read a base VM id from {spec.BASE_FILE}; "
-                  f"check for a leftover base VM.")
-        elif args.keep_base:
-            print(f"\nbase {base_vm_id} kept (--keep-base). It holds a GPU slice until "
-                  f"you delete it; the next run will reuse it.")
-        else:
-            delete_base(base_vm_id)
-    raise SystemExit(rc)
+        stop.set()
+        # Generous: threads are mid-cycle and must still delete their VM.
+        for t in threads:
+            t.join(timeout=args.grace + 120)
+        h.ev("end")
+        h.sweep()                       # agent VMs whose own delete failed
+        h.teardown_base(base, args)
+
+    h.report(args.minutes, {"threads": args.threads, "vgpu": args.vgpu,
+                            "tests_per_agent": args.tests_per_agent,
+                            "vram_mib": base_vram_mib})
 
 
 if __name__ == "__main__":
