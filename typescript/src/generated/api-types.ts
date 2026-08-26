@@ -583,10 +583,10 @@ export interface components {
         VmState: "idle" | "running";
         SessionState: components["schemas"]["VmState"];
         /**
-         * @description Lifecycle state for a run. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run.
+         * @description Lifecycle state for a run. `pending` means the run was accepted but has not started yet because an earlier run on the same session is still in flight; it is not terminal, and a client should keep polling. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run.
          * @enum {string}
          */
-        RunState: "running" | "completed" | "failed" | "cancelled";
+        RunState: "pending" | "running" | "completed" | "failed" | "cancelled";
         /** @description Infrastructure provider currently hosting the resource. */
         Provider: string;
         /** @description A complete replacement for a VM's network policy. Rules are evaluated in order, and the first matching rule determines the result. An empty rule list allows all outbound traffic and permits authenticated inbound access to any guest port. */

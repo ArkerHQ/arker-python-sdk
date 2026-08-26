@@ -86,7 +86,7 @@ VmState: TypeAlias = Literal['idle', 'running']
 SessionState: TypeAlias = VmState
 
 
-RunState: TypeAlias = Literal['running', 'completed', 'failed', 'cancelled']
+RunState: TypeAlias = Literal['pending', 'running', 'completed', 'failed', 'cancelled']
 
 
 Provider: TypeAlias = str
