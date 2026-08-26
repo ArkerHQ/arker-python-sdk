@@ -11,7 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANAGED_PATHS = (
-    Path("contract/openapi.json"),
+    Path("openapi.json"),
     Path("typescript/src/generated/api-types.ts"),
     Path("python/src/arker/generated/api_models.py"),
 )
@@ -50,7 +50,7 @@ def test_generation_is_deterministic_for_both_languages() -> None:
             run(
                 "./scripts/generate-openapi",
                 "--contract",
-                "contract/openapi.json",
+                "openapi.json",
                 "--output-root",
                 output,
             )
@@ -70,7 +70,7 @@ def test_generation_is_deterministic_for_both_languages() -> None:
         operation_ids = {
             operation["operationId"]
             for path_item in json.loads(
-                (REPO_ROOT / "contract/openapi.json").read_text()
+                (REPO_ROOT / "openapi.json").read_text()
             )["paths"].values()
             for method, operation in path_item.items()
             if method != "parameters"
@@ -112,7 +112,7 @@ def test_generation_is_deterministic_for_both_languages() -> None:
 
 def test_public_wire_types_are_generated() -> None:
     schemas = set(
-        json.loads((REPO_ROOT / "contract/openapi.json").read_text())["components"][
+        json.loads((REPO_ROOT / "openapi.json").read_text())["components"][
             "schemas"
         ]
     )
@@ -187,7 +187,7 @@ def test_sdk_runtime_uses_only_current_public_error_codes() -> None:
 
 def test_retired_vm_pin_is_not_in_the_public_sdk_contract() -> None:
     field = "_".join(("keep", "alive"))
-    contract = json.loads((REPO_ROOT / "contract/openapi.json").read_text())
+    contract = json.loads((REPO_ROOT / "openapi.json").read_text())
     schemas = contract["components"]["schemas"]
 
     assert field not in schemas["Vm"]["properties"]
@@ -201,7 +201,7 @@ def test_retired_vm_pin_is_not_in_the_public_sdk_contract() -> None:
 
 
 def test_provider_and_region_contract_values_are_open_ended() -> None:
-    contract = json.loads((REPO_ROOT / "contract/openapi.json").read_text())
+    contract = json.loads((REPO_ROOT / "openapi.json").read_text())
     schemas = contract["components"]["schemas"]
 
     # `examples` is documentation, not validation: it names the providers we
@@ -232,7 +232,7 @@ def test_provider_and_region_contract_values_are_open_ended() -> None:
 
 
 def test_public_surface_uses_only_current_names_and_copy() -> None:
-    contract = json.loads((REPO_ROOT / "contract/openapi.json").read_text())
+    contract = json.loads((REPO_ROOT / "openapi.json").read_text())
     schemas = contract["components"]["schemas"]
 
     assert "network" not in schemas["ForkRequest"]["properties"]
@@ -294,7 +294,7 @@ def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
         run(
             "./scripts/sync-openapi",
             "--source-file",
-            "contract/openapi.json",
+            "openapi.json",
             "--output-root",
             output_directory,
         )
@@ -348,7 +348,6 @@ def test_contract_tooling_is_repository_local() -> None:
         REPO_ROOT / "scripts/sync-openapi",
         REPO_ROOT / "scripts/check-openapi",
         REPO_ROOT / "scripts/check-local",
-        REPO_ROOT / "contract/README.md",
     ]
     checked_source = "\n".join(path.read_text() for path in contract_paths)
     for forbidden in (
