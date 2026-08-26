@@ -197,8 +197,12 @@ const RUN_POLL_BACKOFF = 1.5;
 // successful check), so a long-running command and a transient network blip
 // both survive; only a service that has stopped responding throws.
 const RUN_POLL_MAX_CONSECUTIVE_FAILURES = 10;
-// Terminal run states — RunState ("running" | "completed" | "failed" |
-// "cancelled") minus the sole non-terminal "running".
+// Terminal run states — RunState ("pending" | "running" | "completed" |
+// "failed" | "cancelled") minus the two NON-terminal states, "pending" and
+// "running". A run is "pending" while it waits behind an earlier run on the
+// same session; a poller must keep polling through it. Anything not in this
+// set is treated as non-terminal, so an unknown future state degrades to
+// "keep polling" rather than a false completion.
 const TERMINAL_RUN_STATES: ReadonlySet<string> = new Set(["completed", "failed", "cancelled"]);
 const RETRYABLE_HTTP = new Set([429, 502, 503, 504]);
 const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
