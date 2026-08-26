@@ -73,7 +73,7 @@ export interface paths {
         };
         /**
          * List VMs
-         * @description List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, or lifecycle state.
+         * @description List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, lifecycle state, platform, or creation time. All filters compose with AND semantics.
          */
         get: operations["listVms"];
         put?: never;
@@ -512,7 +512,7 @@ export interface components {
             timestamp: string;
         };
         RegionPlacement: {
-            /** @description Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it. */
+            /** @description Infrastructure provider identifier for the placement. */
             provider: string;
             /** @description Provider region identifier. */
             region: string;
@@ -527,10 +527,10 @@ export interface components {
             regions: components["schemas"]["RegionPlacement"][];
         };
         /**
-         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity. `capacity_unavailable` means no worker can currently serve the requested platform and one is being brought up; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again.
+         * @description Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `upstream_rate_limited` means a third-party service the request directed Arker to contact — a registry named by `image`, today — rate limited Arker while acting on the caller's behalf; unlike `rate_limited`, the limit is not Arker's and not the organization's request rate, so the remedy is with that service (authenticate, or pull less from it); `message` carries the upstream's own words, including which host refused. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity. `capacity_unavailable` means no worker can currently serve the requested platform and one is being brought up; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again.
          * @enum {string}
          */
-        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "rate_limited" | "budget_exceeded" | "concurrency_limit_exceeded" | "regional_concurrency_limit_exceeded" | "resource_pressure" | "capacity_unavailable" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
+        ErrorCode: "unsupported_operation" | "bad_request" | "validation_error" | "unauthorized" | "invalid_api_key" | "api_key_required" | "csrf_rejected" | "forbidden" | "legal_acceptance_required" | "payment_required" | "not_found" | "conflict" | "method_not_allowed" | "payload_too_large" | "rate_limited" | "upstream_rate_limited" | "budget_exceeded" | "concurrency_limit_exceeded" | "regional_concurrency_limit_exceeded" | "resource_pressure" | "capacity_unavailable" | "internal" | "unavailable" | "bad_gateway" | "stale_route" | "unrecoverable";
         ErrorBody: {
             code: components["schemas"]["ErrorCode"];
             /** @description Human-readable, client-safe error message. For `code: "internal"`, this is intentionally generic. */
@@ -666,7 +666,7 @@ export interface components {
              * @default false
              */
             suspend?: boolean;
-            /** @description Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead — this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. (Deliberately declared with no JSON-Schema `default`: a schema default is MATERIALIZED by the generated wire types, which would stamp `wake` onto every scaling action including outbound ones — where the field is invalid — and would also emit it into every stored policy document, breaking older workers that reject unknown fields. The absent-means-wake semantic lives in this description and in the server's `ScalingAction::wakes()`.) */
+            /** @description Whether a matched inbound request may wake a suspended VM. Omit this field to allow waking. Set it to `false` so a request that would need to start the VM fails with `503 vm_suspended`; requests received while the VM is running are served normally. This field is not valid on outbound rules. */
             wake?: boolean;
         };
         /** @description Mutate-and-forward. Host/path/header/body values support request-time `$`-token interpolation: `$domain`, `$path`, `$method`, `$vm_id`, `$body` (the request body as received, also `${…}`-braced), and `$$` for a literal `$`. Unknown/unresolved tokens pass through unchanged. */
@@ -690,7 +690,10 @@ export interface components {
             host: string;
             /** @description Request path (interpolated). Default /. */
             path?: string;
-            /** @description HTTP method. Default GET. */
+            /**
+             * @description HTTP method. Default GET.
+             * @default GET
+             */
             method?: string;
             /** @description Request headers with interpolated values. Stored credentials are encrypted at rest and masked in policy responses. */
             headers?: {
@@ -700,7 +703,10 @@ export interface components {
             body?: unknown;
             /** @description HTTP status codes that mean ALLOW. Any other status denies. Must be non-empty. */
             allow_on_status: number[];
-            /** @description Verdict on timeout / connection failure: true = deny (fail-closed, default), false = allow (fail-open). */
+            /**
+             * @description Verdict on timeout / connection failure: true = deny (fail-closed, default), false = allow (fail-open).
+             * @default true
+             */
             deny_on_timeout?: boolean;
             /** @description Max wall-clock for the gate call before it is abandoned (then deny_on_timeout applies). Default ~30000. */
             timeout_ms?: number;
@@ -714,7 +720,7 @@ export interface components {
             image?: string | null;
             /** @description Dockerfile source to build and fork from, as raw Dockerfile text (not a path, not a URL). Exclusive with source_vm_id, source_vm_name and image. Supports a single-stage build using FROM, RUN, ADD (URL source only), ENV, WORKDIR, USER, EXPOSE, ENTRYPOINT, CMD, ARG, and LABEL; anything outside that set (multi-stage builds, an ARG-substituted FROM, COPY, or any other directive) is rejected with a 400 naming the problem. FROM resolves through the same pull/convert pipeline a bare `image` fork uses; every other instruction executes as a real operation against the resulting VM (RUN runs for real, ENV/WORKDIR persist onto the delivered session) rather than inside a build container — the new VM inherits nothing from a source VM, the same fields `image` honours (`policies`, `ssh_public_keys`, `description`) are honoured here too, and the same fields are refused (`layers`, `platforms`, `durable`, `public`, GPU resources). */
             dockerfile?: string | null;
-            /** @description Request nested virtualization support (the guest's own /dev/kvm works) for a new VM forked from `image` or `dockerfile`. Omit or pass false for no nested virt, the default. This selects a hypervisor backend capable of serving it internally — backend selection itself is never a direct customer choice — and returns a 400 naming the reason if this host cannot serve it, rather than silently creating a VM that cannot do nested virt despite the request. */
+            /** @description Request nested virtualization for a VM forked from `image` or `dockerfile`, including access to `/dev/kvm` inside the guest. Omit this field or pass `false` to disable it. The request returns 400 when the selected placement cannot provide nested virtualization. */
             nestedvirt?: boolean | null;
             /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
             source_org_id?: string | null;
@@ -730,25 +736,11 @@ export interface components {
             disk?: boolean | null;
             /** @description Whether the VM should preserve recoverable state across compute interruptions. */
             durable?: boolean | null;
-            /**
-             * @deprecated
-             * @description This input is accepted but ignored. Configure inbound reachability through `policies`.
-             */
-            network?: {
-                [key: string]: unknown;
-            } | null;
-            /**
-             * @deprecated
-             * @description This input is accepted but ignored. Configure outbound access through `policies`.
-             */
-            egress?: {
-                [key: string]: unknown;
-            } | null;
             /** @description Preferred compute platforms for a public template, such as `["graviton3"]`. Supply multiple values to allow any listed platform. Omit or pass an empty list for automatic selection. A fork of an existing VM inherits its source platform. */
             platforms?: string[] | null;
             /** @description State to inherit from the source VM. Omit this field or pass `["disk", "memory"]` for a warm fork that resumes the source's filesystem and running processes. Pass `["disk"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`. */
             layers?: ("disk" | "memory")[] | null;
-            /** @description Maximum time in seconds this request may wait before failing with `capacity_unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. */
+            /** @description Maximum time in seconds this request may wait for capacity before failing with `capacity_unavailable`. Omit this field or pass `0` to fail immediately when capacity is unavailable. */
             queueing_timeout?: number | null;
             /** @description Network policy stored and enforced before the new VM first runs. Omit it to inherit the source VM's policy. Providing a policy replaces the inherited policy; an empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. A non-empty document denies unmatched outbound traffic, so include outbound rules needed during setup. Network topology is inherited from the source. Set SSH keys through `ssh_public_keys`. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
@@ -891,22 +883,17 @@ export interface components {
             session_id: string;
         };
         RunRequest: {
-            /** @description The session to run in. Arker's run interface works like a terminal: sessions are tabs, each keeps its own state — working directory, environment, shell history — and each handles one run at a time. Create a session with `POST /v1/vms/{id}/sessions`, which also sets its starting directory and environment, then pass its id here. Run sequential commands in one session; for a long-running task, start it with `background: true` in a session of its own so later work does not interrupt it. Distinct sessions run concurrently. A session that no longer exists is a 404. Omitted, the run uses the VM's default session, which every caller that omits it shares. */
+            /** @description The session to run in. Arker's run interface works like a terminal: sessions are tabs, each keeps its own state — working directory, environment, shell history — and each handles one run at a time. Create a session with `POST /v1/vms/{id}/sessions`, which also sets its starting directory and environment, then pass its id here. Run sequential commands in one session; for a long-running task, use `time_to_background: 0` in a session of its own so later work does not interrupt it. Distinct sessions run concurrently. A session that no longer exists is a 404. Omitted, the run uses the VM's default session, which every caller that omits it shares. */
             session_id?: string | null;
-            /** @description Legacy selector: choose a session by index rather than id. Prefer `session_id`, which takes precedence when both are sent. */
+            /** @description Numeric session selector. `session_id` takes precedence when both selectors are sent. */
             session_idx?: number | null;
-            /** @description Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op). */
+            /** @description Command submitted for execution. Omit it only for a resource operation (`acquire` or `release`) or a `signal` request. */
             command?: string;
             /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
             /** @description Sync window in seconds. `0` returns a pollable command run immediately after successful dispatch without polling for completion. A positive value bounds the synchronous wait. Omission uses the 300-second default. Control requests do not accept this field. This does not bound command execution; use `timeout` for the execution and kill bound. Values above approximately 350 seconds can exceed the load balancer idle limit. */
             time_to_background?: number | null;
-            /**
-             * @deprecated
-             * @description DEPRECATED alias for `time_to_background`. `true` is exactly `time_to_background: 0` (return a pollable run immediately); `false` leaves the default sync window. Accepted for callers written before `time_to_background` became canonical. Send only one of the two — supplying both is rejected, because they can disagree. Prefer `time_to_background`, which can also bound the wait instead of only switching it off.
-             */
-            background?: boolean | null;
-            /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. Independent of `timeout` (execution bound) and `time_to_background` (sync window). */
+            /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. Omit this field or pass `0` to fail immediately when the run cannot start. This is independent of `timeout` and `time_to_background`. */
             queueing_timeout?: number | null;
             /**
              * @description Output marker used to determine when interactive execution is complete.
@@ -920,7 +907,7 @@ export interface components {
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
             /**
-             * @description Preferred guest-memory mode if this run has to restore the VM: `file` maps the memory image from the host page cache, `uffd` supplies pages on demand through a userfaultfd handler. Omit it to let the server choose from the image's resident size, which is the right answer for almost everything. Set `uffd` for a short-lived call where restore latency dominates, `file` for a long-lived session that will touch most of its memory. A HINT, not a command: it only overrides the size policy, and an image reconstructed from object storage still uses `uffd` because the file mode cannot fault it correctly. Only takes effect when this run actually restores the VM — on an already-running VM it does nothing, and the mode in use is reported back as `memory_backend` on the response.
+             * @description Preferred guest-memory mode when this run restores the VM. `file` maps the memory image from the host page cache; `uffd` supplies pages on demand. Omit this field to let the service choose. The setting has no effect when the VM is already running, and the response reports the mode used.
              * @enum {string|null}
              */
             memory_backend?: "file" | "uffd" | null;
@@ -948,7 +935,7 @@ export interface components {
         };
         RunResponse: components["schemas"]["CompletedRunResponse"] | components["schemas"]["BackgroundRunResponse"];
         CompletedRunResponse: {
-            /** @description The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command. */
+            /** @description Session used by this run. Use this identifier to inspect or stop work that continues after the initial response. Absent for resource and signal requests that execute no command. */
             session_id?: string | null;
             /** @description The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record. */
             run_id?: string | null;
@@ -968,17 +955,7 @@ export interface components {
              * @enum {string}
              */
             stderr_encoding: "utf-8" | "base64";
-            /**
-             * @description The command's exit status, or `null` when there is none.
-             *
-             *     `null` means a PROMPT ended this run rather than the command's own completion marker, so nothing exited and there is no status to report. A REPL turn genuinely has none: `print(6 * 7)` does not exit with anything.
-             *
-             *     Expected when you passed `end_symbol`, or when the command was itself a REPL launch such as `python3`.
-             *
-             *     If you did NEITHER, an interpreter left running by an earlier run in this session received your command as keystrokes, answered with its own error, and returned to its prompt — which is the prompt that ended the run. Its output is in `stdout`. **The command never reached Bash.** Send `exit()` to leave the interpreter, pass `end_symbol: "none"` to force Bash for one run, or use a different `session_idx`.
-             *
-             *     This was previously a fabricated `0`, which a caller checking `exit_code == 0` read as success for a command that never ran. The key is always present, so `null` is an explicit answer rather than an omission.
-             */
+            /** @description The command's exit status. `null` means a prompt ended the run before a command completion marker was received, so no exit status is available. This is expected for `end_symbol` and REPL commands. If it is unexpected, `stdout` can show that an interpreter from an earlier run received the command. Exit the interpreter, pass `end_symbol: "none"`, or use another session. */
             exit_code: number | null;
             /** @description Execution mode selected by the service, when reported. */
             dispatch?: string | null;
@@ -995,7 +972,7 @@ export interface components {
             memory_backend?: "file" | "uffd" | null;
         };
         BackgroundRunResponse: {
-            /** @description The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command. */
+            /** @description Session used by this run. Use this identifier to inspect or stop work that continues after the initial response. Absent for resource and signal requests that execute no command. */
             session_id?: string | null;
             /** @description Unique run identifier. */
             run_id: string;
@@ -1082,10 +1059,7 @@ export interface components {
             next_cursor?: string | null;
         };
         OrgRunListRow: {
-            /**
-             * @deprecated
-             * @description No longer meaningful; do not depend on this field.
-             */
+            /** @description Service that produced the activity record. */
             source?: string;
             /** @description Activity timestamp as Unix epoch milliseconds. */
             t_ms: number;
@@ -1194,13 +1168,13 @@ export interface components {
             /** @description Region containing the resource or activity. */
             region?: string | null;
             /**
-             * @description Whether the shared directory is mounted in the VM. Attaching the mount is asynchronous, so creating a sync always answers `attaching` and the outcome is learned by polling this resource.
+             * @description Mount status. Creating a sync returns `attaching`; poll this resource for the outcome.
              *
-             *     `attaching` — not mounted yet. This also covers a VM that is not currently running: the sync is recorded durably and is established on its next resume. Keep polling.
+             *     `attaching` — the mount is pending. A stopped VM remains in this state until it resumes.
              *
-             *     `mounted` — the guest reported the filesystem live.
+             *     `mounted` — the filesystem is available in the VM.
              *
-             *     `failed` — this VM cannot mount it and never will, so polling is pointless; `status_detail` says why. The usual cause is an image with no way to obtain the FUSE driver — for example one with no package manager. A transient failure is NOT reported here, because it is still being retried.
+             *     `failed` — the VM cannot mount the filesystem. `status_detail` explains the cause. Transient errors remain in `attaching` while the service retries them.
              * @enum {string|null}
              */
             status?: "attaching" | "mounted" | "failed" | null;
@@ -1309,7 +1283,7 @@ export interface components {
             content: string;
             /** @description Inclusive starting byte offset. */
             start: number;
-            /** @description EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`. */
+            /** @description Exclusive ending byte offset. The range is half-open `[start, end)`, so a whole file of `N` bytes uses `start=0` and `end=N`. */
             end: number;
             /** @description Lowercase hexadecimal SHA-256 digest used to verify file content. */
             sha256?: string | null;
@@ -1445,7 +1419,7 @@ export interface components {
         SyncByteRange: {
             /** @description Inclusive starting byte offset. */
             start: number;
-            /** @description EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`. */
+            /** @description Exclusive ending byte offset. The range is half-open `[start, end)`, so a whole file of `N` bytes uses `start=0` and `end=N`. */
             end: number;
         };
         SyncEntryError: {
@@ -1750,12 +1724,18 @@ export interface operations {
                 region?: string;
                 /** @description Narrow results to a provider. */
                 provider?: components["schemas"]["Provider"];
-                /** @description List public VMs owned by this org. Currently only `ArkerHQ` is supported, together with `public=true`, for the public template catalog. */
+                /** @description List public VMs owned by this organization. Use `ArkerHQ` with `public=true` for the public template catalog. */
                 org_id?: string;
                 /** @description Filter by public visibility. Use with `org_id=ArkerHQ` to list the public template catalog. */
                 public?: boolean;
                 /** @description Filter by VM lifecycle state. */
                 state?: components["schemas"]["VmState"];
+                /** @description Match a concrete VM platform ID exactly. A public template matches when any compatible_platforms entry has this ID. */
+                platform?: string;
+                /** @description Include VMs created at or after this RFC 3339 timestamp. An explicit UTC offset is required. */
+                created_after?: string;
+                /** @description Include VMs created before this RFC 3339 timestamp. An explicit UTC offset is required. */
+                created_before?: string;
             };
             header?: never;
             path?: never;

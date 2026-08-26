@@ -41,6 +41,7 @@ ErrorCode: TypeAlias = Literal[
     'method_not_allowed',
     'payload_too_large',
     'rate_limited',
+    'upstream_rate_limited',
     'budget_exceeded',
     'concurrency_limit_exceeded',
     'regional_concurrency_limit_exceeded',
@@ -125,10 +126,10 @@ class Gate:
     host: str
     allow_on_status: list[int]
     path: str | None = None
-    method: str | None = None
+    method: str | None = 'GET'
     headers: dict[str, str] | None = None
     body: Any | None = None
-    deny_on_timeout: bool | None = None
+    deny_on_timeout: bool | None = True
     timeout_ms: int | None = None
 
 
@@ -534,6 +535,9 @@ class ListVmsParameters:
     org_id: str | None = None
     public: bool | None = None
     state: VmState | None = None
+    platform: str | None = None
+    created_after: str | None = None
+    created_before: str | None = None
 
 
 @dataclass(frozen=True)
@@ -875,8 +879,6 @@ class ForkRequest1:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
-    network: dict[str, Any] | None = None
-    egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -899,8 +901,6 @@ class ForkRequest2:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
-    network: dict[str, Any] | None = None
-    egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -923,8 +923,6 @@ class ForkRequest3:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
-    network: dict[str, Any] | None = None
-    egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -947,8 +945,6 @@ class ForkRequest4:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
-    network: dict[str, Any] | None = None
-    egress: dict[str, Any] | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -967,7 +963,6 @@ class RunRequest:
     command: str | None = None
     timeout: int | None = None
     time_to_background: int | None = None
-    background: bool | None = None
     queueing_timeout: int | None = None
     end_symbol: str | None = 'auto'
     vcpu_count: int | None = None

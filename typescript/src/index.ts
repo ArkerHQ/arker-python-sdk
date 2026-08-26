@@ -21,9 +21,7 @@ export const CHUNK_SIZE = 4 * 1024 * 1024;
  * that change landed: 64 MiB returned 200, 72 MiB returned 413
  * `payload_too_large`.
  *
- * The SDK no longer branches on this — every write streams, and the router
- * picks buffered or streamed forwarding itself. Retained because it is exported
- * API and still describes where that switch happens.
+ * Every write streams, and the router selects buffered or streamed forwarding.
  */
 export const STREAM_MAX_BYTES = 64 * 1024 * 1024;
 
@@ -95,8 +93,7 @@ interface StatCacheFile {
 
 /**
  * Pull the `{error:{code,message}}` envelope off a failed response.
- * Shared so every transfer path reports failures identically — the sync call
- * sites previously each parsed errors their own way.
+ * Shared so every transfer path reports failures identically.
  */
 /**
  * Where the persisted stat cache lives. Honours XDG on Linux and the platform
@@ -293,24 +290,11 @@ export async function discoverRegions(
 }
 
 // ── Core resources ─────────────────────────────────────────────────
-/** @deprecated Network topology is no longer a public policy input. */
-export type NetworkPolicy = { type: "open" } | { type: "blocked" };
-/** @deprecated Fork-time egress inputs were replaced by `policies`. */
-export type NetworkPolicyInput =
-  | boolean
-  | "open"
-  | "blocked"
-  | "true"
-  | "false"
-  | "none"
-  | NetworkPolicy;
 export type PolicyDoc = ApiSchema<"PolicyDoc">;
 export type PolicyEntry = ApiSchema<"PolicyEntry">;
 export type PolicyMatch = ApiSchema<"PolicyMatch">;
 export type PolicyAction = ApiSchema<"PolicyAction">;
 export type Rewrite = ApiSchema<"Rewrite">;
-/** @deprecated Policy writes now return the stored `PolicyDoc` directly. */
-export type PutPoliciesResponse = PolicyDoc;
 /** A `ports` element: a single port (`80`) or an inclusive `[start, end]`
  * range (`[1000, 2000]`). A `ports` list may mix the two. */
 export type PortSpec = NonNullable<PolicyMatch["ports"]>[number];
@@ -370,30 +354,6 @@ export type RunOptions = Partial<Omit<RunRequest, "command">> & {
    */
   idempotencyKey?: string;
 };
-/** @deprecated Run-time inbound configuration moved to `policies`. */
-export type InboundPortRequest = {
-  visibility?: string;
-  protocol?: string;
-};
-/** @deprecated Run-time inbound configuration moved to `policies`. */
-export type NetworkRequest = {
-  inbound?: { ports?: Record<string, InboundPortRequest> } | null;
-};
-/** @deprecated Network status is represented by the VM's policy document. */
-export type NetworkStatus = {
-  inbound: {
-    ports: Record<
-      string,
-      {
-        requested: string;
-        observed: string;
-        effective: string;
-        protocol: string;
-        url?: string | null;
-      }
-    >;
-  };
-};
 export type RunResponse = ApiSchema<"RunResponse">;
 export type CompletedRunResponse = ApiSchema<"CompletedRunResponse">;
 export type BackgroundRunResponse = ApiSchema<"BackgroundRunResponse">;
@@ -431,8 +391,6 @@ export type CreateSessionRequest = ApiSchema<"CreateSessionRequest">;
 export type PatchSessionRequest = ApiSchema<"PatchSessionRequest">;
 export type PatchSessionResponse = ApiSchema<"PatchSessionResponse">;
 export type PtyTicketResponse = ApiSchema<"PtyTicketResponse">;
-/** @deprecated Use `PtyTicketResponse`. */
-export type MintSessionPtyTicketResponse = PtyTicketResponse;
 
 // ── Operation query parameters ─────────────────────────────────────
 export type ListVmsParameters = ApiQuery<"listVms">;
@@ -448,11 +406,6 @@ export type PatchVmRequest = ApiSchema<"PatchVmRequest">;
 // ── Errors ─────────────────────────────────────────────────────────
 export type ErrorResponse = ApiSchema<"ErrorResponse">;
 
-// ── Back-compat aliases (deprecated) ───────────────────────────────
-/** @deprecated Use `Session`. */
-export type SessionInfo = Session;
-/** @deprecated Use `Run`. */
-export type RunStatusResponse = Run;
 // ── Result shapes for the high-level run() helper ──────────────────
 export interface CompletedRunResult {
   type: "completed";
@@ -621,16 +574,31 @@ export class ArkerError extends Error {
   }
 }
 
-function rejectRemovedNetworkInputs(operation: "fork" | "run", request: unknown): void {
+function rejectUnsupportedNetworkInputs(operation: "fork" | "run", request: unknown): void {
   if (request == null || typeof request !== "object") return;
-  const legacy = request as Record<string, unknown>;
+  const input = request as Record<string, unknown>;
   const fields = ["network", "egress"].filter(
-    (field) => legacy[field] !== undefined,
+    (field) => input[field] !== undefined,
   );
   if (fields.length > 0) {
     throw new ArkerError(
       "bad_request",
-      `${operation} ${fields.join("/")} inputs were removed; use policies`,
+      `${operation} ${fields.join("/")} inputs are not supported; use policies`,
+      400,
+    );
+  }
+}
+
+function rejectUnsupportedForkResourceInputs(request: unknown): void {
+  if (request == null || typeof request !== "object") return;
+  const input = request as Record<string, unknown>;
+  const fields = ["vcpu_count", "memory_mib", "disk_mib"].filter(
+    (field) => input[field] !== undefined,
+  );
+  if (fields.length > 0) {
+    throw new ArkerError(
+      "bad_request",
+      `fork ${fields.join("/")} inputs are not supported; use resources`,
       400,
     );
   }
@@ -779,7 +747,8 @@ export class Arker {
         : source instanceof VM
           ? { sourceVmId: source.id, ...opts }
           : source;
-    rejectRemovedNetworkInputs("fork", src);
+    rejectUnsupportedNetworkInputs("fork", src);
+    rejectUnsupportedForkResourceInputs(src);
     // `image` and `dockerfile` are two further sources, each exclusive with
     // the VM selectors and with each other. A body naming more than one
     // decodes as no variant of the contract's `oneOf`.
@@ -821,35 +790,12 @@ export class Arker {
       );
     }
     const sourceOrgId = src.sourceOrgId;
-    // Back-compat: callers used to pass flat resource fields
-    // (vcpu_count / memory_mib / disk_mib). The contract now folds these
-    // into a single `resources` object, so map any legacy flat fields in.
-    const legacy = src as {
-      vcpu_count?: number | null;
-      memory_mib?: number | null;
-      disk_mib?: number | null;
-    };
-    const resources: ResourcesInput | null =
-      src.resources ??
-      (legacy.vcpu_count != null || legacy.memory_mib != null || legacy.disk_mib != null
-        ? {
-            vcpu: legacy.vcpu_count ?? null,
-            memory_mib: legacy.memory_mib ?? null,
-            disk_mib: legacy.disk_mib ?? null,
-          }
-        : null);
-    // Forward everything the caller passed, THEN normalize. This used to be an
-    // allowlist that named each contract field, so any field added to the
-    // contract afterwards was accepted by the types and silently dropped on the
-    // wire — the caller got a successful fork that ignored what they asked for.
-    // `layers` was dropped exactly that way. A passthrough keeps new contract
-    // fields working without an SDK release; the entries below only normalize
-    // (defaults, camelCase→snake_case, legacy resource folding) and so must
-    // come after the spread.
+    // Forward all contract fields, then normalize defaults and camelCase source
+    // selectors. This keeps additive contract fields available without an SDK
+    // release.
     //
     // The excluded keys are NOT contract fields and would be rejected by the
-    // server's request validator: the camelCase source selectors, and the
-    // legacy flat resource fields folded into `resources` above.
+    // server's request validator: the camelCase source selectors.
     const {
       sourceVmId: _sourceVmId,
       sourceVmName: _sourceVmName,
@@ -859,10 +805,6 @@ export class Arker {
       registryAuth: _registryAuth,
       ...passthrough
     } = src as ForkSource & Record<string, unknown>;
-    delete passthrough.vcpu_count;
-    delete passthrough.memory_mib;
-    delete passthrough.disk_mib;
-
     const requestOptions = {
       ...passthrough,
       ...(sourceOrgId !== undefined ? { source_org_id: sourceOrgId } : {}),
@@ -875,7 +817,7 @@ export class Arker {
       disk: src.disk,
       durable: src.durable ?? null,
       platforms: src.platforms,
-      resources,
+      resources: src.resources ?? null,
       // Omit to inherit the source's policy; pass a document to replace it.
       policies: src.policies,
       // Only present for image/dockerfile forks; refused above otherwise.
@@ -1126,13 +1068,10 @@ export class VM {
     return new VM(this._client, this.id, this.baseUrl, data);
   }
 
-  /**
-   * @deprecated Use `Arker.fork({ sourceVmId: this.id, ... })`.
-   * Kept for back-compat with older user code that called `.fork()` on
-   * a VM instance.
-   */
+  /** Fork this VM and return its child. */
   async fork(request: Partial<ForkRequest> = {}): Promise<VM> {
-    rejectRemovedNetworkInputs("fork", request);
+    rejectUnsupportedNetworkInputs("fork", request);
+    rejectUnsupportedForkResourceInputs(request);
     const merged: ForkRequest = {
       ...request,
       source_vm_id: request.source_vm_id ?? this.id,
@@ -1173,9 +1112,13 @@ export class VM {
    * until the window elapses, then surfaces the error. Omitted/`0` = fail fast.
    */
   async run(command: string, options: RunOptions & { time_to_background: 0 }): Promise<BackgroundRunResult>;
-  async run(command: string, options?: RunOptions): Promise<CompletedRunResult>;
+  async run(
+    command: string,
+    options?: Omit<RunOptions, "time_to_background"> & { time_to_background?: null | undefined },
+  ): Promise<CompletedRunResult>;
+  async run(command: string, options: RunOptions): Promise<RunResult>;
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
-    rejectRemovedNetworkInputs("run", options);
+    rejectUnsupportedNetworkInputs("run", options);
     const { idempotencyKey, ...body } = options;
     const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
     const request: RunRequest = { ...body, command };
@@ -1535,11 +1478,8 @@ export class VM {
    * The body is sent raw (`application/octet-stream`) — no base64, so none of
    * the +33% inflation the JSON write path pays. */
   /**
-   * THE single `/sync-stream` call site. Every streaming upload — single file
-   * and directory tarball alike — goes through here so auth, content-type,
-   * retry and error parsing cannot drift apart (they previously did: this path
-   * had bespoke error handling and no retry at all, while `putPresigned` had
-   * retry and a different error shape).
+   * Every streaming upload goes through this call site so authentication,
+   * content type, retries, and error parsing stay consistent.
    *
    * `body` is a factory, not a value: a retried attempt needs a fresh body,
    * and a stream can only be consumed once.
@@ -1601,9 +1541,7 @@ export class VM {
   }
 
   /**
-   * Upload a tarball straight off disk instead of reading it into memory first.
-   * A 2 GB tree produced a 2 GB Buffer under the old `readFile` approach purely
-   * to hand it to fetch.
+   * Upload a tarball straight from disk to keep memory flat for large trees.
    *
    * The body is a factory so a retry gets a FRESH read stream — a consumed
    * stream cannot be replayed, which is why `syncStreamPost` takes a factory
@@ -1700,8 +1638,8 @@ export class VM {
     // 319 MB -> 70 MB) and this tarball is ONE request, so compressing is a
     // large win there. On an already-compressed tree it is a double loss —
     // wasted CPU here plus ~3.4x the extraction cost in the guest — so sample
-    // first rather than always gzipping. `tar -xf` sniffs compression, so
-    // either choice extracts correctly and older guests stay compatible.
+    // first rather than always gzipping. `tar -xf` detects the compression
+    // format, so either choice extracts correctly.
     const compress = await this.shouldCompress(changed, fsp);
     const mode = compress ? "tar.gz" : "tar";
     const localTar = nodePath.join(os.tmpdir(), `arker-sync-${ulid()}.${mode}`);
@@ -1711,14 +1649,13 @@ export class VM {
         changed.map((entry) => entry.rel),
       );
 
-      // FAST PATH: one round-trip. `/sync-stream?extract=tar.gz` streams the
+      // One round trip. `/sync-stream?extract=tar.gz` streams the
       // tarball to the guest over vsock and untars it THERE before responding.
-      // The legacy path below is upload + a SEPARATE `run("tar -xf")` — two
+      // The fallback path is upload plus a separate `run("tar -xf")` — two
       // round-trips, with the extract going through the user run scheduler
       // where it can queue behind an active foreground run.
       //
-      // Falls back on 404 so older servers still work: the route only became
-      // reachable once registered in openapi.json.
+      // A 404 selects the upload-and-extract path.
       try {
         if (this._client._supportsStreamingBody()) {
           const { size } = await fsp.stat(localTar);
@@ -1734,10 +1671,8 @@ export class VM {
         }
       }
 
-      // We only reach here because sync-stream answered 404 — an older server
-      // that predates the route. So the fallback must NOT go through `sync()`,
-      // which now streams and would 404 identically. Use the inline/presigned
-      // write that those servers do understand.
+      // A 404 selects the inline or presigned write path. Do not call `sync()`
+      // here because it uses the same streaming route.
       const remoteTar = `/tmp/.arker-sync-${ulid()}.${mode}`;
       await this.syncWriteInline(remoteTar, await fsp.readFile(localTar));
 
@@ -1868,8 +1803,8 @@ export class VM {
    *       ],
    *     });
    */
-  async setPolicies(doc: PolicyDoc): Promise<PutPoliciesResponse> {
-    return this._client._request<PutPoliciesResponse>("PUT", `${vmPath(this.id)}/policies`, doc, this.baseUrl);
+  async setPolicies(doc: PolicyDoc): Promise<PolicyDoc> {
+    return this._client._request<PolicyDoc>("PUT", `${vmPath(this.id)}/policies`, doc, this.baseUrl);
   }
 
   // ── Syncs: bindings of a filesystem into this VM at a path ────────
@@ -1985,7 +1920,7 @@ export class VM {
     };
     let ticket: string | undefined;
     if (useTicket) {
-      const response = await this._client._request<MintSessionPtyTicketResponse>(
+      const response = await this._client._request<PtyTicketResponse>(
         "POST",
         `${vmPath(this.id)}/sessions/${pathSegment(sessionId)}/pty-ticket`,
         {},
@@ -2224,10 +2159,7 @@ function normalizePlacementLabel(name: "provider" | "region", value: string): st
 }
 
 function computeBaseUrl(provider: string, region: string): string {
-  // The subdomain encodes provider+region. Today it still resolves through
-  // the CF Worker (which dispatches based on hostname), so the path includes
-  // `/api`. When DNS is split to bypass the worker on the compute
-  // subdomain, drop `/api` here.
+  // Regional endpoints encode the provider and region in the hostname.
   const normalizedProvider = normalizePlacementLabel("provider", provider);
   const normalizedRegion = normalizePlacementLabel("region", region);
   const placement = `${normalizedProvider}-${normalizedRegion}`;

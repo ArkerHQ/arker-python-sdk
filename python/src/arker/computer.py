@@ -222,13 +222,6 @@ class VmList:
         return len(self.vms)
 
 
-VmSummary = Vm
-
-# Backwards-compat aliases — pre-rename names. Drop in a future major.
-VmInfo = Vm
-SessionInfo = Session
-
-
 def _as_text(data: bytes) -> str:
     """Decode command output for the caller-facing ``stdout``/``stderr``.
 
@@ -414,8 +407,6 @@ class Arker:
         description: str | None = None,
         public: bool | None = None,
         ssh_public_keys: list[str] | None = None,
-        network: dict[str, Any] | None = None,
-        egress: dict[str, Any] | bool | str | None = None,
         disk: bool | None = None,
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
@@ -539,12 +530,6 @@ class Arker:
             raise ArkerError("bad_request", "fork: registry_auth applies to an image or dockerfile fork", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
-        if network is not None or egress is not None:
-            raise ArkerError(
-                "bad_request",
-                "fork network/egress inputs were removed; use policies",
-                400,
-            )
         # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
         # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
         # platform's max is a 400 from the server, not a silent clamp.
@@ -811,6 +796,10 @@ class VM:
         info = _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
         return VM(self._client, self.id, self.base_url, info)
 
+    def fork(self, **kwargs: Any) -> VM:
+        """Fork this VM and return its child."""
+        return self._client.fork(source_vm_id=self.id, **kwargs)
+
     def run(
         self,
         command: str,
@@ -824,7 +813,6 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
-        network: dict[str, Any] | None = None,
         policies: PolicyDoc | dict[str, Any] | None = None,
         acquire: str | list[str] | None = None,
         release: str | list[str] | None = None,
@@ -869,21 +857,10 @@ class VM:
         ``session_id`` uses the VM's default session, which every caller that
         omits it shares.
 
-        ``timeout`` is the execution/kill bound in seconds: the maximum wall-clock
-        time the command may run before the host kills it. Per the contract,
-        omitting it and passing ``0`` mean THE SAME THING — no limit; the run is
-        killed only if you set a positive ``timeout``. There is no 3600s server
-        default: an unset ``timeout`` leaves the run unbounded on the host, so a
-        runaway command runs until something else stops it. It is NOT the HTTP wait window,
-        so backgrounded runs should leave it unset (or set a real kill
-        bound) — a small ``timeout`` would kill the run, not just background it.
-
         ``timeout`` is the execution/kill bound in seconds: the maximum
         wall-clock time the command may run before the host kills it. ``None``
-        (default) and ``0`` both mean unbounded — the run is killed only if you
-        set a ``timeout``. It is NOT the HTTP wait window, so backgrounded runs
-        should leave it unset (or set a real kill bound) — a small
-        ``timeout`` would kill the run, not just background it.
+        and ``0`` both mean unbounded. It does not control the synchronous wait;
+        use ``time_to_background`` for that.
 
         ``time_to_background`` is the HTTP sync window in seconds: how long the call
         blocks inline before backgrounding the run and returning a pollable
@@ -891,16 +868,10 @@ class VM:
         ``DEFAULT_TIME_TO_BACKGROUND``. It does not bound command
         runtime — that is ``timeout``.
 
-        READING THE RESULT. ``exit_code`` is annotated ``int`` but is ``None``
-        when a PROMPT ended the run rather than the command's own completion —
-        a REPL turn genuinely has no exit status. Expect it when you passed
-        ``end_symbol``, or when the command was itself a REPL launch such as
-        ``python3``. If you did neither and still get ``None``, an interpreter
-        left running by an EARLIER run in that tab received your command as
-        keystrokes: its output is in ``stdout`` and your command never reached
-        bash. Send ``exit()``, pass ``end_symbol="none"``, or use a different
-        ``session_idx``. Test success with ``exit_code == 0``, which is False
-        for ``None`` — checking ``!= 0`` would read a REPL turn as a failure.
+        ``exit_code`` is ``None`` when a prompt ends the run before a command
+        completion marker is received. This is expected for ``end_symbol`` and
+        REPL commands. If it is unexpected, inspect ``stdout``, exit the active
+        interpreter, pass ``end_symbol="none"``, or use another session.
 
         ``stdout``/``stderr`` are decoded text; ``stdout_bytes``/``stderr_bytes``
         carry the raw bytes for output that is not valid UTF-8 (the service
@@ -911,12 +882,6 @@ class VM:
         until the window elapses, then surfaces the error. ``None``/``0`` =
         fail fast.
         """
-        if network is not None:
-            raise ArkerError(
-                "bad_request",
-                "run network inputs were removed; use policies",
-                400,
-            )
         policy_doc = (
             policies
             if isinstance(policies, PolicyDoc)
@@ -1372,15 +1337,15 @@ class VM:
             with tarfile.open(tar_local, "w:gz" if compress else "w") as tar:
                 for rel, abs_path in changed:
                     tar.add(abs_path, arcname=rel, recursive=False)
-            # FAST PATH: one round-trip. `/sync-stream?extract=` streams the
+            # One round trip. `/sync-stream?extract=` streams the
             # tarball to the guest and untars it THERE before responding. The
-            # legacy path below is upload + a SEPARATE run("tar -xf") — two
+            # fallback path is upload plus a separate run("tar -xf") — two
             # round-trips, with the extract going through the user run
             # scheduler where it can queue behind an active foreground run.
             try:
-                # Streamed off disk: a 2 GB tree no longer means a 2 GB buffer
-                # just to hand it to the HTTP client. The body is a factory so a
-                # retry reopens the file — a consumed stream cannot be replayed.
+                # Stream from disk to keep memory flat for large trees. The
+                # body is a factory so a retry reopens the file; a consumed
+                # stream cannot be replayed.
                 self._sync_stream_extract_file(tar_local, remote_root, mode)
                 return
             except ArkerError as error:
@@ -1938,12 +1903,7 @@ def _normalize_placement_label(name: str, value: str) -> str:
 
 
 def _compute_base_url(provider: str, region: str) -> str:
-    """The subdomain encodes provider+region.
-
-    Regional endpoints still resolve through the CF Worker, which dispatches based on hostname,
-    so the path includes ``/api``. When DNS is split to bypass the worker on
-    the compute subdomains, drop ``/api`` here.
-    """
+    """Derive the regional API URL from a provider and region pair."""
     normalized_provider = _normalize_placement_label("provider", provider)
     normalized_region = _normalize_placement_label("region", region)
     placement = f"{normalized_provider}-{normalized_region}"
@@ -2049,22 +2009,7 @@ def _drop_none(value: Any) -> Any:
 
 
 def _decode_model(model: type[Model], payload: dict[str, Any]) -> Model:
-    """Decode a response model, IGNORING fields this SDK does not know.
-
-    Forward compatibility is the point. Adding a field to a response is an
-    additive, non-breaking change on the server — but this decoder used to raise
-    a `TypeError` for any unrecognised key, which made every such addition break
-    every already released version of this SDK at once. A client pinned to an
-    older version could not even `fork()` against a newer deployment.
-
-    The strictness was protecting against a legacy/incorrect response SHAPE
-    (see `test_fork_rejects_legacy_id_response`, where the server returns
-    `{"id": ...}` instead of `{"vm_id": ...}`). That protection does not need
-    the unknown-key check: a response missing the fields the model REQUIRES
-    still fails, because the dataclass constructor rejects the missing
-    argument. So we keep "the response must carry what we need" and drop
-    "the response must carry nothing else".
-    """
+    """Decode known response fields and require all mandatory model fields."""
     fields = dataclasses.fields(model)
     hints = get_type_hints(model)
     values = {
@@ -2340,7 +2285,3 @@ def _optional_str(value: Any) -> str | None:
 
 def _optional_int(value: Any) -> int | None:
     return int(value) if isinstance(value, int) else None
-
-
-# Backwards-compat: previously RunStatusResponse.
-RunStatusResponse = Run

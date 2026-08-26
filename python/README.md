@@ -113,9 +113,9 @@ vm.run("python3 train.py", time_to_background=0, idempotency_key=str(uuid.uuid4(
 
 If the host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Backends without durability raise `ArkerError(code="unsupported_operation")`.
 
-## Compatibility imports
+## Provider adapters
 
-The Python package includes limited compatibility modules for common Daytona, E2B, and Modal sandbox workflows. For the supported surface below, migration is a one-line import change:
+The Python package includes focused adapters for common Daytona, E2B, and Modal sandbox workflows. For the supported surface below, selecting an adapter is a one-line import change:
 
 | SDK | Replace | With |
 | --- | --- | --- |

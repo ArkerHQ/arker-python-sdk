@@ -223,34 +223,19 @@ async function testForkRejectsImageAlongsideASourceVm(): Promise<void> {
   assert.equal(fetch.calls.length, 0, "a refused fork must not reach the network");
 }
 
-async function testForkDropsNonContractKeys(): Promise<void> {
+async function testForkRejectsUnsupportedFlatResourceInputs(): Promise<void> {
   const fetch = new FakeFetch();
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
-    200,
-    { vm_id: "vm_child", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  await assert.rejects(
+    () => client(fetch).fork({
+      sourceVmName: "source-vm",
+      vcpu_count: 2,
+    } as never),
+    (error: unknown) =>
+      error instanceof ArkerError &&
+      error.code === "bad_request" &&
+      error.message.includes("use resources"),
   );
-
-  // camelCase selectors + legacy flat resources. The server's validator 400s on
-  // unknown fields, so these must be folded/renamed, never forwarded verbatim.
-  await client(fetch).fork({
-    sourceVmName: "source-vm",
-    sourceOrgId: "org_x",
-    vcpu_count: 2,
-    memory_mib: 1024,
-  } as never);
-
-  const body = JSON.parse(fetch.calls[0]!.body!);
-  for (const key of ["sourceVmName", "sourceOrgId", "vcpu_count", "memory_mib", "disk_mib"]) {
-    assert.equal(key in body, false, `${key} is not a contract field and must not be sent`);
-  }
-  assert.equal(body.source_vm_name, "source-vm", "camelCase selector must be renamed");
-  assert.equal(body.source_org_id, "org_x");
-  assert.deepEqual(
-    body.resources,
-    { vcpu: 2, memory_mib: 1024, disk_mib: null },
-    "legacy flat resource fields must fold into resources",
-  );
+  assert.equal(fetch.calls.length, 0);
 }
 
 async function testForkOmitsSourceOrgWhenNotExplicit(): Promise<void> {
@@ -1049,7 +1034,7 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 
 await testForkPostsDirectlyToSourceVm();
 await testForkForwardsContractFieldsItDoesNotEnumerate();
-await testForkDropsNonContractKeys();
+await testForkRejectsUnsupportedFlatResourceInputs();
 await testForkFromImageSendsOnlyTheImage();
 await testForkRejectsImageAlongsideASourceVm();
 await testForkOmitsSourceOrgWhenNotExplicit();
