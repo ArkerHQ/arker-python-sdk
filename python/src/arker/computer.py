@@ -57,7 +57,6 @@ from .generated.api_models import (
     ListSyncsParameters,
     ListVmsResponse,
     ListVmsParameters,
-    NetworkInput,
     OrgRunListRow,
     PatchSessionRequest,
     PatchSessionResponse,
@@ -973,10 +972,11 @@ class VM:
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         description: str | None | _UnsetType = _UNSET,
-        network: NetworkInput | dict[str, Any] | None = None,
+        ssh_public_keys: list[str] | None = None,
     ) -> Vm:
         """Update this VM's description, resource allocation, and/or authorized
-        SSH keys (``network.ssh_public_keys``) via ``PATCH /v1/vms/{id}``.
+        SSH keys via ``PATCH /v1/vms/{id}``.
+        Pass an empty ``ssh_public_keys`` list to remove all authorized keys.
         Pass ``None`` or an empty description to clear it. Omit
         ``description`` to leave it unchanged. Returns the updated :class:`Vm`."""
         resources: ResourcesInput | None = None
@@ -988,12 +988,12 @@ class VM:
             )
         body: PatchVmRequest | dict[str, Any]
         if description is _UNSET:
-            body = PatchVmRequest(resources=resources, network=network)
+            body = PatchVmRequest(resources=resources, ssh_public_keys=ssh_public_keys)
         else:
             body = {
                 "description": _EXPLICIT_NULL if description is None else description,
                 "resources": resources,
-                "network": network,
+                "ssh_public_keys": ssh_public_keys,
             }
         payload = self._client._request("PATCH", _vm_path(self.id), body, base_url=self.base_url)
         return _vm_info(payload)

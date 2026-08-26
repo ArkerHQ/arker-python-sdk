@@ -1484,11 +1484,6 @@ export interface components {
             /** @description Fraction of one physical GPU to allocate, in eighths of a card: 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, or 1. Resolved against the serving platform's GPU (`vgpu: 0.25` on `x86_64-l40s` is 35 SMs and 11517 MiB), so the same fraction is a different amount of silicon on a different card — see the per-platform table in the docs. Mutually exclusive with `gpu_sms` and `gpu_vram_mib`. Request-only: responses report the resolved `gpu_sms`/`gpu_vram_mib` and never this field. */
             vgpu?: number | null;
         };
-        /** @description SSH key configuration for a fork or patch. Inbound reachability is controlled by the VM's policy document and reported by the policy endpoints. */
-        NetworkInput: {
-            /** @description OpenSSH public keys authorized for terminator auth and in-VM sshd injection. */
-            ssh_public_keys?: string[];
-        };
         SshPublicKeyInfo: {
             /** @description SSH public key in authorized_keys format. */
             public_key: string;
@@ -1505,8 +1500,8 @@ export interface components {
             description?: string | null;
             /** @description CPU, memory, and disk configuration. */
             resources?: components["schemas"]["ResourcesInput"] | null;
-            /** @description SSH access configuration for the VM. */
-            network?: components["schemas"]["NetworkInput"] | null;
+            /** @description Complete replacement for the VM's authorized SSH keys. Omit this field to leave the keys unchanged. Pass an empty array to remove all keys. */
+            ssh_public_keys?: string[];
             /** @description Complete network policy replacement for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails. */
             policies?: components["schemas"]["PolicyWriteRequest"] | null;
         };

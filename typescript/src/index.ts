@@ -303,7 +303,6 @@ export type ForkOptions = ForkRequest;
 export type VmResources = ApiSchema<"VmResources">;
 export type ResourcesInput = ApiSchema<"ResourcesInput">;
 export type VmNetwork = ApiSchema<"VmNetwork">;
-export type NetworkInput = ApiSchema<"NetworkInput">;
 export type Session = ApiSchema<"Session">;
 export type Vm = ApiSchema<"Vm">;
 export type ListVmsResponse = ApiSchema<"ListVmsResponse">;
@@ -1744,17 +1743,16 @@ export class VM {
   }
 
   /**
-   * Update this VM's resource allocation and/or network settings via
+   * Update this VM's resource allocation and/or authorized SSH keys via
    * `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
    *
-   * Accepts either a `PatchVmRequest` (`{ description, resources, network }`) or, for
-   * convenience, flat resource fields (`{ vcpu, memory_mib, disk_mib }`)
-   * which are folded into `resources`.
+   * Accepts either a `PatchVmRequest` or flat resource fields
+   * (`{ vcpu, memory_mib, disk_mib }`), which are folded into `resources`.
    */
   async update(
     request:
       | PatchVmRequest
-      | (ResourcesInput & Pick<PatchVmRequest, "network">),
+      | (ResourcesInput & Pick<PatchVmRequest, "ssh_public_keys">),
   ): Promise<Vm> {
     const r = request as PatchVmRequest &
       ResourcesInput & { resources?: ResourcesInput | null };
@@ -1762,8 +1760,8 @@ export class VM {
       r.resources !== undefined || (r.vcpu === undefined && r.memory_mib === undefined && r.disk_mib === undefined)
         ? {
             description: r.description,
-            resources: r.resources ?? null,
-            network: r.network ?? null,
+            resources: r.resources,
+            ssh_public_keys: r.ssh_public_keys,
             policies: r.policies,
           }
         : {
@@ -1773,7 +1771,7 @@ export class VM {
               memory_mib: r.memory_mib ?? null,
               disk_mib: r.disk_mib ?? null,
             },
-            network: r.network ?? null,
+            ssh_public_keys: r.ssh_public_keys,
             policies: r.policies,
           };
     return this._client._request("PATCH", vmPath(this.id), body, this.baseUrl);

@@ -327,6 +327,28 @@ async function testRemovedNetworkInputsFailBeforeRequests(): Promise<void> {
   assert.equal(fetch.calls.length, 0);
 }
 
+async function testUpdateSendsTopLevelSshPublicKeys(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "PATCH" && url.endsWith("/v1/vms/vm_1"),
+    200,
+    {
+      vm_id: "vm_1",
+      owner_org_id: "owner",
+      created_at: "now",
+      public: false,
+      state: "idle",
+      sessions: [],
+      resources: {},
+      network: {},
+    },
+  );
+
+  await client(fetch).vm("vm_1").update({ ssh_public_keys: [] });
+
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { ssh_public_keys: [] });
+}
+
 async function testNestedErrorWithoutOkStillParses(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -1040,6 +1062,7 @@ await testForkRejectsImageAlongsideASourceVm();
 await testForkOmitsSourceOrgWhenNotExplicit();
 await testForkOmitsUnconfiguredCapabilities();
 await testRemovedNetworkInputsFailBeforeRequests();
+await testUpdateSendsTopLevelSshPublicKeys();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();

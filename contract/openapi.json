@@ -4620,20 +4620,6 @@
         },
         "description": "Resource shape a caller asks for. GPU size is set with `vgpu`, in eighths of one card; the resolved per-GPU `gpu_sms`/`gpu_vram_mib` are reported back on the machine."
       },
-      "NetworkInput": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "SSH key configuration for a fork or patch. Inbound reachability is controlled by the VM's policy document and reported by the policy endpoints.",
-        "properties": {
-          "ssh_public_keys": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "OpenSSH public keys authorized for terminator auth and in-VM sshd injection."
-          }
-        }
-      },
       "SshPublicKeyInfo": {
         "type": "object",
         "required": [
@@ -4689,16 +4675,12 @@
               }
             ]
           },
-          "network": {
-            "description": "SSH access configuration for the VM.",
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkInput"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "ssh_public_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Complete replacement for the VM's authorized SSH keys. Omit this field to leave the keys unchanged. Pass an empty array to remove all keys."
           },
           "policies": {
             "description": "Complete network policy replacement for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails.",

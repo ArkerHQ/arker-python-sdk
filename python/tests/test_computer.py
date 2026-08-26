@@ -853,6 +853,34 @@ def test_update_can_clear_vm_description_with_blank_string() -> None:
     assert json.loads(t.calls[0]["body"]) == {"description": ""}
 
 
+@pytest.mark.parametrize(
+    "keys",
+    [["ssh-ed25519 AAAA test@example.com"], []],
+)
+def test_update_replaces_ssh_public_keys_at_the_top_level(keys: list[str]) -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "PATCH" and url.endswith("/v1/vms/vm_1"),
+        200,
+        {
+            "vm_id": "vm_1",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "resources": {},
+            "network": {},
+        },
+    )
+
+    with use_transport(t):
+        client().vm("vm_1").update(ssh_public_keys=keys)
+
+    assert json.loads(t.calls[0]["body"]) == {"ssh_public_keys": keys}
+
+
 def test_background_run_response() -> None:
     t = FakeTransport()
     t.add_json(

@@ -483,11 +483,6 @@ class ResourcesInput:
 
 
 @dataclass(frozen=True)
-class NetworkInput:
-    ssh_public_keys: list[str] | None = None
-
-
-@dataclass(frozen=True)
 class SshPublicKeyInfo:
     public_key: str
     fingerprint: str
@@ -986,7 +981,7 @@ class SyncWriteResponse:
 class PatchVmRequest:
     description: str | None = None
     resources: ResourcesInput | None = None
-    network: NetworkInput | None = None
+    ssh_public_keys: list[str] | None = None
     policies: PolicyWriteRequest | None = None
 
 
