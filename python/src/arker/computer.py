@@ -1900,6 +1900,24 @@ def _retry_delay(
     return base + jitter
 
 
+def _query_scalar(value: object) -> str:
+    """Render one query value the way the API decodes it.
+
+    Bools MUST be `true`/`false`: the server deserialises them with serde, which
+    rejects Python's `True`/`False` outright —
+
+        400 bad_request: Failed to deserialize query string:
+            public: provided string was not `true` or `false`
+
+    so `str()` made every boolean query parameter unusable. Checked before
+    `int`, because `bool` is a subclass of `int` and would otherwise render as
+    `1`/`0` — which serde rejects for a bool field just the same.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def _build_query(
     path: str,
     parameters: object,
@@ -1910,7 +1928,7 @@ def _build_query(
     if not isinstance(values, dict):
         raise TypeError("operation parameters must serialize to an object")
     pairs = [
-        (key, str(value))
+        (key, _query_scalar(value))
         for key, value in values.items()
         if key not in path_fields
     ]

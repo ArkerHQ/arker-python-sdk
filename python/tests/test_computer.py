@@ -451,7 +451,7 @@ def test_list_uses_configured_base_url() -> None:
     # `Arker.list()` is an admin call — routed through the control
     # plane, not the compute URL.
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=True&state=idle",
+        lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=true&state=idle",
         200,
         {"vms": [{
             "vm_id": "vm_1",
@@ -541,7 +541,7 @@ def test_listed_vm_uses_its_placement_endpoint() -> None:
 def test_list_runs_uses_control_plane_and_filters() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=true&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
         200,
         {
             "since": 10,
