@@ -31,15 +31,7 @@ await vm.delete();
 
 ## Interactive PTY
 
-`arker shell` opens a native PTY session over WebSocket. It does not use SSH and
-does not call `/runs` for each line:
-
-```bash
-arker shell vm_123
-arker shell vm_123 --session-id sess_123
-```
-
-The SDK exposes the same transport:
+The SDK exposes a native PTY session over WebSocket:
 
 ```ts
 const pty = await vm.connectPty({ cols: 120, rows: 32 });
@@ -85,7 +77,7 @@ await vm.listSyncs();
 await vm.deleteSync(syncId);
 ```
 
-`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. Set both `provider` and `region`, or pass `baseUrl`. The SDK accepts any provider and region that form valid DNS labels and resolves compute calls to `https://{provider}-{region}.arker.ai/api`. The region catalog is optional and contains only `provider` and `region`. The CLI equivalent is `arker regions`. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
+`apiKey` falls back to `ARKER_API_KEY`; `provider` to `ARKER_PROVIDER`; and `region` to `ARKER_REGION`. Set both `provider` and `region`, or pass `baseUrl`. The SDK accepts any provider and region that form valid DNS labels and resolves compute calls to `https://{provider}-{region}.arker.ai/api`. The region catalog is optional and contains only `provider` and `region`. Configure retries with `retry: { attempts, baseDelayMs, maxDelayMs }`, or `retry: false` to disable.
 
 ## Durability
 

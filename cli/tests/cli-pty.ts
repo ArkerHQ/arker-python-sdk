@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { bridgePty, type PtyBridgeRuntime } from "../src/cli-pty.js";
-import type { PtyCloseEvent, PtyConnection, PtyInput } from "../src/index.js";
+import type { PtyCloseEvent, PtyConnection, PtyInput } from "@arker-ai/sdk";
 
 class FakePty implements PtyConnection {
   readonly sessionId = "session_1";

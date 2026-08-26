@@ -13,6 +13,7 @@ Arker provides hyper-elastic, durable virtual machines for agent workloads. Its 
 This repository contains the Arker CLI and the Python and TypeScript SDKs, providing convenient access to Arker.
 
 [![PyPI](https://img.shields.io/pypi/v/arker.svg?style=flat-square&label=pypi)](https://pypi.org/project/arker/)
+[![CLI](https://img.shields.io/npm/v/@arker-ai/cli.svg?style=flat-square&label=cli)](https://www.npmjs.com/package/@arker-ai/cli)
 [![npm](https://img.shields.io/npm/v/@arker-ai/sdk.svg?style=flat-square&label=npm)](https://www.npmjs.com/package/@arker-ai/sdk)
 
 ## Get started
@@ -21,7 +22,8 @@ Sign up and get your API key at [arker.ai/console](https://arker.ai/console).
 
 Read the [Arker documentation](https://arker.ai/docs), or see the package-specific guides:
 
-- CLI and TypeScript SDK: [TypeScript guide](./typescript/README.md)
+- CLI: [CLI guide](./cli/README.md)
+- TypeScript SDK: [TypeScript guide](./typescript/README.md)
 - Python SDK: [Python guide](./python/README.md)
 
 ## Examples

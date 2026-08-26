@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+bun run --cwd "$REPO_ROOT/cli" build
+cp "$REPO_ROOT/cli/dist/cli.js" "$REPO_ROOT/typescript/dist/cli.js"

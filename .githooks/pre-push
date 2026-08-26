@@ -11,4 +11,9 @@ python3 tests/test_openapi_enforcement.py --fast
 (
   cd typescript
   bun run typecheck
+  bun run build:sdk
+)
+(
+  cd cli
+  bun run typecheck
 )

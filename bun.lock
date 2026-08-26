@@ -3,7 +3,31 @@
   "configVersion": 1,
   "workspaces": {
     "": {
+      "name": "arker-sdk-monorepo",
+    },
+    "cli": {
+      "name": "@arker-ai/cli",
+      "version": "0.1.0",
+      "bin": {
+        "arker": "./dist/cli.js",
+      },
+      "dependencies": {
+        "@arker-ai/sdk": "workspace:^",
+      },
+      "devDependencies": {
+        "@types/node": "^25.6.0",
+        "@types/ws": "^8.18.1",
+        "tsup": "^8.3.0",
+        "typescript": "^5.6.0",
+        "ws": "^8.21.0",
+      },
+    },
+    "typescript": {
       "name": "@arker-ai/sdk",
+      "version": "1.2.0",
+      "bin": {
+        "arker": "./dist/cli.js",
+      },
       "dependencies": {
         "tar": "^7.5.22",
         "ws": "^8.21.0",
@@ -34,6 +58,10 @@
     },
   },
   "packages": {
+    "@arker-ai/cli": ["@arker-ai/cli@workspace:cli"],
+
+    "@arker-ai/sdk": ["@arker-ai/sdk@workspace:typescript"],
+
     "@aws-sdk/checksums": ["@aws-sdk/checksums@3.1000.18", "", { "dependencies": { "@aws-sdk/core": "^3.975.3", "@aws-sdk/types": "^3.974.2", "@smithy/core": "^3.29.4", "@smithy/types": "^4.16.1", "tslib": "^2.6.2" } }, "sha512-IImkbEyXdV6/uaF5r6Wkk+8718mQw1ll83j0a4a30R3JM/rHVFdWAiT4jtJpFjJiIwM/oJ6SxIxr0z2TaQUGqw=="],
 
     "@aws-sdk/client-s3": ["@aws-sdk/client-s3@3.1091.0", "", { "dependencies": { "@aws-sdk/checksums": "^3.1000.18", "@aws-sdk/core": "^3.975.3", "@aws-sdk/credential-provider-node": "^3.972.70", "@aws-sdk/middleware-sdk-s3": "^3.972.64", "@aws-sdk/signature-v4-multi-region": "^3.996.41", "@aws-sdk/types": "^3.974.2", "@smithy/core": "^3.29.4", "@smithy/fetch-http-handler": "^5.6.6", "@smithy/node-http-handler": "^4.9.6", "@smithy/types": "^4.16.1", "tslib": "^2.6.2" } }, "sha512-jvXBCWZdPEXACF7TEbLdwLgmrcWvAqSnIJeRbnnFTxLuPRAZtEbujVUU48i7PGnrOoO6Jc6HCw9hRqBECoKSww=="],

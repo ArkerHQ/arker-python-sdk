@@ -277,14 +277,14 @@ def test_public_surface_uses_only_current_names_and_copy() -> None:
         Path("python/src/arker/__init__.py"),
         Path("python/src/arker/computer.py"),
         Path("typescript/README.md"),
-        Path("typescript/src/cli.ts"),
+        Path("cli/src/cli.ts"),
         Path("typescript/src/index.ts"),
     )
     for relative_path in public_sources:
         source = (REPO_ROOT / relative_path).read_text()
         assert transition_terms.search(source) is None, relative_path
 
-    cli = (REPO_ROOT / "typescript/src/cli.ts").read_text()
+    cli = (REPO_ROOT / "cli/src/cli.ts").read_text()
     assert "--time-to-background" in cli
     assert "--background" not in cli
 
