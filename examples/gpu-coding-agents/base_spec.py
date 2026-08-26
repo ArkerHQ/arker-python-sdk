@@ -1,6 +1,7 @@
-"""The BASE VM: outbound policy, install, and the agent task.
+"""What runs INSIDE the VMs: the outbound policy, the install, the agent task.
 
-Shared by setup_base.py (builds the base) and run_fleet_test.py (forks it).
+Content only — no SDK calls. launch.py is the flow that feeds these to
+`vm.run()`; helpers.py is the plumbing around it.
 
 The guest never holds a usable key:
 
@@ -9,7 +10,6 @@ The guest never holds a usable key:
 """
 
 import base64
-import json
 import os
 
 GOLDEN = os.environ.get("FLEET_GOLDEN", "ubuntu-gpu")
@@ -19,7 +19,6 @@ GOLDEN_ORG = os.environ.get("FLEET_GOLDEN_ORG", "ArkerHQ")
 # card type serves a whole run. Comma-separated to allow more than one.
 PLATFORMS = [p for p in os.environ.get(
     "FLEET_PLATFORMS", "x86_64-a100sxm-80gb").split(",") if p]
-BASE_FILE = os.environ.get("BASE_FILE", "base.json")
 PREFIX = os.environ.get("FLEET_PREFIX", "vllm-agent")
 
 # Valid-looking but worthless. Must LOOK like a key: a blank one fails as
@@ -44,23 +43,6 @@ VGPU = float(os.environ.get("FLEET_VGPU", "0.125"))
 
 WORK = "/home/user/work"
 AGENT = "/root/agent"
-
-
-def slice_mib(vm, default=None):
-    """VRAM the platform resolved `vgpu` to, read off a VM response.
-
-    The request asks in eighths; only the response knows the MiB, and the agent
-    prompt quotes that figure.
-    """
-    try:
-        got = (vm.get("resources") or {}).get("gpu_vram_mib")
-    except AttributeError:
-        got = None
-    try:
-        return int(got) if got else default
-    except (TypeError, ValueError):
-        return default
-
 
 def policy_doc(real_key):
     """Rewrite the Anthropic auth header; allow everything else.
@@ -211,6 +193,19 @@ VLLM_SMOKE = (
     "python3 -u {WORK}/_vllm_smoke.py\n"
 ).replace("{AGENT}", AGENT).replace("{WORK}", WORK) \
  .replace("{MODEL_DIR}", MODEL_DIR).replace("{MARKER_OK}", VLLM_OK_MARKER)
+
+
+# Is the base actually usable? Checked for real weights, not just the directory:
+# INSTALL creates MODEL_DIR up front, so `test -d` would pass on a failed download.
+TOOLCHAIN_CHECK = (
+    f". {AGENT}/env.sh; "
+    f"command -v claude >/dev/null && echo CLAUDE_OK || echo NO_CLAUDE; "
+    f"python3 -c 'import vllm' 2>/dev/null && echo VLLM_OK || echo NO_VLLM; "
+    f"test -s {MODEL_DIR}/config.json "
+    f"&& ( ls {MODEL_DIR}/*.safetensors >/dev/null 2>&1 "
+    f"|| ls {MODEL_DIR}/*.bin >/dev/null 2>&1 ) "
+    f"&& echo MODEL_OK || echo NO_MODEL"
+)
 
 
 def feature_test_task(features, vram_mib, per_test_budget):
