@@ -113,7 +113,7 @@ arker rm "$VM"
 Runnable quick-starts in [`examples/`](./examples):
 
 - [`browser/`](./examples/browser) — open two Wikipedia pages and fork a live checkpoint at each
-- [`coding-agent/`](./examples/coding-agent) — background coding agents (Claude Code, Codex, Cursor)
+- [`coding-agent/`](./examples/coding-agent) — background coding agents (Claude Code, Codex)
 - [`firmware/`](./examples/firmware) — a coding agent edits firmware and runs it on QEMU
 - [`policies/`](./examples/policies) — host-enforced egress policy as code
 - [`autoresearch/`](./examples/autoresearch) — agents tune a model in parallel on slices of one H100
