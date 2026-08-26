@@ -98,11 +98,11 @@ await vm.run("python3 train.py", { time_to_background: 0, idempotencyKey: crypto
 
 If the host fails mid-run, the run resumes on a healthy host with the VM's filesystem state preserved. Backends without durability return `ArkerError` code `unsupported_operation`.
 
-## Compatibility imports
+## Provider adapters
 
-The SDK includes limited compatibility layers for common Daytona, E2B, and Modal sandbox workflows. These entrypoints keep the original SDK-shaped calls, route through ComputeSDK, use Arker as the first provider, and fall back to the original provider when resolving an existing non-Arker sandbox ID.
+The SDK includes focused adapters for common Daytona, E2B, and Modal sandbox workflows. These entrypoints keep each provider's familiar call shape, route through ComputeSDK, use Arker as the first provider, and use the named provider when resolving one of its sandbox IDs.
 
-For the supported surface below, migration is a one-line import change:
+For the supported surface below, selecting an adapter is a one-line import change:
 
 | SDK | Replace | With |
 | --- | --- | --- |

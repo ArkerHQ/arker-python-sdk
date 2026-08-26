@@ -34,11 +34,6 @@ from .computer import (
     SyncDirResult,
     Vm,
     VmList,
-    VmSummary,
-    # Backwards-compat re-exports.
-    RunStatusResponse,
-    SessionInfo,
-    VmInfo,
 )
 
 from . import daytona, e2b, modal
@@ -72,16 +67,12 @@ __all__ = [
     "RunRecord",
     "OrgRunListRow",
     "RunResult",
-    "RunStatusResponse",
     "RunSummary",
     "Session",
-    "SessionInfo",
     "Sync",
     "SyncDirResult",
     "Vm",
-    "VmInfo",
     "VmList",
-    "VmSummary",
     "daytona",
     "e2b",
     "modal",

@@ -161,7 +161,7 @@
           "VMs"
         ],
         "summary": "List VMs",
-        "description": "List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, or lifecycle state.",
+        "description": "List VMs visible to the authenticated caller, optionally filtered by region, provider, owner, visibility, lifecycle state, platform, or creation time. All filters compose with AND semantics.",
         "parameters": [
           {
             "$ref": "#/components/parameters/Cursor"
@@ -191,7 +191,7 @@
             "in": "query",
             "name": "org_id",
             "required": false,
-            "description": "List public VMs owned by this org. Currently only `ArkerHQ` is supported, together with `public=true`, for the public template catalog.",
+            "description": "List public VMs owned by this organization. Use `ArkerHQ` with `public=true` for the public template catalog.",
             "schema": {
               "type": "string"
             }
@@ -212,6 +212,35 @@
             "description": "Filter by VM lifecycle state.",
             "schema": {
               "$ref": "#/components/schemas/VmState"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "description": "Match a concrete VM platform ID exactly. A public template matches when any compatible_platforms entry has this ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_after",
+            "required": false,
+            "description": "Include VMs created at or after this RFC 3339 timestamp. An explicit UTC offset is required.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_before",
+            "required": false,
+            "description": "Include VMs created before this RFC 3339 timestamp. An explicit UTC offset is required.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
             }
           }
         ],
@@ -1691,7 +1720,7 @@
         "properties": {
           "provider": {
             "type": "string",
-            "description": "Infrastructure provider for the placement. Open-ended BY CONTRACT: no enum, no default, here or anywhere `provider`/`region` appear. A pinned SDK validates against the spec it vendored, so narrowing this to a fixed set makes every existing client reject the first placement on a provider added after their release. Adding a provider must not be a breaking change. The SDK enforces this — tests/test_openapi_enforcement.py walks the whole document for it."
+            "description": "Infrastructure provider identifier for the placement."
           },
           "region": {
             "type": "string",
@@ -1738,6 +1767,7 @@
           "method_not_allowed",
           "payload_too_large",
           "rate_limited",
+          "upstream_rate_limited",
           "budget_exceeded",
           "concurrency_limit_exceeded",
           "regional_concurrency_limit_exceeded",
@@ -1749,7 +1779,7 @@
           "stale_route",
           "unrecoverable"
         ],
-        "description": "Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity. `capacity_unavailable` means no worker can currently serve the requested platform and one is being brought up; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again."
+        "description": "Stable machine-readable error code. `unsupported_operation` means the requested optional feature is unavailable in the selected region or provider. `payment_required` means billing setup or payment is required before new compute can start. `rate_limited` means the organization exceeded its request rate. `upstream_rate_limited` means a third-party service the request directed Arker to contact — a registry named by `image`, today — rate limited Arker while acting on the caller's behalf; unlike `rate_limited`, the limit is not Arker's and not the organization's request rate, so the remedy is with that service (authenticate, or pull less from it); `message` carries the upstream's own words, including which host refused. `budget_exceeded` means the organization reached its monthly spending limit. `concurrency_limit_exceeded` means the organization reached a global concurrent compute-resource limit. `regional_concurrency_limit_exceeded` means the organization reached a concurrent compute-resource limit in the selected region. `resource_pressure` means the serving infrastructure is temporarily at capacity. `capacity_unavailable` means no worker can currently serve the requested platform and one is being brought up; unlike `unavailable`, which signals a fault, this is an expected transient state and the accompanying `retry_after` says when to try again."
       },
       "ErrorBody": {
         "type": "object",
@@ -2114,7 +2144,7 @@
           },
           "wake": {
             "type": "boolean",
-            "description": "Whether a matched `inbound` request may wake a suspended VM. Omit it to allow waking, which is how every inbound request has always behaved. Set it to `false` so that a request which would have to start the VM fails fast with `503 vm_suspended` instead — this is what keeps a health check from resurrecting a scaled-to-zero VM and defeating `suspend`. A request arriving while the VM is already running is served normally. Invalid on `outbound` rules. (Deliberately declared with no JSON-Schema `default`: a schema default is MATERIALIZED by the generated wire types, which would stamp `wake` onto every scaling action including outbound ones — where the field is invalid — and would also emit it into every stored policy document, breaking older workers that reject unknown fields. The absent-means-wake semantic lives in this description and in the server's `ScalingAction::wakes()`.)"
+            "description": "Whether a matched inbound request may wake a suspended VM. Omit this field to allow waking. Set it to `false` so a request that would need to start the VM fails with `503 vm_suspended`; requests received while the VM is running are served normally. This field is not valid on outbound rules."
           }
         }
       },
@@ -2170,6 +2200,7 @@
           },
           "method": {
             "type": "string",
+            "default": "GET",
             "description": "HTTP method. Default GET."
           },
           "headers": {
@@ -2191,6 +2222,7 @@
           },
           "deny_on_timeout": {
             "type": "boolean",
+            "default": true,
             "description": "Verdict on timeout / connection failure: true = deny (fail-closed, default), false = allow (fail-open)."
           },
           "timeout_ms": {
@@ -2314,7 +2346,7 @@
               "boolean",
               "null"
             ],
-            "description": "Request nested virtualization support (the guest's own /dev/kvm works) for a new VM forked from `image` or `dockerfile`. Omit or pass false for no nested virt, the default. This selects a hypervisor backend capable of serving it internally — backend selection itself is never a direct customer choice — and returns a 400 naming the reason if this host cannot serve it, rather than silently creating a VM that cannot do nested virt despite the request."
+            "description": "Request nested virtualization for a VM forked from `image` or `dockerfile`, including access to `/dev/kvm` inside the guest. Omit this field or pass `false` to disable it. The request returns 400 when the selected placement cannot provide nested virtualization."
           },
           "source_org_id": {
             "type": [
@@ -2366,24 +2398,6 @@
               "null"
             ]
           },
-          "network": {
-            "description": "This input is accepted but ignored. Configure inbound reachability through `policies`.",
-            "deprecated": true,
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": true
-          },
-          "egress": {
-            "description": "This input is accepted but ignored. Configure outbound access through `policies`.",
-            "deprecated": true,
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": true
-          },
           "platforms": {
             "description": "Preferred compute platforms for a public template, such as `[\"graviton3\"]`. Supply multiple values to allow any listed platform. Omit or pass an empty list for automatic selection. A fork of an existing VM inherits its source platform.",
             "type": [
@@ -2410,7 +2424,7 @@
             }
           },
           "queueing_timeout": {
-            "description": "Maximum time in seconds this request may wait before failing with `capacity_unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast.",
+            "description": "Maximum time in seconds this request may wait for capacity before failing with `capacity_unavailable`. Omit this field or pass `0` to fail immediately when capacity is unavailable.",
             "type": [
               "integer",
               "null"
@@ -2846,14 +2860,14 @@
         "additionalProperties": false,
         "properties": {
           "session_id": {
-            "description": "The session to run in. Arker's run interface works like a terminal: sessions are tabs, each keeps its own state — working directory, environment, shell history — and each handles one run at a time. Create a session with `POST /v1/vms/{id}/sessions`, which also sets its starting directory and environment, then pass its id here. Run sequential commands in one session; for a long-running task, start it with `background: true` in a session of its own so later work does not interrupt it. Distinct sessions run concurrently. A session that no longer exists is a 404. Omitted, the run uses the VM's default session, which every caller that omits it shares.",
+            "description": "The session to run in. Arker's run interface works like a terminal: sessions are tabs, each keeps its own state — working directory, environment, shell history — and each handles one run at a time. Create a session with `POST /v1/vms/{id}/sessions`, which also sets its starting directory and environment, then pass its id here. Run sequential commands in one session; for a long-running task, use `time_to_background: 0` in a session of its own so later work does not interrupt it. Distinct sessions run concurrently. A session that no longer exists is a 404. Omitted, the run uses the VM's default session, which every caller that omits it shares.",
             "type": [
               "string",
               "null"
             ]
           },
           "session_idx": {
-            "description": "Legacy selector: choose a session by index rather than id. Prefer `session_id`, which takes precedence when both are sent.",
+            "description": "Numeric session selector. `session_id` takes precedence when both selectors are sent.",
             "type": [
               "integer",
               "null"
@@ -2861,7 +2875,7 @@
             "minimum": 0
           },
           "command": {
-            "description": "Command submitted for execution. Optional: a run carries EITHER a command OR a resource-only operation (`acquire`/`release`) or `signal`. Omit `command` for a release-only run (the canonical evict/suspend/release op).",
+            "description": "Command submitted for execution. Omit it only for a resource operation (`acquire` or `release`) or a `signal` request.",
             "type": "string"
           },
           "timeout": {
@@ -2880,16 +2894,8 @@
             ],
             "minimum": 0
           },
-          "background": {
-            "description": "DEPRECATED alias for `time_to_background`. `true` is exactly `time_to_background: 0` (return a pollable run immediately); `false` leaves the default sync window. Accepted for callers written before `time_to_background` became canonical. Send only one of the two — supplying both is rejected, because they can disagree. Prefer `time_to_background`, which can also bound the wait instead of only switching it off.",
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "deprecated": true
-          },
           "queueing_timeout": {
-            "description": "Maximum time in seconds this request may wait to start before failing with `unavailable`. The request queues instead of failing immediately, and the SDKs keep retrying until the window elapses. Omitted or 0 = fail fast. Independent of `timeout` (execution bound) and `time_to_background` (sync window).",
+            "description": "Maximum time in seconds this request may wait to start before failing with `unavailable`. Omit this field or pass `0` to fail immediately when the run cannot start. This is independent of `timeout` and `time_to_background`.",
             "type": [
               "integer",
               "null"
@@ -2930,7 +2936,7 @@
             "minimum": 0
           },
           "memory_backend": {
-            "description": "Preferred guest-memory mode if this run has to restore the VM: `file` maps the memory image from the host page cache, `uffd` supplies pages on demand through a userfaultfd handler. Omit it to let the server choose from the image's resident size, which is the right answer for almost everything. Set `uffd` for a short-lived call where restore latency dominates, `file` for a long-lived session that will touch most of its memory. A HINT, not a command: it only overrides the size policy, and an image reconstructed from object storage still uses `uffd` because the file mode cannot fault it correctly. Only takes effect when this run actually restores the VM — on an already-running VM it does nothing, and the mode in use is reported back as `memory_backend` on the response.",
+            "description": "Preferred guest-memory mode when this run restores the VM. `file` maps the memory image from the host page cache; `uffd` supplies pages on demand. Omit this field to let the service choose. The setting has no effect when the VM is already running, and the response reports the mode used.",
             "type": [
               "string",
               "null"
@@ -3004,7 +3010,7 @@
         "additionalProperties": false,
         "properties": {
           "session_id": {
-            "description": "The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command.",
+            "description": "Session used by this run. Use this identifier to inspect or stop work that continues after the initial response. Absent for resource and signal requests that execute no command.",
             "type": [
               "string",
               "null"
@@ -3046,7 +3052,7 @@
             "description": "Encoding used for stderr. Valid UTF-8 is returned directly; arbitrary bytes are base64 encoded."
           },
           "exit_code": {
-            "description": "The command's exit status, or `null` when there is none.\n\n`null` means a PROMPT ended this run rather than the command's own completion marker, so nothing exited and there is no status to report. A REPL turn genuinely has none: `print(6 * 7)` does not exit with anything.\n\nExpected when you passed `end_symbol`, or when the command was itself a REPL launch such as `python3`.\n\nIf you did NEITHER, an interpreter left running by an earlier run in this session received your command as keystrokes, answered with its own error, and returned to its prompt — which is the prompt that ended the run. Its output is in `stdout`. **The command never reached Bash.** Send `exit()` to leave the interpreter, pass `end_symbol: \"none\"` to force Bash for one run, or use a different `session_idx`.\n\nThis was previously a fabricated `0`, which a caller checking `exit_code == 0` read as success for a command that never ran. The key is always present, so `null` is an explicit answer rather than an omission.",
+            "description": "The command's exit status. `null` means a prompt ended the run before a command completion marker was received, so no exit status is available. This is expected for `end_symbol` and REPL commands. If it is unexpected, `stdout` can show that an interpreter from an earlier run received the command. Exit the interpreter, pass `end_symbol: \"none\"`, or use another session.",
             "type": [
               "integer",
               "null"
@@ -3099,7 +3105,7 @@
         "additionalProperties": false,
         "properties": {
           "session_id": {
-            "description": "The session this run executed in. A run always occupies exactly one session, and the caller cannot otherwise learn which: `session_idx` is FIND-OR-CREATE, so omitting it silently targets index 0, and a caller that did supply one still has no id to address that session by afterwards. Returned so a long-lived background run can be found, inspected and stopped by id rather than by guessing the index it was started on. Absent for operation acks (release/signal) that execute no command.",
+            "description": "Session used by this run. Use this identifier to inspect or stop work that continues after the initial response. Absent for resource and signal requests that execute no command.",
             "type": [
               "string",
               "null"
@@ -3400,9 +3406,8 @@
         "additionalProperties": false,
         "properties": {
           "source": {
-            "description": "No longer meaningful; do not depend on this field.",
-            "type": "string",
-            "deprecated": true
+            "description": "Service that produced the activity record.",
+            "type": "string"
           },
           "t_ms": {
             "description": "Activity timestamp as Unix epoch milliseconds.",
@@ -3683,7 +3688,7 @@
             ]
           },
           "status": {
-            "description": "Whether the shared directory is mounted in the VM. Attaching the mount is asynchronous, so creating a sync always answers `attaching` and the outcome is learned by polling this resource.\n\n`attaching` — not mounted yet. This also covers a VM that is not currently running: the sync is recorded durably and is established on its next resume. Keep polling.\n\n`mounted` — the guest reported the filesystem live.\n\n`failed` — this VM cannot mount it and never will, so polling is pointless; `status_detail` says why. The usual cause is an image with no way to obtain the FUSE driver — for example one with no package manager. A transient failure is NOT reported here, because it is still being retried.",
+            "description": "Mount status. Creating a sync returns `attaching`; poll this resource for the outcome.\n\n`attaching` — the mount is pending. A stopped VM remains in this state until it resumes.\n\n`mounted` — the filesystem is available in the VM.\n\n`failed` — the VM cannot mount the filesystem. `status_detail` explains the cause. Transient errors remain in `attaching` while the service retries them.",
             "type": [
               "string",
               "null"
@@ -4003,7 +4008,7 @@
             "minimum": 0
           },
           "end": {
-            "description": "EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`.",
+            "description": "Exclusive ending byte offset. The range is half-open `[start, end)`, so a whole file of `N` bytes uses `start=0` and `end=N`.",
             "type": "integer",
             "minimum": 0
           },
@@ -4390,7 +4395,7 @@
             "minimum": 0
           },
           "end": {
-            "description": "EXCLUSIVE ending byte offset — the range is half-open [start, end), so a whole file of N bytes is start=0, end=N (NOT N-1). Sending N-1 is rejected with `decoded content length N does not match range length N-1`.",
+            "description": "Exclusive ending byte offset. The range is half-open `[start, end)`, so a whole file of `N` bytes uses `start=0` and `end=N`.",
             "type": "integer",
             "minimum": 0
           }
@@ -4615,20 +4620,6 @@
         },
         "description": "Resource shape a caller asks for. GPU size is set with `vgpu`, in eighths of one card; the resolved per-GPU `gpu_sms`/`gpu_vram_mib` are reported back on the machine."
       },
-      "NetworkInput": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "SSH key configuration for a fork or patch. Inbound reachability is controlled by the VM's policy document and reported by the policy endpoints.",
-        "properties": {
-          "ssh_public_keys": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "OpenSSH public keys authorized for terminator auth and in-VM sshd injection."
-          }
-        }
-      },
       "SshPublicKeyInfo": {
         "type": "object",
         "required": [
@@ -4684,16 +4675,12 @@
               }
             ]
           },
-          "network": {
-            "description": "SSH access configuration for the VM.",
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NetworkInput"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "ssh_public_keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Complete replacement for the VM's authorized SSH keys. Omit this field to leave the keys unchanged. Pass an empty array to remove all keys."
           },
           "policies": {
             "description": "Complete network policy replacement for the VM. A non-empty document replaces the persisted policy and applies it to the running VM. An empty document selects the default posture of allow-all outbound traffic and authenticated inbound traffic. Omit it to leave the current policy unchanged. If the policy cannot be stored and applied, the request fails.",

@@ -231,6 +231,64 @@ def test_provider_and_region_contract_values_are_open_ended() -> None:
     check_placement_fields(contract)
 
 
+def test_public_surface_uses_only_current_names_and_copy() -> None:
+    contract = json.loads((REPO_ROOT / "contract/openapi.json").read_text())
+    schemas = contract["components"]["schemas"]
+
+    assert "network" not in schemas["ForkRequest"]["properties"]
+    assert "egress" not in schemas["ForkRequest"]["properties"]
+    assert "background" not in schemas["RunRequest"]["properties"]
+
+    def assert_not_deprecated(value: object) -> None:
+        if isinstance(value, dict):
+            assert value.get("deprecated") is not True
+            for child in value.values():
+                assert_not_deprecated(child)
+        elif isinstance(value, list):
+            for child in value:
+                assert_not_deprecated(child)
+
+    assert_not_deprecated(contract)
+
+    typescript = (REPO_ROOT / "typescript/src/index.ts").read_text()
+    python_init = (REPO_ROOT / "python/src/arker/__init__.py").read_text()
+    removed_exports = {
+        "InboundPortRequest",
+        "MintSessionPtyTicketResponse",
+        "NetworkPolicy",
+        "NetworkPolicyInput",
+        "NetworkRequest",
+        "NetworkStatus",
+        "PutPoliciesResponse",
+        "RunStatusResponse",
+        "SessionInfo",
+    }
+    for name in removed_exports:
+        assert f"export type {name}" not in typescript
+    for name in {"RunStatusResponse", "SessionInfo", "VmInfo", "VmSummary"}:
+        assert f'"{name}"' not in python_init
+
+    transition_terms = re.compile(
+        r"\b(?:deprecated|formerly|historical|legacy|migration|no longer|previously|retired|today)\b",
+        re.IGNORECASE,
+    )
+    public_sources = (
+        Path("python/README.md"),
+        Path("python/src/arker/__init__.py"),
+        Path("python/src/arker/computer.py"),
+        Path("typescript/README.md"),
+        Path("typescript/src/cli.ts"),
+        Path("typescript/src/index.ts"),
+    )
+    for relative_path in public_sources:
+        source = (REPO_ROOT / relative_path).read_text()
+        assert transition_terms.search(source) is None, relative_path
+
+    cli = (REPO_ROOT / "typescript/src/cli.ts").read_text()
+    assert "--time-to-background" in cli
+    assert "--background" not in cli
+
+
 def test_sync_from_local_contract_regenerates_all_managed_files() -> None:
     with tempfile.TemporaryDirectory() as output_directory:
         run(
@@ -331,6 +389,8 @@ FAST_TESTS = (
     test_public_wire_types_are_generated,
     test_sdk_runtime_uses_only_current_public_error_codes,
     test_retired_vm_pin_is_not_in_the_public_sdk_contract,
+    test_provider_and_region_contract_values_are_open_ended,
+    test_public_surface_uses_only_current_names_and_copy,
     test_contract_tooling_is_repository_local,
 )
 
