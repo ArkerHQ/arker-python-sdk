@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["arker==0.8.6"]
+# dependencies = ["arker==1.2.1"]
 # ///
 """Build a local React app in an Arker VM and expose it with a policy.
 
@@ -90,7 +90,7 @@ def main() -> None:
             """
         )
         if build.exit_code != 0:
-            raise RuntimeError(build.stderr.decode(errors="replace").strip())
+            raise RuntimeError(build.stderr.strip())
 
         print(f"\n4. Exposing the app on port {APP_PORT}")
         print(f"   Runtime policy: allow public inbound traffic on :{APP_PORT}")
@@ -111,11 +111,15 @@ def main() -> None:
 
         # Wait until the server accepts connections before checking it publicly.
         health = vm.run(
-            f"curl --retry 10 --retry-connrefused --retry-delay 1 "
-            f"-fsS http://127.0.0.1:{APP_PORT}/healthz"
+            "for attempt in $(seq 1 10); do "
+            f"node -e \"fetch('http://127.0.0.1:{APP_PORT}/healthz')"
+            ".then(async response => process.exit("
+            "response.ok && await response.text() === 'ok\\n' ? 0 : 1))"
+            ".catch(() => process.exit(1))\" && exit 0; "
+            "sleep 1; done; exit 1"
         )
         if health.exit_code != 0:
-            raise RuntimeError(health.stderr.decode(errors="replace").strip())
+            raise RuntimeError(health.stderr.strip())
 
         public_url = f"https://{vm.id}-{APP_PORT}.{PROVIDER}-{REGION}.arker.app"
         print(f"\n5. Verifying {public_url}")
@@ -129,12 +133,14 @@ def main() -> None:
             if b"<title>Arker React policy demo</title>" not in response.read():
                 raise RuntimeError("The public app returned unexpected content")
 
-        # Denied connections are dropped silently (no reset), so the probe
-        # must bound its own connect timeout or it hangs for curl's default.
+        # Denied connections are dropped silently, so the probe bounds its
+        # own connect timeout.
         print("\n6. Verifying egress is now locked down")
-        print('   $ arker run $VM "curl --connect-timeout 3 https://registry.npmjs.org"')
+        print('   $ arker run $VM "node -e fetch(https://registry.npmjs.org)"')
         lockdown = vm.run(
-            "curl --connect-timeout 3 -sS https://registry.npmjs.org",
+            "node -e \"fetch('https://registry.npmjs.org', "
+            "{signal: AbortSignal.timeout(3000)})"
+            ".then(() => process.exit(0), () => process.exit(1))\"",
             timeout=30,
         )
         if lockdown.exit_code == 0:

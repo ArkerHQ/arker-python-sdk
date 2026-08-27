@@ -53,3 +53,12 @@ def test_policies_example_uses_cli_policy_commands() -> None:
     assert "arker policies get" in source
     assert "curl -fsS -X PUT" not in source
     assert "ARKER_REGION" not in source
+
+
+def test_browser_example_does_not_wait_for_window_manager_activation() -> None:
+    source = (EXAMPLES_DIR / "browser" / "quick-start-browser.sh").read_text()
+
+    assert "windowactivate --sync" not in source
+    assert 'arker run --time-to-background 0 "$VM" "open-url' in source
+    assert "curl -fsS -X PATCH" not in source
+    assert 'arker policies set "$ck"' in source
