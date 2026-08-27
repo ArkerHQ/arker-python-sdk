@@ -724,6 +724,10 @@ export interface components {
             nestedvirt?: boolean | null;
             /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
             source_org_id?: string | null;
+            /** @description BYOC: provider name of the registered BLAST worker fleet to fork on. Must match the `provider` the BLAST worker registered with. Mutually exclusive with source_vm_id / source_vm_name / image / dockerfile. */
+            worker_provider?: string | null;
+            /** @description BYOC: region label of the registered BLAST worker to fork on. Must match the `region` the BLAST worker registered with. Required when worker_provider is set. */
+            worker_region?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
             name?: string | null;
             /** @description Optional short description for the new VM. Blank strings normalize to null and forked VMs never inherit their source's description. */
