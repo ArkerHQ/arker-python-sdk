@@ -1,6 +1,16 @@
+<div align="center">
+
+<img src="../assets/banner.png" alt="Arker" width="480" />
+
+[Docs](https://arker.ai/docs) / [Benchmarks](https://arker.ai/benchmarks) / [Console](https://arker.ai/console)
+
+</div>
+
 # Arker CLI
 
-The Arker CLI provides command-line access to Arker virtual machines.
+The Arker CLI provides command-line access to Arker VMs.
+
+[![npm](https://img.shields.io/npm/v/@arker-ai/cli.svg?style=flat-square&label=npm)](https://www.npmjs.com/package/@arker-ai/cli)
 
 ## Install
 
@@ -8,11 +18,69 @@ The Arker CLI provides command-line access to Arker virtual machines.
 bun add --global @arker-ai/cli
 ```
 
+The CLI requires Node.js 18 or later.
+
 ## Get started
 
 Sign up and get your API key at [arker.ai/console](https://arker.ai/console).
 
-Read the [Arker documentation](https://arker.ai/docs) for setup, commands, and examples.
+`ARKER_API_KEY` is required. If provider and region are omitted, the CLI uses `aws` and `us-west-2`.
+
+```bash
+export ARKER_API_KEY=ark_live_...
+```
+
+You can override the default placement:
+
+```bash
+export ARKER_PROVIDER=aws
+export ARKER_REGION=us-west-2
+```
+
+For persistent configuration, create `~/.arker/config.json`:
+
+```json
+{
+  "apiKey": "ark_live_...",
+  "provider": "aws",
+  "region": "us-west-2"
+}
+```
+
+List the public source VMs:
+
+```bash
+arker vms ls --source-org-id ArkerHQ --public
+```
+
+Fork a source VM:
+
+```bash
+arker fork <source-vm-name>
+```
+
+Use the returned VM ID to run commands, sync files, or open a terminal:
+
+```bash
+arker run <vm-id> python3 -c 'print(2 + 2)'
+
+arker sync <vm-id> /tmp/hello.txt "hello from Arker"
+arker sync <vm-id> /tmp/hello.txt --read
+
+arker shell <vm-id>
+```
+
+Delete the VM when you are finished:
+
+```bash
+arker rm <vm-id>
+```
+
+Run `arker --help` for the available commands and flags.
+
+## Documentation and examples
+
+Read the [Arker documentation](https://arker.ai/docs) and browse the runnable [examples](../examples).
 
 ## License
 
