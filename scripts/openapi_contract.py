@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-CONTRACT_PATH = Path("contract/openapi.json")
+CONTRACT_PATH = Path("openapi.json")
 TYPESCRIPT_PATH = Path("typescript/src/generated/api-types.ts")
 PYTHON_PATH = Path("python/src/arker/generated/api_models.py")
 MANAGED_PATHS = (CONTRACT_PATH, TYPESCRIPT_PATH, PYTHON_PATH)
@@ -396,7 +396,7 @@ def command_check(args: argparse.Namespace) -> int:
     if drift:
         return 1
 
-    print("generated artifacts match contract/openapi.json")
+    print("generated artifacts match openapi.json")
     return 0
 
 

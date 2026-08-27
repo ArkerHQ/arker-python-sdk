@@ -31,7 +31,7 @@ import {
   Arker,
   ArkerError,
   discoverRegions,
-} from "./index.js";
+} from "@arker-ai/sdk";
 import { bridgePty } from "./cli-pty.js";
 import type {
   PolicyDoc,
@@ -42,7 +42,7 @@ import type {
   RunResult,
   Vm,
   ListVmsParameters,
-} from "./index.js";
+} from "@arker-ai/sdk";
 
 /** Signals the service accepts, per RunRequest.signal in the OpenAPI contract. */
 const RUN_SIGNALS = ["SIGINT", "SIGTERM", "SIGKILL", "SIGHUP"] as const;

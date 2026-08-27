@@ -1,5 +1,5 @@
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
-import type { PtyConnection } from "./index.js";
+import type { PtyConnection } from "@arker-ai/sdk";
 
 export interface PtyBridgeOptions {
   fallbackCols: number;

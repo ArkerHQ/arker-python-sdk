@@ -2,122 +2,40 @@
 
 <img src="./assets/banner.png" alt="Arker" width="480" />
 
-
-</div>
-
-###
-
-<div align="center">
-
 [Docs](https://arker.ai/docs) / [Benchmarks](https://arker.ai/benchmarks) / [Console](https://arker.ai/console)
 
-
 </div>
 
-### Authentication
+# Arker
 
-Get your API key at [arker.ai/console](https://arker.ai/console).
+Arker provides hyper-elastic, durable virtual machines for agent workloads. Its core primitives are fork, run, and sync.
 
-### Packages
+This repository contains the Arker CLI and the Python and TypeScript SDKs, providing convenient access to Arker.
 
 [![PyPI](https://img.shields.io/pypi/v/arker.svg?style=flat-square&label=pypi)](https://pypi.org/project/arker/)
+[![CLI](https://img.shields.io/npm/v/@arker-ai/cli.svg?style=flat-square&label=cli)](https://www.npmjs.com/package/@arker-ai/cli)
 [![npm](https://img.shields.io/npm/v/@arker-ai/sdk.svg?style=flat-square&label=npm)](https://www.npmjs.com/package/@arker-ai/sdk)
 
-### License
+## Get started
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square)](./LICENSE)
+Sign up and get your API key at [arker.ai/console](https://arker.ai/console).
 
-### Python Client
+Read the [Arker documentation](https://arker.ai/docs), or see the package-specific guides:
 
-```bash
-pip install arker
-```
+- CLI: [CLI guide](./cli/README.md)
+- TypeScript SDK: [TypeScript guide](./typescript/README.md)
+- Python SDK: [Python guide](./python/README.md)
 
-```python
-import os
+## Examples
 
-from arker import Arker
+- [Browser](./examples/browser): Open two Wikipedia pages and fork a live checkpoint at each.
+- [Coding agents](./examples/coding-agent): Run Claude Code, Codex, or Cursor in the background.
+- [Firmware](./examples/firmware): Use a coding agent to edit firmware and run it with QEMU.
+- [GPU coding agents](./examples/gpu-coding-agents): Run coding agents on parallel GPU workloads.
+- [Policies](./examples/policies): Configure host-enforced egress policies.
+- [React policy](./examples/react-policy): Control a VM's network policy from a React application.
+- [Autoresearch](./examples/autoresearch): Tune a model in parallel with fractional GPUs.
 
-ar = Arker(provider="aws", region="us-west-2")  # key from ARKER_API_KEY
-vm = ar.fork(os.environ["ARKER_SOURCE_VM"])
-print(vm.run("python3 -c 'print(2 + 2)'").stdout.decode())
-```
+## License
 
-### TypeScript Client
-
-```bash
-bun add @arker-ai/sdk
-```
-
-```ts
-import { Arker } from "@arker-ai/sdk";
-
-const ar = new Arker({ provider: "aws", region: "us-west-2" }); // key from ARKER_API_KEY
-const vm = await ar.fork(process.env.ARKER_SOURCE_VM!);
-const run = await vm.run("node -e 'console.log(2 + 2)'");
-if (run.type === "completed") console.log(new TextDecoder().decode(run.stdout));
-```
-
-### GCP
-
-You can read the public placement catalog before you configure a client. Discovery does not require an API key:
-
-```python
-from arker import discover_regions
-
-catalog = discover_regions()
-```
-
-```ts
-import { discoverRegions } from "@arker-ai/sdk";
-
-const catalog = await discoverRegions();
-```
-
-```bash
-arker regions
-```
-
-Then select GCP with both the provider and region:
-
-```python
-ar = Arker(provider="gcp", region="us-central1")
-```
-
-```ts
-const ar = new Arker({ provider: "gcp", region: "us-central1" });
-```
-
-```bash
-arker fork "$ARKER_SOURCE_VM" --provider gcp --region us-central1
-```
-
-### CLI
-
-```bash
-bun add --global @arker-ai/sdk
-```
-
-```bash
-export ARKER_API_KEY=ark_live_...
-export ARKER_PROVIDER=aws
-export ARKER_REGION=us-west-2
-: "${ARKER_SOURCE_VM:?set ARKER_SOURCE_VM to a source name returned by the API}"
-VM=$(arker fork "$ARKER_SOURCE_VM" | jq -r .vm_id)
-arker run "$VM" "python3 -c 'print(2 + 2)'"
-arker rm "$VM"
-```
-
-### Examples
-
-Runnable quick-starts in [`examples/`](./examples):
-
-- [`browser/`](./examples/browser) — open two Wikipedia pages and fork a live checkpoint at each
-- [`coding-agent/`](./examples/coding-agent) — background coding agents (Claude Code, Codex, Cursor)
-- [`firmware/`](./examples/firmware) — a coding agent edits firmware and runs it on QEMU
-- [`policies/`](./examples/policies) — host-enforced egress policy as code
-- [`autoresearch/`](./examples/autoresearch) — agents tune a model in parallel on slices of one H100
-
-### Get Started
-
-Read the [docs](https://arker.ai/docs) and browse the [examples](./examples).
+Apache-2.0

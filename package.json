@@ -1,0 +1,12 @@
+{
+  "name": "arker-sdk-monorepo",
+  "private": true,
+  "packageManager": "bun@1.3.8",
+  "workspaces": [
+    "cli",
+    "typescript"
+  ],
+  "scripts": {
+    "check": "./scripts/check-local"
+  }
+}
