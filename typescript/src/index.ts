@@ -2683,3 +2683,22 @@ async function sendRequest(
   const response = await fetchImpl(url, init as RequestInit);
   return { status: response.status, ok: response.ok, text: await response.text() };
 }
+
+// ── Migrate a running command into a VM ────────────────────────────────
+// Move a running command (claude-code / codex / pi / cursor-agent, or any
+// command that persists a resumable on-disk transcript) into a fresh Arker
+// VM, and resume it there. Config-driven from command_migration.json — the
+// same recipes the Python and CLI SDKs load. See migrate.ts.
+export {
+  discover,
+  loadConfig as loadMigrationConfig,
+  migrate,
+  quiesce,
+} from "./migrate.js";
+export type {
+  CommandSpec as MigrationCommandSpec,
+  DiscoverResult,
+  MigrateOptions,
+  MigrateResult,
+  MigrationConfig,
+} from "./migrate.js";

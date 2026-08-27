@@ -346,3 +346,23 @@ def test_migrate_raises_for_unrecognized_command():
     finally:
         proc.kill()
         proc.wait()
+
+
+# ---------------------------------------------------------------------------
+# Package export — command migration must be reachable as `from arker import
+# migrate`, not just as an internal module nobody outside this package can
+# find. (Previously `arker/__init__.py` never imported it, so it worked only
+# by accident via Python's from-package-import-submodule fallback and was
+# absent from `__all__`, invisible to `from arker import *` / introspection.)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_module_is_a_declared_package_export():
+    import arker
+
+    assert "migrate" in arker.__all__
+    # Same module object reached two ways: the top-of-file `from arker import
+    # migrate` and attribute access on the package after import.
+    assert arker.migrate is migrate
+    assert callable(arker.migrate.migrate)
+    assert callable(arker.migrate.discover)

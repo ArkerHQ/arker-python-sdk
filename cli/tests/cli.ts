@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
@@ -17,7 +19,21 @@ type CliOptions = {
   stdin?: string | Uint8Array;
   authenticated?: boolean;
   controlOnly?: boolean;
+  /** Override HOME for the child process. Defaults to a nonexistent path so
+   * commands never accidentally pick up the real invoking user's ~/.arker
+   * config or session files; `migrate` tests need a real, populated HOME. */
+  home?: string;
 };
+
+// Mirrors @arker-ai/sdk's migrate.ts `cwdKey()` exactly (cwd with every
+// non-alphanumeric char replaced by '-' — Claude Code's own
+// ~/.claude/projects/<key> directory-naming convention). Duplicated rather
+// than imported: `cli` and `typescript` are separate published packages now
+// (see #103), so reaching into the SDK's `src/` from here would cross a
+// package boundary the split just established.
+function cwdKey(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
 
 type CapturedRequest = {
   method: string | undefined;
@@ -67,7 +83,7 @@ async function withCapturedServer(
 async function runCli(baseUrl: string | undefined, args: string[], options: CliOptions = {}): Promise<CliResult> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    HOME: "/nonexistent/ark-202-cli-test-home",
+    HOME: options.home ?? "/nonexistent/ark-202-cli-test-home",
     NODE_NO_WARNINGS: "1",
   };
   if (options.authenticated !== false) env.ARKER_API_KEY = "ark_live_test";
@@ -427,9 +443,9 @@ async function testPerCommandHelpIsCommandSpecific(): Promise<void> {
 
   // Every command must render its own help, not the global blob.
   for (const command of [
-    "delete", "filesystems", "fork", "fs", "list", "ls", "policies", "regions",
-    "rm", "run", "runs", "sessions", "shell", "signal", "sync", "sync-dir",
-    "syncs", "update", "vms",
+    "delete", "filesystems", "fork", "fs", "list", "ls", "migrate", "policies",
+    "regions", "rm", "run", "runs", "sessions", "shell", "signal", "sync",
+    "sync-dir", "syncs", "update", "vms",
   ]) {
     const result = await runCli(undefined, [command, "--help"], { authenticated: false });
     assert.equal(result.code, 0, `${command} --help should succeed`);
@@ -532,6 +548,124 @@ async function testPoliciesGetAndSet(): Promise<void> {
     assert.ok(put!.url!.includes("/policies"), `unexpected url: ${put!.url}`);
     assert.deepEqual(put!.body, doc);
   });
+}
+
+// ── migrate ────────────────────────────────────────────────────────
+//
+// `arker migrate` moves a running command (by PID) into a fresh VM using
+// fork + syncDir + sync + createSession + run under the hood. These are
+// smoke tests: they confirm the subcommand is wired end to end (argument
+// validation, the /proc discovery step, and — for the happy path — the full
+// live-shaped request sequence against a real spawned process and a mock
+// server), not an exhaustive behavioral suite (that's @arker-ai/sdk's own
+// tests/migrate.ts, against the engine directly).
+
+async function testMigrateRequiresPid(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["migrate"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /usage: arker migrate <pid>/);
+    assert.equal(requests.length, 0);
+  });
+}
+
+async function testMigrateRejectsNonNumericPid(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, ["migrate", "not-a-pid"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /usage: arker migrate <pid>/);
+    assert.equal(requests.length, 0);
+  });
+}
+
+async function testMigrateSurfacesMissingProcess(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+    // A PID essentially guaranteed not to exist (PIDs wrap well under 2^22).
+    const result = await runCli(baseUrl, ["migrate", "999999999"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /no such (file or directory|process)|ENOENT/i);
+    assert.equal(requests.length, 0);
+  });
+}
+
+async function testMigrateSurfacesUnrecognizedCommand(): Promise<void> {
+  const proc = spawn("sleep", ["100"]);
+  await once(proc, "spawn");
+  try {
+    await withCapturedServer((_request, res) => jsonResponse(res, {}), async (baseUrl, requests) => {
+      const result = await runCli(baseUrl, ["migrate", String(proc.pid)]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /not a recognized migratable command/);
+      // Discovery rejects it before any fork is attempted.
+      assert.equal(requests.length, 0);
+    });
+  } finally {
+    proc.kill("SIGKILL");
+  }
+}
+
+async function testMigrateForksSyncsAndResumes(): Promise<void> {
+  // A real spawned "claude" process (argv[0] renamed via bash's `exec -a`,
+  // same trick @arker-ai/sdk's tests/migrate.ts uses) with a real on-disk
+  // session transcript, migrated through the actual CLI binary against a mock
+  // server that answers the full request sequence: fork, mkdir run,
+  // syncDir's manifest fetch + tarball upload, install run, transcript
+  // write, createSession, resume run.
+  const home = mkdtempSync(join(tmpdir(), "arker-cli-migrate-test-"));
+  const cwd = join(home, "project");
+  mkdirSync(cwd, { recursive: true });
+  const sessDir = join(home, ".claude", "projects", cwdKey(cwd));
+  mkdirSync(sessDir, { recursive: true });
+  writeFileSync(join(sessDir, "abc-session-id.jsonl"), '{"hello": "world"}\n');
+
+  const proc = spawn("bash", ["-c", "exec -a claude sleep 100"], {
+    cwd,
+    env: { ...process.env, HOME: home, ANTHROPIC_API_KEY: "sk-ant-test-demo-key" },
+  });
+  await once(proc, "spawn");
+  await new Promise((r) => setTimeout(r, 200));
+
+  try {
+    const vmId = "vm_migrated";
+    let sessionEnv: unknown;
+    await withServer(async (req, res) => {
+      const url = new URL(req.url!, "http://x");
+      const body = await readJson(req);
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && url.pathname === "/api/v1/fork") {
+        return jsonResponse(res, { vm_id: vmId, state: "idle" });
+      }
+      if (req.method === "POST" && url.pathname === `/api/v1/vms/${vmId}/sync`
+        && typeof body === "object" && body !== null && (body as { op?: string }).op === "manifest") {
+        return jsonResponse(res, { entries: [], truncated: false });
+      }
+      if (req.method === "POST" && url.pathname === `/api/v1/vms/${vmId}/sync-stream`) {
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      if (req.method === "POST" && url.pathname === `/api/v1/vms/${vmId}/sessions`) {
+        sessionEnv = (body as { env?: unknown } | undefined)?.env;
+        return jsonResponse(res, { session_id: "sess-migrated", state: "idle", cwd });
+      }
+      if (req.method === "POST" && url.pathname === `/api/v1/vms/${vmId}/runs`) {
+        return jsonResponse(res, completedRun({ stdout: "still refactoring the sync engine" }));
+      }
+      res.statusCode = 404;
+      res.end();
+    }, async (baseUrl) => {
+      const result = await runCli(baseUrl, ["migrate", String(proc.pid), "--json"], { home });
+      assert.equal(result.code, 0, result.stderr);
+      const payload = JSON.parse(stdoutText(result));
+      assert.equal(payload.vm_id, vmId);
+      assert.equal(payload.command, "claude-code");
+      assert.match(payload.output, /still refactoring/);
+    });
+    assert.deepEqual(sessionEnv, { ANTHROPIC_API_KEY: "sk-ant-test-demo-key" });
+  } finally {
+    proc.kill("SIGKILL");
+    rmSync(home, { recursive: true, force: true });
+  }
 }
 
 async function testPoliciesSetRejectsInvalidJson(): Promise<void> {
@@ -956,5 +1090,10 @@ await testFalseMutationResultsExitNonzero();
 await testRemainingHttpCommandSurface();
 await testPoliciesGetAndSet();
 await testPoliciesSetRejectsInvalidJson();
+await testMigrateRequiresPid();
+await testMigrateRejectsNonNumericPid();
+await testMigrateSurfacesMissingProcess();
+await testMigrateSurfacesUnrecognizedCommand();
+await testMigrateForksSyncsAndResumes();
 
 console.log("PASS cli");

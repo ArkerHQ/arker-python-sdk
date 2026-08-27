@@ -36,7 +36,7 @@ from .computer import (
     VmList,
 )
 
-from . import daytona, e2b, modal
+from . import daytona, e2b, migrate, modal
 
 __all__ = [
     "ARKER_ORG_ID",
@@ -75,6 +75,7 @@ __all__ = [
     "VmList",
     "daytona",
     "e2b",
+    "migrate",
     "modal",
 ]
 # Derived from installed package metadata rather than hardcoded: the literal
