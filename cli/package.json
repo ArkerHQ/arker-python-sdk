@@ -1,6 +1,6 @@
 {
   "name": "@arker-ai/cli",
-  "version": "0.1.0",
+  "version": "0.3.4",
   "description": "Command-line client for the Arker virtual computer platform.",
   "type": "module",
   "bin": {
