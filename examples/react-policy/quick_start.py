@@ -129,8 +129,8 @@ def main() -> None:
             if b"<title>Arker React policy demo</title>" not in response.read():
                 raise RuntimeError("The public app returned unexpected content")
 
-        # Denied connections are dropped silently (no reset), so the probe
-        # must bound its own connect timeout or it hangs for curl's default.
+        # A denied connection does not fail fast, so the probe bounds its own
+        # connect timeout rather than waiting out curl's default.
         print("\n6. Verifying egress is now locked down")
         print('   $ arker run $VM "curl --connect-timeout 3 https://registry.npmjs.org"')
         lockdown = vm.run(

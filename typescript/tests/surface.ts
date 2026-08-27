@@ -1,7 +1,7 @@
 /**
  * Full-surface exercise of the SDK against a live backend.
  * Calls every public method on Arker / Computer / Runs / Sessions /
- * Tunnels / Syncs / Filesystems and reports PASS / FAIL / STUB.
+ * Syncs / Filesystems and reports PASS / FAIL / STUB.
  *
  *   ARKER_API_KEY=... ARKER_BASE_URL=http://host:8080/api bun tests/surface.ts
  */
@@ -21,7 +21,7 @@ type Status = "PASS" | "FAIL" | "STUB";
 const rows: Array<[Status, string, string]> = [];
 function rec(s: Status, name: string, detail = "") { rows.push([s, name, detail]); }
 
-// Treat arkerd's intentional stubs (empty list / not-implemented) as STUB, not FAIL.
+// Treat the server's intentional stubs (empty list / not-implemented) as STUB, not FAIL.
 async function call(name: string, fn: () => Promise<unknown>, opts: { stubOk?: boolean } = {}) {
   try {
     const r = await fn();
@@ -44,7 +44,6 @@ function summarize(r: unknown): string {
   if (Array.isArray((r as any)?.vms)) return `${(r as any).vms.length} vms`;
   if (Array.isArray((r as any)?.runs)) return `${(r as any).runs.length} runs`;
   if (Array.isArray((r as any)?.sessions)) return `${(r as any).sessions.length} sessions`;
-  if (Array.isArray((r as any)?.tunnels)) return `${(r as any).tunnels.length} tunnels`;
   if (Array.isArray((r as any)?.syncs)) return `${(r as any).syncs.length} syncs`;
   if (Array.isArray((r as any)?.filesystems)) return `${(r as any).filesystems.length} filesystems`;
   if ((r as any)?.type) return `run:${(r as any).type}`;

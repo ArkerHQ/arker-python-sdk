@@ -32,6 +32,7 @@ from .computer import (
     Session,
     Sync,
     SyncDirResult,
+    SyncResult,
     Vm,
     VmList,
 )
@@ -71,6 +72,7 @@ __all__ = [
     "Session",
     "Sync",
     "SyncDirResult",
+    "SyncResult",
     "Vm",
     "VmList",
     "daytona",

@@ -10,11 +10,11 @@
  *   - large output integrity (ordered + complete, no loss at moderate volume)
  *   - concurrent independent PTY sessions (two shells, isolated state)
  *   - cancel_ttl: an idle PTY auto-cancels and the shell is destroyed
- *   - exec-before-PTY corner case (#42): run() on a session, then attach a PTY
- *   - cold reconnect after idle-TTL suspend (restore path) keeps the same shell
+ *   - exec-before-PTY corner case: run() on a session, then attach a PTY
+ *   - reconnect after the VM has gone idle keeps the same shell
  *
  *   bun run build
- *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://<worker>:8080/api \
+ *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://<host>:8080/api \
  *   ARKER_SOURCE_VM=<source-name> ARKER_SOURCE_ORG_ID=<source-org> bun tests/conformance/pty-scenarios.ts
  *
  * Exits non-zero on any failure. Self-cleans the VM it forks.
@@ -155,7 +155,7 @@ async function main(): Promise<void> {
         a.pty.close();
         await sleep(3000);
         // Reconnect RAW (not via live(), whose LIVE_OK probing clears the buffer
-        // and would consume the replay). The guest replays the out_ring on reattach,
+        // and would consume the replay). The VM replays recent output on reattach,
         // so the prior output must reappear WITHOUT re-running the command.
         let rbuf = "";
         const b = await arker.vm(vmId).connectPty({ sessionId: sid, cols: 80, rows: 24, persist: true });
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
       }
     }
 
-    // ---- 7) exec-before-PTY corner case (#42): run() then attach a PTY ----
+    // ---- 7) exec-before-PTY corner case: run() then attach a PTY ----
     {
       const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
@@ -221,9 +221,9 @@ async function main(): Promise<void> {
     }
 
     // ---- 8) cancel_ttl: an idle ATTACHED PTY auto-cancels + destroys the shell ----
-    //   Semantics (ARK-120 Phase D): while attached, if there's no PTY I/O for
-    //   cancel_ttl_secs the bridge cancels the run and DESTROYS the shell (the WS
-    //   closes server-side). This is NOT a detach timer — it fires on the live conn.
+    //   While attached, if there's no PTY I/O for cancel_ttl_secs the server
+    //   cancels the run and DESTROYS the shell (the WS closes server-side).
+    //   This is NOT a detach timer — it fires on the live connection.
     {
       const s = await arker.vm(vmId).createSession();
       const sid = s.session_id ?? (s as { id?: string }).id!;
@@ -260,13 +260,13 @@ async function main(): Promise<void> {
         a.d.clear();
         await a.d.expect("COLD=YES", "export COLD=YES; echo COLD=$COLD\n");
         a.pty.close();
-        console.log("    (waiting 95s for idle-TTL suspend → cold restore path)");
+        console.log("    (waiting 95s for the VM to go idle, then reconnecting)");
         await sleep(95000);
         const b = await live(vmId, sid);
-        check("cold-reconnect: reconnect after suspend succeeds", b !== null);
+        check("reconnect: reconnect after the VM goes idle succeeds", b !== null);
         if (b) {
           b.d.clear();
-          check("cold-reconnect: same shell survives suspend/restore ($COLD)", await b.d.expect("COLD=[YES]", "echo COLD=[$COLD]\n"));
+          check("reconnect: same shell survives the VM going idle ($COLD)", await b.d.expect("COLD=[YES]", "echo COLD=[$COLD]\n"));
           b.pty.close();
         }
       }

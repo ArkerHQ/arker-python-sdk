@@ -1,21 +1,19 @@
 /**
- * Throughput bench for VM.syncDir FULL-sync (ARK-268).
+ * Throughput bench for VM.syncDir FULL-sync.
  *
  * Measures the SDK's rsync-style directory sync on a first/full push: a tree of
  * ~3000 small files + a few large ones, forked onto a live VM, timed end-to-end
  * through the working-tree `VM.syncDir`. Reports files/s, MB/s, and the
- * tarball-vs-naive win — syncDir packs all changed files into ONE tarball the
- * guest extracts with `tar -x`, versus the naive path of one `vm.sync()` write
- * per file (N round-trips). The tarball collapses N round-trips to ~2, which is
- * the whole point of the method (the ~6.6s→~2.4s story at this scale).
+ * batched-vs-naive win — syncDir uploads all changed files in ONE batch the VM
+ * applies together, versus the naive path of one `vm.sync()` write per file
+ * (N round-trips). The batch collapses N round-trips to ~2, which is the whole
+ * point of the method (the ~6.6s→~2.4s story at this scale).
  *
- * FULL-sync ONLY. The delta/repeat throughput bench is intentionally NOT here:
- * op=manifest reads the host rootfs.xfs directly, while syncDir's guest tar-x
- * writes only reach rootfs.xfs after an async host-side flush (~2-3s lag,
- * measured). So a back-to-back second syncDir re-sends everything (sent=N,
- * skipped=0) — the delta path is blocked on the manifest-flush fix
- * (quiesce/FIFREEZE-then-read, or a guest-agent manifest). Re-enable a delta
- * bench once the host manifest is flush-consistent for a running VM.
+ * FULL-sync ONLY. The delta/repeat throughput bench lives separately in
+ * sync-dir-delta-bench.ts: a back-to-back second syncDir can occasionally
+ * re-send everything instead of nothing if the VM's file listing hasn't yet
+ * caught up with the most recent writes — see that file's header for how it
+ * handles this.
  *
  *   ARKER_API_KEY=ark_... ARKER_BASE_URL=http://host:8080/api \
  *   ARKER_SOURCE_VM=<source-name> bun tests/conformance/sync-dir-bench.ts
@@ -78,7 +76,7 @@ async function main(): Promise<void> {
   let vm: VM | undefined;
   try {
     vm = await arker.fork(source);
-    // Warm the guest so cold-boot doesn't pollute the sync timing.
+    // Warm the VM so first-boot cost doesn't pollute the sync timing.
     await vm.sync(`/home/user/.bench-warm`, "warm");
 
     // ── syncDir FULL-sync (tarball path) ─────────────────────────────────

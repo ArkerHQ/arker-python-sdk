@@ -283,7 +283,6 @@ async function testInternalArkerProvider(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      tunnels: [],
     },
   );
   fetch.addJson(
