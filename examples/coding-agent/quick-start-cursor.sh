@@ -4,7 +4,7 @@
 #
 # Forks a caller-selected source and runs the Cursor CLI inside it.
 #
-# Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`) and `jq`.
+# Prereqs: the Arker CLI (`bun add --global @arker-ai/cli`) and `jq`.
 
 set -euo pipefail
 
@@ -21,5 +21,5 @@ trap 'arker rm "$VM" >/dev/null 2>&1 || true' EXIT
 # The agent runs for minutes; a synchronous `arker run` is capped at 300s by the HTTP layer,
 # so start it in the background and poll for completion (up to arkerd's 1h exec limit).
 RID=$(arker run --time-to-background 0 "$VM" "CURSOR_API_KEY=$CURSOR_API_KEY cursor-agent -f -p 'create hello.py that prints hello world, then run it'" | jq -r .run_id)
-until [ "$(arker runs get "$VM" "$RID" 2>/dev/null | jq -r .state)" != running ]; do sleep 5; done
-arker runs get "$VM" "$RID" 2>/dev/null | jq -r '.stdout // ""'
+until [ "$(arker runs get --json "$VM" "$RID" 2>/dev/null | jq -r .state)" != running ]; do sleep 5; done
+arker runs get "$VM" "$RID" 2>/dev/null

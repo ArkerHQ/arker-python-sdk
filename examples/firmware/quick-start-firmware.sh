@@ -6,7 +6,7 @@
 # seeds a Cortex-M3 firmware, has the agent add a feature, then forks a checkpoint
 # and has it add another — building on the first.
 #
-# Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`) and `jq`.
+# Prereqs: the Arker CLI (`bun add --global @arker-ai/cli`) and `jq`.
 #   ARKER_API_KEY=...  CURSOR_API_KEY=...  ./quick-start-firmware.sh
 
 set -uo pipefail
@@ -48,7 +48,7 @@ b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 run() {
   local rid
   rid=$(arker run --time-to-background 0 "$1" "{ set +x; } 2>/dev/null; $2" 2>/dev/null | jq -r '.run_id // empty' 2>/dev/null || true)
-  [ -n "${rid:-}" ] && until [ "$(arker runs get "$1" "$rid" 2>/dev/null | jq -r .state 2>/dev/null)" != running ]; do sleep 3; done
+  [ -n "${rid:-}" ] && until [ "$(arker runs get --json "$1" "$rid" 2>/dev/null | jq -r .state 2>/dev/null)" != running ]; do sleep 3; done
   return 0
 }
 show() { arker run "$1" "{ set +x; } 2>/dev/null; cat $2" 2>&1 | grep -vaE '^\+\+? ' || true; }
