@@ -6,14 +6,13 @@
 # checkpoints it mid-session. Here we open two Wikipedia pages and fork at each,
 # leaving two live checkpoints you can reopen over VNC.
 #
-# Prereqs: the Arker CLI (`bun add --global @arker-ai/sdk`), `jq`, and `curl`.
+# Prereqs: the Arker CLI (`bun add --global @arker-ai/cli`) and `jq`.
 
 set -euo pipefail
 
 export ARKER_API_KEY="${ARKER_API_KEY:-ark_live_...}"   # TODO: set your Arker API key
 : "${ARKER_SOURCE_VM:?set ARKER_SOURCE_VM to a source with a desktop}"
 REGION="${ARKER_REGION:-us-west-2}"
-BASE="https://aws-${REGION}.arker.ai/api"
 
 # The selected source must have a desktop. Add Chromium from the arm64 xtradeb PPA.
 VM=$(arker fork "$ARKER_SOURCE_VM" | jq -r .vm_id)
@@ -29,19 +28,24 @@ export DISPLAY=:99 HOME=/root
 pkill -f chromium 2>/dev/null; sleep 1
 nohup chromium --kiosk --no-sandbox --no-first-run --disable-gpu --disable-dev-shm-usage --user-data-dir=/tmp/c "$1" >/dev/null 2>&1 &
 until xdotool search --class chromium >/dev/null 2>&1; do sleep 0.5; done
-sleep 3; wid=$(xdotool search --class chromium | tail -1); xdotool windowactivate --sync "$wid"; xdotool windowraise "$wid"
+sleep 3; wid=$(xdotool search --class chromium | tail -1); xdotool windowraise "$wid"
 SH
 arker run "$VM" "chmod +x /usr/local/bin/open-url" >/dev/null
 
 # open a page, fork a checkpoint, make it reachable, print its noVNC URL
 checkpoint() {
-  arker run "$VM" "open-url '$1'" >/dev/null
+  arker run --time-to-background 0 "$VM" "open-url '$1'" >/dev/null
   sleep 4
-  local ck host
+  local ck
   ck=$(arker fork --source-vm-id "$VM" | jq -r .vm_id)
-  host=$(curl -fsS -X PATCH "$BASE/v1/vms/$ck" -H "authorization: Bearer $ARKER_API_KEY" \
-    -H 'content-type: application/json' -d '{"network":{"reachable":true}}' | jq -r .network.hostname)
-  echo "$2: https://$host:6080/vnc.html"
+  arker policies set "$ck" >/dev/null <<'JSON'
+{
+  "policies": [
+    {"type":"inbound","match":{"ports":[6080]},"action":"allow","auth":"open"}
+  ]
+}
+JSON
+  echo "$2: https://$ck-6080.aws-$REGION.arker.app/vnc.html"
 }
 checkpoint "https://en.wikipedia.org/wiki/Virtual_machine" "checkpoint A"
 checkpoint "https://en.wikipedia.org/wiki/Firecracker_(software)" "checkpoint B"

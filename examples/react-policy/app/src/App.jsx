@@ -1,7 +1,7 @@
 const cliCommands = String.raw`# 1. Configure Arker
 export ARKER_API_KEY=ark_live_...
 export ARKER_REGION=us-west-2
-: "${ARKER_SOURCE_VM:?set ARKER_SOURCE_VM to a source name returned by the API}"
+test -n "$ARKER_SOURCE_VM" || { echo "set ARKER_SOURCE_VM to a source name" >&2; exit 1; }
 
 # 2. Fork the selected source VM
 VM=$(arker fork "$ARKER_SOURCE_VM" | jq -r .vm_id)

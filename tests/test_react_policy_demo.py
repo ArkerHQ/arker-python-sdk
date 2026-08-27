@@ -1,8 +1,10 @@
 import io
+import json
 import re
 import runpy
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, ClassVar
@@ -39,6 +41,23 @@ PUBLIC_POLICY = {
 }
 
 
+def test_script_uses_current_python_sdk_release() -> None:
+    pyproject = (REPO_ROOT / "python" / "pyproject.toml").read_text()
+    package_version = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE)
+
+    assert package_version is not None
+    assert (
+        f'# dependencies = ["arker=={package_version.group(1)}"]'
+        in PYTHON_DEMO.read_text()
+    )
+
+
+def test_react_build_supports_public_node_template() -> None:
+    lock = json.loads((DEMO_DIR / "app" / "package-lock.json").read_text())
+
+    assert "18" in lock["packages"]["node_modules/vite"]["engines"]["node"]
+
+
 class FakeResponse(io.BytesIO):
     def __enter__(self):
         return self
@@ -66,14 +85,14 @@ class FakeVM:
         if "npm ci" in command:
             return SimpleNamespace(
                 exit_code=self.build_exit_code,
-                stdout=b"build output\n",
-                stderr=b"build failed\n" if self.build_exit_code else b"",
+                stdout="build output\n",
+                stderr="build failed\n" if self.build_exit_code else "",
             )
         if kwargs.get("time_to_background") == 0:
             return SimpleNamespace(run_id="run_test")
-        if "--connect-timeout" in command:
-            return SimpleNamespace(exit_code=28, stdout=b"", stderr=b"")
-        return SimpleNamespace(exit_code=0, stdout=b"ok\n", stderr=b"")
+        if "registry.npmjs.org" in command:
+            return SimpleNamespace(exit_code=1, stdout="", stderr="")
+        return SimpleNamespace(exit_code=0, stdout="ok\n", stderr="")
 
     def create_session(self, *, cwd: str) -> SimpleNamespace:
         self.session_cwds.append(cwd)
@@ -146,6 +165,12 @@ def test_python_demo_runs_the_documented_sdk_flow(
         "timeout": 0,
         "policies": PUBLIC_POLICY,
     }
+    health_command, _ = vm.runs[2]
+    assert "node -e" in health_command
+    assert "curl" not in health_command
+    lockdown_command, _ = vm.runs[3]
+    assert "node -e" in lockdown_command
+    assert "curl" not in lockdown_command
 
     public_url = "https://vm_test-8080.aws-us-west-2.arker.app"
     assert requested_urls == [f"{public_url}/healthz", f"{public_url}/"]
@@ -176,3 +201,24 @@ def test_cli_equivalent_is_valid_shell() -> None:
         text=True,
         check=True,
     )
+
+
+def test_react_app_compiles() -> None:
+    with tempfile.TemporaryDirectory() as output:
+        subprocess.run(
+            [
+                "bun",
+                "build",
+                str(REACT_APP),
+                "--outdir",
+                output,
+                "--external",
+                "react",
+                "--external",
+                "react-dom",
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
