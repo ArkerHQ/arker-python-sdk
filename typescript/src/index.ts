@@ -16,6 +16,19 @@ type ApiQuery<Name extends keyof operations> = NonNullable<
 export const CHUNK_SIZE = 4 * 1024 * 1024;
 
 /**
+ * Max decoded bytes carried in ONE `/sync` request's `writes[]` (as
+ * `CHUNK_SIZE` chunks sharing an `upload_id`). arkerd enforces
+ * `MAX_SYNC_INLINE_REQUEST_BYTES = 20 MiB`
+ * (`aws/arkerd-worker-linux/src/api/routes/sync.rs`) on the decoded total per
+ * request; this stays comfortably under that. `syncWriteInline` batches into
+ * multiple sequential requests sharing one `upload_id` — reassembled
+ * server-side by the same `SyncChunkSessionState` ledger that already lets a
+ * single request carry multiple chunks — so an inline write of any size
+ * degrades to more round trips instead of failing.
+ */
+export const INLINE_WRITE_LIMIT = 16 * 1024 * 1024;
+
+/**
  * Largest single request body the service accepts. A larger body is rejected
  * with 413 `payload_too_large`; the limit is exact and fails loudly, never
  * truncating. `sync()` streams its body, so this bounds one request, not the
@@ -1861,32 +1874,72 @@ export class VM {
     return new Uint8Array(await signed.arrayBuffer());
   }
 
+  /**
+   * Write `data` through the JSON/base64 `/sync` fallback.
+   *
+   * Used only when the streaming fast path (`/sync-stream`) is unavailable —
+   * an older server, or the route missing entirely. Chunked the same way
+   * regardless of size: every chunk shares one `upload_id`, and chunks are
+   * grouped into as many sequential requests as it takes to keep each
+   * request's decoded total at or under `INLINE_WRITE_LIMIT` (comfortably
+   * inside the server's hard `MAX_SYNC_INLINE_REQUEST_BYTES` cap). arkerd's
+   * chunk-session ledger is keyed by (vm, upload_id) and outlives any single
+   * request, so this reassembles correctly server-side — a large inline
+   * write costs more round trips, not a hard failure.
+   */
   private async syncWriteInline(path: string, data: Uint8Array): Promise<void> {
-    const result = await this.sendOneWrite({
+    const uploadId = ulid();
+    // Empty data still needs its one (empty) chunk — zero chunks would send
+    // `writes: []` and never create the file.
+    const starts: number[] = [];
+    for (let start = 0; start < data.length; start += CHUNK_SIZE) starts.push(start);
+    if (starts.length === 0) starts.push(0);
+    const entries: SyncChunkWrite[] = starts.map((start) => ({
       path,
       size: data.length,
-      upload_id: ulid(),
-      content: bytesToBase64(data),
-      start: 0,
-      end: data.length,
+      upload_id: uploadId,
+      content: bytesToBase64(data.subarray(start, start + CHUNK_SIZE)),
+      start,
+      end: Math.min(start + CHUNK_SIZE, data.length),
       is_secret: false,
-    });
-    assertWriteComplete(result, "inline write");
+    }));
+
+    let lastResult: SyncWriteResult | undefined;
+    for (const batch of inlineWriteBatches(entries)) {
+      const results = await this.sendWrites(batch);
+      // Chunks before the last legitimately report written=false; the final
+      // chunk's result (in the final batch) carries file completion.
+      lastResult = results[results.length - 1];
+    }
+    if (!lastResult) throw new ArkerError("internal", "inline write produced no result", 200);
+    assertWriteComplete(lastResult, "inline write");
   }
 
   private async sendOneWrite(entry: SyncWriteEntry): Promise<SyncWriteResult> {
+    const results = await this.sendWrites([entry]);
+    const result = results[0];
+    if (!result) throw new ArkerError("internal", "sync write returned no result", 200);
+    return result;
+  }
+
+  /** Send a batch of write entries as ONE `/sync` request, retrying the
+   * whole batch on a transient error. Entries sharing an `upload_id` stay in
+   * the same request/response pair so arkerd's chunk-session ledger and this
+   * call's ordering agree. */
+  private async sendWrites(entries: SyncWriteEntry[]): Promise<SyncWriteResult[]> {
     let lastError: SyncEntryError | undefined;
     const attempts = this._client._retryAttempts();
     for (let attempt = 0; attempt < attempts; attempt++) {
       const request: SyncWriteOperationRequest = {
         op: "write",
-        writes: [entry],
+        writes: entries,
       };
       const response = await this._client._request<SyncWriteResponse>("POST", `${vmPath(this.id)}/sync`, request, this.baseUrl);
-      const result = response.results[0];
-      if (!result) throw new ArkerError("internal", "sync write returned no result", 200);
-      const error = result.error ?? undefined;
-      if (!error) return result;
+      if (response.results.length !== entries.length) {
+        throw new ArkerError("internal", "write response missing results", 200);
+      }
+      const error = response.results.map((r) => r.error).find((e): e is SyncEntryError => !!e);
+      if (!error) return response.results;
       lastError = error;
       if (!isRetryable(200, error) || attempt === attempts - 1) break;
       await sleep(this._client._retryDelay(attempt));
@@ -2632,6 +2685,29 @@ function optionalNumberOrNull(value: unknown): number | null | undefined {
 function assertWriteComplete(result: SyncWriteResult, context: string): void {
   if (result.complete && result.written) return;
   throw new ArkerError("internal", `${context} did not complete`, 200);
+}
+
+/**
+ * Group chunk entries (already `<= CHUNK_SIZE` each) into request batches
+ * whose decoded total stays at or under `INLINE_WRITE_LIMIT`, preserving
+ * order. A single small write is always exactly one batch.
+ */
+function inlineWriteBatches(entries: SyncChunkWrite[]): SyncChunkWrite[][] {
+  const batches: SyncChunkWrite[][] = [];
+  let batch: SyncChunkWrite[] = [];
+  let batchBytes = 0;
+  for (const entry of entries) {
+    const entryBytes = entry.end - entry.start;
+    if (batch.length > 0 && batchBytes + entryBytes > INLINE_WRITE_LIMIT) {
+      batches.push(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(entry);
+    batchBytes += entryBytes;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
 }
 
 function ulid(): string {

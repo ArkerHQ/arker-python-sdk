@@ -25,7 +25,10 @@ type FetchCall = {
 
 type FetchScript = {
   predicate: (method: string, url: string) => boolean;
-  response: Response;
+  respond: (call: FetchCall) => Response;
+  /** If true, stays in the script and can match every subsequent call
+   * instead of being consumed after one match. */
+  sticky?: boolean;
 };
 
 class FakeFetch {
@@ -35,10 +38,35 @@ class FakeFetch {
   addJson(predicate: FetchScript["predicate"], status: number, body: unknown): void {
     this.script.push({
       predicate,
-      response: new Response(JSON.stringify(body), {
-        status,
-        headers: { "content-type": "application/json" },
-      }),
+      respond: () =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        }),
+    });
+  }
+
+  /**
+   * Like `addJson`, but computes the response from the ACTUAL request (e.g.
+   * echoing back how many chunks a `/sync` write batch carried), and stays
+   * available to match every subsequent matching call rather than being
+   * consumed after one — for flows whose exact number of requests is a
+   * property under test, not something the test should have to predict.
+   */
+  addDynamicJson(
+    predicate: FetchScript["predicate"],
+    respond: (call: FetchCall) => { status: number; body: unknown },
+  ): void {
+    this.script.push({
+      predicate,
+      sticky: true,
+      respond: (call) => {
+        const { status, body } = respond(call);
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      },
     });
   }
 
@@ -64,11 +92,14 @@ class FakeFetch {
       }
       bodyBytes = new Uint8Array(Buffer.concat(chunks.map((c) => Buffer.from(c))));
     }
-    this.calls.push({ url, method, body, bodyBytes, headers });
+    const call: FetchCall = { url, method, body, bodyBytes, headers };
+    this.calls.push(call);
 
     const index = this.script.findIndex((entry) => entry.predicate(method, url));
     assert.notEqual(index, -1, `no scripted response for ${method} ${url}`);
-    return this.script.splice(index, 1)[0]!.response;
+    const entry = this.script[index]!;
+    if (!entry.sticky) this.script.splice(index, 1);
+    return entry.respond(call);
   };
 }
 
@@ -1554,6 +1585,102 @@ async function testSyncDirUploadsAGzippedTarball(): Promise<void> {
 }
 
 await testSyncDirUploadsAGzippedTarball();
+
+// A >20MB inline-fallback write is the exact shape that hard-failed with
+// `payload_too_large` before arkerd's `MAX_SYNC_INLINE_REQUEST_BYTES` cap was
+// respected client-side: `syncWriteInline` used to put the WHOLE file — not
+// even chunked — in ONE request's ONE entry regardless of size. It must now
+// split into multiple sequential requests, each staying within
+// `INLINE_WRITE_LIMIT`, sharing one `upload_id` so arkerd's
+// `SyncChunkSessionState` ledger reassembles them across requests.
+async function testLargeInlineWriteSplitsAcrossMultipleRequests(): Promise<void> {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const nodePath = await import("node:path");
+  const crypto = await import("node:crypto");
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-inline-big-"));
+  // Random bytes so gzip cannot shrink the tarball below the size that
+  // forces multiple inline requests (24MiB: > INLINE_WRITE_LIMIT=16MiB and >
+  // arkerd's 20MiB MAX_SYNC_INLINE_REQUEST_BYTES).
+  const fileSize = 24 * 1024 * 1024;
+  fs.writeFileSync(nodePath.join(dir, "blob.bin"), crypto.randomBytes(fileSize));
+
+  const fetch = new FakeFetch();
+  // 1. remote manifest -> empty, so the file counts as changed
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, { ok: true, op: "manifest", entries: [] });
+  // 2. no /sync-stream on this server -> 404 -> legacy inline-write fallback
+  fetch.addJson((m, url) => m === "POST" && url.includes("/sync-stream"), 404, {
+    error: { code: "not_found", message: "no route" },
+  });
+  // 3. every inline write request (however many it takes): echo back
+  // completion based on whether THIS entry's range reaches the declared
+  // size, same contract arkerd's chunk-session ledger implements. Sticky, so
+  // it answers every batch, not just the first.
+  fetch.addDynamicJson(
+    (m, url) => m === "POST" && url.endsWith("/sync"),
+    (call) => {
+      const parsed = JSON.parse(call.body ?? "{}") as {
+        writes?: Array<{ path: string; size: number; end: number }>;
+      };
+      const writes = parsed.writes ?? [];
+      const results = writes.map((w) => {
+        const complete = w.end === w.size;
+        return {
+          path: w.path,
+          size: w.size,
+          received_bytes: w.end,
+          ranges: [{ start: 0, end: w.end }],
+          complete,
+          written: complete,
+        };
+      });
+      return { status: 200, body: { ok: true, op: "write", results } };
+    },
+  );
+  // 4. the in-guest extract
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/runs"), 200, {
+    run_id: "r1", state: "completed", exit_code: 0, stdout: "", stderr: "",
+    stdout_encoding: "utf-8", stderr_encoding: "utf-8",
+  });
+
+  await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p");
+
+  const writeCalls = fetch.calls.filter(
+    (c) => c.url.endsWith("/sync") && (c.body ?? "").includes('"op":"write"'),
+  );
+  // The fix's whole point: this is NOT one request carrying the entire file.
+  assert.ok(writeCalls.length >= 2, `expected multiple inline write requests, got ${writeCalls.length}`);
+
+  const allWrites: Array<{ upload_id: string; size: number; start: number; end: number; content: string }> = [];
+  for (const call of writeCalls) {
+    const writes = JSON.parse(call.body!).writes as Array<{
+      upload_id: string; size: number; start: number; end: number; content: string;
+    }>;
+    allWrites.push(...writes);
+    const decodedTotal = writes.reduce((sum, w) => sum + Buffer.from(w.content, "base64").length, 0);
+    // Each request's own decoded total must stay within the server's inline
+    // cap. Before the fix, one request carried the whole (>20MB) file and
+    // arkerd rejected it with `payload_too_large`.
+    assert.ok(
+      decodedTotal <= 16 * 1024 * 1024,
+      `one inline request carried ${decodedTotal} decoded bytes, over INLINE_WRITE_LIMIT`,
+    );
+  }
+
+  // Every chunk shares one upload_id, so arkerd's cross-request
+  // chunk-session ledger treats the split requests as one upload.
+  const uploadIds = new Set(allWrites.map((w) => w.upload_id));
+  assert.equal(uploadIds.size, 1, "all chunks of one file must share an upload_id");
+
+  // Chunks reassemble losslessly, in order, with no gaps or overlaps, and
+  // cover the whole declared file size.
+  const reconstructed = Buffer.concat(allWrites.map((w) => Buffer.from(w.content, "base64")));
+  assert.equal(reconstructed.length, allWrites[0]!.size, "chunks must cover [0, size) exactly");
+
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+await testLargeInlineWriteSplitsAcrossMultipleRequests();
 
 // ── Directory upload: the preferred single-request path ──────────────
 // A whole tree travels as one archive in one request; the compatibility

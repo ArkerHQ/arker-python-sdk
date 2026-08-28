@@ -1077,6 +1077,83 @@ def test_mid_size_write_inlines_chunks_in_one_request() -> None:
     assert decoded == payload
 
 
+def test_large_inline_write_splits_across_multiple_requests() -> None:
+    """A >20MB inline-fallback write is the exact shape that hard-failed with
+    `payload_too_large` before arkerd's `MAX_SYNC_INLINE_REQUEST_BYTES` cap
+    was respected client-side: `_sync_write_inline` used to put every chunk
+    of the whole file in ONE request regardless of size. It must now split
+    into multiple sequential requests, each staying within
+    `INLINE_WRITE_LIMIT`, sharing one `upload_id` so arkerd's
+    `SyncChunkSessionState` ledger reassembles them across requests."""
+    chunk = sdk.CHUNK_SIZE
+    # 6 chunks (~24MiB decoded): more than fits in one arkerd
+    # MAX_SYNC_INLINE_REQUEST_BYTES=20MiB request, and more than fits in one
+    # INLINE_WRITE_LIMIT=16MiB batch, so this forces >=2 requests.
+    size = 6 * chunk + 1
+    payload = bytes(i % 256 for i in range(size))
+
+    # Mirror exactly what `_sync_write_inline` builds, then batch it through
+    # the SDK's own (now unit-tested-by-construction) batching helper so the
+    # expected request shape can never drift from the implementation.
+    starts = list(range(0, size, chunk))
+    entries = [
+        sdk.SyncChunkWrite(
+            path="/home/user/huge",
+            size=size,
+            upload_id="uid_test",
+            content=base64.b64encode(payload[start : start + chunk]).decode("ascii"),
+            start=start,
+            end=min(start + chunk, size),
+        )
+        for start in starts
+    ]
+    batches = sdk._inline_write_batches(entries)
+    assert len(batches) >= 2, "test payload must force multiple requests"
+
+    t = FakeTransport()
+    predicate = lambda method, url: method == "POST" and url.endswith("/sync")
+    for batch_index, batch in enumerate(batches):
+        is_last_batch = batch_index == len(batches) - 1
+        results = [
+            {
+                "path": "/home/user/huge",
+                "size": size,
+                "received_bytes": entry.end,
+                "ranges": [{"start": 0, "end": entry.end}],
+                "complete": is_last_batch and i == len(batch) - 1,
+                "written": is_last_batch and i == len(batch) - 1,
+            }
+            for i, entry in enumerate(batch)
+        ]
+        t.add_json(predicate, 200, {"ok": True, "op": "write", "results": results})
+
+    with use_transport(t):
+        client().vm("vm_1")._sync_write_inline("/home/user/huge", payload)
+
+    # One request per batch — the fix's whole point is that this is NOT one
+    # request for the entire file.
+    assert len(t.calls) == len(batches)
+
+    all_writes = []
+    for call in t.calls:
+        writes = json.loads(call["body"])["writes"]
+        all_writes.extend(writes)
+        # Each request's own decoded total must stay within the server's
+        # inline cap. Before the fix, a single request carried every chunk of
+        # the whole (>20MB) file and arkerd rejected it with
+        # `payload_too_large`.
+        decoded_total = sum(len(base64.b64decode(w["content"])) for w in writes)
+        assert decoded_total <= sdk.INLINE_WRITE_LIMIT
+
+    # Every chunk shares one upload_id, in order, and reassembles losslessly —
+    # this is what lets arkerd's cross-request chunk-session ledger treat the
+    # split requests as one upload.
+    upload_ids = {w["upload_id"] for w in all_writes}
+    assert len(upload_ids) == 1
+    reconstructed = b"".join(base64.b64decode(w["content"]) for w in all_writes)
+    assert reconstructed == payload
+
+
 def test_fork_sends_durable_flag() -> None:
     t = FakeTransport()
     t.add_json(

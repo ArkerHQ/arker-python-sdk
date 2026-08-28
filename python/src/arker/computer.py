@@ -107,8 +107,15 @@ _UNSET = _UnsetType()
 _EXPLICIT_NULL = _ExplicitNullType()
 
 CHUNK_SIZE = 4 * 1024 * 1024
-# Max bytes carried inline in ONE /sync request (as CHUNK_SIZE chunks sharing
-# an upload_id).
+# Max decoded bytes carried in ONE /sync request's `writes[]` (as CHUNK_SIZE
+# chunks sharing an upload_id). arkerd enforces `MAX_SYNC_INLINE_REQUEST_BYTES
+# = 20 MiB` (aws/arkerd-worker-linux/src/api/routes/sync.rs) on the decoded
+# total per request; this stays comfortably under that so one JSON/base64
+# overhead miscalculation never tips a request over the server's hard cap.
+# `_sync_write_inline` batches into multiple sequential requests sharing one
+# `upload_id` — reassembled server-side by the same `SyncChunkSessionState`
+# ledger that lets a single request already carry multiple chunks — so an
+# inline write of any size degrades to more round trips instead of failing.
 INLINE_WRITE_LIMIT = 16 * 1024 * 1024
 
 # Largest single request body the service accepts. A larger body is rejected
@@ -1278,6 +1285,18 @@ class VM:
         return signed.content
 
     def _sync_write_inline(self, path: str, data: bytes) -> None:
+        """Write ``data`` through the JSON/base64 ``/sync`` fallback.
+
+        Used only when the streaming fast path (``/sync-stream``) is
+        unavailable — an older server, or the route missing entirely. Chunked
+        the same way regardless of size: every chunk shares one ``upload_id``,
+        and chunks are grouped into as many sequential requests as it takes to
+        keep each request's decoded total at or under ``INLINE_WRITE_LIMIT``
+        (comfortably inside the server's hard `MAX_SYNC_INLINE_REQUEST_BYTES`
+        cap). arkerd's chunk-session ledger is keyed by (vm, upload_id) and
+        outlives any single request, so this reassembles correctly server-side
+        — a large inline write costs more round trips, not a hard failure.
+        """
         upload_id = _ulid()
         # `or [0]`: an empty file still needs its one (empty) chunk — zero
         # chunks would send `writes: []` and never create the file.
@@ -1293,10 +1312,15 @@ class VM:
             )
             for start in starts
         ]
-        results = self._send_writes(entries)
-        # Chunks before the last legitimately report written=False; the final
-        # chunk's result carries file completion.
-        _assert_write_complete(results[-1], "inline write")
+        last_result: SyncWriteResult | None = None
+        for batch in _inline_write_batches(entries):
+            results = self._send_writes(batch)
+            # Chunks before the last legitimately report written=False; the
+            # final chunk's result (in the final batch) carries file
+            # completion.
+            last_result = results[-1]
+        assert last_result is not None  # `entries` is always non-empty
+        _assert_write_complete(last_result, "inline write")
 
     def _send_one_write(self, entry: SyncWriteEntry) -> SyncWriteResult:
         return self._send_writes([entry])[0]
@@ -2304,6 +2328,26 @@ def _assert_write_complete(result: SyncWriteResult, context: str) -> None:
     if result.complete and result.written:
         return
     raise ArkerError("internal", f"{context} did not complete", 200)
+
+
+def _inline_write_batches(entries: list[SyncChunkWrite]) -> list[list[SyncChunkWrite]]:
+    """Group chunk entries (already ``<= CHUNK_SIZE`` each) into request
+    batches whose decoded total stays at or under ``INLINE_WRITE_LIMIT``,
+    preserving order. A single small write is always exactly one batch."""
+    batches: list[list[SyncChunkWrite]] = []
+    batch: list[SyncChunkWrite] = []
+    batch_bytes = 0
+    for entry in entries:
+        entry_bytes = entry.end - entry.start
+        if batch and batch_bytes + entry_bytes > INLINE_WRITE_LIMIT:
+            batches.append(batch)
+            batch = []
+            batch_bytes = 0
+        batch.append(entry)
+        batch_bytes += entry_bytes
+    if batch:
+        batches.append(batch)
+    return batches
 
 
 @dataclasses.dataclass
