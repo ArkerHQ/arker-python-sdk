@@ -47,6 +47,11 @@ const DOWNLOAD_CONCURRENCY = 8;
 /**
  * Compress only when a sample sees at least this much reduction. A payload
  * that barely compresses costs time on both ends for nothing.
+ *
+ * KEEP IN SYNC: arker-app's benchmark harness
+ * (benchmarks/benchrunner/providers/arker.py, `_COMPRESSION_WORTH_IT_RATIO`)
+ * hardcodes this same value to model real caller behavior. There is no
+ * automated check tying the two together — update both in the same change.
  */
 const COMPRESSION_WORTH_IT_RATIO = 0.6;
 
