@@ -1755,10 +1755,21 @@ class Pty:
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
-# Shared HTTP/2 client. One connection pool for the process, so concurrent requests
-# multiplex over a single connection per host. HTTP/2 is negotiated via ALPN; hosts
-# that don't offer it (e.g. presigned storage transfers) fall back to HTTP/1.1.
-_http_client = httpx.Client(http2=True)
+# Shared HTTP/1.1 client, one connection per in-flight request.
+#
+# Not HTTP/2: h2 puts every thread's requests on one socket, and httpcore's sync
+# backend races `sock.settimeout()` between its read and write paths, failing every
+# request in flight on that connection with `ReadError: [Errno 35]`. The longer a
+# request is held open the likelier it is to be caught, so `run()` is worst hit. A
+# synchronous client gains nothing from multiplexing anyway, so reviving h2 means
+# going async, not flipping this flag.
+#
+# `max_connections` is a real concurrency ceiling here (a synchronous `run()` holds
+# its connection for the whole command); httpx defaults to 100.
+_http_client = httpx.Client(
+    http2=False,
+    limits=httpx.Limits(max_connections=256, max_keepalive_connections=256),
+)
 atexit.register(_http_client.close)
 
 

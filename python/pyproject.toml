@@ -22,10 +22,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
 ]
-# httpx is the HTTP backend; the http2 extra pulls in `h2` so requests negotiate
-# HTTP/2 (falling back to HTTP/1.1 per host via ALPN).
+# httpx without the http2 extra — see the `_http_client` comment in
+# src/arker/computer.py for why h2 is off.
 dependencies = [
-    "httpx[http2]>=0.27",
+    "httpx>=0.27",
     "typing-extensions>=4.12",
 ]
 
