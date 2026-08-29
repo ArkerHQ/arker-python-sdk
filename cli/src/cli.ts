@@ -31,6 +31,7 @@ import {
   Arker,
   ArkerError,
   discoverRegions,
+  migrate as migrateCommand,
 } from "@arker-ai/sdk";
 import { bridgePty } from "./cli-pty.js";
 import type {
@@ -135,6 +136,16 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     "source-vm-name": { type: "string" },
   },
   fs: {},
+  migrate: {
+    ...GLOBAL_OPTIONS,
+    "freeze-local": { type: "boolean" },
+    "kill-local": { type: "boolean" },
+    keys: { type: "string" },
+    "memory-mib": { type: "integer", min: 0 },
+    "no-quiesce": { type: "boolean" },
+    probe: { type: "string" },
+    source: { type: "string" },
+  },
   list: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
@@ -1168,6 +1179,52 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   if (exitCode !== 0) process.exit(exitCode);
 }
 
+// ── Migrate a running command into a VM ─────────────────────────────
+
+// Move a running command (claude-code / codex / pi / cursor-agent, or any
+// command with a resumable on-disk transcript) into a fresh Arker VM and
+// resume it there. Config-driven from command_migration.json.
+async function cmdMigrate(args: ParsedArgs, client: Arker): Promise<void> {
+  const pidArg = args.positional[0];
+  if (!pidArg || !/^\d+$/.test(pidArg)) {
+    die(
+      "usage: arker migrate <pid> [--source <vm_name>] [--memory-mib N]\n" +
+        "       [--no-quiesce] [--freeze-local] [--kill-local] [--probe TEXT]\n" +
+        "       [--keys NAME=VALUE[,NAME=VALUE...]]",
+    );
+  }
+  const pid = Number(pidArg);
+
+  const keysFlag = args.flags.keys as string | undefined;
+  let keys: Record<string, string> | undefined;
+  if (keysFlag !== undefined) {
+    keys = {};
+    for (const pair of keysFlag.split(",")) {
+      const eq = pair.indexOf("=");
+      if (eq === -1) die(`--keys entry "${pair}" must be NAME=VALUE`);
+      keys[pair.slice(0, eq)] = pair.slice(eq + 1);
+    }
+  }
+
+  try {
+    const { vm, command, output } = await migrateCommand(client, {
+      pid,
+      source: args.flags.source as string | undefined,
+      memoryMib: numFlag(args, "memory-mib"),
+      doQuiesce: args.flags["no-quiesce"] !== true,
+      freezeLocal: boolFlag(args, "freeze-local"),
+      killLocal: boolFlag(args, "kill-local"),
+      probe: args.flags.probe as string | undefined,
+      keys,
+    });
+    if (args.flags.json) return out({ vm_id: vm.id, command, output });
+    out(`migrated pid ${pid} (${command}) -> ${vm.id}`);
+    if (output) out(output);
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 function numFlag(args: ParsedArgs, name: string): number | undefined {
@@ -1258,19 +1315,24 @@ const OPTION_HELP: Record<string, { placeholder?: string; desc: string }> = {
   "disk-mib": { placeholder: "<n>", desc: "disk size in MiB" },
   file: { placeholder: "<path>", desc: "read the policy document from this file" },
   "filesystem-id": { placeholder: "<id>", desc: "filter by filesystem" },
+  "freeze-local": { desc: "SIGSTOP the local process before migrating, so it can't diverge" },
   "gpu-sms": { placeholder: "<n>", desc: "GPU SM count, in hardware units" },
   "gpu-vram-mib": { placeholder: "<n>", desc: "GPU VRAM in MiB, in hardware units" },
   help: { desc: "show help without connecting" },
   json: { desc: "emit JSON instead of tabular output" },
+  "keys": { placeholder: "<name=value[,...]>", desc: "explicit API keys to forward, overriding auto-discovery" },
+  "kill-local": { desc: "SIGTERM the local process once the resumed VM is up" },
   limit: { placeholder: "<n>", desc: "max rows to return (1-1000)" },
   "memory-mib": { placeholder: "<n>", desc: "memory in MiB" },
   name: { placeholder: "<name>", desc: "name for the new resource, scoped to your org" },
   "name-prefix": { placeholder: "<prefix>", desc: "filter by name prefix" },
   "no-disk": { desc: "fork a memory-backed (nodisk) VM" },
   "no-persist": { desc: "close the remote PTY process on disconnect" },
+  "no-quiesce": { desc: "don't wait for the transcript to stop growing before migrating" },
   path: { placeholder: "<path>", desc: "filter by guest path" },
   persist: { desc: "keep the remote PTY process alive on disconnect" },
   platform: { placeholder: "<token[,token...]>", desc: "pin to a compute platform (e.g. icelake, graviton2)" },
+  probe: { placeholder: "<text>", desc: "first prompt sent to the resumed command, to verify state carried" },
   provider: { placeholder: "<provider>", desc: "compute provider (or env ARKER_PROVIDER)" },
   public: { desc: "restrict the listing to public VMs" },
   "queueing-timeout": { placeholder: "<seconds>", desc: "queue up to this long instead of failing fast" },
@@ -1280,6 +1342,7 @@ const OPTION_HELP: Record<string, { placeholder?: string; desc: string }> = {
   rows: { placeholder: "<n>", desc: "initial terminal height" },
   "session-id": { placeholder: "<ulid>", desc: "target a specific existing session" },
   "session-idx": { placeholder: "<n>", desc: "target the session at this index (default 0)" },
+  source: { placeholder: "<vm_name>", desc: "VM to fork into (default: ubuntu-small)" },
   "source-org-id": { placeholder: "<org>", desc: "list that org's VMs (only ArkerHQ, with --public)" },
   "source-vm-id": { placeholder: "<id>", desc: "fork by global source VM id" },
   "source-vm-name": { placeholder: "<name>", desc: "fork by source VM name" },
@@ -1328,6 +1391,20 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
     notes: [
       "Without --limit the listing stops at the first page and prints a trailing",
       "'# next_cursor=<n>' line; pass --limit (max 1000) or --cursor to page further.",
+    ],
+  },
+  migrate: {
+    synopsis: ["arker migrate <pid> [flags]"],
+    summary:
+      "Migrate a running command (claude-code, codex, pi, cursor-agent) by local PID into a " +
+      "fresh Arker VM and resume it there.",
+    notes: [
+      "Config-driven from command_migration.json: syncs the command's working directory plus its",
+      "on-disk resumable transcript, then re-invokes the command's own resume entrypoint in the VM.",
+      "No CRIU — only commands that persist a resumable transcript are supported.",
+      "API keys are auto-forwarded from the source process's environment per the recipe's declared",
+      "`keys` list; pass --keys to override (needed for a file-based login, e.g. an OAuth token,",
+      "since that never appears in the process environment for auto-discovery to find).",
     ],
   },
   policies: {
@@ -1490,6 +1567,7 @@ function usage(command?: string, sub?: string): void {
       "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
       "  arker shell <vm_id>                            native PTY shell",
       "  arker shell --source-vm-name <name>            fork a source, then open a shell",
+      "  arker migrate <pid>                            migrate a running coding-agent session into a VM",
       "",
       "Resources:",
       "  arker regions                                  list available public placements",
@@ -1594,6 +1672,8 @@ async function main(): Promise<void> {
         return await cmdPolicies(args, client);
       case "shell":
         return await cmdShell(args, client);
+      case "migrate":
+        return await cmdMigrate(args, client);
       // Resources.
       case "vms":
         return await cmdVms(args, client);
