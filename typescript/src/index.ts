@@ -43,6 +43,33 @@ export const STREAM_MAX_BYTES = 64 * 1024 * 1024;
 const ARCHIVE_MIN_BYTES = 1024 * 1024;
 
 /**
+ * Ceiling on one archive's total INPUT bytes before a directory sync splits
+ * the changed-file set into multiple sequential/bounded-concurrent tarballs
+ * instead of one.
+ *
+ * arkerd's `/sync-stream` route (the archive-extract transport) enforces
+ * `MAX_SYNC_FILE_BYTES = 2 GiB` per request
+ * (aws/arkerd-worker-linux/src/api/routes/sync.rs) and rejects anything
+ * larger with 413 `payload_too_large` — exact, no truncation. `uploadTree`
+ * used to tar EVERY changed file into ONE archive regardless of total size,
+ * so a cold sync of a tree with >2 GiB of changed content (or a warm sync
+ * that happens to touch that much) failed outright instead of merely being
+ * slow. Bounded well under the hard cap: tar's per-file overhead (a
+ * 512-byte header, padded to a 512-byte boundary) is trivial even across
+ * thousands of files, but an incompressible payload uploads at close to its
+ * raw size, and the margin protects against exactly that worst case.
+ */
+const ARCHIVE_BATCH_MAX_BYTES = 1_500_000_000;
+
+/**
+ * Archive batches uploaded concurrently once a directory sync needs more
+ * than one (see ARCHIVE_BATCH_MAX_BYTES). Each batch extracts a disjoint set
+ * of files under the same remote root, so concurrent extracts never touch
+ * the same path.
+ */
+const ARCHIVE_BATCH_CONCURRENCY = 4;
+
+/**
  * Below this, don't bother sampling for compressibility — the decision costs
  * more than it can save.
  */
@@ -1523,17 +1550,42 @@ export class VM {
     const hashMs = clock() - tHash0;
     const tUpload0 = clock();
 
-    // 4. Upload the changed files and apply them to the VM in one batch. The
-    //    operation's outcome is checked, so a failure surfaces (never a silent
-    //    partial); the diff also fails safe — any omitted file is re-sent next
-    //    call.
+    // 4. Upload the changed files and apply them to the VM. The operation's
+    //    outcome is checked, so a failure surfaces (never a silent partial);
+    //    the diff also fails safe — any omitted file is re-sent next call.
+    //
+    //    One archive per call used to be unconditional, so a changed set
+    //    above arkerd's MAX_SYNC_FILE_BYTES (2 GiB) — trivially reached by a
+    //    cold sync of a tens-of-GB tree, or a warm sync that happens to touch
+    //    that much — failed the whole sync with 413 payload_too_large instead
+    //    of merely being slow. Splitting into ARCHIVE_BATCH_MAX_BYTES-sized
+    //    archives (bounded-concurrent: each batch extracts a disjoint file
+    //    set under the same remote root, so concurrent extracts never race)
+    //    fixes that without giving up the one-request-per-batch win for the
+    //    common case that still fits in one.
     if (changed.length > 0) {
       const transport = await this.selectWriteTransport(changed);
       if (transport.kind === "bytes") {
         const only = changed[0]!;
         await this.syncWriteStream(`${remoteRoot}/${only.rel}`, new Uint8Array(await fsp.readFile(only.abs)));
       } else {
-        await this.uploadAndExtractTarball(changed, localRoot, remoteRoot, fsp, transport.compress);
+        const batches = batchBySize(changed, options.archiveBatchMaxBytes ?? ARCHIVE_BATCH_MAX_BYTES);
+        if (batches.length === 1) {
+          await this.uploadAndExtractTarball(batches[0]!, localRoot, remoteRoot, fsp, transport.compress);
+        } else {
+          let nextBatch = 0;
+          const workers = Math.min(ARCHIVE_BATCH_CONCURRENCY, batches.length);
+          await Promise.all(
+            Array.from({ length: workers }, async () => {
+              for (;;) {
+                const index = nextBatch++;
+                const batch = batches[index];
+                if (!batch) return;
+                await this.uploadAndExtractTarball(batch, localRoot, remoteRoot, fsp, transport.compress);
+              }
+            }),
+          );
+        }
       }
     }
     // Only after the upload succeeded — persisting earlier would record files
@@ -2783,6 +2835,11 @@ export interface SyncDirOptions {
    * is what a first sync does anyway. Setting it wrongly re-sends files that
    * were already there — wasteful, never incorrect. */
   assumeEmpty?: boolean;
+
+  /** @internal Test override for ARCHIVE_BATCH_MAX_BYTES (default 1.5 GB) --
+   * lets a test trigger the changed-set batching path without materializing
+   * gigabyte-scale fixtures on disk. */
+  archiveBatchMaxBytes?: number;
 }
 
 /** Upload form of {@link VM.sync}: copy a local file or directory INTO the VM. */
@@ -2800,6 +2857,36 @@ export interface SyncDownloadOptions {
 /** POSIX-single-quote a string so it is safe inside a `/bin/sh` command. */
 function shellQuoteSingle(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Split `files` into order-preserving groups whose summed `size` stays at or
+ * under `cap` — so one archive's upload never trips arkerd's per-request
+ * `MAX_SYNC_FILE_BYTES` cap just because the CHANGED set (not any one file)
+ * is large.
+ *
+ * Greedy: a batch fills up to (not over) `cap`, then starts the next. A
+ * single file at or above `cap` gets a batch of its own rather than being
+ * split — splitting one file's bytes across archives is a separate,
+ * unrelated problem this does not attempt to solve; such a file still needs
+ * to individually clear the server's own per-file size limit, exactly as
+ * before this batching existed.
+ */
+function batchBySize<T extends { size: number }>(files: T[], cap: number): T[][] {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let currentBytes = 0;
+  for (const entry of files) {
+    if (current.length > 0 && currentBytes + entry.size > cap) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(entry);
+    currentBytes += entry.size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
 }
 
 function base64ToBytes(text: string): Uint8Array {

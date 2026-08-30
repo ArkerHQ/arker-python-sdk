@@ -127,6 +127,28 @@ STREAM_MAX_BYTES = 64 * 1024 * 1024
 # a plain byte body, so its mode bits travel with it.
 ARCHIVE_MIN_BYTES = 1024 * 1024
 
+# Ceiling on one archive's total INPUT bytes before a directory sync splits the
+# changed-file set into multiple sequential tarballs instead of one.
+#
+# arkerd's `/sync-stream` route (the archive-extract transport) enforces
+# `MAX_SYNC_FILE_BYTES = 2 GiB` per request (aws/arkerd-worker-linux/src/api/routes/sync.rs)
+# and rejects anything larger with 413 `payload_too_large` -- exact, no
+# truncation. A directory sync used to tar EVERY changed file into ONE archive
+# regardless of total size, so a cold sync of a tree with >2 GiB of changed
+# content (or a warm sync that happens to touch that much) failed outright
+# rather than merely being slow. Bounded well under the hard cap: tar's
+# per-file overhead (a 512-byte header, padded to a 512-byte boundary) is
+# trivial even across thousands of files, but an incompressible payload
+# uploads at close to its raw size, and the margin protects against exactly
+# that worst case.
+ARCHIVE_BATCH_MAX_BYTES = 1_500_000_000
+
+# Archive batches uploaded concurrently once a directory sync needs more than
+# one (see ARCHIVE_BATCH_MAX_BYTES). Each batch extracts a disjoint set of
+# files under the same `remote_root`, so concurrent `tar -x` calls never touch
+# the same path.
+ARCHIVE_BATCH_CONCURRENCY = 4
+
 # Below this a compressibility sample is not worth taking; above it `sync`
 # samples the payload before deciding whether to compress it.
 COMPRESSION_SAMPLE_MIN_BYTES = 256 * 1024
@@ -1140,6 +1162,37 @@ class VM:
                 return "bytes", False
         return "archive", VM._should_compress([(rel, abs_path) for rel, abs_path, _s, _m in files])
 
+    @staticmethod
+    def _batch_by_size(
+        files: list[tuple[str, str, int, int]], cap: int
+    ) -> list[list[tuple[str, str, int, int]]]:
+        """Split ``files`` into order-preserving groups whose summed size stays
+        at or under ``cap`` -- so one archive's upload never trips arkerd's
+        per-request ``MAX_SYNC_FILE_BYTES`` cap just because the CHANGED set
+        (not any one file) is large.
+
+        Greedy: a batch fills up to (not over) ``cap``, then starts the next.
+        A single file at or above ``cap`` gets a batch of its own rather than
+        being split -- splitting one file's bytes across archives is a
+        separate, unrelated problem this does not attempt to solve; such a
+        file still needs to individually clear the server's own per-file size
+        limit, exactly as before this batching existed.
+        """
+        batches: list[list[tuple[str, str, int, int]]] = []
+        current: list[tuple[str, str, int, int]] = []
+        current_bytes = 0
+        for entry in files:
+            size = entry[2]
+            if current and current_bytes + size > cap:
+                batches.append(current)
+                current = []
+                current_bytes = 0
+            current.append(entry)
+            current_bytes += size
+        if current:
+            batches.append(current)
+        return batches
+
     def _download_to_local(self, remote_path: str, local_path: str) -> SyncResult:
         """Copy ``remote_path`` out of the VM to ``local_path``, recursing when
         it is a directory."""
@@ -1439,11 +1492,22 @@ class VM:
             result.sent += 1
             result.bytes_sent += size
 
-        # 4. Upload the changed files and apply them to the VM in one batch —
-        #    far faster than one write per file. The VM performs the writes, so
-        #    they are always consistent with its own filesystem. The outcome is
+        # 4. Upload the changed files and apply them to the VM — far faster
+        #    than one write per file. The VM performs the writes, so they are
+        #    always consistent with its own filesystem. The outcome is
         #    checked, so a failure surfaces (never a silent partial); the diff
         #    also fails safe: any omitted file is re-sent next call.
+        #
+        #    One archive per call used to be unconditional, so a changed set
+        #    above arkerd's MAX_SYNC_FILE_BYTES (2 GiB) — trivially reached by
+        #    a cold sync of a tens-of-GB tree, or a warm sync that happens to
+        #    touch that much — failed the whole sync with 413
+        #    payload_too_large instead of merely being slow. Splitting into
+        #    ARCHIVE_BATCH_MAX_BYTES-sized archives (bounded-concurrent: each
+        #    batch extracts a disjoint file set under the same remote_root, so
+        #    concurrent `tar -x` calls never race) fixes that without giving
+        #    up the one-request-per-batch win for the common case that still
+        #    fits in one.
         if changed:
             kind, compress = self._select_write_transport(changed)
             if kind == "bytes":
@@ -1451,10 +1515,26 @@ class VM:
                 with open(abs_path, "rb") as fh:
                     self._sync_write_stream(f"{remote_root}/{rel}", fh.read())
             else:
-                self._upload_and_extract_tarball(
-                    [(rel, abs_path) for rel, abs_path, _s, _m in changed],
-                    remote_root, compress,
-                )
+                batches = self._batch_by_size(changed, ARCHIVE_BATCH_MAX_BYTES)
+                if len(batches) == 1:
+                    self._upload_and_extract_tarball(
+                        [(rel, abs_path) for rel, abs_path, _s, _m in batches[0]],
+                        remote_root, compress,
+                    )
+                else:
+                    with ThreadPoolExecutor(max_workers=ARCHIVE_BATCH_CONCURRENCY) as pool:
+                        futures = [
+                            pool.submit(
+                                self._upload_and_extract_tarball,
+                                [(rel, abs_path) for rel, abs_path, _s, _m in batch],
+                                remote_root, compress,
+                            )
+                            for batch in batches
+                        ]
+                        # Wait for every batch and surface the first failure —
+                        # a batch that never ran must not look like success.
+                        for future in futures:
+                            future.result()
         return result
 
     def _remote_manifest(self, path: str) -> tuple[dict[str, str], bool]:

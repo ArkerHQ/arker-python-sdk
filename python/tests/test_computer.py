@@ -2275,6 +2275,70 @@ def test_sync_from_local_dir_sends_one_archive(tmp_path) -> None:
     assert _extract_mode(_stream_calls(t)[0]["url"]) in ("tar", "tar.gz")
 
 
+def test_batch_by_size_fills_greedily_and_never_splits_one_file() -> None:
+    """Pure unit coverage for the batching primitive, independent of the HTTP
+    layer: greedy fill up to (not over) the cap, order preserved, and an
+    oversized single file gets its own batch rather than being split (which
+    this helper deliberately does not attempt -- a single file over the
+    server's own per-file cap is a separate, pre-existing limit)."""
+    entry = lambda rel, size: (rel, f"/abs/{rel}", size, 0o100644)  # noqa: E731
+
+    # Exact-boundary packing: 3 + 3 == cap(6) fits one batch; +3 more forces a
+    # second.
+    files = [entry("a", 3), entry("b", 3), entry("c", 3)]
+    batches = sdk.VM._batch_by_size(files, cap=6)
+    assert [[e[0] for e in b] for b in batches] == [["a", "b"], ["c"]]
+
+    # A single file at/above the cap is not split, and does not drag
+    # neighboring small files into its own batch.
+    files = [entry("small", 1), entry("huge", 100), entry("small2", 1)]
+    batches = sdk.VM._batch_by_size(files, cap=6)
+    assert [[e[0] for e in b] for b in batches] == [["small"], ["huge"], ["small2"]]
+
+    # Empty input -> no batches.
+    assert sdk.VM._batch_by_size([], cap=6) == []
+
+
+def test_sync_from_local_dir_splits_oversized_changed_set(tmp_path, monkeypatch) -> None:
+    """A changed set that would exceed arkerd's per-request MAX_SYNC_FILE_BYTES
+    cap must split into multiple archives instead of building one oversized tar
+    and having the server reject it with 413 payload_too_large.
+
+    Real files stay tiny here (this is a unit test); ARCHIVE_BATCH_MAX_BYTES is
+    patched down so the same batching code path is exercised at a size the
+    test can afford. ARCHIVE_BATCH_CONCURRENCY is patched to 1 so the batches
+    upload sequentially -- FakeTransport's call log and script queue are not
+    thread-safe, and the real concurrency is exercised by TypeScript's
+    equivalent batching test and this one still proves the split happens.
+    """
+    monkeypatch.setattr(sdk, "ARCHIVE_BATCH_MAX_BYTES", 5)
+    monkeypatch.setattr(sdk, "ARCHIVE_BATCH_CONCURRENCY", 1)
+
+    (tmp_path / "pkg").mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / "pkg" / name).write_bytes(b"12345")  # 5 bytes == the patched cap
+
+    t = FakeTransport()
+    t.add_json(
+        lambda m, u: m == "POST" and u.endswith("/sync"),
+        200,
+        {"ok": True, "op": "manifest", "root": "/home/user/pkg", "hash_algo": "sha256",
+         "entries": [], "truncated": False},
+    )
+    for _ in range(3):
+        t.add_json(lambda m, u: m == "POST" and "/sync-stream" in u, 200, {"ok": True})
+
+    with use_transport(t):
+        result = client().vm("vm_1").sync("/home/user/pkg", from_local=str(tmp_path / "pkg"))
+
+    # One 5-byte file per batch under a 5-byte cap: three files, three
+    # archives -- never one archive carrying all three.
+    assert result.sent == 3
+    assert len(_stream_calls(t)) == 3
+    for call in _stream_calls(t):
+        assert _extract_mode(call["url"]) in ("tar", "tar.gz")
+
+
 def test_sync_from_local_dir_skips_unchanged(tmp_path) -> None:
     """What the VM already has is authoritative: matching files are not sent."""
     (tmp_path / "pkg").mkdir()

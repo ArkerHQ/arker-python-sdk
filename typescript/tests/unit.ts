@@ -1746,6 +1746,45 @@ async function testSyncStreamErrorsOtherThan404DoNotFallBack(): Promise<void> {
 await testSyncStreamFastPathSkipsTheExtractRun();
 await testSyncStreamErrorsOtherThan404DoNotFallBack();
 
+// A changed set that would exceed arkerd's per-request MAX_SYNC_FILE_BYTES
+// cap (2 GiB, aws/arkerd-worker-linux/src/api/routes/sync.rs) used to be
+// packed into ONE archive regardless of total size: a cold sync of a
+// tens-of-GB tree, or a warm sync that happened to touch that much, failed
+// outright with 413 payload_too_large instead of merely being slow. It must
+// now split into multiple archives. Real fixture files stay tiny (this is a
+// unit test); `archiveBatchMaxBytes` overrides the real ~1.5 GB default so
+// the same batching code path is exercised at a size the test can afford.
+async function testSyncDirSplitsOversizedChangedSet(): Promise<void> {
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "syncdir-batch-"));
+  for (const name of ["a.txt", "b.txt", "c.txt"]) {
+    fs.writeFileSync(nodePath.join(dir, name), "12345"); // 5 bytes == the overridden cap
+  }
+
+  const fetch = new FakeFetch();
+  fetch.addJson((m, url) => m === "POST" && url.endsWith("/sync"), 200, { ok: true, op: "manifest", entries: [] });
+  // Sticky: answers every batch's /sync-stream call, however many there are.
+  fetch.addDynamicJson((m, url) => m === "POST" && url.includes("/sync-stream"), () => ({
+    status: 200,
+    body: { ok: true },
+  }));
+
+  const result = await client(fetch).vm("vm_1").syncDir(dir, "/home/user/p", { archiveBatchMaxBytes: 5 });
+
+  const streamCalls = fetch.calls.filter((c) => c.url.includes("/sync-stream"));
+  // One 5-byte file per batch under a 5-byte cap: three files, three
+  // archives -- never one archive carrying all three.
+  assert.equal(result.sent, 3);
+  assert.equal(streamCalls.length, 3, `expected 3 archive batches, got ${streamCalls.length}`);
+  for (const call of streamCalls) {
+    const extract = new URL(call.url).searchParams.get("extract");
+    assert.ok(extract === "tar" || extract === "tar.gz", `expected an archive extract, got ${extract}`);
+  }
+
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+await testSyncDirSplitsOversizedChangedSet();
+
 // ── syncDir assumeEmpty ──────────────────────────────────────────────
 // The manifest exists to avoid re-sending unchanged files. Into a fresh
 // directory it is guaranteed empty, so the round-trip costs real latency to
