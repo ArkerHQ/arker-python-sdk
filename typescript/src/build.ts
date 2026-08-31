@@ -36,6 +36,8 @@ import fs from "node:fs";
 import nodePath from "node:path";
 
 import type { Step } from "./buildSpec.js";
+import { loadDockerignore } from "./dockerignore.js";
+import { UrlFetchError, fetchUrl } from "./urlfetch.js";
 
 /** A Dockerfile that parsed but cannot be built, with the reason named. */
 export class BuildError extends Error {
@@ -51,6 +53,26 @@ export type BuildTarget = {
   sync(path: string, data: Uint8Array | string): Promise<void>;
   syncDir(localDir: string, remoteDir: string, options?: Record<string, unknown>): Promise<unknown>;
 };
+
+/**
+ * Quote an `ENV`/`ARG` value for `export`.
+ *
+ * A value containing `$` is DOUBLE-quoted so the guest shell expands it.
+ * `ENV PATH=/opt/bin:$PATH` is one of the most common lines in any Dockerfile,
+ * and single-quoting it sets the literal string `$PATH` — breaking every later
+ * `RUN` and every `run()` the customer makes, with a "command not found" three
+ * steps away from the cause.
+ *
+ * The trade-off is deliberate: double quotes make the value an expansion
+ * context, so `$(...)` would also run. That is guest-side, where `RUN` already
+ * grants arbitrary execution, so it costs nothing already spent. Backslash,
+ * backtick and `"` are escaped so the value cannot break out of the quoting.
+ */
+function envValue(value: string): string {
+  if (!value.includes("$")) return shellQuote(value);
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/`/g, "\\`");
+  return `"${escaped}"`;
+}
 
 function shellQuote(value: string): string {
   if (value.length > 0 && /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
@@ -77,7 +99,14 @@ function resolveSources(source: string, contextRoot: string): string[] {
       `^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`,
     );
     const entries = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-    matches = entries.filter((entry) => regex.test(entry)).sort().map((entry) => nodePath.join(dir, entry));
+    // A leading `.` must be matched EXPLICITLY, as in the shell and in
+    // Python's glob. Without this `COPY * /app` shipped `.env` and `.git` in
+    // TypeScript but not in Python: the same Dockerfile, two different images.
+    const wantsDotfiles = pattern.startsWith(".");
+    matches = entries
+      .filter((entry) => (wantsDotfiles || !entry.startsWith(".")) && regex.test(entry))
+      .sort()
+      .map((entry) => nodePath.join(dir, entry));
   } else {
     matches = [full];
   }
@@ -147,7 +176,11 @@ async function runChecked(vm: BuildTarget, command: string, what: string): Promi
     stdout?: string;
     stderr?: string;
   };
-  const code = result?.exitCode ?? result?.exit_code ?? 0;
+  // `??` would treat an explicit null as absent and coalesce it to 0, which
+  // laundered "the command never ran" into success and made the branch below
+  // unreachable. Read the field, then decide.
+  const raw = result?.exitCode !== undefined ? result.exitCode : result?.exit_code;
+  const code = raw === undefined ? 0 : raw;
   if (code === 0) return;
 
   const detail = (result?.stderr || result?.stdout || "").trim();
@@ -159,25 +192,6 @@ async function runChecked(vm: BuildTarget, command: string, what: string): Promi
     );
   }
   throw new BuildError(`${what} failed with exit code ${code}${suffix}`);
-}
-
-/**
- * Download `url` from HERE, the way Docker downloads it on the builder.
- *
- * Fetching inside the guest instead would need `curl` or `wget` in the image,
- * which a minimal base does not have — `ubuntu:24.04` ships neither, so `ADD`
- * failed with exit 127 on the commonest base there is. Docker has no such
- * requirement because the builder does the download and copies the bytes in,
- * and this machine is our builder.
- *
- * Exported for tests to stub; not part of the public surface.
- */
-export async function fetchUrl(url: string): Promise<Uint8Array> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
-  }
-  return new Uint8Array(await response.arrayBuffer());
 }
 
 /** Execute every step after `FROM` against `vm`, in file order. */
@@ -196,13 +210,13 @@ export async function applySteps(
         command = step.command;
         break;
       case "env":
-        command = `export ${step.pairs.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ")}`;
+        command = `export ${step.pairs.map(([k, v]) => `${k}=${envValue(v)}`).join(" ")}`;
         break;
       case "arg":
         // No --build-arg channel exists, so an ARG with no default can only
         // ever be unset, the same as Docker leaves it.
         if (step.default === undefined) continue;
-        command = `export ${step.name}=${shellQuote(step.default)}`;
+        command = `export ${step.name}=${envValue(step.default)}`;
         break;
       case "workdir": {
         // Docker creates a WORKDIR that does not exist; a bare `cd` would fail
@@ -221,7 +235,8 @@ export async function applySteps(
         try {
           payload = await fetchUrl(step.url);
         } catch (error) {
-          throw new BuildError(`ADD ${step.url}: ${String(error)}`);
+          const detail = error instanceof UrlFetchError ? error.message : String(error);
+          throw new BuildError(`ADD ${step.url}: ${detail}`);
         }
         await vm.sync(step.dest, payload);
         continue;
@@ -241,7 +256,11 @@ export async function applySteps(
     }
 
     if (command === undefined) continue;
-    if (currentUser !== undefined) {
+    // Only a RUN needs to become the USER. Wrapping `export`/`cd` would run
+    // them in a `su -c` subshell that exits immediately, throwing the state
+    // away — so `ENV` after `USER` silently did nothing at all. Docker treats
+    // ENV/WORKDIR as metadata that USER does not affect.
+    if (currentUser !== undefined && step.kind === "run") {
       command = `su -p ${shellQuote(currentUser)} -c ${shellQuote(command)}`;
     }
     await runChecked(vm, command, `${step.kind.toUpperCase()} step`);
@@ -253,7 +272,21 @@ async function applyCopy(
   step: Extract<Step, { kind: "copy" }>,
   contextRoot: string,
 ): Promise<void> {
-  const resolved = step.sources.flatMap((source) => resolveSources(source, contextRoot));
+  // realpath BOTH sides. `resolveSources` returns resolved paths, and on a
+  // platform where the context sits under a symlink (macOS /tmp ->
+  // /private/tmp) comparing a resolved path against an unresolved root yields
+  // a relative path like `../../private/tmp/...`, which matches no pattern and
+  // silently disables every rule.
+  const root = fs.realpathSync(contextRoot);
+  const ignore = loadDockerignore(root);
+  const relTo = (p: string) =>
+    nodePath.relative(root, fs.realpathSync(p)).split(nodePath.sep).join("/");
+
+  const resolved = step.sources
+    .flatMap((source) => resolveSources(source, contextRoot))
+    // A named source that is itself ignored is dropped, the same as Docker
+    // dropping it from the context before COPY ever looks.
+    .filter((p) => !ignore.ignores(relTo(p)));
   const multiple = resolved.length > 1;
 
   for (const path of resolved) {
@@ -264,7 +297,12 @@ async function applyCopy(
       const target = multiple
         ? destinationFor(step.dest, path, multiple)
         : step.dest.replace(/\/+$/, "");
-      await vm.syncDir(path, target);
+      // `.dockerignore` patterns are context-relative but syncDir reports
+      // paths relative to the directory being synced, so re-anchor them.
+      const prefix = relTo(path) === "" ? "" : `${relTo(path)}/`;
+      await vm.syncDir(path, target, {
+        ignore: (rel: string) => ignore.ignores(prefix + rel),
+      });
     } else {
       await vm.sync(destinationFor(step.dest, path, multiple), fs.readFileSync(path));
     }

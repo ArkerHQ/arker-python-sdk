@@ -1317,11 +1317,12 @@ class VM:
         so it can never cause a stale or missing upload — worst case it hashes a
         file it didn't need to.
 
-        ``ignore`` is called with each file's context-relative, ``/``-separated
+``ignore`` is called with each file's context-relative, ``/``-separated
         path; returning True drops it. Applied BEFORE hashing, so an ignored
-        file costs nothing and — more importantly — cannot change the diff. A
-        filter applied after hashing would still let an ignored file's
-        appearance or removal perturb the comparison.
+        file costs nothing and cannot perturb the incremental diff — a filter
+        applied after hashing would still let an ignored file's appearance or
+        removal change the comparison. The Dockerfile build driver uses it to
+        apply `.dockerignore`.
 
         Returns a :class:`SyncDirResult` (sent / skipped / bytes).
         """

@@ -1383,7 +1383,11 @@ export class VM {
    *     await vm.syncDir("./project", "/home/user/project", { cache }); // full
    *     await vm.syncDir("./project", "/home/user/project", { cache }); // delta
    */
-  async syncDir(localDir: string, remoteDir: string, options: SyncDirOptions = {}): Promise<SyncDirResult> {
+  async syncDir(
+    localDir: string,
+    remoteDir: string,
+    options: SyncDirOptions & { ignore?: (rel: string) => boolean } = {},
+  ): Promise<SyncDirResult> {
     const fs = await import("node:fs");
     const nodePath = await import("node:path");
     const { createHash } = await import("node:crypto");
@@ -1419,6 +1423,9 @@ export class VM {
         // bigint stats: nanosecond timestamps, and ino/dev without precision loss.
         const st = await fsp.stat(abs, { bigint: true });
         const rel = nodePath.relative(localRoot, abs).split(nodePath.sep).join("/");
+        // Filtered BEFORE hashing, so an ignored file cannot perturb the
+        // incremental diff — not merely skipped at upload time.
+        if (options.ignore?.(rel)) continue;
         localFiles.push({
           rel, abs,
           sig: {

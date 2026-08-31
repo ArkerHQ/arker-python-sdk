@@ -1994,6 +1994,7 @@ await testTimeToBackgroundZeroReturnsTheAckWithoutPolling();
 
 class FakeBuildVM implements BuildTarget {
   readonly calls: { kind: string; a: string; b?: string }[] = [];
+  readonly ignores: ((rel: string) => boolean)[] = [];
   constructor(private readonly exitCodes: Record<string, number> = {}) {}
   async run(command: string): Promise<unknown> {
     this.calls.push({ kind: "run", a: command });
@@ -2006,8 +2007,9 @@ class FakeBuildVM implements BuildTarget {
   async sync(path: string, data: Uint8Array | string): Promise<void> {
     this.calls.push({ kind: "sync", a: path, b: String(data.length) });
   }
-  async syncDir(localDir: string, remoteDir: string): Promise<unknown> {
+  async syncDir(localDir: string, remoteDir: string, options?: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ kind: "syncDir", a: nodePath.basename(localDir), b: remoteDir });
+    this.ignores.push((options?.ignore as ((rel: string) => boolean)) ?? (() => false));
     return undefined;
   }
   get commands(): string[] {
@@ -2159,7 +2161,9 @@ async function testAddUrlIsFetchedByTheClient(): Promise<void> {
     new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })) as typeof fetch;
   try {
     const vm = new FakeBuildVM();
-    await applySteps(vm, parseDockerfile("FROM x\nADD https://e.test/f /opt/f\n").steps, dir);
+    // A public IP LITERAL, so the SSRF guard's DNS lookup is skipped and the
+    // test needs no network. A hostname would be resolved for real.
+    await applySteps(vm, parseDockerfile("FROM x\nADD https://93.184.216.34/f /opt/f\n").steps, dir);
     assert.ok(
       vm.calls.some((c) => c.kind === "sync" && c.a === "/opt/f" && c.b === "4"),
       JSON.stringify(vm.calls),
@@ -2188,6 +2192,82 @@ async function testAFailingRunAbortsTheBuild(): Promise<void> {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+
+async function testGlobDoesNotMatchDotfiles(): Promise<void> {
+  // `COPY * /app` must not ship `.env`. The hand-rolled matcher turned `*`
+  // into `.*`, which matches a leading dot — so TypeScript copied dotfiles
+  // where Python (glob) and Docker do not. Same Dockerfile, two images.
+  const dir = makeBuildContext();
+  fs.writeFileSync(nodePath.join(dir, ".env"), "AWS_SECRET=hunter2\n");
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(vm, parseDockerfile("FROM x\nCOPY * /app/\n").steps, dir);
+    const synced = vm.calls.filter((c) => c.kind === "sync").map((c) => c.a);
+    assert.ok(!synced.some((p) => p.endsWith("/.env")), `dotfile copied: ${synced.join(", ")}`);
+    assert.ok(synced.some((p) => p.endsWith("/app.js")), synced.join(", "));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testDockerignoreExcludesFromACopiedDirectory(): Promise<void> {
+  // `COPY . /app` shipped .git and .env. actions/checkout writes a
+  // GITHUB_TOKEN into .git/config, so this leaked CI credentials.
+  const dir = makeBuildContext();
+  fs.writeFileSync(nodePath.join(dir, ".dockerignore"), ".git\nsecrets.env\n");
+  fs.writeFileSync(nodePath.join(dir, "secrets.env"), "TOKEN=hunter2\n");
+  fs.mkdirSync(nodePath.join(dir, ".git"));
+  fs.writeFileSync(nodePath.join(dir, ".git", "config"), "[remote]\n");
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(vm, parseDockerfile("FROM x\nCOPY . /app\n").steps, dir);
+    const ignore = vm.ignores.at(-1)!;
+    assert.ok(ignore(".git/config"), "an ignored directory's contents must be excluded");
+    assert.ok(ignore("secrets.env"));
+    assert.ok(!ignore("app.js"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testEnvAndWorkdirAfterUserAreNotWrapped(): Promise<void> {
+  // `su -c` is a fresh process, so wrapping an export or a cd threw the state
+  // away: ENV after USER silently did nothing at all.
+  const dir = makeBuildContext();
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(
+      vm,
+      parseDockerfile("FROM x\nUSER app\nENV AFTER=1\nWORKDIR /srv\nRUN hi\n").steps,
+      dir,
+    );
+    assert.deepEqual(vm.commands, [
+      "export AFTER=1",
+      "mkdir -p /srv && cd /srv",
+      "su -p app -c hi",
+    ]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testEnvWithAVariableExpands(): Promise<void> {
+  // `ENV PATH=/opt/bin:$PATH` set the LITERAL string when single-quoted.
+  const dir = makeBuildContext();
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(vm, parseDockerfile("FROM x\nENV PATH=/opt/bin:$PATH\n").steps, dir);
+    assert.deepEqual(vm.commands, ['export PATH="/opt/bin:$PATH"']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+await testGlobDoesNotMatchDotfiles();
+await testDockerignoreExcludesFromACopiedDirectory();
+await testEnvAndWorkdirAfterUserAreNotWrapped();
+await testEnvWithAVariableExpands();
 
 await testAddUrlIsFetchedByTheClient();
 await testAFailingRunAbortsTheBuild();
