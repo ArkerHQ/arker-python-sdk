@@ -44,12 +44,16 @@ VGPU = float(os.environ.get("FLEET_VGPU", "0.125"))
 WORK = "/home/user/work"
 AGENT = "/root/agent"
 
-def policy_doc(real_key):
+def policy_doc(real_key, workspace_id=""):
     """Rewrite the Anthropic auth header; allow everything else.
 
     First match wins. The catch-all `allow` is load-bearing: without it a
     non-empty document denies pip and HuggingFace, and the install fails.
     """
+    headers = {"x-api-key": "${secret:%s}" % SECRET_NAME}
+    if workspace_id:
+        headers["anthropic-workspace-id"] = workspace_id
+
     return {
         "policies": [
             {
@@ -57,7 +61,7 @@ def policy_doc(real_key):
                 "match": {"hosts": ["api.anthropic.com"]},
                 "action": {
                     "rewrite": {
-                        "headers": {"x-api-key": "${secret:%s}" % SECRET_NAME}
+                        "headers": headers
                     }
                 },
             },

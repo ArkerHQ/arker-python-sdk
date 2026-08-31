@@ -62,3 +62,16 @@ def test_browser_example_does_not_wait_for_window_manager_activation() -> None:
     assert 'arker run --time-to-background 0 "$VM" "open-url' in source
     assert "curl -fsS -X PATCH" not in source
     assert 'arker policies set "$ck"' in source
+
+
+def test_gpu_coding_agents_quickstart_installs_python_sdk() -> None:
+    source = (EXAMPLES_DIR / "gpu-coding-agents" / "README.md").read_text()
+
+    assert "uv run --with arker python launch.py" in source
+
+
+def test_autoresearch_bounds_agent_output_tokens() -> None:
+    source = (EXAMPLES_DIR / "autoresearch" / "autoresearch.py").read_text()
+
+    assert '"maxTokens": 16000' in source
+    assert 'raise SystemExit(f"missing env: {name}")' in source
