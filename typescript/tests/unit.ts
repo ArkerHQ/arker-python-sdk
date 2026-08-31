@@ -556,6 +556,24 @@ async function testListRegionsUsesPublicControlPlaneCatalog(): Promise<void> {
   assert.deepEqual(await arker.listRegions(), { regions: [placement] });
 }
 
+async function testWhoamiUsesControlPlane(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "GET" && url === "https://control.invalid/api/v1/whoami",
+    200,
+    { org_id: "org_01", org_name: "ArkerHQ" },
+  );
+  const arker = new Arker({
+    apiKey: "ark_test",
+    baseUrl: "https://compute.invalid/api",
+    controlBaseUrl: "https://control.invalid/api",
+    fetch: fetch.fetch,
+    retry: false,
+  });
+
+  assert.deepEqual(await arker.whoami(), { org_id: "org_01", org_name: "ArkerHQ" });
+}
+
 async function testDiscoverRegionsRequiresNoConfiguredClient(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -1075,6 +1093,7 @@ testArbitraryProviderBuildsEndpoint();
 testPlacementRequiresSeparateProviderAndRegion();
 testInvalidProviderSyntaxFailsClosed();
 await testListRegionsUsesPublicControlPlaneCatalog();
+await testWhoamiUsesControlPlane();
 await testDiscoverRegionsRequiresNoConfiguredClient();
 await testListedVmUsesItsPlacementEndpoint();
 testExplicitVmHandleUsesPlacementEndpoint();

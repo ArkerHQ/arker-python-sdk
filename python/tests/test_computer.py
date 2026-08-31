@@ -167,6 +167,27 @@ def test_discover_regions_requires_no_configured_client() -> None:
     assert "authorization" not in t.calls[0]["headers"]
 
 
+def test_whoami_uses_authenticated_control_plane() -> None:
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "GET"
+        and url == "https://control.invalid/api/v1/whoami",
+        200,
+        {"org_id": "org_01", "org_name": "ArkerHQ"},
+    )
+
+    with use_transport(t):
+        identity = sdk.Arker(
+            api_key="ark_live_test",
+            base_url="https://compute.invalid/api",
+            control_base_url="https://control.invalid/api",
+            retry=False,
+        ).whoami()
+
+    assert identity.org_id == "org_01"
+    assert identity.org_name == "ArkerHQ"
+
+
 def test_fork_posts_directly_to_source_vm() -> None:
     t = FakeTransport()
     # Contract 0.3 routes forks to `/v1/fork`, with the source vm id

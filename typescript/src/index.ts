@@ -272,6 +272,7 @@ export type RunState = ApiSchema<"RunState">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
 export type RegionPlacement = ApiSchema<"RegionPlacement">;
 export type ListRegionsResponse = ApiSchema<"ListRegionsResponse">;
+export type WhoamiResponse = ApiSchema<"WhoamiResponse">;
 
 /** Read the public placement catalog without configuring compute or auth. */
 export async function discoverRegions(
@@ -970,6 +971,11 @@ export class Arker {
   /** List available public provider and region placements. */
   async listRegions(): Promise<ListRegionsResponse> {
     return this._request("GET", "/v1/regions", undefined, this.controlBaseUrl);
+  }
+
+  /** Return the organization associated with the configured credentials. */
+  async whoami(): Promise<WhoamiResponse> {
+    return this._request("GET", "/v1/whoami", undefined, this.controlBaseUrl);
   }
 
   /**

@@ -59,6 +59,7 @@ from .generated.api_models import (
     ListSyncsParameters,
     ListVmsResponse,
     ListVmsParameters,
+    WhoamiResponse,
     OrgRunListRow,
     PatchSessionRequest,
     PatchSessionResponse,
@@ -783,6 +784,11 @@ class Arker:
         """List available public provider and region placements."""
         payload = self._request("GET", "/v1/regions", base_url=self._control_base_url)
         return _decode_model(ListRegionsResponse, payload)
+
+    def whoami(self) -> WhoamiResponse:
+        """Return the organization associated with these credentials."""
+        payload = self._request("GET", "/v1/whoami", base_url=self._control_base_url)
+        return _decode_model(WhoamiResponse, payload)
 
     def get_vm(
         self,
