@@ -272,6 +272,7 @@ export type RunState = ApiSchema<"RunState">;
 export type ErrorCode = ApiSchema<"ErrorCode">;
 export type RegionPlacement = ApiSchema<"RegionPlacement">;
 export type ListRegionsResponse = ApiSchema<"ListRegionsResponse">;
+export type WhoamiResponse = ApiSchema<"WhoamiResponse">;
 
 /** Read the public placement catalog without configuring compute or auth. */
 export async function discoverRegions(
@@ -667,7 +668,7 @@ export class Arker {
   /** Compute base URL for `provider` + `region` — used for fork/run/
    * per-VM ops. SDK calls go straight to this host, skipping the CF
    * Worker control plane. */
-  readonly baseUrl: string;
+  private readonly computeBaseUrl?: string;
   /** CF Worker control-plane URL — used for cross-cutting admin calls
    * like list-VMs and filesystems. */
   readonly controlBaseUrl: string;
@@ -693,14 +694,8 @@ export class Arker {
     const controlBaseUrl = opts.controlBaseUrl ?? env("ARKER_CONTROL_BASE_URL") ?? DEFAULT_CONTROL_BASE_URL;
 
     if (!apiKey) throw new Error("apiKey is required; pass apiKey or set ARKER_API_KEY");
-    if (!baseUrl) {
-      throw new Error(
-        "provider and region or baseUrl are required; pass provider and region, baseUrl, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL",
-      );
-    }
-
     this.apiKey = apiKey;
-    this.baseUrl = normalizeBaseUrl(baseUrl);
+    this.computeBaseUrl = baseUrl ? normalizeBaseUrl(baseUrl) : undefined;
     this.controlBaseUrl = normalizeBaseUrl(controlBaseUrl);
     this.region = region;
     this.provider = provider;
@@ -710,6 +705,15 @@ export class Arker {
     this.retry = normalizeRetry(opts.retry);
 
     if (!this.fetchImpl) throw new Error("fetch is required in this runtime");
+  }
+
+  get baseUrl(): string {
+    if (!this.computeBaseUrl) {
+      throw new Error(
+        "provider and region or baseUrl are required; pass provider and region, baseUrl, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL",
+      );
+    }
+    return this.computeBaseUrl;
   }
 
   /**
@@ -970,6 +974,11 @@ export class Arker {
   /** List available public provider and region placements. */
   async listRegions(): Promise<ListRegionsResponse> {
     return this._request("GET", "/v1/regions", undefined, this.controlBaseUrl);
+  }
+
+  /** Return the organization associated with the configured credentials. */
+  async whoami(): Promise<WhoamiResponse> {
+    return this._request("GET", "/v1/whoami", undefined, this.controlBaseUrl);
   }
 
   /**

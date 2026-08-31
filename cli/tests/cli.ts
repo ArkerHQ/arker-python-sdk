@@ -410,6 +410,18 @@ async function testRegionsDiscoveryNeedsNoCredentialsOrPlacement(): Promise<void
   );
 }
 
+async function testWhoamiUsesAuthenticatedControlPlane(): Promise<void> {
+  await withCapturedServer(
+    (_request, res) => jsonResponse(res, { org_id: "org_01", org_name: "ArkerHQ" }),
+    async (baseUrl, requests) => {
+      const result = await runCli(baseUrl, ["whoami"], { controlOnly: true });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(stdoutText(result)), { org_id: "org_01", org_name: "ArkerHQ" });
+      assert.deepEqual(requests.map(({ method, url }) => [method, url]), [["GET", "/api/v1/whoami"]]);
+    },
+  );
+}
+
 async function testRemovedSecretAndUrlFlagsFailLocally(): Promise<void> {
   for (const args of [
     ["--api-key", "secret", "ls"],
@@ -429,7 +441,7 @@ async function testPerCommandHelpIsCommandSpecific(): Promise<void> {
   for (const command of [
     "delete", "filesystems", "fork", "fs", "list", "ls", "policies", "regions",
     "rm", "run", "runs", "sessions", "shell", "signal", "sync", "sync-dir",
-    "syncs", "update", "vms",
+    "syncs", "update", "vms", "whoami",
   ]) {
     const result = await runCli(undefined, [command, "--help"], { authenticated: false });
     assert.equal(result.code, 0, `${command} --help should succeed`);
@@ -932,6 +944,7 @@ await testArbitraryProviderFlagIsAccepted();
 await testComputeCommandRequiresProviderAndRegion();
 await testProviderOnlyVmListDoesNotRequireAComputeRegion();
 await testRegionsDiscoveryNeedsNoCredentialsOrPlacement();
+await testWhoamiUsesAuthenticatedControlPlane();
 await testRemovedSecretAndUrlFlagsFailLocally();
 await testHelpMatchesSupportedSurface();
 await testPerCommandHelpIsCommandSpecific();

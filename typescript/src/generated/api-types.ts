@@ -44,6 +44,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/whoami": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Show the authenticated organization
+         * @description Returns the organization associated with the authenticated API key or session.
+         */
+        get: operations["whoami"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/fork": {
         parameters: {
             query?: never;
@@ -510,6 +530,12 @@ export interface components {
              * @description Server time when the health response was generated.
              */
             timestamp: string;
+        };
+        WhoamiResponse: {
+            /** @description Identifier of the authenticated organization. */
+            org_id: string;
+            /** @description Display name of the authenticated organization. */
+            org_name: string;
         };
         RegionPlacement: {
             /** @description Infrastructure provider identifier for the placement. */
@@ -1708,6 +1734,27 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListRegionsResponse"];
+                };
+            };
+            default: components["responses"]["Error"];
+        };
+    };
+    whoami: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The authenticated organization. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WhoamiResponse"];
                 };
             };
             default: components["responses"]["Error"];

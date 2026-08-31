@@ -14,6 +14,12 @@ class HealthResponse:
 
 
 @dataclass(frozen=True)
+class WhoamiResponse:
+    org_id: str
+    org_name: str
+
+
+@dataclass(frozen=True)
 class RegionPlacement:
     provider: str
     region: str
@@ -1349,6 +1355,16 @@ class DeleteSyncOperation(TypedDict):
     errors: ErrorResponse
 
 
+class WhoamiOperation(TypedDict):
+    operation_id: Literal['whoami']
+    method: Literal['GET']
+    path: Literal['/v1/whoami']
+    parameters: None
+    request: None
+    success: WhoamiResponse
+    errors: ErrorResponse
+
+
 ApiOperation: TypeAlias = (
     ListFilesystemsOperation |
     CreateFilesystemOperation |
@@ -1379,5 +1395,6 @@ ApiOperation: TypeAlias = (
     SyncStreamOperation |
     ListSyncsOperation |
     CreateSyncOperation |
-    DeleteSyncOperation
+    DeleteSyncOperation |
+    WhoamiOperation
 )

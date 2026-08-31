@@ -186,6 +186,7 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     help: { type: "boolean" },
     json: { type: "boolean" },
   },
+  whoami: GLOBAL_OPTIONS,
   signal: {
     ...GLOBAL_OPTIONS,
     "session-id": { type: "string" },
@@ -494,7 +495,7 @@ function commandRequiresComputePlacement(
   command: string,
   args: ParsedArgs,
 ): boolean {
-  if (command === "ls" || command === "list") return false;
+  if (command === "ls" || command === "list" || command === "whoami") return false;
   if (command !== "vms") return true;
   const subcommand = args.positional[0];
   return subcommand !== undefined && subcommand !== "ls" && subcommand !== "list";
@@ -539,6 +540,10 @@ async function cmdRegions(args: ParsedArgs): Promise<void> {
   for (const placement of response.regions) {
     out(`${placement.provider}-${placement.region}`);
   }
+}
+
+async function cmdWhoami(client: Arker): Promise<void> {
+  out(await client.whoami());
 }
 
 async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
@@ -1339,6 +1344,10 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
     synopsis: ["arker regions [flags]"],
     summary: "List available public placements (provider + region + endpoint).",
   },
+  whoami: {
+    synopsis: ["arker whoami"],
+    summary: "Show the authenticated organization.",
+  },
   rm: {
     synopsis: ["arker rm <vm> [flags]"],
     summary: "Delete a VM.",
@@ -1493,6 +1502,7 @@ function usage(command?: string, sub?: string): void {
       "",
       "Resources:",
       "  arker regions                                  list available public placements",
+      "  arker whoami                                   show the authenticated organization",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
       "  arker vms ls --source-org-id ArkerHQ --public  list the public VM catalog",
       "  arker runs        <ls|get|rm> <vm_id> ...",
@@ -1571,6 +1581,8 @@ async function main(): Promise<void> {
       requiresComputePlacement: commandRequiresComputePlacement(cmd, args),
     });
     switch (cmd) {
+      case "whoami":
+        return await cmdWhoami(client);
       // Shortcuts.
       case "ls":
       case "list":

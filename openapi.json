@@ -113,6 +113,25 @@
         "description": "Public placement catalog. Each item supplies the provider, region, and regional endpoint. Every listed placement accepts fork, run, and sync requests. Unavailable placements are omitted."
       }
     },
+    "/v1/whoami": {
+      "get": {
+        "operationId": "whoami",
+        "tags": ["Service"],
+        "summary": "Show the authenticated organization",
+        "description": "Returns the organization associated with the authenticated API key or session.",
+        "responses": {
+          "200": {
+            "description": "The authenticated organization.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WhoamiResponse" }
+              }
+            }
+          },
+          "default": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/v1/fork": {
       "post": {
         "operationId": "fork",
@@ -1706,6 +1725,21 @@
             "type": "string",
             "format": "date-time",
             "description": "Server time when the health response was generated."
+          }
+        }
+      },
+      "WhoamiResponse": {
+        "type": "object",
+        "required": ["org_id", "org_name"],
+        "additionalProperties": false,
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "description": "Identifier of the authenticated organization."
+          },
+          "org_name": {
+            "type": "string",
+            "description": "Display name of the authenticated organization."
           }
         }
       },
