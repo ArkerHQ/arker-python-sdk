@@ -12,6 +12,8 @@ import {
   type PtyWebSocketFactory,
 } from "../src/index.js";
 import { runPollBudgetMs } from "../src/internal/run-poll.js";
+import { parseDockerfile, DockerfileError } from "../src/buildSpec.js";
+import { applySteps, BuildError, type BuildTarget } from "../src/build.js";
 import { isExpectedSurfaceStub } from "./helpers/surface-errors.js";
 
 type FetchCall = {
@@ -1982,3 +1984,169 @@ await testExplicitTimeoutStillBoundsTheWait();
 await testPollingGivesUpWhenTheServiceStopsAnswering();
 await testAPollBlipDoesNotEndAnUnboundedWait();
 await testTimeToBackgroundZeroReturnsTheAckWithoutPolling();
+
+// ── Dockerfile builds ────────────────────────────────────────────────────
+//
+// The build runs from the CLIENT, not the server, and COPY is why: its sources
+// are files on this machine, which no server-side build could reach without
+// being handed a build context first. These cover the part that is ours:
+// parsing, ordering, shell state, and how COPY resolves against the context.
+
+class FakeBuildVM implements BuildTarget {
+  readonly calls: { kind: string; a: string; b?: string }[] = [];
+  async run(command: string): Promise<unknown> {
+    this.calls.push({ kind: "run", a: command });
+    return undefined;
+  }
+  async sync(path: string, data: Uint8Array | string): Promise<void> {
+    this.calls.push({ kind: "sync", a: path, b: String(data.length) });
+  }
+  async syncDir(localDir: string, remoteDir: string): Promise<unknown> {
+    this.calls.push({ kind: "syncDir", a: nodePath.basename(localDir), b: remoteDir });
+    return undefined;
+  }
+  get commands(): string[] {
+    return this.calls.filter((c) => c.kind === "run").map((c) => c.a);
+  }
+}
+
+function makeBuildContext(): string {
+  const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "arker-build-"));
+  fs.writeFileSync(nodePath.join(dir, "app.js"), "console.log(1)\n");
+  fs.writeFileSync(nodePath.join(dir, "package.json"), "{}\n");
+  fs.writeFileSync(nodePath.join(dir, "package-lock.json"), "{}\n");
+  fs.writeFileSync(nodePath.join(dir, "ignored.txt"), "no\n");
+  fs.mkdirSync(nodePath.join(dir, "src"));
+  fs.writeFileSync(nodePath.join(dir, "src", "index.js"), "//\n");
+  return dir;
+}
+
+async function buildAgainst(text: string, contextRoot: string): Promise<FakeBuildVM> {
+  const vm = new FakeBuildVM();
+  await applySteps(vm, parseDockerfile(text).steps, contextRoot);
+  return vm;
+}
+
+function testDockerfileParsingBasics(): void {
+  const parsed = parseDockerfile(
+    "# comment\nFROM ubuntu:24.04\nRUN apt-get update \\\n  && echo done\nENV A=1 B=2\n",
+  );
+  assert.equal(parsed.baseImage, "ubuntu:24.04");
+  assert.equal(parsed.steps.length, 2, JSON.stringify(parsed.steps));
+  // Comment dropped and the continuation joined, both by the parser library.
+  assert.equal(parsed.steps[0]!.kind, "run");
+  assert.ok((parsed.steps[0] as { command: string }).command.includes("&& echo done"));
+  assert.deepEqual(
+    (parsed.steps[1] as { pairs: [string, string][] }).pairs,
+    [["A", "1"], ["B", "2"]],
+  );
+}
+
+function testDockerfileRefusalsAreNamed(): void {
+  const cases: [string, string][] = [
+    ["RUN echo hi\n", "FROM"],
+    ["FROM a AS x\nFROM b\n", "multi-stage"],
+    ["FROM a\nCOPY --from=x /a /a\n", "--from"],
+    ["ARG B=a\nFROM ${B}\n", "ARG"],
+    ["FROM a\nVOLUME /data\n", "VOLUME"],
+    ["FROM a\nADD ./local /d\n", "ADD"],
+  ];
+  for (const [text, needle] of cases) {
+    assert.throws(
+      () => parseDockerfile(text),
+      (error: unknown) => error instanceof DockerfileError && error.message.includes(needle),
+      `expected ${needle} named for: ${text}`,
+    );
+  }
+}
+
+async function testBuildAppliesShellStateInOrder(): Promise<void> {
+  const dir = makeBuildContext();
+  try {
+    const vm = await buildAgainst('FROM x\nWORKDIR /app\nENV G="hello world"\nRUN pwd\n', dir);
+    // WORKDIR is created before it is entered: Docker makes a missing one, and
+    // a bare `cd` would fail on a fresh image.
+    assert.equal(vm.commands[0], "mkdir -p /app && cd /app");
+    // Quoted only where needed, so a value with a space survives intact.
+    assert.equal(vm.commands[1], "export G='hello world'");
+    assert.equal(vm.commands[2], "pwd");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testUserWrapsOnlyLaterRuns(): Promise<void> {
+  const dir = makeBuildContext();
+  try {
+    const vm = await buildAgainst("FROM x\nRUN first\nUSER app\nRUN second\n", dir);
+    assert.equal(vm.commands[0], "first");
+    assert.equal(vm.commands[1], "su -p app -c second");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testCopyResolvesAgainstTheContext(): Promise<void> {
+  const dir = makeBuildContext();
+  try {
+    let vm = await buildAgainst("FROM x\nCOPY app.js /srv/app.js\n", dir);
+    assert.ok(
+      vm.calls.some((c) => c.kind === "sync" && c.a === "/srv/app.js"),
+      JSON.stringify(vm.calls),
+    );
+
+    // A directory source copies its CONTENTS to the destination.
+    vm = await buildAgainst("FROM x\nCOPY src /app/src\n", dir);
+    assert.ok(
+      vm.calls.some((c) => c.kind === "syncDir" && c.a === "src" && c.b === "/app/src"),
+      JSON.stringify(vm.calls),
+    );
+
+    // A glob matches what it should and nothing else.
+    vm = await buildAgainst("FROM x\nCOPY package*.json /app/\n", dir);
+    const synced = vm.calls.filter((c) => c.kind === "sync").map((c) => c.a).sort();
+    assert.deepEqual(synced, ["/app/package-lock.json", "/app/package.json"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testCopyRefusesToEscapeTheContext(): Promise<void> {
+  const dir = makeBuildContext();
+  try {
+    // The context root is the boundary, exactly as `docker build` treats it.
+    await assert.rejects(
+      () => buildAgainst("FROM x\nCOPY ../secrets /app\n", dir),
+      (error: unknown) =>
+        error instanceof BuildError && error.message.includes("outside the build context"),
+    );
+    await assert.rejects(
+      () => buildAgainst("FROM x\nCOPY nope.txt /app\n", dir),
+      (error: unknown) => error instanceof BuildError && error.message.includes("no such file"),
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testCopyIsNotWrappedInTheUserShell(): Promise<void> {
+  const dir = makeBuildContext();
+  try {
+    // Docker writes copied files as root regardless of USER unless --chown
+    // says otherwise, and the sync APIs write as the guest agent.
+    const vm = await buildAgainst("FROM x\nUSER app\nCOPY --chown=app:app src /app/src\n", dir);
+    assert.ok(vm.calls.some((c) => c.kind === "syncDir"));
+    assert.equal(vm.commands.at(-1), "chown -R app:app /app/src");
+    assert.ok(!vm.commands.some((c) => c.startsWith("su -p")), vm.commands.join(" | "));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+testDockerfileParsingBasics();
+testDockerfileRefusalsAreNamed();
+await testBuildAppliesShellStateInOrder();
+await testUserWrapsOnlyLaterRuns();
+await testCopyResolvesAgainstTheContext();
+await testCopyRefusesToEscapeTheContext();
+await testCopyIsNotWrappedInTheUserShell();
