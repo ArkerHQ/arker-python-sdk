@@ -823,12 +823,16 @@ export class Arker {
       sourceOrgId: _sourceOrgId,
       image: _image,
       dockerfile: _dockerfile,
+      // SDK-only: which local directory COPY reads from. Never sent.
+      context: _context,
       registryAuth: _registryAuth,
       ...passthrough
     } = src as ForkSource & Record<string, unknown>;
+    // `source_org_id` is NOT here: it scopes a `source_vm_name` lookup, and
+    // the contract's image/id variants exclude it outright. It is added to the
+    // name-selected body below, which is the only shape that accepts it.
     const requestOptions = {
       ...passthrough,
-      ...(sourceOrgId !== undefined ? { source_org_id: sourceOrgId } : {}),
       name: src.name ?? null,
       description: src.description ?? null,
       public: src.public ?? null,
@@ -845,6 +849,9 @@ export class Arker {
       ...(src.registryAuth ? { registry_auth: src.registryAuth } : {}),
       queueing_timeout: src.queueing_timeout,
     };
+    // No `dockerfile` arm: a Dockerfile never reaches here, because
+    // `forkDockerfile` builds it client-side and returns above. The API
+    // refuses the field outright.
     const body: ForkRequest = src.image
       ? {
           ...requestOptions,
@@ -852,24 +859,24 @@ export class Arker {
           source_vm_id: null,
           source_vm_name: null,
         }
-      : src.dockerfile
-        ? {
-            ...requestOptions,
-            dockerfile: src.dockerfile,
-            source_vm_id: null,
-            source_vm_name: null,
-          }
       : src.sourceVmId
         ? {
             ...requestOptions,
             source_vm_id: src.sourceVmId,
             source_vm_name: null,
           }
-        : {
-            ...requestOptions,
-            source_vm_id: null,
-            source_vm_name: src.sourceVmName!,
-          };
+        : typeof sourceOrgId === "string"
+          ? {
+              ...requestOptions,
+              source_vm_id: null,
+              source_vm_name: src.sourceVmName!,
+              source_org_id: sourceOrgId,
+            }
+          : {
+              ...requestOptions,
+              source_vm_id: null,
+              source_vm_name: src.sourceVmName!,
+            };
     const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
     const vm = await this._request<Vm>(
       "POST",

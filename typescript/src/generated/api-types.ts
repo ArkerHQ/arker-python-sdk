@@ -55,7 +55,7 @@ export interface paths {
         put?: never;
         /**
          * Fork a VM
-         * @description Create a new VM by forking from an existing VM ID or a VM name within an organization. Exactly one of `source_vm_id` or `source_vm_name` must be set. Forking a VM owned by another organization requires that VM to be public.
+         * @description Create a new VM from an existing VM ID, an organization-scoped VM name, an OCI image, or a Dockerfile. For named sources, the scope can be the caller organization or `ArkerHQ`.
          */
         post: operations["fork"];
         delete?: never;
@@ -714,16 +714,21 @@ export interface components {
         ForkRequest: {
             /** @description Global VM identifier. Org is inferred from the row. */
             source_vm_id?: string | null;
-            /** @description VM name within an organization. `source_org_id` defaults to the caller's organization. A VM owned by another organization must be public. */
+            /** @description VM name within the caller organization or `ArkerHQ`. Omit the organization scope to search the caller first and then `ArkerHQ`. */
             source_vm_name?: string | null;
             /** @description OCI image reference to fork from — for example `ubuntu:24.04`, `ghcr.io/org/image:v1`, or `image@sha256:...`. An unqualified name resolves against Docker Hub. Give a bare reference, not a URI. The new VM boots a rootfs converted from that image rather than from an existing VM, so neither `source_vm_id` nor `source_vm_name` is given. */
             image?: string | null;
-            /** @description Dockerfile source to build and fork from, as raw Dockerfile text (not a path, not a URL). Exclusive with source_vm_id, source_vm_name and image. Supports a single-stage build using FROM, RUN, ADD (URL source only), ENV, WORKDIR, USER, EXPOSE, ENTRYPOINT, CMD, ARG, and LABEL; anything outside that set (multi-stage builds, an ARG-substituted FROM, COPY, or any other directive) is rejected with a 400 naming the problem. FROM resolves through the same pull/convert pipeline a bare `image` fork uses; every other instruction executes as a real operation against the resulting VM (RUN runs for real, ENV/WORKDIR persist onto the delivered session) rather than inside a build container — the new VM inherits nothing from a source VM, the same fields `image` honours (`policies`, `ssh_public_keys`, `description`) are honoured here too, and the same fields are refused (`layers`, `platforms`, `durable`, `public`, GPU resources). */
+            /** @description Dockerfile source. Accepted by the schema and ALWAYS REFUSED with a 400: the API does not build Dockerfiles, the SDKs do. Use arker.fork(dockerfile="./Dockerfile") from the Python or TypeScript SDK, or pass `image` to fork a prebuilt image here. COPY is why it works that way: it reads files on the caller's machine, and this field carries text while the caller waits for the fork response, so the server can never be handed those files. The field is kept rather than removed so this refusal can point at the SDK instead of answering with a bare `unknown field`. */
             dockerfile?: string | null;
-            /** @description Request nested virtualization for a VM forked from `image` or `dockerfile`, including access to `/dev/kvm` inside the guest. Omit this field or pass `false` to disable it. The request returns 400 when the selected placement cannot provide nested virtualization. */
+            /** @description Request nested virtualization for a VM forked from `image`, including access to `/dev/kvm` inside the guest. Omit this field or pass `false` to disable it. The request returns 400 when the selected placement cannot provide nested virtualization. */
             nestedvirt?: boolean | null;
-            /** @description Organization that owns `source_vm_name`. Use `ArkerHQ` for Arker's public templates. */
+            /**
+             * @deprecated
+             * @description Organization ID that owns `source_vm_name`. Supported for existing integrations and scheduled for removal in a later API version; use `source_org_name` for new integrations. Cannot be combined with `source_org_name`.
+             */
             source_org_id?: string | null;
+            /** @description Organization name that owns `source_vm_name`. Currently accepts the caller's organization or `ArkerHQ`. Cannot be combined with `source_org_id`. */
+            source_org_name?: string | null;
             /** @description Optional name for the new VM, scoped to the caller's org. */
             name?: string | null;
             /** @description Optional short description for the new VM. Blank strings normalize to null and forked VMs never inherit their source's description. */
@@ -753,21 +758,43 @@ export interface components {
             source_vm_name?: null;
             image?: null;
             dockerfile?: null;
+            source_org_id?: null;
+            source_org_name?: null;
         } | {
             source_vm_id?: null;
             source_vm_name: string;
             image?: null;
             dockerfile?: null;
+            source_org_id?: null;
+            source_org_name?: null;
+        } | {
+            source_vm_id?: null;
+            source_vm_name: string;
+            image?: null;
+            dockerfile?: null;
+            source_org_id: string;
+            source_org_name?: null;
+        } | {
+            source_vm_id?: null;
+            source_vm_name: string;
+            image?: null;
+            dockerfile?: null;
+            source_org_id?: null;
+            source_org_name: string;
         } | {
             source_vm_id?: null;
             source_vm_name?: null;
             image: string;
             dockerfile?: null;
+            source_org_id?: null;
+            source_org_name?: null;
         } | {
             source_vm_id?: null;
             source_vm_name?: null;
             image?: null;
             dockerfile: string;
+            source_org_id?: null;
+            source_org_name?: null;
         });
         Session: {
             /** @description Unique session identifier. */
@@ -893,6 +920,11 @@ export interface components {
             timeout?: number | null;
             /** @description Sync window in seconds. `0` returns a pollable command run immediately after successful dispatch without polling for completion. A positive value bounds the synchronous wait. Omission uses the 300-second default. Control requests do not accept this field. This does not bound command execution; use `timeout` for the execution and kill bound. Values above approximately 350 seconds can exceed the load balancer idle limit. */
             time_to_background?: number | null;
+            /**
+             * @deprecated
+             * @description Alias for `time_to_background`. `true` is exactly `time_to_background: 0` (return a pollable run immediately); `false` leaves the default sync window. Send only one of the two — supplying both is rejected, because they can disagree. Prefer `time_to_background`, which can also bound the wait instead of only switching it off.
+             */
+            background?: boolean | null;
             /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. Omit this field or pass `0` to fail immediately when the run cannot start. This is independent of `timeout` and `time_to_background`. */
             queueing_timeout?: number | null;
             /**
