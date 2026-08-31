@@ -2148,6 +2148,30 @@ async function testCopyIsNotWrappedInTheUserShell(): Promise<void> {
   }
 }
 
+async function testAddUrlIsFetchedByTheClient(): Promise<void> {
+  // Docker downloads an ADD url on the BUILDER and copies the bytes in, so the
+  // image needs no curl or wget. Fetching inside the guest instead made ADD
+  // fail on any minimal base (ubuntu:24.04 ships neither) — a divergence from
+  // Docker, not a limitation of it.
+  const dir = makeBuildContext();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })) as typeof fetch;
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(vm, parseDockerfile("FROM x\nADD https://e.test/f /opt/f\n").steps, dir);
+    assert.ok(
+      vm.calls.some((c) => c.kind === "sync" && c.a === "/opt/f" && c.b === "4"),
+      JSON.stringify(vm.calls),
+    );
+    // Nothing is asked of the guest: no curl, no wget, no shell at all.
+    assert.deepEqual(vm.commands, []);
+  } finally {
+    globalThis.fetch = realFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function testAFailingRunAbortsTheBuild(): Promise<void> {
   // Docker fails a build on a non-zero RUN, and so must this. Without it a
   // Dockerfile whose `RUN npm install` fails hands back a VM that looks built
@@ -2165,6 +2189,7 @@ async function testAFailingRunAbortsTheBuild(): Promise<void> {
   }
 }
 
+await testAddUrlIsFetchedByTheClient();
 await testAFailingRunAbortsTheBuild();
 testDockerfileParsingBasics();
 testDockerfileRefusalsAreNamed();

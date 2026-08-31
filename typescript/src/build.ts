@@ -162,20 +162,22 @@ async function runChecked(vm: BuildTarget, command: string, what: string): Promi
 }
 
 /**
- * `ADD <url>` — fetched in the guest, parent directory created first.
+ * Download `url` from HERE, the way Docker downloads it on the builder.
  *
- * Requires `curl` or `wget` IN THE IMAGE. Docker fetches host-side and needs
- * neither; we run the fetch inside the VM, so a minimal base (`ubuntu:24.04`
- * ships neither) fails with exit 127, surfacing as a build failure that names
- * the missing tool rather than a silently absent file.
+ * Fetching inside the guest instead would need `curl` or `wget` in the image,
+ * which a minimal base does not have — `ubuntu:24.04` ships neither, so `ADD`
+ * failed with exit 127 on the commonest base there is. Docker has no such
+ * requirement because the builder does the download and copies the bytes in,
+ * and this machine is our builder.
+ *
+ * Exported for tests to stub; not part of the public surface.
  */
-function fetchCommand(url: string, dest: string): string {
-  const destination = shellQuote(dest);
-  const source = shellQuote(url);
-  return (
-    `mkdir -p "$(dirname ${destination})" && ` +
-    `(curl -fsSL ${source} -o ${destination} || wget -qO ${destination} ${source})`
-  );
+export async function fetchUrl(url: string): Promise<Uint8Array> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 /** Execute every step after `FROM` against `vm`, in file order. */
@@ -212,9 +214,18 @@ export async function applySteps(
       case "user":
         currentUser = step.name;
         continue;
-      case "add":
-        command = fetchCommand(step.url, step.dest);
-        break;
+      case "add": {
+        // Fetched here, then written like a COPY: the guest needs no network
+        // tooling and no shell for this at all.
+        let payload: Uint8Array;
+        try {
+          payload = await fetchUrl(step.url);
+        } catch (error) {
+          throw new BuildError(`ADD ${step.url}: ${String(error)}`);
+        }
+        await vm.sync(step.dest, payload);
+        continue;
+      }
       case "copy":
         // Unwrapped by design; see the module docstring.
         await applyCopy(vm, step, contextRoot);

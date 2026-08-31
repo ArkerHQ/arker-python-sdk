@@ -153,9 +153,18 @@ def test_copy_runs_as_root_even_after_user(context):
     assert not any("su -p" in c for c in vm.commands)
 
 
-def test_add_url_becomes_a_guest_side_fetch(context):
-    vm = build("FROM x\nADD https://example.com/f /f\n", context)
-    assert "curl" in vm.commands[0] and "-o /f" in vm.commands[0]
+def test_a_failed_add_fetch_aborts_the_build(context, monkeypatch):
+    """A URL that cannot be fetched is a build failure, named by URL."""
+    import arker.build as build_mod
+
+    def boom(url):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(build_mod, "_fetch_url", boom)
+    vm = FakeVM()
+    steps = parse_dockerfile("FROM x\nADD https://example.com/f /f\n").steps
+    with pytest.raises(BuildError, match="https://example.com/f"):
+        apply_steps(vm, steps, str(context))
 
 
 def test_inert_instructions_produce_no_calls(context):
@@ -183,3 +192,23 @@ def test_a_failing_copy_chown_aborts_the_build(context):
     steps = parse_dockerfile("FROM x\nCOPY --chown=nope:nope app.js /a.js\n").steps
     with pytest.raises(BuildError):
         apply_steps(vm, steps, str(context))
+
+
+def test_add_url_is_fetched_by_the_client_not_the_guest(context, monkeypatch):
+    """Docker downloads an ADD url on the BUILDER and copies the bytes in, so
+    the image needs no curl or wget. Fetching inside the guest instead made
+    `ADD` fail on any minimal base (ubuntu:24.04 ships neither), which is a
+    divergence from Docker, not a limitation of it.
+
+    The client has network access. Fetch there, then sync the bytes like COPY.
+    """
+    import arker.build as build_mod
+
+    monkeypatch.setattr(build_mod, "_fetch_url", lambda url: b"remote-bytes")
+    vm = FakeVM()
+    steps = parse_dockerfile("FROM x\nADD https://example.com/f.txt /opt/f.txt\n").steps
+    apply_steps(vm, steps, str(context))
+
+    assert ("sync", "/opt/f.txt", len(b"remote-bytes")) in vm.calls, vm.calls
+    # Nothing is asked of the guest: no curl, no wget, no shell at all.
+    assert vm.commands == [], vm.commands
