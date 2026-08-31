@@ -327,20 +327,42 @@ def test_fork_from_a_private_image_sends_registry_auth() -> None:
     }
 
 
-def test_fork_from_a_dockerfile_sends_only_the_dockerfile() -> None:
+def test_fork_from_a_dockerfile_forks_the_base_image_then_drives_the_rest() -> None:
+    """A Dockerfile build runs from the CLIENT, not the server.
+
+    `FROM` is the only part the server does — through the ordinary image fork —
+    and every instruction after it is applied to the resulting VM. That is what
+    lets `COPY` work at all: its sources are files on this machine, which no
+    server-side build could reach without being handed a build context first.
+    """
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
         200,
         _fork_response("vm_dockerfile"),
     )
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/runs"),
+        200,
+        {
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+            "exit_code": 0,
+        },
+    )
 
     with use_transport(t):
         vm = client().fork(dockerfile="FROM ubuntu:24.04\nRUN echo hi\n")
 
     assert vm.id == "vm_dockerfile"
-    body = json.loads(t.calls[0]["body"])
-    assert body == {"dockerfile": "FROM ubuntu:24.04\nRUN echo hi\n"}
+    # The fork asks for the base image only — the Dockerfile itself is never
+    # sent, because nothing on the server interprets it any more.
+    assert json.loads(t.calls[0]["body"]) == {"image": "ubuntu:24.04"}
+    # ...and RUN became a real command against the forked VM.
+    assert t.calls[1]["url"].endswith("/vms/vm_dockerfile/runs")
+    assert json.loads(t.calls[1]["body"])["command"] == "echo hi"
 
 
 def test_fork_rejects_an_image_and_a_dockerfile_together() -> None:
