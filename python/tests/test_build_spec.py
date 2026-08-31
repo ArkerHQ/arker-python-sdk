@@ -182,3 +182,24 @@ def test_rejects_copy_with_no_destination():
 def test_rejects_empty_input():
     with pytest.raises(DockerfileError):
         parse_dockerfile("   \n\n")
+
+
+def test_an_env_key_that_would_inject_a_command_is_refused():
+    """A key is a bare token in `export k=v` and cannot be quoted, so it is the
+    one interpolation quoting cannot make safe. Docker refuses the same input
+    with "invalid environment variable name"."""
+    # NB `ENV a b=c=1` is NOT in this list: that is the legacy `ENV key value`
+    # form, so the key is `a` and the value is `b=c=1`. Valid, and accepted.
+    for bad in ["ENV a;id;b=1", "ENV `id`=1", "ENV 1leading=x", "ENV a-b=x"]:
+        with pytest.raises(DockerfileError, match="valid environment variable name"):
+            parse_dockerfile(f"FROM ubuntu:24.04\n{bad}\n")
+
+
+def test_an_arg_name_is_validated_too():
+    with pytest.raises(DockerfileError, match="valid environment variable name"):
+        parse_dockerfile("FROM ubuntu:24.04\nARG x;touch /tmp/pwn;y=2\n")
+
+
+def test_ordinary_env_and_arg_names_still_parse():
+    parsed = parse_dockerfile("FROM ubuntu:24.04\nENV _A1=x B=y\nARG VERSION=1\n")
+    assert parsed.steps[0] == Env([("_A1", "x"), ("B", "y")])

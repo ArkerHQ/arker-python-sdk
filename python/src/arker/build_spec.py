@@ -40,6 +40,7 @@ Refused by name, rather than silently dropped:
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Iterator
@@ -237,6 +238,22 @@ def _command_line(argument: str) -> str:
     return " ".join(shlex.quote(item) for item in argv)
 
 
+def _validate_env_key(key: str, directive: str) -> str:
+    """A key is a bare token in `export k=v` and CANNOT be quoted.
+
+    So it is the one interpolation in the whole driver that quoting cannot
+    make safe, and it has to be validated instead. `ENV a;id;b=1` parses
+    happily and would emit `export a;id;b=1`. Docker refuses the same input
+    with "invalid environment variable name".
+    """
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        raise DockerfileError(
+            f"{directive} name {key!r} is not a valid environment variable name "
+            "(letters, digits and underscore, not starting with a digit)"
+        )
+    return key
+
+
 def _key_value_pairs(argument: str, directive: str) -> list[tuple[str, str]]:
     """Parse ``k=v k=v`` and the legacy ``ENV key value`` single-pair form."""
     try:
@@ -250,13 +267,13 @@ def _key_value_pairs(argument: str, directive: str) -> list[tuple[str, str]]:
         # value, so it cannot be split into further pairs.
         if len(tokens) < 2:
             raise DockerfileError(f"{directive} {tokens[0]} has no value")
-        return [(tokens[0], " ".join(tokens[1:]))]
+        return [(_validate_env_key(tokens[0], directive), " ".join(tokens[1:]))]
     pairs = []
     for token in tokens:
         key, sep, value = token.partition("=")
         if not sep or not key:
             raise DockerfileError(f"{directive} expects key=value, got: {token}")
-        pairs.append((key, value))
+        pairs.append((_validate_env_key(key, directive), value))
     return pairs
 
 
@@ -356,6 +373,7 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
             name = name.strip()
             if not name:
                 raise DockerfileError("ARG requires a name")
+            _validate_env_key(name, "ARG")
             steps.append(Arg(name, default.strip() if sep else None))
 
         elif directive == "LABEL":

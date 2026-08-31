@@ -1301,6 +1301,7 @@ class VM:
         remote_dir: str,
         *,
         cache: dict[str, tuple[int, int, str]] | None = None,
+        ignore: "Callable[[str], bool] | None" = None,
     ) -> SyncDirResult:
         """Recursively sync a local directory INTO this VM at ``remote_dir``,
         rsync-style: fetch the VM's file *manifest* (per-file sha256) in ONE
@@ -1315,6 +1316,13 @@ class VM:
         files whose (size, mtime) are unchanged. It never decides remote state,
         so it can never cause a stale or missing upload — worst case it hashes a
         file it didn't need to.
+
+``ignore`` is called with each file's context-relative, ``/``-separated
+        path; returning True drops it. Applied BEFORE hashing, so an ignored
+        file costs nothing and cannot perturb the incremental diff — a filter
+        applied after hashing would still let an ignored file's appearance or
+        removal change the comparison. The Dockerfile build driver uses it to
+        apply `.dockerignore`.
 
         Returns a :class:`SyncDirResult` (sent / skipped / bytes).
         """
@@ -1334,6 +1342,8 @@ class VM:
                 if os.path.islink(abs_path) or not os.path.isfile(abs_path):
                     continue
                 rel = os.path.relpath(abs_path, local_root).replace(os.sep, "/")
+                if ignore is not None and ignore(rel):
+                    continue
                 st = os.stat(abs_path)
                 local_files[rel] = (abs_path, st.st_size, st.st_mtime_ns)
 
