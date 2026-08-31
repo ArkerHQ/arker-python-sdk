@@ -138,11 +138,52 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
                 vm.sync(_copy_destination(step.dest, path, multiple), handle.read())
 
     if step.chown:
-        vm.run(f"chown -R {shlex.quote(step.chown)} {shlex.quote(step.dest)}")
+        _run_checked(
+            vm,
+            f"chown -R {shlex.quote(step.chown)} {shlex.quote(step.dest)}",
+            f"COPY --chown={step.chown}",
+        )
+
+
+def _run_checked(vm: _VM, command: str, what: str) -> None:
+    """Run `command` and abort the build unless it succeeded.
+
+    Docker fails a build on a non-zero `RUN`, and the reason is not tidiness: a
+    build that continues past a failure applies every later instruction on top
+    of it and hands back a VM that looks built and is not. `RUN npm install`
+    failing must not produce a "successful" image with no node_modules.
+
+    `exit_code is None` is also a failure. It means a prompt ended the command
+    rather than its completion marker — an interpreter left running by an
+    earlier step swallowed it — so the command never ran at all. Folding that
+    to success would be the same lie in a quieter form.
+    """
+    result = vm.run(command)
+    code = getattr(result, "exit_code", 0)
+    if code == 0:
+        return
+    detail = ""
+    for stream in ("stderr", "stdout"):
+        text = (getattr(result, stream, "") or "").strip()
+        if text:
+            detail = f": {text[:400]}"
+            break
+    if code is None:
+        raise BuildError(
+            f"{what} never reached the shell (an interpreter started by an earlier "
+            f"instruction is holding the session){detail}"
+        )
+    raise BuildError(f"{what} failed with exit code {code}{detail}")
 
 
 def _fetch_command(url: str, dest: str) -> str:
-    """`ADD <url>` — fetched in the guest, parent directory created first."""
+    """`ADD <url>` — fetched in the guest, parent directory created first.
+
+    Requires `curl` or `wget` IN THE IMAGE. Docker fetches host-side and needs
+    neither; we run the fetch inside the VM, so a minimal base (`ubuntu:24.04`
+    ships neither) fails with exit 127. That surfaces as a build failure naming
+    the missing tool rather than a silently absent file.
+    """
     destination = shlex.quote(dest)
     source = shlex.quote(url)
     return (
@@ -192,4 +233,4 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
 
         if current_user is not None:
             command = f"su -p {shlex.quote(current_user)} -c {shlex.quote(command)}"
-        vm.run(command)
+        _run_checked(vm, command, f"{step.__class__.__name__.upper()} step")

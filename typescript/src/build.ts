@@ -128,6 +128,47 @@ function destinationFor(dest: string, sourcePath: string, multiple: boolean): st
   return dest;
 }
 
+/**
+ * Run `command` and abort the build unless it succeeded.
+ *
+ * Docker fails a build on a non-zero `RUN`, and the reason is not tidiness: a
+ * build that continues past a failure applies every later instruction on top of
+ * it and hands back a VM that looks built and is not. `RUN npm install` failing
+ * must not produce a "successful" image with no node_modules.
+ *
+ * A missing exit code is also a failure. It means a prompt ended the command
+ * rather than its completion marker — an interpreter left running by an earlier
+ * instruction swallowed it — so the command never ran at all.
+ */
+async function runChecked(vm: BuildTarget, command: string, what: string): Promise<void> {
+  const result = (await vm.run(command)) as {
+    exit_code?: number | null;
+    exitCode?: number | null;
+    stdout?: string;
+    stderr?: string;
+  };
+  const code = result?.exitCode ?? result?.exit_code ?? 0;
+  if (code === 0) return;
+
+  const detail = (result?.stderr || result?.stdout || "").trim();
+  const suffix = detail ? `: ${detail.slice(0, 400)}` : "";
+  if (code === null || code === undefined) {
+    throw new BuildError(
+      `${what} never reached the shell (an interpreter started by an earlier ` +
+        `instruction is holding the session)${suffix}`,
+    );
+  }
+  throw new BuildError(`${what} failed with exit code ${code}${suffix}`);
+}
+
+/**
+ * `ADD <url>` — fetched in the guest, parent directory created first.
+ *
+ * Requires `curl` or `wget` IN THE IMAGE. Docker fetches host-side and needs
+ * neither; we run the fetch inside the VM, so a minimal base (`ubuntu:24.04`
+ * ships neither) fails with exit 127, surfacing as a build failure that names
+ * the missing tool rather than a silently absent file.
+ */
 function fetchCommand(url: string, dest: string): string {
   const destination = shellQuote(dest);
   const source = shellQuote(url);
@@ -192,7 +233,7 @@ export async function applySteps(
     if (currentUser !== undefined) {
       command = `su -p ${shellQuote(currentUser)} -c ${shellQuote(command)}`;
     }
-    await vm.run(command);
+    await runChecked(vm, command, `${step.kind.toUpperCase()} step`);
   }
 }
 
@@ -219,6 +260,10 @@ async function applyCopy(
   }
 
   if (step.chown) {
-    await vm.run(`chown -R ${shellQuote(step.chown)} ${shellQuote(step.dest)}`);
+    await runChecked(
+      vm,
+      `chown -R ${shellQuote(step.chown)} ${shellQuote(step.dest)}`,
+      `COPY --chown=${step.chown}`,
+    );
   }
 }
