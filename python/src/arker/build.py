@@ -176,20 +176,19 @@ def _run_checked(vm: _VM, command: str, what: str) -> None:
     raise BuildError(f"{what} failed with exit code {code}{detail}")
 
 
-def _fetch_command(url: str, dest: str) -> str:
-    """`ADD <url>` — fetched in the guest, parent directory created first.
+def _fetch_url(url: str) -> bytes:
+    """Download `url` from HERE, the way Docker downloads it on the builder.
 
-    Requires `curl` or `wget` IN THE IMAGE. Docker fetches host-side and needs
-    neither; we run the fetch inside the VM, so a minimal base (`ubuntu:24.04`
-    ships neither) fails with exit 127. That surfaces as a build failure naming
-    the missing tool rather than a silently absent file.
+    Fetching inside the guest instead would need `curl` or `wget` in the image,
+    which a minimal base does not have — `ubuntu:24.04` ships neither, so
+    `ADD` failed with exit 127 on the commonest base there is. Docker has no
+    such requirement because the builder does the download and copies the bytes
+    in, and this machine is our builder.
     """
-    destination = shlex.quote(dest)
-    source = shlex.quote(url)
-    return (
-        f'mkdir -p "$(dirname {destination})" && '
-        f"(curl -fsSL {source} -o {destination} || wget -qO {destination} {source})"
-    )
+    import urllib.request
+
+    with urllib.request.urlopen(url) as response:  # noqa: S310 - the URL is the caller's own Dockerfile
+        return response.read()
 
 
 def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
@@ -218,7 +217,14 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
             current_user = step.name
             continue
         elif isinstance(step, Add):
-            command = _fetch_command(step.url, step.dest)
+            # Fetched here, then written like a COPY: the guest needs no
+            # network tooling and no shell for this at all.
+            try:
+                payload = _fetch_url(step.url)
+            except Exception as error:  # noqa: BLE001 - any fetch failure is a build failure
+                raise BuildError(f"ADD {step.url}: {error}") from error
+            vm.sync(step.dest, payload)
+            continue
         elif isinstance(step, Copy):
             # Unwrapped by design — see the module docstring.
             _apply_copy(vm, step, context_root)
