@@ -203,3 +203,14 @@ def test_an_arg_name_is_validated_too():
 def test_ordinary_env_and_arg_names_still_parse():
     parsed = parse_dockerfile("FROM ubuntu:24.04\nENV _A1=x B=y\nARG VERSION=1\n")
     assert parsed.steps[0] == Env([("_A1", "x"), ("B", "y")])
+
+
+def test_parsing_does_not_write_into_the_working_directory(tmp_path, monkeypatch):
+    existing = tmp_path / "Dockerfile"
+    existing.write_text("FROM myrealbase:1\nRUN important-thing\n")
+    monkeypatch.chdir(tmp_path)
+
+    parse_dockerfile("FROM ubuntu:24.04\nRUN echo hi\n")
+
+    assert existing.read_text() == "FROM myrealbase:1\nRUN important-thing\n"
+    assert sorted(q.name for q in tmp_path.iterdir()) == ["Dockerfile"]

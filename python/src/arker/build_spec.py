@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import io
 from dataclasses import dataclass, field
 from typing import Iterator
 
@@ -203,7 +204,7 @@ def _instructions(text: str) -> Iterator[tuple[str, str]]:
     runloop, novita, blaxel, beam, …) use for this same job, and Arker is
     itself a Harbor provider.
     """
-    parser = DockerfileParser()
+    parser = DockerfileParser(fileobj=io.BytesIO())
     parser.content = text
     for instruction in parser.structure:
         directive = str(instruction.get("instruction", "")).upper()
