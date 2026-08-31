@@ -405,6 +405,7 @@ class Arker:
         source_org_id: str | None = None,
         image: str | None = None,
         dockerfile: str | None = None,
+        context: str | None = None,
         registry_auth: "RegistryAuth | dict[str, str] | None" = None,
         name: str | None = None,
         description: str | None = None,
@@ -463,9 +464,22 @@ class Arker:
 
               vm.run("nginx -g 'daemon off;' &")
 
-        - ``fork(dockerfile="FROM ubuntu:24.04\nRUN ...")`` — build from a
-          Dockerfile instead of pulling a single image. Each instruction runs
-          on the host and the result is forked like any other image.
+        - ``fork(dockerfile="./Dockerfile")`` — build from a Dockerfile instead
+          of pulling a single image. ``dockerfile`` is a PATH when it names an
+          existing file and Dockerfile TEXT otherwise, so
+          ``fork(dockerfile="FROM ubuntu:24.04\nRUN ...")`` works too.
+
+          ``COPY`` resolves its sources against the build context: the
+          Dockerfile's own directory by default, the current directory when the
+          Dockerfile is passed as text, or ``context="./src"`` to name one —
+          the same role as the trailing argument of
+          ``docker build -f ./docker/Dockerfile ./src``.
+
+          The build runs from the client: ``FROM`` forks through the ordinary
+          image path, then each instruction is applied to the resulting VM —
+          ``RUN`` as a command, ``COPY`` as a directory sync that re-sends only
+          what changed. ``ENV``/``WORKDIR`` persist onto the VM you get back;
+          ``USER`` applies to the build's own ``RUN``s only.
 
         ``registry_auth={"username": ..., "password": ...}`` supplies
         credentials for a private registry, and applies to the ``image`` and
@@ -533,6 +547,29 @@ class Arker:
             raise ArkerError("bad_request", "fork: registry_auth applies to an image or dockerfile fork", 400)
         if source_vm_id and source_vm_name:
             raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
+        if context is not None and not dockerfile:
+            raise ArkerError("bad_request", "fork: context applies to a dockerfile fork", 400)
+        if dockerfile:
+            return self._fork_dockerfile(
+                dockerfile,
+                context,
+                source_org_id=source_org_id,
+                name=name,
+                description=description,
+                public=public,
+                ssh_public_keys=ssh_public_keys,
+                disk=disk,
+                durable=durable,
+                platforms=platforms,
+                layers=layers,
+                vcpu_count=vcpu_count,
+                memory_mib=memory_mib,
+                disk_mib=disk_mib,
+                vgpu=vgpu,
+                policies=policies,
+                registry_auth=registry_auth,
+                queueing_timeout=queueing_timeout,
+            )
         # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
         # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
         # platform's max is a 400 from the server, not a silent clamp.
@@ -595,6 +632,66 @@ class Arker:
         info = _vm_info(payload)
         # Child lives on the host the fork was posted to.
         return VM(self, info.vm_id, base_url, info)
+
+    def _fork_dockerfile(
+        self,
+        dockerfile: str,
+        context: str | None,
+        **fork_options,
+    ) -> "VM":
+        """Build a Dockerfile by forking its ``FROM`` and driving the rest.
+
+        The build runs from HERE rather than on the server, and ``COPY`` is why.
+        Its sources are files on this machine; a server-side build would have to
+        be handed them first, which means uploading a build context — an upload
+        endpoint, object storage, and a ceiling on how big a project may be.
+        Driving it here turns ``COPY`` into ``vm.sync_dir``, which streams
+        straight into the guest and, being manifest-diffed, re-sends only the
+        files that changed since a previous build.
+
+        ``FROM`` is still the server's job: ``fork(image=…)`` owns the registry
+        pull, its vetting, the OCI→ext4 conversion and the template cache. This
+        only orchestrates what comes after it.
+        """
+        from .build import apply_steps
+        from .build_spec import DockerfileError, parse_dockerfile
+
+        # `dockerfile` is a PATH if it names an existing file, and Dockerfile
+        # TEXT otherwise. Deliberately not a heuristic on content (newlines,
+        # leading keyword): "does this file exist" is a question with one
+        # answer, so the rule is predictable and explainable. Docker draws the
+        # same distinction between `-f Dockerfile .` and `docker build -`.
+        path = os.path.abspath(dockerfile) if os.path.isfile(dockerfile) else None
+        if path is not None:
+            with open(path, "r", encoding="utf-8") as handle:
+                text = handle.read()
+        else:
+            text = dockerfile
+
+        try:
+            parsed = parse_dockerfile(text)
+        except DockerfileError as error:
+            raise ArkerError("bad_request", f"fork: {error}", 400) from error
+
+        # The context is where COPY resolves its sources: an explicit
+        # `context`, else the Dockerfile's own directory, else — for text,
+        # which has no directory — the current one. Same defaulting `docker
+        # build` has, and nothing here inspects the instructions to decide it:
+        # a Dockerfile with no COPY simply never reads it.
+        if context:
+            context_root = os.path.abspath(context)
+        elif path is not None:
+            context_root = os.path.dirname(path)
+        else:
+            context_root = os.getcwd()
+        if not os.path.isdir(context_root):
+            raise ArkerError(
+                "bad_request", f"fork: context is not a directory: {context_root}", 400
+            )
+
+        vm = self.fork(image=parsed.base_image, **fork_options)
+        apply_steps(vm, parsed.steps, context_root)
+        return vm
 
     def list_vms(
         self,
