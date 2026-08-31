@@ -38,10 +38,10 @@ from __future__ import annotations
 import glob as _glob
 import os
 import shlex
+import urllib.request
 from typing import Protocol
 
 from .dockerignore import load_dockerignore
-from .urlfetch import UrlFetchError, fetch_url as _fetch_url
 from .build_spec import (
     Add,
     Arg,
@@ -276,9 +276,8 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
             # Fetched here, then written like a COPY: the guest needs no
             # network tooling and no shell for this at all.
             try:
-                payload = _fetch_url(step.url)
-            except UrlFetchError as error:
-                raise BuildError(f"ADD {step.url}: {error}") from error
+                with urllib.request.urlopen(step.url, timeout=30) as response:
+                    payload = response.read()
             except Exception as error:  # noqa: BLE001 - any fetch failure is a build failure
                 raise BuildError(f"ADD {step.url}: {error}") from error
             vm.sync(step.dest, payload)

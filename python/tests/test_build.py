@@ -10,6 +10,9 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
+import contextlib
+import io
+
 import pytest
 
 from arker.build_spec import parse_dockerfile
@@ -159,10 +162,10 @@ def test_a_failed_add_fetch_aborts_the_build(context, monkeypatch):
     """A URL that cannot be fetched is a build failure, named by URL."""
     import arker.build as build_mod
 
-    def boom(url):
+    def boom(url, timeout=None):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(build_mod, "_fetch_url", boom)
+    monkeypatch.setattr(build_mod.urllib.request, "urlopen", boom)
     vm = FakeVM()
     steps = parse_dockerfile("FROM x\nADD https://example.com/f /f\n").steps
     with pytest.raises(BuildError, match="https://example.com/f"):
@@ -206,7 +209,11 @@ def test_add_url_is_fetched_by_the_client_not_the_guest(context, monkeypatch):
     """
     import arker.build as build_mod
 
-    monkeypatch.setattr(build_mod, "_fetch_url", lambda url: b"remote-bytes")
+    monkeypatch.setattr(
+        build_mod.urllib.request,
+        "urlopen",
+        lambda url, timeout=None: contextlib.closing(io.BytesIO(b"remote-bytes")),
+    )
     vm = FakeVM()
     steps = parse_dockerfile("FROM x\nADD https://example.com/f.txt /opt/f.txt\n").steps
     apply_steps(vm, steps, str(context))

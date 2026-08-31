@@ -37,7 +37,6 @@ import nodePath from "node:path";
 
 import type { Step } from "./buildSpec.js";
 import { loadDockerignore } from "./dockerignore.js";
-import { UrlFetchError, fetchUrl } from "./urlfetch.js";
 
 /** A Dockerfile that parsed but cannot be built, with the reason named. */
 export class BuildError extends Error {
@@ -233,10 +232,11 @@ export async function applySteps(
         // tooling and no shell for this at all.
         let payload: Uint8Array;
         try {
-          payload = await fetchUrl(step.url);
+          const response = await fetch(step.url, { signal: AbortSignal.timeout(30_000) });
+          if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
+          payload = new Uint8Array(await response.arrayBuffer());
         } catch (error) {
-          const detail = error instanceof UrlFetchError ? error.message : String(error);
-          throw new BuildError(`ADD ${step.url}: ${detail}`);
+          throw new BuildError(`ADD ${step.url}: ${String(error)}`);
         }
         await vm.sync(step.dest, payload);
         continue;
