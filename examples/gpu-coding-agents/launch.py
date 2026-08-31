@@ -20,7 +20,7 @@ VERIFY_TASK = (
 # ── the base VM ─────────────────────────────────────────────────────────────
 
 
-def build_base(ar, args, real_key):
+def build_base(ar, args, real_key, workspace_id):
     """Fork the public GPU template and turn it into the image agents fork from.
     """
     base = ar.fork(
@@ -28,7 +28,7 @@ def build_base(ar, args, real_key):
         source_org_id=spec.GOLDEN_ORG or None,
         name=f"{spec.PREFIX}-base",
         platforms=spec.PLATFORMS or None,
-        policies=spec.policy_doc(real_key),
+        policies=spec.policy_doc(real_key, workspace_id),
         vcpu_count=args.vcpu,
         memory_mib=args.memory_mib,
         disk_mib=args.disk_mib,
@@ -192,6 +192,7 @@ def iterate(ar, base, policy, thread_idx, args, base_vram_mib, stop, deadline):
 def main():
     args = h.parse_args()
     real_key = os.environ.get("ARKER_ANTHROPIC_API_KEY", "")
+    workspace_id = os.environ.get("ARKER_ANTHROPIC_WORKSPACE_ID", "")
     if not real_key or not os.environ.get("ARKER_API_KEY"):
         raise SystemExit(
             "missing env:\n"
@@ -199,7 +200,7 @@ def main():
             "  export ARKER_ANTHROPIC_API_KEY=sk-ant-...   # never reaches a guest")
 
     ar = h.client()
-    policy = spec.policy_doc(real_key)
+    policy = spec.policy_doc(real_key, workspace_id)
     print(f"placement: {h.PROVIDER}/{h.REGION}\n")
 
     if args.base_vm:
@@ -207,7 +208,7 @@ def main():
         base_vram_mib = h.slice_mib(base)
         print(f"reusing base {base.id} ({base_vram_mib} MiB slice)\n")
     else:
-        base, base_vram_mib = build_base(ar, args, real_key)
+        base, base_vram_mib = build_base(ar, args, real_key, workspace_id)
 
     print(f"== iterate: {args.threads} agents x {args.minutes} min ==")
     h.ev("start", threads=args.threads, minutes=args.minutes,
