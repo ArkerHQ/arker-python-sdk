@@ -8,6 +8,8 @@ context — without needing a real VM.
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+
 import pytest
 
 from arker.build_spec import parse_dockerfile
@@ -17,12 +19,18 @@ from arker.build import BuildError, apply_steps
 class FakeVM:
     """Records what the driver asks a VM to do."""
 
-    def __init__(self):
+    def __init__(self, exit_codes=None):
         self.calls: list[tuple] = []
+        # Per-command exit codes, keyed by a substring of the command.
+        self.exit_codes = exit_codes or {}
 
     def run(self, command, **kwargs):
         self.calls.append(("run", command))
-        return None
+        code = 0
+        for needle, value in self.exit_codes.items():
+            if needle in command:
+                code = value
+        return SimpleNamespace(exit_code=code, stdout="", stderr="")
 
     def sync(self, path, data=None):
         self.calls.append(("sync", path, len(data) if data else None))
@@ -153,3 +161,25 @@ def test_add_url_becomes_a_guest_side_fetch(context):
 def test_inert_instructions_produce_no_calls(context):
     vm = build("FROM x\nLABEL a=b\nEXPOSE 8080\nCMD [\"true\"]\n", context)
     assert vm.calls == []
+
+
+def test_a_failing_run_aborts_the_build(context):
+    """Docker fails a build on a non-zero RUN, and so must this.
+
+    Without it a Dockerfile whose `RUN npm install` fails hands back a VM that
+    looks built and is not, with every later instruction applied on top of the
+    failure.
+    """
+    vm = FakeVM(exit_codes={"boom": 17})
+    steps = parse_dockerfile("FROM x\nRUN ok-one\nRUN boom\nRUN never\n").steps
+    with pytest.raises(BuildError, match="17"):
+        apply_steps(vm, steps, str(context))
+    assert vm.commands == ["ok-one", "boom"], "the step after the failure must not run"
+
+
+def test_a_failing_copy_chown_aborts_the_build(context):
+    """The chown after a COPY is a real command and can fail like any other."""
+    vm = FakeVM(exit_codes={"chown": 1})
+    steps = parse_dockerfile("FROM x\nCOPY --chown=nope:nope app.js /a.js\n").steps
+    with pytest.raises(BuildError):
+        apply_steps(vm, steps, str(context))

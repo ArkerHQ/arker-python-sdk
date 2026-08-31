@@ -1994,9 +1994,14 @@ await testTimeToBackgroundZeroReturnsTheAckWithoutPolling();
 
 class FakeBuildVM implements BuildTarget {
   readonly calls: { kind: string; a: string; b?: string }[] = [];
+  constructor(private readonly exitCodes: Record<string, number> = {}) {}
   async run(command: string): Promise<unknown> {
     this.calls.push({ kind: "run", a: command });
-    return undefined;
+    let code = 0;
+    for (const [needle, value] of Object.entries(this.exitCodes)) {
+      if (command.includes(needle)) code = value;
+    }
+    return { exit_code: code, stdout: "", stderr: "" };
   }
   async sync(path: string, data: Uint8Array | string): Promise<void> {
     this.calls.push({ kind: "sync", a: path, b: String(data.length) });
@@ -2143,6 +2148,24 @@ async function testCopyIsNotWrappedInTheUserShell(): Promise<void> {
   }
 }
 
+async function testAFailingRunAbortsTheBuild(): Promise<void> {
+  // Docker fails a build on a non-zero RUN, and so must this. Without it a
+  // Dockerfile whose `RUN npm install` fails hands back a VM that looks built
+  // and is not, with every later instruction applied on top of the failure.
+  const dir = makeBuildContext();
+  try {
+    const vm = new FakeBuildVM({ boom: 17 });
+    await assert.rejects(
+      () => applySteps(vm, parseDockerfile("FROM x\nRUN ok-one\nRUN boom\nRUN never\n").steps, dir),
+      (error: unknown) => error instanceof BuildError && error.message.includes("17"),
+    );
+    assert.deepEqual(vm.commands, ["ok-one", "boom"], "the step after the failure must not run");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+await testAFailingRunAbortsTheBuild();
 testDockerfileParsingBasics();
 testDockerfileRefusalsAreNamed();
 await testBuildAppliesShellStateInOrder();
