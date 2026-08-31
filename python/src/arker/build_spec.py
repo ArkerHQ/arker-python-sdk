@@ -103,6 +103,7 @@ class Add:
 
     url: str
     dest: str
+    checksum: str | None = None
 
 
 @dataclass(frozen=True)
@@ -354,7 +355,7 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
                     "local files — note ADD's archive auto-extraction is not implemented, "
                     "which is why a local ADD is refused rather than treated as COPY"
                 )
-            steps.append(Add(source, dest))
+            steps.append(Add(source, dest, checksum=flags.get("checksum")))
 
         elif directive == "ENV":
             steps.append(Env(_key_value_pairs(argument, "ENV")))

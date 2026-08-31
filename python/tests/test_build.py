@@ -292,3 +292,73 @@ def test_env_and_workdir_after_user_are_not_wrapped(context):
         "mkdir -p /srv && cd /srv",
         "su -p app -c hi",
     ]
+
+
+def test_copy_preserves_the_executable_bit(context):
+    script = context / "entrypoint.sh"
+    script.write_text("#!/bin/sh\necho hi\n")
+    script.chmod(0o755)
+
+    vm = FakeVM()
+    steps = parse_dockerfile("FROM x\nCOPY entrypoint.sh /app/e.sh\n").steps
+    apply_steps(vm, steps, str(context))
+
+    assert any("chmod" in c and "+x" in c for c in vm.commands), vm.commands
+
+
+def test_copy_leaves_a_plain_file_unexecutable(context):
+    vm = FakeVM()
+    steps = parse_dockerfile("FROM x\nCOPY app.js /app/app.js\n").steps
+    apply_steps(vm, steps, str(context))
+
+    assert not any("chmod" in c for c in vm.commands), vm.commands
+
+
+def test_multiple_directory_sources_merge_into_the_destination(context):
+    for name in ("x", "y"):
+        directory = context / name
+        directory.mkdir()
+        (directory / f"{name}.txt").write_text(name)
+
+    vm = FakeVM()
+    apply_steps(vm, parse_dockerfile("FROM x\nCOPY x y /dest/\n").steps, str(context))
+
+    targets = [c[2] for c in vm.calls if c[0] == "sync_dir"]
+    assert targets == ["/dest", "/dest"], targets
+
+
+def test_add_checksum_mismatch_fails_the_build(context, monkeypatch):
+    import arker.build as build_mod
+
+    monkeypatch.setattr(
+        build_mod.urllib.request,
+        "urlopen",
+        lambda url, timeout=None: contextlib.closing(io.BytesIO(b"tampered")),
+    )
+    wrong = "sha256:" + "0" * 64
+    steps = parse_dockerfile(
+        f"FROM x\nADD --checksum={wrong} https://example.com/f /f\n"
+    ).steps
+    with pytest.raises(BuildError, match="checksum"):
+        apply_steps(FakeVM(), steps, str(context))
+
+
+def test_add_checksum_match_is_accepted(context, monkeypatch):
+    import hashlib
+
+    import arker.build as build_mod
+
+    payload = b"trusted"
+    monkeypatch.setattr(
+        build_mod.urllib.request,
+        "urlopen",
+        lambda url, timeout=None: contextlib.closing(io.BytesIO(payload)),
+    )
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    steps = parse_dockerfile(
+        f"FROM x\nADD --checksum={digest} https://example.com/f /f\n"
+    ).steps
+
+    vm = FakeVM()
+    apply_steps(vm, steps, str(context))
+    assert ("sync", "/f", len(payload)) in vm.calls, vm.calls

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import glob as _glob
 import os
+import hashlib
 import shlex
 import urllib.request
 from typing import Protocol
@@ -141,6 +142,25 @@ def _copy_destination(dest: str, source_path: str, multiple: bool) -> str:
     return dest
 
 
+def _verify_checksum(step: Add, payload: bytes) -> None:
+    if not step.checksum:
+        return
+    algorithm, _, expected = step.checksum.partition(":")
+    if not expected:
+        raise BuildError(
+            f"ADD {step.url}: --checksum must be <algorithm>:<hex>, got {step.checksum!r}"
+        )
+    try:
+        digest = hashlib.new(algorithm, payload).hexdigest()
+    except ValueError as error:
+        raise BuildError(f"ADD {step.url}: unknown checksum algorithm {algorithm!r}") from error
+    if digest != expected.lower():
+        raise BuildError(
+            f"ADD {step.url}: checksum mismatch, expected {algorithm}:{expected.lower()} "
+            f"but the downloaded bytes are {algorithm}:{digest}"
+        )
+
+
 def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
     resolved: list[str] = []
     for source in step.sources:
@@ -165,17 +185,22 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
             # A directory source copies its CONTENTS into the destination,
             # which is what sync_dir does — `COPY src /app/src` puts src's
             # files at /app/src, not at /app/src/src.
-            target = step.dest.rstrip("/") if not multiple else _copy_destination(
-                step.dest, path, multiple
-            )
+            target = step.dest.rstrip("/")
             # Patterns are context-relative but sync_dir reports paths
             # relative to the synced directory: `COPY src /app` hands us
             # `index.js`, which must be tested as `src/index.js`.
             prefix = "" if rel(path) == "." else rel(path) + "/"
             vm.sync_dir(path, target, ignore=lambda r, p=prefix: ignore.ignores(p + r))
         else:
+            target = _copy_destination(step.dest, path, multiple)
             with open(path, "rb") as handle:
-                vm.sync(_copy_destination(step.dest, path, multiple), handle.read())
+                vm.sync(target, handle.read())
+            if os.stat(path).st_mode & 0o111:
+                _run_checked(
+                    vm,
+                    f"chmod +x {shlex.quote(target)}",
+                    f"COPY {os.path.basename(path)}",
+                )
 
     if step.chown:
         _run_checked(
@@ -280,6 +305,7 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
                     payload = response.read()
             except Exception as error:  # noqa: BLE001 - any fetch failure is a build failure
                 raise BuildError(f"ADD {step.url}: {error}") from error
+            _verify_checksum(step, payload)
             vm.sync(step.dest, payload)
             continue
         elif isinstance(step, Copy):

@@ -2269,6 +2269,90 @@ await testDockerignoreExcludesFromACopiedDirectory();
 await testEnvAndWorkdirAfterUserAreNotWrapped();
 await testEnvWithAVariableExpands();
 
+
+async function testCopyPreservesTheExecutableBit(): Promise<void> {
+  const dir = makeBuildContext();
+  fs.writeFileSync(nodePath.join(dir, "entrypoint.sh"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(vm, parseDockerfile("FROM x\nCOPY entrypoint.sh /app/e.sh\n").steps, dir);
+    assert.ok(
+      vm.commands.some((c) => c.includes("chmod") && c.includes("+x")),
+      vm.commands.join(", "),
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testCopyLeavesAPlainFileUnexecutable(): Promise<void> {
+  const dir = makeBuildContext();
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(vm, parseDockerfile("FROM x\nCOPY app.js /app/app.js\n").steps, dir);
+    assert.ok(!vm.commands.some((c) => c.includes("chmod")), vm.commands.join(", "));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testMultipleDirectorySourcesMergeIntoTheDestination(): Promise<void> {
+  const dir = makeBuildContext();
+  for (const name of ["x", "y"]) {
+    fs.mkdirSync(nodePath.join(dir, name));
+    fs.writeFileSync(nodePath.join(dir, name, `${name}.txt`), name);
+  }
+  try {
+    const vm = new FakeBuildVM();
+    await applySteps(vm, parseDockerfile("FROM x\nCOPY x y /dest/\n").steps, dir);
+    const targets = vm.calls.filter((c) => c.kind === "syncDir").map((c) => c.b);
+    assert.deepEqual(targets, ["/dest", "/dest"], JSON.stringify(targets));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testAddChecksumMismatchFailsTheBuild(): Promise<void> {
+  const dir = makeBuildContext();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(new Uint8Array([1, 2, 3]))) as typeof fetch;
+  try {
+    const wrong = `sha256:${"0".repeat(64)}`;
+    const steps = parseDockerfile(
+      `FROM x\nADD --checksum=${wrong} https://example.com/f /f\n`,
+    ).steps;
+    await assert.rejects(() => applySteps(new FakeBuildVM(), steps, dir), /checksum/);
+  } finally {
+    globalThis.fetch = realFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testAddChecksumMatchIsAccepted(): Promise<void> {
+  const dir = makeBuildContext();
+  const payload = new Uint8Array([1, 2, 3]);
+  const digest = createHash("sha256").update(payload).digest("hex");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(payload)) as typeof fetch;
+  try {
+    const steps = parseDockerfile(
+      `FROM x\nADD --checksum=sha256:${digest} https://example.com/f /f\n`,
+    ).steps;
+    const vm = new FakeBuildVM();
+    await applySteps(vm, steps, dir);
+    assert.ok(vm.calls.some((c) => c.kind === "sync" && c.a.endsWith("/f")), JSON.stringify(vm.calls));
+  } finally {
+    globalThis.fetch = realFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+await testCopyPreservesTheExecutableBit();
+await testCopyLeavesAPlainFileUnexecutable();
+await testMultipleDirectorySourcesMergeIntoTheDestination();
+await testAddChecksumMismatchFailsTheBuild();
+await testAddChecksumMatchIsAccepted();
+
 await testAddUrlIsFetchedByTheClient();
 await testAFailingRunAbortsTheBuild();
 testDockerfileParsingBasics();

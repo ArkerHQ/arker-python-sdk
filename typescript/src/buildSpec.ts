@@ -48,7 +48,7 @@ export type RunStep = { kind: "run"; command: string };
  */
 export type CopyStep = { kind: "copy"; sources: string[]; dest: string; chown?: string };
 /** `ADD <url> <dest>` — fetched inside the guest. */
-export type AddStep = { kind: "add"; url: string; dest: string };
+export type AddStep = { kind: "add"; url: string; dest: string; checksum?: string };
 /** `ENV k=v` — exported for later RUNs, and persists onto the delivered VM. */
 export type EnvStep = { kind: "env"; pairs: [string, string][] };
 /** `WORKDIR <dir>` — created if missing, then entered. */
@@ -190,6 +190,8 @@ export function parseDockerfile(text: string): ParsedDockerfile {
         break;
       }
       case "ADD": {
+        const addFlags = (instruction as AstCopy).getFlags?.() ?? [];
+        const checksum = addFlags.find((flag) => flag.getName() === "checksum")?.getValue();
         const tokens = instruction.getArguments().map((a) => a.getValue());
         if (tokens.length !== 2) {
           throw new DockerfileError(
@@ -205,7 +207,7 @@ export function parseDockerfile(text: string): ParsedDockerfile {
               "local ADD is refused rather than treated as COPY",
           );
         }
-        steps.push({ kind: "add", url: source, dest });
+        steps.push({ kind: "add", url: source, dest, ...(checksum ? { checksum } : {}) });
         break;
       }
       case "ENV": {
