@@ -72,30 +72,6 @@ class _VM(Protocol):
     def sync_dir(self, local_dir: str, remote_dir: str, **kwargs): ...
 
 
-def _ignored_under(context_root: str):
-    """A predicate over paths relative to a COPY's source directory.
-
-    `.dockerignore` patterns are written relative to the CONTEXT root, but
-    `sync_dir` reports paths relative to the directory being synced. `COPY src
-    /app` syncing `<context>/src` hands us `index.js`, which has to be tested
-    as `src/index.js` or a pattern like `src/secret` would never fire.
-    """
-    # realpath BOTH sides. `_resolve_sources` returns resolved paths, and on a
-    # platform where the context sits under a symlink (macOS /tmp ->
-    # /private/tmp) comparing a resolved path against an unresolved root yields
-    # a relpath like `../../private/tmp/...`, which matches no pattern and
-    # silently disables every rule.
-    root = os.path.realpath(context_root)
-    ignore = load_dockerignore(root)
-
-    def make(local_dir: str):
-        prefix = os.path.relpath(os.path.realpath(local_dir), root).replace(os.sep, "/")
-        prefix = "" if prefix == "." else prefix + "/"
-        return lambda rel: ignore.ignores(prefix + rel)
-
-    return make
-
-
 def _env_value(value: str) -> str:
     """Quote an `ENV`/`ARG` value for `export`.
 
@@ -170,17 +146,18 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
     for source in step.sources:
         resolved.extend(_resolve_sources(source, context_root))
 
+    # realpath BOTH sides: where the context sits under a symlink (macOS /tmp
+    # -> /private/tmp) an unresolved root yields `../../private/tmp/...`, which
+    # matches no pattern and silently disables every rule.
     root = os.path.realpath(context_root)
     ignore = load_dockerignore(root)
-    make_ignore = _ignored_under(root)
 
-    def excluded(path: str) -> bool:
-        rel = os.path.relpath(os.path.realpath(path), root).replace(os.sep, "/")
-        return ignore.ignores(rel)
+    def rel(path: str) -> str:
+        return os.path.relpath(os.path.realpath(path), root).replace(os.sep, "/")
 
     # A named source that is itself ignored is dropped, the same as Docker
     # dropping it from the context before COPY ever looks.
-    resolved = [p for p in resolved if not excluded(p)]
+    resolved = [p for p in resolved if not ignore.ignores(rel(p))]
 
     multiple = len(resolved) > 1
     for path in resolved:
@@ -191,7 +168,11 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
             target = step.dest.rstrip("/") if not multiple else _copy_destination(
                 step.dest, path, multiple
             )
-            vm.sync_dir(path, target, ignore=make_ignore(path))
+            # Patterns are context-relative but sync_dir reports paths
+            # relative to the synced directory: `COPY src /app` hands us
+            # `index.js`, which must be tested as `src/index.js`.
+            prefix = "" if rel(path) == "." else rel(path) + "/"
+            vm.sync_dir(path, target, ignore=lambda r, p=prefix: ignore.ignores(p + r))
         else:
             with open(path, "rb") as handle:
                 vm.sync(_copy_destination(step.dest, path, multiple), handle.read())
