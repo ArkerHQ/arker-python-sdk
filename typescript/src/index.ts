@@ -643,9 +643,20 @@ export interface ForkSource {
    * started — a VM whose entrypoint was running would be busy from birth,
    * which blocks idle suspend. Start the workload yourself when you want it. */
   image?: string;
-  /** Dockerfile source, built on the host and then forked like any other
-   * image. Exclusive with `image` and with the VM selectors. */
+  /** Dockerfile to build. A PATH when it names an existing file, Dockerfile
+   * TEXT otherwise, so both `dockerfile: "./Dockerfile"` and
+   * `dockerfile: "FROM ubuntu:24.04\nRUN ..."` work.
+   *
+   * The build runs from the client: `FROM` forks through the ordinary image
+   * path, then each instruction is applied to the resulting VM. `RUN` becomes
+   * a command, `COPY` a sync that re-sends only what changed. `ENV`/`WORKDIR`
+   * persist onto the VM you get back; `USER` applies to the build's own `RUN`s
+   * only. Exclusive with `image` and with the VM selectors. */
   dockerfile?: string;
+  /** Build context for `COPY`: the Dockerfile's own directory by default, the
+   * current directory when `dockerfile` is text. Same role as the trailing
+   * argument of `docker build -f ./docker/Dockerfile ./src`. */
+  context?: string;
   /** Credentials for a private registry. Applies to `image` and `dockerfile`
    * only (including a private *base* image in a Dockerfile). They authorize
    * one pull, are not stored, and a child fork of the result needs none. */
@@ -792,6 +803,13 @@ export class Arker {
         400,
       );
     }
+    if (src.context !== undefined && !src.dockerfile) {
+      throw new ArkerError("bad_request", "fork: context applies to a dockerfile fork", 400);
+    }
+    if (src.dockerfile) {
+      const { dockerfile, context, ...rest } = src;
+      return await this.forkDockerfile(dockerfile, context, rest);
+    }
     const sourceOrgId = src.sourceOrgId;
     // Forward all contract fields, then normalize defaults and camelCase source
     // selectors. This keeps additive contract fields available without an SDK
@@ -864,6 +882,66 @@ export class Arker {
     const vmId = vm.vm_id;
     // Child lives on the same host the fork was posted to.
     return new VM(this, vmId, baseUrl, vm);
+  }
+
+  /**
+   * Build a Dockerfile by forking its `FROM` and driving the rest from here.
+   *
+   * `COPY` is why this runs client-side: its sources are files on this
+   * machine, which a server-side build could not reach without being handed a
+   * build context first. `FROM` is still the server's job — `fork(image=…)`
+   * owns the registry pull, its vetting, the OCI to ext4 conversion and the
+   * template cache.
+   */
+  private async forkDockerfile(
+    dockerfile: string,
+    context: string | undefined,
+    rest: Record<string, unknown>,
+  ): Promise<VM> {
+    const { applySteps } = await import("./build.js");
+    const { DockerfileError, parseDockerfile } = await import("./buildSpec.js");
+    const fs = await import("node:fs");
+    const nodePath = await import("node:path");
+
+    // A PATH when it names an existing file, TEXT otherwise. Deliberately not
+    // a heuristic on content: "does this file exist" has one answer, so the
+    // rule is predictable. Docker draws the same line between `-f Dockerfile .`
+    // and `docker build -`.
+    let path: string | undefined;
+    try {
+      if (fs.existsSync(dockerfile) && fs.statSync(dockerfile).isFile()) {
+        path = nodePath.resolve(dockerfile);
+      }
+    } catch {
+      // A string that is not a usable path is simply text.
+    }
+    const text = path ? fs.readFileSync(path, "utf8") : dockerfile;
+
+    let parsed;
+    try {
+      parsed = parseDockerfile(text);
+    } catch (error) {
+      if (error instanceof DockerfileError) {
+        throw new ArkerError("bad_request", `fork: ${error.message}`, 400);
+      }
+      throw error;
+    }
+
+    // Where COPY resolves its sources: an explicit context, else the
+    // Dockerfile's own directory, else — for text, which has no directory —
+    // the current one.
+    const contextRoot = context
+      ? nodePath.resolve(context)
+      : path
+        ? nodePath.dirname(path)
+        : process.cwd();
+    if (!fs.existsSync(contextRoot) || !fs.statSync(contextRoot).isDirectory()) {
+      throw new ArkerError("bad_request", `fork: context is not a directory: ${contextRoot}`, 400);
+    }
+
+    const vm = await this.fork({ ...rest, image: parsed.baseImage } as ForkSource);
+    await applySteps(vm, parsed.steps, contextRoot);
+    return vm;
   }
 
   /**
