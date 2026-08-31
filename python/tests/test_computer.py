@@ -67,12 +67,13 @@ def session(session_id: str = "s0") -> dict[str, str]:
     return {"session_id": session_id, "state": "ready", "cwd": "/home/user"}
 
 
-def test_constructor_requires_base_url(monkeypatch) -> None:
+def test_control_only_client_defers_compute_placement_error(monkeypatch) -> None:
     monkeypatch.delenv("ARKER_BASE_URL", raising=False)
     monkeypatch.delenv("ARKER_REGION", raising=False)
     monkeypatch.delenv("ARKER_API_KEY", raising=False)
+    arker = sdk.Arker(api_key="ark_live_test")
     with pytest.raises(ValueError, match="provider and region or base_url are required"):
-        sdk.Arker(api_key="ark_live_test")
+        arker.vm("vm_01")
 
 
 def test_constructor_reads_env(monkeypatch) -> None:
@@ -179,11 +180,11 @@ def test_whoami_uses_authenticated_control_plane() -> None:
     with use_transport(t):
         identity = sdk.Arker(
             api_key="ark_live_test",
-            base_url="https://compute.invalid/api",
             control_base_url="https://control.invalid/api",
             retry=False,
         ).whoami()
 
+    assert isinstance(identity, sdk.WhoamiResponse)
     assert identity.org_id == "org_01"
     assert identity.org_name == "ArkerHQ"
 

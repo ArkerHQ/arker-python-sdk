@@ -34,6 +34,7 @@ from .computer import (
     SyncDirResult,
     Vm,
     VmList,
+    WhoamiResponse,
 )
 
 from . import daytona, e2b, modal
@@ -73,6 +74,7 @@ __all__ = [
     "SyncDirResult",
     "Vm",
     "VmList",
+    "WhoamiResponse",
     "daytona",
     "e2b",
     "modal",

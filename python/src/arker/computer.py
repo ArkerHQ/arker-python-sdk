@@ -361,14 +361,10 @@ class Arker:
 
         if not resolved_api_key:
             raise ValueError("api_key is required; pass api_key or set ARKER_API_KEY")
-        if not resolved_base_url:
-            raise ValueError(
-                "provider and region or base_url are required; pass provider and region, "
-                "base_url, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL"
-            )
-
         self._api_key = resolved_api_key
-        self._base_url = _normalize_base_url(resolved_base_url)
+        self._base_url = (
+            _normalize_base_url(resolved_base_url) if resolved_base_url else None
+        )
         self._control_base_url = _normalize_base_url(resolved_control_base_url)
         self._region = resolved_region
         self._provider = provider_value
@@ -376,6 +372,11 @@ class Arker:
 
     @property
     def base_url(self) -> str:
+        if not self._base_url:
+            raise ValueError(
+                "provider and region or base_url are required; pass provider and region, "
+                "base_url, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL"
+            )
         return self._base_url
 
     @property
@@ -629,7 +630,7 @@ class Arker:
             if source_vm_id is not None
             else ForkBySourceVmName(source_vm_name=source_vm_name, **request_options)
         )
-        base_url = source.base_url if isinstance(source, VM) else self._base_url
+        base_url = source.base_url if isinstance(source, VM) else self.base_url
         payload = self._request(
             "POST", "/v1/fork", body, base_url=base_url, max_queueing_s=queueing_timeout
         )
@@ -811,18 +812,18 @@ class Arker:
         # the regional endpoint (base_url) rather than the control plane: the
         # control-plane path (arker.ai → api_proxy_bash) does not route
         # /v1/filesystems, while the regional endpoint serves it.
-        payload = self._request("GET", path, base_url=self._base_url)
+        payload = self._request("GET", path, base_url=self.base_url)
         return _decode_model(ListFilesystemsResponse, payload)
 
     def create_filesystem(self, *, name: str) -> Filesystem:
         request = FilesystemCreateRequest(name=name)
-        return _filesystem(self._request("POST", "/v1/filesystems", request, base_url=self._base_url))
+        return _filesystem(self._request("POST", "/v1/filesystems", request, base_url=self.base_url))
 
     def get_filesystem(self, filesystem_id: str) -> Filesystem:
-        return _filesystem(self._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._base_url))
+        return _filesystem(self._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self.base_url))
 
     def delete_filesystem(self, filesystem_id: str) -> DeleteFilesystemResponse:
-        payload = self._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self._base_url)
+        payload = self._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self.base_url)
         return _decode_model(DeleteFilesystemResponse, payload)
 
     def _request(
@@ -839,7 +840,7 @@ class Arker:
             method,
             path,
             body,
-            base_url=base_url or self._base_url,
+            base_url=base_url or self.base_url,
             retry=self._retry,
             api_key=self._api_key,
             extra_headers=extra_headers,
@@ -859,7 +860,7 @@ class Arker:
         placement_provider = _optional_compute_provider(provider)
         if placement_provider and region and region.strip():
             return _compute_base_url(placement_provider, region)
-        return self._base_url
+        return self.base_url
 
 
 class VM:

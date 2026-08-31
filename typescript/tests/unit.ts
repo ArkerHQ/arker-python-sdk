@@ -565,13 +565,13 @@ async function testWhoamiUsesControlPlane(): Promise<void> {
   );
   const arker = new Arker({
     apiKey: "ark_test",
-    baseUrl: "https://compute.invalid/api",
     controlBaseUrl: "https://control.invalid/api",
     fetch: fetch.fetch,
     retry: false,
   });
 
   assert.deepEqual(await arker.whoami(), { org_id: "org_01", org_name: "ArkerHQ" });
+  assert.throws(() => arker.vm("vm_01"), /provider and region or baseUrl are required/i);
 }
 
 async function testDiscoverRegionsRequiresNoConfiguredClient(): Promise<void> {
