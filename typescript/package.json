@@ -102,6 +102,7 @@
     }
   },
   "dependencies": {
+    "dockerfile-ast": "^0.7.1",
     "tar": "^7.5.22",
     "ws": "^8.21.0"
   }
