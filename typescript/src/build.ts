@@ -32,6 +32,7 @@
  * explicit `chown -R`.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import nodePath from "node:path";
 
@@ -238,6 +239,7 @@ export async function applySteps(
         } catch (error) {
           throw new BuildError(`ADD ${step.url}: ${String(error)}`);
         }
+        verifyChecksum(step, payload);
         await vm.sync(step.dest, payload);
         continue;
       }
@@ -264,6 +266,30 @@ export async function applySteps(
       command = `su -p ${shellQuote(currentUser)} -c ${shellQuote(command)}`;
     }
     await runChecked(vm, command, `${step.kind.toUpperCase()} step`);
+  }
+}
+
+function verifyChecksum(step: Extract<Step, { kind: "add" }>, payload: Uint8Array): void {
+  if (!step.checksum) return;
+  const separator = step.checksum.indexOf(":");
+  const algorithm = separator === -1 ? "" : step.checksum.slice(0, separator);
+  const expected = separator === -1 ? "" : step.checksum.slice(separator + 1).toLowerCase();
+  if (!expected) {
+    throw new BuildError(
+      `ADD ${step.url}: --checksum must be <algorithm>:<hex>, got ${JSON.stringify(step.checksum)}`,
+    );
+  }
+  let digest: string;
+  try {
+    digest = crypto.createHash(algorithm).update(payload).digest("hex");
+  } catch {
+    throw new BuildError(`ADD ${step.url}: unknown checksum algorithm ${JSON.stringify(algorithm)}`);
+  }
+  if (digest !== expected) {
+    throw new BuildError(
+      `ADD ${step.url}: checksum mismatch, expected ${algorithm}:${expected} ` +
+        `but the downloaded bytes are ${algorithm}:${digest}`,
+    );
   }
 }
 
@@ -294,9 +320,7 @@ async function applyCopy(
       // A directory source copies its CONTENTS into the destination, which is
       // what syncDir does: `COPY src /app/src` puts src's files at /app/src,
       // not at /app/src/src.
-      const target = multiple
-        ? destinationFor(step.dest, path, multiple)
-        : step.dest.replace(/\/+$/, "");
+      const target = step.dest.replace(/\/+$/, "");
       // `.dockerignore` patterns are context-relative but syncDir reports
       // paths relative to the directory being synced, so re-anchor them.
       const prefix = relTo(path) === "" ? "" : `${relTo(path)}/`;
@@ -304,7 +328,11 @@ async function applyCopy(
         ignore: (rel: string) => ignore.ignores(prefix + rel),
       });
     } else {
-      await vm.sync(destinationFor(step.dest, path, multiple), fs.readFileSync(path));
+      const target = destinationFor(step.dest, path, multiple);
+      await vm.sync(target, fs.readFileSync(path));
+      if (fs.statSync(path).mode & 0o111) {
+        await runChecked(vm, `chmod +x ${shellQuote(target)}`, `COPY ${nodePath.basename(path)}`);
+      }
     }
   }
 
