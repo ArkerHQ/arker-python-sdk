@@ -40,10 +40,12 @@ from .generated.api_models import (
     ErrorResponse,
     Filesystem,
     FilesystemCreateRequest,
-    ForkRequest1,
-    ForkRequest2,
-    ForkRequest3,
-    ForkRequest4,
+    # `ForkRequest<N>` is positional — N is the index of the variant in the
+    # contract's `oneOf`, so inserting one upstream renumbers the rest. Alias
+    # them by what they select, so the numbers appear exactly here.
+    ForkRequest1 as ForkBySourceVmId,
+    ForkRequest2 as ForkBySourceVmName,
+    ForkRequest5 as ForkByImage,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -613,17 +615,18 @@ class Arker:
             registry_auth=auth,
             queueing_timeout=queueing_timeout,
         )
+        # No `dockerfile` arm: a Dockerfile never reaches here, because
+        # `_fork_dockerfile` builds it client-side and returns above. The API
+        # refuses the field outright.
         body = (
             # Truthiness, matching the exclusivity checks above and the TS SDK:
             # `image=""` is caller error, and treating it as "an image was
             # given" would discard a `source_vm_name` the caller did supply.
-            ForkRequest3(image=image, **request_options)
+            ForkByImage(image=image, **request_options)
             if image
-            else ForkRequest4(dockerfile=dockerfile, **request_options)
-            if dockerfile
-            else ForkRequest1(source_vm_id=source_vm_id, **request_options)
+            else ForkBySourceVmId(source_vm_id=source_vm_id, **request_options)
             if source_vm_id is not None
-            else ForkRequest2(source_vm_name=source_vm_name, **request_options)
+            else ForkBySourceVmName(source_vm_name=source_vm_name, **request_options)
         )
         base_url = source.base_url if isinstance(source, VM) else self._base_url
         payload = self._request(

@@ -867,7 +867,8 @@ class ForkRequest1:
     image: None = None
     dockerfile: None = None
     nestedvirt: bool | None = None
-    source_org_id: str | None = None
+    source_org_id: None = None
+    source_org_name: None = None
     name: str | None = None
     description: str | None = None
     public: bool | None = None
@@ -889,7 +890,8 @@ class ForkRequest2:
     image: None = None
     dockerfile: None = None
     nestedvirt: bool | None = None
-    source_org_id: str | None = None
+    source_org_id: None = None
+    source_org_name: None = None
     name: str | None = None
     description: str | None = None
     public: bool | None = None
@@ -906,12 +908,13 @@ class ForkRequest2:
 
 @dataclass(frozen=True)
 class ForkRequest3:
-    image: str
+    source_vm_name: str
+    source_org_id: str
     source_vm_id: None = None
-    source_vm_name: None = None
+    image: None = None
     dockerfile: None = None
     nestedvirt: bool | None = None
-    source_org_id: str | None = None
+    source_org_name: None = None
     name: str | None = None
     description: str | None = None
     public: bool | None = None
@@ -928,12 +931,13 @@ class ForkRequest3:
 
 @dataclass(frozen=True)
 class ForkRequest4:
-    dockerfile: str
+    source_vm_name: str
+    source_org_name: str
     source_vm_id: None = None
-    source_vm_name: None = None
     image: None = None
+    dockerfile: None = None
     nestedvirt: bool | None = None
-    source_org_id: str | None = None
+    source_org_id: None = None
     name: str | None = None
     description: str | None = None
     public: bool | None = None
@@ -948,7 +952,60 @@ class ForkRequest4:
     registry_auth: RegistryAuth | None = None
 
 
-ForkRequest: TypeAlias = ForkRequest1 | ForkRequest2 | ForkRequest3 | ForkRequest4
+@dataclass(frozen=True)
+class ForkRequest5:
+    image: str
+    source_vm_id: None = None
+    source_vm_name: None = None
+    dockerfile: None = None
+    nestedvirt: bool | None = None
+    source_org_id: None = None
+    source_org_name: None = None
+    name: str | None = None
+    description: str | None = None
+    public: bool | None = None
+    ssh_public_keys: list[str] | None = None
+    disk: bool | None = None
+    durable: bool | None = None
+    platforms: list[str] | None = None
+    layers: list[Literal['disk', 'memory']] | None = None
+    queueing_timeout: int | None = None
+    policies: PolicyWriteRequest | None = None
+    resources: ResourcesInput | None = None
+    registry_auth: RegistryAuth | None = None
+
+
+@dataclass(frozen=True)
+class ForkRequest6:
+    dockerfile: str
+    source_vm_id: None = None
+    source_vm_name: None = None
+    image: None = None
+    nestedvirt: bool | None = None
+    source_org_id: None = None
+    source_org_name: None = None
+    name: str | None = None
+    description: str | None = None
+    public: bool | None = None
+    ssh_public_keys: list[str] | None = None
+    disk: bool | None = None
+    durable: bool | None = None
+    platforms: list[str] | None = None
+    layers: list[Literal['disk', 'memory']] | None = None
+    queueing_timeout: int | None = None
+    policies: PolicyWriteRequest | None = None
+    resources: ResourcesInput | None = None
+    registry_auth: RegistryAuth | None = None
+
+
+ForkRequest: TypeAlias = (
+    ForkRequest1
+    | ForkRequest2
+    | ForkRequest3
+    | ForkRequest4
+    | ForkRequest5
+    | ForkRequest6
+)
 
 
 @dataclass(frozen=True)
@@ -958,6 +1015,7 @@ class RunRequest:
     command: str | None = None
     timeout: int | None = None
     time_to_background: int | None = None
+    background: bool | None = None
     queueing_timeout: int | None = None
     end_symbol: str | None = 'auto'
     vcpu_count: int | None = None
