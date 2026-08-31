@@ -40,6 +40,8 @@ import os
 import shlex
 from typing import Protocol
 
+from .dockerignore import load_dockerignore
+from .urlfetch import UrlFetchError, fetch_url as _fetch_url
 from .build_spec import (
     Add,
     Arg,
@@ -68,6 +70,51 @@ class _VM(Protocol):
     def run(self, command: str, **kwargs): ...
     def sync(self, path: str, data: bytes | str | None = None): ...
     def sync_dir(self, local_dir: str, remote_dir: str, **kwargs): ...
+
+
+def _ignored_under(context_root: str):
+    """A predicate over paths relative to a COPY's source directory.
+
+    `.dockerignore` patterns are written relative to the CONTEXT root, but
+    `sync_dir` reports paths relative to the directory being synced. `COPY src
+    /app` syncing `<context>/src` hands us `index.js`, which has to be tested
+    as `src/index.js` or a pattern like `src/secret` would never fire.
+    """
+    # realpath BOTH sides. `_resolve_sources` returns resolved paths, and on a
+    # platform where the context sits under a symlink (macOS /tmp ->
+    # /private/tmp) comparing a resolved path against an unresolved root yields
+    # a relpath like `../../private/tmp/...`, which matches no pattern and
+    # silently disables every rule.
+    root = os.path.realpath(context_root)
+    ignore = load_dockerignore(root)
+
+    def make(local_dir: str):
+        prefix = os.path.relpath(os.path.realpath(local_dir), root).replace(os.sep, "/")
+        prefix = "" if prefix == "." else prefix + "/"
+        return lambda rel: ignore.ignores(prefix + rel)
+
+    return make
+
+
+def _env_value(value: str) -> str:
+    """Quote an `ENV`/`ARG` value for `export`.
+
+    A value containing `$` is DOUBLE-quoted so the guest shell expands it.
+    `ENV PATH=/opt/bin:$PATH` is one of the most common lines in any
+    Dockerfile, and single-quoting it sets the literal string `$PATH` — which
+    then breaks every later `RUN` and every `run()` the customer makes, with a
+    "command not found" three steps away from the cause.
+
+    The trade-off is deliberate: double quotes make the value an expansion
+    context, so `$(...)` would also run. That is guest-side, where `RUN`
+    already grants arbitrary execution, so it costs nothing that was not
+    already spent. Backslash, backtick and `"` are escaped so the value cannot
+    break out of the quoting itself.
+    """
+    if "$" not in value:
+        return shlex.quote(value)
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return f'"{escaped}"'
 
 
 def _resolve_sources(source: str, context_root: str) -> list[str]:
@@ -123,6 +170,18 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
     for source in step.sources:
         resolved.extend(_resolve_sources(source, context_root))
 
+    root = os.path.realpath(context_root)
+    ignore = load_dockerignore(root)
+    make_ignore = _ignored_under(root)
+
+    def excluded(path: str) -> bool:
+        rel = os.path.relpath(os.path.realpath(path), root).replace(os.sep, "/")
+        return ignore.ignores(rel)
+
+    # A named source that is itself ignored is dropped, the same as Docker
+    # dropping it from the context before COPY ever looks.
+    resolved = [p for p in resolved if not excluded(p)]
+
     multiple = len(resolved) > 1
     for path in resolved:
         if os.path.isdir(path):
@@ -132,7 +191,7 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
             target = step.dest.rstrip("/") if not multiple else _copy_destination(
                 step.dest, path, multiple
             )
-            vm.sync_dir(path, target)
+            vm.sync_dir(path, target, ignore=make_ignore(path))
         else:
             with open(path, "rb") as handle:
                 vm.sync(_copy_destination(step.dest, path, multiple), handle.read())
@@ -176,19 +235,35 @@ def _run_checked(vm: _VM, command: str, what: str) -> None:
     raise BuildError(f"{what} failed with exit code {code}{detail}")
 
 
-def _fetch_url(url: str) -> bytes:
-    """Download `url` from HERE, the way Docker downloads it on the builder.
+def _run_checked(vm: _VM, command: str, what: str) -> None:
+    """Run `command` and abort the build unless it succeeded.
 
-    Fetching inside the guest instead would need `curl` or `wget` in the image,
-    which a minimal base does not have — `ubuntu:24.04` ships neither, so
-    `ADD` failed with exit 127 on the commonest base there is. Docker has no
-    such requirement because the builder does the download and copies the bytes
-    in, and this machine is our builder.
+    Docker fails a build on a non-zero `RUN`, and the reason is not tidiness: a
+    build that continues past a failure applies every later instruction on top
+    of it and hands back a VM that looks built and is not. `RUN npm install`
+    failing must not produce a "successful" image with no node_modules.
+
+    `exit_code is None` is also a failure. It means a prompt ended the command
+    rather than its completion marker — an interpreter left running by an
+    earlier step swallowed it — so the command never ran at all. Folding that
+    to success would be the same lie in a quieter form.
     """
-    import urllib.request
-
-    with urllib.request.urlopen(url) as response:  # noqa: S310 - the URL is the caller's own Dockerfile
-        return response.read()
+    result = vm.run(command)
+    code = getattr(result, "exit_code", 0)
+    if code == 0:
+        return
+    detail = ""
+    for stream in ("stderr", "stdout"):
+        text = (getattr(result, stream, "") or "").strip()
+        if text:
+            detail = f": {text[:400]}"
+            break
+    if code is None:
+        raise BuildError(
+            f"{what} never reached the shell (an interpreter started by an earlier "
+            f"instruction is holding the session){detail}"
+        )
+    raise BuildError(f"{what} failed with exit code {code}{detail}")
 
 
 def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
@@ -200,14 +275,14 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
             command = step.command
         elif isinstance(step, Env):
             command = "export " + " ".join(
-                f"{key}={shlex.quote(value)}" for key, value in step.pairs
+                f"{key}={_env_value(value)}" for key, value in step.pairs
             )
         elif isinstance(step, Arg):
             if step.default is None:
                 # No --build-arg channel exists, so an ARG with no default can
                 # only ever be unset — same as Docker leaves it.
                 continue
-            command = f"export {step.name}={shlex.quote(step.default)}"
+            command = f"export {step.name}={_env_value(step.default)}"
         elif isinstance(step, Workdir):
             quoted = shlex.quote(step.path)
             # Docker creates a WORKDIR that doesn't exist; a bare `cd` would
@@ -221,6 +296,8 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
             # network tooling and no shell for this at all.
             try:
                 payload = _fetch_url(step.url)
+            except UrlFetchError as error:
+                raise BuildError(f"ADD {step.url}: {error}") from error
             except Exception as error:  # noqa: BLE001 - any fetch failure is a build failure
                 raise BuildError(f"ADD {step.url}: {error}") from error
             vm.sync(step.dest, payload)
@@ -237,6 +314,11 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
         else:  # pragma: no cover - every step type is handled above
             raise BuildError(f"unhandled instruction: {step!r}")
 
-        if current_user is not None:
+        # Only a RUN (or an ADD's fetch) needs to become the USER. Wrapping
+        # `export`/`cd` would run them in a `su -c` subshell that exits
+        # immediately, throwing the state away — so `ENV` after `USER` silently
+        # did nothing at all. Docker treats ENV/WORKDIR as metadata that USER
+        # does not affect, and this matches that.
+        if current_user is not None and isinstance(step, (Run, Add)):
             command = f"su -p {shlex.quote(current_user)} -c {shlex.quote(command)}"
         _run_checked(vm, command, f"{step.__class__.__name__.upper()} step")

@@ -21,6 +21,7 @@ class FakeVM:
 
     def __init__(self, exit_codes=None):
         self.calls: list[tuple] = []
+        self.ignores: list = []
         # Per-command exit codes, keyed by a substring of the command.
         self.exit_codes = exit_codes or {}
 
@@ -38,6 +39,7 @@ class FakeVM:
 
     def sync_dir(self, local_dir, remote_dir, **kwargs):
         self.calls.append(("sync_dir", os.path.basename(local_dir.rstrip("/")), remote_dir))
+        self.ignores.append(kwargs.get("ignore") or (lambda rel: False))
         return None
 
     @property
@@ -212,3 +214,74 @@ def test_add_url_is_fetched_by_the_client_not_the_guest(context, monkeypatch):
     assert ("sync", "/opt/f.txt", len(b"remote-bytes")) in vm.calls, vm.calls
     # Nothing is asked of the guest: no curl, no wget, no shell at all.
     assert vm.commands == [], vm.commands
+
+
+def test_dockerignore_excludes_files_from_a_copied_directory(context):
+    """`COPY . /app` must not ship .git or .env into the VM."""
+    (context / ".dockerignore").write_text(".git\nsecrets.env\n")
+    (context / "secrets.env").write_text("TOKEN=hunter2\n")
+    (context / ".git").mkdir()
+    (context / ".git" / "config").write_text("[remote]\n")
+
+    vm = FakeVM()
+    apply_steps(vm, parse_dockerfile("FROM x\nCOPY . /app\n").steps, str(context))
+
+    sync_dirs = [c for c in vm.calls if c[0] == "sync_dir"]
+    assert len(sync_dirs) == 1, vm.calls
+    ignore = vm.ignores[-1]
+    assert ignore(".git/config"), "an ignored directory's contents must be excluded"
+    assert ignore("secrets.env")
+    assert not ignore("app.js")
+
+
+def test_dockerignore_survives_a_symlinked_context_root(tmp_path, context):
+    """Regression: the context reached through a symlink (macOS /tmp ->
+    /private/tmp) made every rule silently stop matching.
+
+    `_resolve_sources` returns realpath'd paths, so comparing them against an
+    unresolved root produced a relpath like `../../private/tmp/...`, which
+    matches no pattern. The failure mode is the dangerous one: the build
+    succeeds and quietly copies everything.
+    """
+    (context / ".dockerignore").write_text("secrets.env\n")
+    (context / "secrets.env").write_text("TOKEN=hunter2\n")
+
+    link = tmp_path / "via-symlink"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    os.symlink(str(context), str(link))
+
+    vm = FakeVM()
+    apply_steps(vm, parse_dockerfile("FROM x\nCOPY . /app\n").steps, str(link))
+    assert vm.ignores[-1]("secrets.env"), "rules must still apply through a symlink"
+
+
+def test_env_with_a_variable_reference_expands(context):
+    """`ENV PATH=/opt/bin:$PATH` is one of the most common Dockerfile lines.
+
+    Single-quoting the value set the literal string `$PATH`, breaking every
+    later RUN and every run() the customer makes — with a "command not found"
+    three steps away from the cause.
+    """
+    vm = build("FROM x\nENV PATH=/opt/bin:$PATH\n", context)
+    assert vm.commands == ['export PATH="/opt/bin:$PATH"']
+
+
+def test_env_without_a_variable_stays_single_quoted(context):
+    """Only `$` needs the weaker quoting; everything else keeps the strong form."""
+    vm = build('FROM x\nENV MSG="hello world"\n', context)
+    assert vm.commands == ["export MSG='hello world'"]
+
+
+def test_env_and_workdir_after_user_are_not_wrapped(context):
+    """`su -c` is a fresh process, so wrapping an export or a cd threw the
+    state away: `ENV` after `USER` silently did nothing at all.
+
+    Docker treats ENV/WORKDIR as metadata that USER does not affect.
+    """
+    vm = build("FROM x\nUSER app\nENV AFTER=1\nWORKDIR /srv\nRUN hi\n", context)
+    assert vm.commands == [
+        "export AFTER=1",
+        "mkdir -p /srv && cd /srv",
+        "su -p app -c hi",
+    ]
