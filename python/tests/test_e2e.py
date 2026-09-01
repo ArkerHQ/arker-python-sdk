@@ -43,7 +43,7 @@ def main() -> int:
         run = vm.run("printf 'hello-from-python-sdk\\n'")
         assert isinstance(run, CompletedRunResult)
         assert run.exit_code == 0
-        assert run.stdout == b"hello-from-python-sdk\n"
+        assert run.stdout == "hello-from-python-sdk\n"
 
         vm.sync("/home/user/python-sdk-e2e.txt", b"hello-from-python-sdk\n")
         assert vm.sync("/home/user/python-sdk-e2e.txt") == b"hello-from-python-sdk\n"
@@ -52,7 +52,7 @@ def main() -> int:
         try:
             child_run = child.run("cat /home/user/python-sdk-e2e.txt")
             assert isinstance(child_run, CompletedRunResult)
-            assert child_run.stdout == b"hello-from-python-sdk\n"
+            assert child_run.stdout == "hello-from-python-sdk\n"
         finally:
             child.delete()
 

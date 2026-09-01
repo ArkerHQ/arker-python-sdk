@@ -64,7 +64,7 @@ try:
     run = vm.run(f"printf '{hello}\\n'")
     if not isinstance(run, CompletedRunResult):
         raise RuntimeError(f"expected completed run result, got {run!r}")
-    if run.exit_code != 0 or run.stdout != f"{hello}\n".encode():
+    if run.exit_code != 0 or run.stdout != f"{hello}\n":
         raise RuntimeError(f"unexpected run output: exit={run.exit_code} stdout={run.stdout!r}")
 
     vm.sync("/home/user/python-sdk-demo.txt", f"{hello}\n")

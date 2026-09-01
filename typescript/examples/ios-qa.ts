@@ -149,9 +149,10 @@ const screenshotTimeout = envInt("IOS_QA_SCREENSHOT_TIMEOUT_SECS", 300);
 let vm: VM | undefined;
 
 try {
-  vm = await ar.fork(source, {
+  vm = await ar.fork({
+    sourceVmName: source,
     name: `ios-qa-${Date.now()}`,
-    resources: { vcpu, memory_mib: memoryMib },
+    resources: { vcpu, memoryMib },
   });
   console.log(`forked ${vm.id} from ${source}${vmMetadata(vm)}`);
 

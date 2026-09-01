@@ -112,7 +112,8 @@ class FakeArker:
         self.vm = FakeVM(self.build_exit_code)
         self.instances.append(self)
 
-    def fork(self, source: str, **kwargs: Any) -> FakeVM:
+    def fork(self, **kwargs: Any) -> FakeVM:
+        source = kwargs.pop("source_vm_name")
         self.forks.append((source, kwargs))
         return self.vm
 

@@ -14,7 +14,8 @@ def prepare_vm(ark: Arker) -> VM:
     """Fork one VM and install the toolchain on it. Every agent forks from this."""
     # A small slice is enough for prep: it installs, it does not train.
     prep = ark.fork(source_vm_name="ubuntu-gpu", platforms=["x86_64-h100sxm"], name="prep",
-                    vgpu=0.25, vcpu_count=2, memory_mib=16384, disk_mib=102400,
+                    resources={"vgpu": 0.25, "vcpu": 2,
+                               "memory_mib": 16384, "disk_mib": 102400},
                     policies={
                         "secrets": {"OPENROUTER_API_KEY": os.environ["OPENROUTER_API_KEY"]},
                         "policies": [
@@ -53,12 +54,11 @@ def prepare_vm(ark: Arker) -> VM:
 
 def run_agent(ark: Arker, prep: VM, n: int, vgpu: float) -> list[dict]:
     """One agent: fork off prep, run TURNS turns, hand back its experiments."""
-    vm = ark.fork(
-        source=prep,
+    vm = prep.fork(
         name=f"agent{n}",
-        vgpu=vgpu,
         platforms=["x86_64-h100sxm"],
-        vcpu_count=2, memory_mib=16384, disk_mib=102400)
+        resources={"vgpu": vgpu, "vcpu": 2,
+                   "memory_mib": 16384, "disk_mib": 102400})
 
     try:
         for turn in range(1, TURNS + 1):

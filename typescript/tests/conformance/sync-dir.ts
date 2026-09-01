@@ -64,7 +64,7 @@ async function main(): Promise<void> {
   const remote = `/home/user/syncdir-${Date.now()}`;
   let vm: VM | undefined;
   try {
-    vm = await arker.fork(source);
+    vm = await arker.fork({ sourceVmName: source });
 
     // 1) Full sync: all 3 files are new.
     eq(await vm.syncDir(local, remote), 3, 0, "full sync");

@@ -58,7 +58,7 @@ def main() -> None:
         print('   $ arker fork "$ARKER_SOURCE_VM"')
         print("   $ arker policies set $VM  # allow registry.npmjs.org:443")
         vm = arker.fork(
-            source_vm,
+            source_vm_name=source_vm,
             name="react-policy-demo",
             policies=BUILD_POLICY,
         )

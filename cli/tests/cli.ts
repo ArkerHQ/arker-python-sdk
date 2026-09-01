@@ -308,14 +308,9 @@ async function testForkOmitsRetiredGpuResourceKeys(): Promise<void> {
         method: "POST",
         url: "/api/v1/fork",
         body: {
-          source_vm_id: null,
           source_vm_name: "source-vm",
-          name: null,
-          description: null,
-          public: null,
-          durable: null,
           platforms: ["x86_64-l40s"],
-          resources: { vcpu: null, memory_mib: null, disk_mib: null, vgpu: 0.25 },
+          resources: { vgpu: 0.25 },
         },
       }]);
     },

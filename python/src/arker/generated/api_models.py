@@ -867,7 +867,7 @@ class PolicyDoc:
 
 
 @dataclass(frozen=True)
-class ForkRequest1:
+class ForkFromVmIdRequest:
     source_vm_id: str
     source_vm_name: None = None
     image: None = None
@@ -890,7 +890,7 @@ class ForkRequest1:
 
 
 @dataclass(frozen=True)
-class ForkRequest2:
+class ForkFromVmNameRequest:
     source_vm_name: str
     source_vm_id: None = None
     image: None = None
@@ -913,7 +913,7 @@ class ForkRequest2:
 
 
 @dataclass(frozen=True)
-class ForkRequest3:
+class ForkFromVmNameAndOrgIdRequest:
     source_vm_name: str
     source_org_id: str
     source_vm_id: None = None
@@ -936,7 +936,7 @@ class ForkRequest3:
 
 
 @dataclass(frozen=True)
-class ForkRequest4:
+class ForkFromVmNameAndOrgNameRequest:
     source_vm_name: str
     source_org_name: str
     source_vm_id: None = None
@@ -959,7 +959,7 @@ class ForkRequest4:
 
 
 @dataclass(frozen=True)
-class ForkRequest5:
+class ForkFromImageRequest:
     image: str
     source_vm_id: None = None
     source_vm_name: None = None
@@ -982,7 +982,7 @@ class ForkRequest5:
 
 
 @dataclass(frozen=True)
-class ForkRequest6:
+class ForkFromDockerfileRequest:
     dockerfile: str
     source_vm_id: None = None
     source_vm_name: None = None
@@ -1005,12 +1005,12 @@ class ForkRequest6:
 
 
 ForkRequest: TypeAlias = (
-    ForkRequest1
-    | ForkRequest2
-    | ForkRequest3
-    | ForkRequest4
-    | ForkRequest5
-    | ForkRequest6
+    ForkFromVmIdRequest
+    | ForkFromVmNameRequest
+    | ForkFromVmNameAndOrgIdRequest
+    | ForkFromVmNameAndOrgNameRequest
+    | ForkFromImageRequest
+    | ForkFromDockerfileRequest
 )
 
 

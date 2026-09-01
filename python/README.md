@@ -32,7 +32,7 @@ Fork a source VM, run a command, sync a file, and delete the VM:
 from arker import Arker
 
 arker = Arker()
-vm = arker.fork("ubuntu-coding")
+vm = arker.fork(source_vm_name="ubuntu-coding")
 
 result = vm.run("python3 -c 'print(2 + 2)'")
 print(result.stdout.decode())

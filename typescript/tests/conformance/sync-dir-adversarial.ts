@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   const bigRemote = `/home/user/adv-big-${Date.now()}`;
   let vm: VM | undefined;
   try {
-    vm = await arker.fork(source);
+    vm = await arker.fork({ sourceVmName: source });
     await vm.run("echo warm");
 
     // Concurrent workload: network + compute + writes, continuously ~22 s.

@@ -35,7 +35,6 @@ import {
 import { bridgePty } from "./cli-pty.js";
 import type {
   PolicyDoc,
-  ResourcesInput,
   RunRecord,
   RunSignal,
   VM,
@@ -639,20 +638,19 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     .filter((token) => token.length > 0);
 
   // Resource overrides — same flag names as `arker update` for consistency.
-  // Folded into the contract's single `resources` object; unset fields stay
-  // null so the source VM's defaults apply.
+  // Folded into the contract's single `resources` object.
   const vcpu = numFlag(args, "vcpu");
   const memoryMib = numFlag(args, "memory-mib");
   const diskMib = numFlag(args, "disk-mib");
   const vgpu = numFlag(args, "vgpu");
   const hasResources = [vcpu, memoryMib, diskMib, vgpu]
     .some((value) => value !== undefined);
-  const resources: ResourcesInput | undefined = hasResources
+  const resources = hasResources
     ? {
-        vcpu: vcpu ?? null,
-        memory_mib: memoryMib ?? null,
-        disk_mib: diskMib ?? null,
-        vgpu: vgpu ?? null,
+        ...(vcpu !== undefined ? { vcpu } : {}),
+        ...(memoryMib !== undefined ? { memoryMib } : {}),
+        ...(diskMib !== undefined ? { diskMib } : {}),
+        ...(vgpu !== undefined ? { vgpu } : {}),
       }
     : undefined;
 
@@ -662,17 +660,20 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const disk = boolFlag(args, "no-disk") ? false : undefined;
 
   const queueingTimeout = numFlag(args, "queueing-timeout");
+  const source = sourceVmId
+    ? { sourceVmId }
+    : sourceOrgId
+      ? { sourceVmName: sourceVmName!, sourceOrgId }
+      : { sourceVmName: sourceVmName! };
   const computer = await client.fork({
-    sourceVmId,
-    sourceVmName,
-    sourceOrgId,
+    ...source,
     name,
     description,
     public: publicFlag,
     ...(platforms && platforms.length > 0 ? { platforms } : {}),
     ...(resources ? { resources } : {}),
     ...(disk !== undefined ? { disk } : {}),
-    ...(queueingTimeout !== undefined ? { queueing_timeout: queueingTimeout } : {}),
+    ...(queueingTimeout !== undefined ? { queueingTimeout } : {}),
   });
   out({ vm_id: computer.id });
 }
@@ -1131,10 +1132,10 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
     if (!sourceVmName) {
       die("usage: arker shell <vm_id> | --source-vm-name <name> [--source-org-id <org>]");
     }
-    computer = await client.fork({
-      sourceVmName,
-      sourceOrgId: args.flags["source-org-id"] as string | undefined,
-    });
+    const sourceOrgId = args.flags["source-org-id"] as string | undefined;
+    computer = await client.fork(
+      sourceOrgId ? { sourceVmName, sourceOrgId } : { sourceVmName },
+    );
     err(`forked ${computer.id}`);
   }
 

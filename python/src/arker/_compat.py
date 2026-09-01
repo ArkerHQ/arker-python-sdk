@@ -49,7 +49,10 @@ def arker_source(config: dict[str, Any] | None = None) -> str:
 def arker_create(config: dict[str, Any] | None = None, *, name: str | None = None, template_id: str | None = None) -> VM:
     cfg = config or {}
     source = template_id or arker_source(config)
-    return arker_client(config).fork(source, name=name or cfg.get("name"))
+    return arker_client(config).fork(
+        source_vm_name=source,
+        name=name or cfg.get("name"),
+    )
 
 
 def arker_get(vm_id: str, config: dict[str, Any] | None = None) -> VM | None:

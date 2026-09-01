@@ -14,9 +14,13 @@ MANAGED_PATHS = (
     Path("openapi.json"),
     Path("typescript/src/generated/api-types.ts"),
     Path("python/src/arker/generated/api_models.py"),
+    Path("typescript/src/generated/fork.ts"),
+    Path("python/src/arker/generated/fork.py"),
 )
-TYPESCRIPT_PATH = MANAGED_PATHS[1]
-PYTHON_PATH = MANAGED_PATHS[2]
+TYPESCRIPT_PATH = Path("typescript/src/generated/api-types.ts")
+PYTHON_PATH = Path("python/src/arker/generated/api_models.py")
+TYPESCRIPT_FORK_PATH = Path("typescript/src/generated/fork.ts")
+PYTHON_FORK_PATH = Path("python/src/arker/generated/fork.py")
 
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -55,17 +59,25 @@ def test_generation_is_deterministic_for_both_languages() -> None:
                 output,
             )
 
-        for relative_path in (TYPESCRIPT_PATH, PYTHON_PATH):
+        for relative_path in MANAGED_PATHS[1:]:
             first_bytes = (Path(first) / relative_path).read_bytes()
             second_bytes = (Path(second) / relative_path).read_bytes()
             assert first_bytes == second_bytes
 
         typescript = (Path(first) / TYPESCRIPT_PATH).read_text()
         python = (Path(first) / PYTHON_PATH).read_text()
+        python_fork = (Path(first) / PYTHON_FORK_PATH).read_text()
+        typescript_fork = (Path(first) / TYPESCRIPT_FORK_PATH).read_text()
         assert "export interface operations" in typescript
-        assert "@dataclass(frozen=True)\nclass ForkRequest" in python
-        assert "class ForkRequest" in python
+        assert "class ForkFromVmIdRequest" in python
+        assert "class ForkFromVmNameAndOrgNameRequest" in python
+        assert re.search(r"class ForkRequest\d+", python) is None
         assert "class ListVmsParameters" in python
+        assert "class ForkByVmNameAndOrgNameOptions" in python_fork
+        assert "def fork_operation(" in python_fork
+        assert 'FORK_RETRY_WINDOW_FIELD = \'queueing_timeout\'' in python_fork
+        assert "export async function forkOperation(" in typescript_fork
+        assert 'FORK_RETRY_WINDOW_FIELD = "queueing_timeout"' in typescript_fork
 
         operation_ids = {
             operation["operationId"]
@@ -110,6 +122,61 @@ def test_generation_is_deterministic_for_both_languages() -> None:
         assert annotations(python, "SyncOperation")["success"] == "SyncResponse"
 
 
+def test_fork_generation_carries_new_contract_fields() -> None:
+    contract = json.loads((REPO_ROOT / "openapi.json").read_text())
+    contract["components"]["schemas"]["ForkRequest"]["properties"][
+        "future_limit_mib"
+    ] = {"type": ["integer", "null"]}
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        contract_path = root / "openapi.json"
+        contract_path.write_text(json.dumps(contract))
+        run(
+            "./scripts/generate-openapi",
+            "--contract",
+            str(contract_path),
+            "--output-root",
+            str(root),
+        )
+
+        python_script = root / "mutation.py"
+        python_script.write_text(
+            "import json, runpy\n"
+            + "module = runpy.run_path("
+            + repr(str(root / PYTHON_FORK_PATH))
+            + ")\n"
+            + "calls = []\n"
+            + "def request(method, path, body, **options):\n"
+            + "    calls.append(body)\n"
+            + "    return {}\n"
+            + "module['fork_operation']("
+            + "{'source_vm_id': 'vm_123', 'future_limit_mib': 4096}, "
+            + "request=request, base_url='https://example.invalid/api')\n"
+            + "print(json.dumps(calls))\n"
+        )
+        python_result = run(
+            "uv", "run", "--project", "python", "python", str(python_script)
+        )
+        assert json.loads(python_result.stdout) == [
+            {"source_vm_id": "vm_123", "future_limit_mib": 4096}
+        ]
+
+        typescript_fork = root / TYPESCRIPT_FORK_PATH
+        script = root / "mutation.ts"
+        script.write_text(
+            "import { encodeForkRequest } from "
+            + json.dumps(str(typescript_fork))
+            + ";\nconsole.log(JSON.stringify(encodeForkRequest({"
+            + 'sourceVmId: "vm_123", futureLimitMib: 4096 })));\n'
+        )
+        result = run("bun", str(script))
+        assert json.loads(result.stdout) == {
+            "source_vm_id": "vm_123",
+            "future_limit_mib": 4096,
+        }
+
+
 def test_public_wire_types_are_generated() -> None:
     schemas = set(
         json.loads((REPO_ROOT / "openapi.json").read_text())["components"][
@@ -152,8 +219,6 @@ def test_public_wire_types_are_generated() -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert {
-        "ForkRequest1",
-        "ForkRequest2",
         "ListFilesystemsParameters",
         "ListOrgRunsParameters",
         "ListRunsParameters",
@@ -167,6 +232,14 @@ def test_public_wire_types_are_generated() -> None:
         "SyncReadOperationRequest",
         "SyncWriteOperationRequest",
     }.issubset(called_python_models)
+    assert "ForkRequest1" not in called_python_models
+    assert "ForkRequest2" not in called_python_models
+    assert any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "generated.fork"
+        and any(alias.name == "fork_operation" for alias in node.names)
+        for node in python_module.body
+    )
 
 
 def test_sdk_runtime_uses_only_current_public_error_codes() -> None:
@@ -237,18 +310,9 @@ def test_public_surface_uses_only_current_names_and_copy() -> None:
 
     assert "network" not in schemas["ForkRequest"]["properties"]
     assert "egress" not in schemas["ForkRequest"]["properties"]
-    assert "background" not in schemas["RunRequest"]["properties"]
+    assert schemas["RunRequest"]["properties"]["background"]["deprecated"] is True
 
-    def assert_not_deprecated(value: object) -> None:
-        if isinstance(value, dict):
-            assert value.get("deprecated") is not True
-            for child in value.values():
-                assert_not_deprecated(child)
-        elif isinstance(value, list):
-            for child in value:
-                assert_not_deprecated(child)
-
-    assert_not_deprecated(contract)
+    assert schemas["ForkRequest"]["properties"]["source_org_id"]["deprecated"] is True
 
     typescript = (REPO_ROOT / "typescript/src/index.ts").read_text()
     python_init = (REPO_ROOT / "python/src/arker/__init__.py").read_text()
@@ -395,6 +459,7 @@ FAST_TESTS = (
 
 ALL_TESTS = (
     test_generation_is_deterministic_for_both_languages,
+    test_fork_generation_carries_new_contract_fields,
     *FAST_TESTS,
     test_sync_from_local_contract_regenerates_all_managed_files,
     test_sync_requires_an_explicit_local_contract,

@@ -7,6 +7,29 @@
 
 import { runPollBudgetMs } from "./internal/run-poll.js";
 import type { components, operations } from "./generated/api-types.js";
+import {
+  encodeForkRequest,
+  forkOperation,
+  type ForkByDockerfileOptions as GeneratedForkByDockerfileOptions,
+  type ForkFromVmOptions,
+  type ForkOptions as GeneratedForkOptions,
+} from "./generated/fork.js";
+export type {
+  ForkByImageOptions,
+  ForkByNameOptions,
+  ForkByVmIdOptions,
+  ForkByVmNameAndOrgIdOptions,
+  ForkByVmNameAndOrgNameOptions,
+  ForkByVmNameOptions,
+  ForkFromVmOptions,
+} from "./generated/fork.js";
+
+export type ForkByDockerfileOptions = GeneratedForkByDockerfileOptions & {
+  context?: string;
+};
+export type ForkOptions =
+  | Exclude<GeneratedForkOptions, GeneratedForkByDockerfileOptions>
+  | ForkByDockerfileOptions;
 
 type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
 type ApiQuery<Name extends keyof operations> = NonNullable<
@@ -305,7 +328,6 @@ export type Rewrite = ApiSchema<"Rewrite">;
  * range (`[1000, 2000]`). A `ports` list may mix the two. */
 export type PortSpec = NonNullable<PolicyMatch["ports"]>[number];
 export type ForkRequest = ApiSchema<"ForkRequest">;
-export type ForkOptions = ForkRequest;
 export type VmResources = ApiSchema<"VmResources">;
 export type ResourcesInput = ApiSchema<"ResourcesInput">;
 export type VmNetwork = ApiSchema<"VmNetwork">;
@@ -579,7 +601,7 @@ export class ArkerError extends Error {
   }
 }
 
-function rejectUnsupportedNetworkInputs(operation: "fork" | "run", request: unknown): void {
+function rejectUnsupportedRunNetworkInputs(request: unknown): void {
   if (request == null || typeof request !== "object") return;
   const input = request as Record<string, unknown>;
   const fields = ["network", "egress"].filter(
@@ -588,81 +610,10 @@ function rejectUnsupportedNetworkInputs(operation: "fork" | "run", request: unkn
   if (fields.length > 0) {
     throw new ArkerError(
       "bad_request",
-      `${operation} ${fields.join("/")} inputs are not supported; use policies`,
+      `run ${fields.join("/")} inputs are not supported; use policies`,
       400,
     );
   }
-}
-
-function rejectUnsupportedForkResourceInputs(request: unknown): void {
-  if (request == null || typeof request !== "object") return;
-  const input = request as Record<string, unknown>;
-  const fields = ["vcpu_count", "memory_mib", "disk_mib"].filter(
-    (field) => input[field] !== undefined,
-  );
-  if (fields.length > 0) {
-    throw new ArkerError(
-      "bad_request",
-      `fork ${fields.join("/")} inputs are not supported; use resources`,
-      400,
-    );
-  }
-}
-
-/** Source for `Arker.fork()`. Exactly one of `sourceVmId` or
- * `sourceVmName` must be set. When `sourceVmName` is set,
- * `sourceOrgId` selects which organization owns the name. Omit it to let the
- * service resolve the current public catalog or caller-owned source.
- *
- * Distinct from the new VM's `name`, which is the *destination* name. */
-export interface ForkSource {
-  sourceVmId?: ForkRequest["source_vm_id"];
-  sourceVmName?: ForkRequest["source_vm_name"];
-  sourceOrgId?: ForkRequest["source_org_id"];
-  /** OCI image to create the VM from instead of forking an existing VM —
-   * `ubuntu:24.04`, `ghcr.io/org/img:v1`, `img@sha256:...`. A bare reference,
-   * never a URI; an unqualified name resolves against Docker Hub. Exclusive
-   * with the VM selectors above.
-   *
-   * The image is pulled and converted on the host, so the first fork of a
-   * given image takes tens of seconds and later ones reuse the cached layers.
-   * Inputs that only mean something relative to a source VM (`layers`,
-   * `public`, GPU fields) are rejected by the service rather than silently
-   * ignored.
-   *
-   * `platforms` MATTERS here, and is served. The image is pulled for the
-   * architecture of whatever host the request lands on, so an image published
-   * only for amd64 (`pytorch/pytorch`, for one) fails on an arm64 host: it
-   * converts and boots, then the guest cannot execute anything in its own
-   * filesystem. Pin an x86 platform for such an image:
-   *
-   *     await arker.fork({ image: "pytorch/pytorch:latest",
-   *                        platforms: ["icelake"] });
-   *
-   * The image's `ENV`, `USER` and `WORKDIR` ARE applied, so a tool on the
-   * image's own `PATH` runs without a prefix and the first run starts in the
-   * image's working directory. `CMD`/`ENTRYPOINT` are recorded but NOT
-   * started — a VM whose entrypoint was running would be busy from birth,
-   * which blocks idle suspend. Start the workload yourself when you want it. */
-  image?: string;
-  /** Dockerfile to build. A PATH when it names an existing file, Dockerfile
-   * TEXT otherwise, so both `dockerfile: "./Dockerfile"` and
-   * `dockerfile: "FROM ubuntu:24.04\nRUN ..."` work.
-   *
-   * The build runs from the client: `FROM` forks through the ordinary image
-   * path, then each instruction is applied to the resulting VM. `RUN` becomes
-   * a command, `COPY` a sync that re-sends only what changed. `ENV`/`WORKDIR`
-   * persist onto the VM you get back; `USER` applies to the build's own `RUN`s
-   * only. Exclusive with `image` and with the VM selectors. */
-  dockerfile?: string;
-  /** Build context for `COPY`: the Dockerfile's own directory by default, the
-   * current directory when `dockerfile` is text. Same role as the trailing
-   * argument of `docker build -f ./docker/Dockerfile ./src`. */
-  context?: string;
-  /** Credentials for a private registry. Applies to `image` and `dockerfile`
-   * only (including a private *base* image in a Dockerfile). They authorize
-   * one pull, are not stored, and a child fork of the result needs none. */
-  registryAuth?: { username: string; password: string };
 }
 
 export class Arker {
@@ -726,206 +677,56 @@ export class Arker {
   }
 
   /**
-   * Create a new VM by forking from a source.
+   * Create a VM from one VM, image, or local Dockerfile source.
    *
-   *     fork(sourceName)                          // API-returned source name
-   *     fork("base")                              // a VM by name in your org
-   *     fork(vm)                                  // an existing VM (uses its id)
-   *     fork({ sourceVmId: "vm_abc..." })
-   *     fork({ sourceVmName: "base", sourceOrgId: "org_..." })
+   *     fork({ sourceVmName: "base" })
+   *     fork({ sourceVmId: "vm_abc", layers: ["disk"] })
+   *     fork({ image: "ubuntu:24.04" })
+   *     fork({ dockerfile: "FROM ubuntu:24.04\nRUN echo ready" })
    *
-   * The source can be a name string, a `VM` handle, or a `ForkSource`
-   * object. `sourceOrgId` is sent only when supplied explicitly. The service
-   * resolves omitted ownership from its current source catalog and the caller's
-   * organization. It is irrelevant when forking by id. Forking a VM in another
-   * org requires that VM to be `public: true`. The new VM's name (in your org)
-   * is passed as `name`. When the source is a name or `VM`, extra fork options
-   * go in the second `opts` argument.
-   *
-   * `layers` selects which state layers the child inherits. Omit it for the
-   * default warm fork (`["disk", "memory"]`): the child inherits both the
-   * filesystem and a copy of the source's live RAM, so it resumes as an exact
-   * continuation — same processes, same shell state. Pass `["disk"]` for a
-   * disk-only fork: the child inherits only the filesystem and cold-boots with
-   * fresh RAM. Everything on disk survives (installed packages, checked-out
-   * source, files the parent wrote); nothing in memory does (no inherited
-   * processes, no environment, no shell state).
-   *
-   *     fork(sourceName, { layers: ["disk"] })      // disk-only, cold boot
+   * Use {@link VM.fork} when the source is already a VM handle.
    */
-  async fork(
-    source: string | VM | (ForkSource & Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">>),
-    opts: Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> = {},
-  ): Promise<VM> {
-    // Normalize the source: a name string, a VM handle (use its id), or a
-    // ForkSource object.
-    const src: ForkSource &
-      Partial<Omit<ForkRequest, "source_vm_id" | "source_vm_name" | "source_org_id" | "image" | "dockerfile">> =
-      typeof source === "string"
-        ? { sourceVmName: source, ...opts }
-        : source instanceof VM
-          ? { sourceVmId: source.id, ...opts }
-          : source;
-    rejectUnsupportedNetworkInputs("fork", src);
-    rejectUnsupportedForkResourceInputs(src);
-    // `image` and `dockerfile` are two further sources, each exclusive with
-    // the VM selectors and with each other. A body naming more than one
-    // decodes as no variant of the contract's `oneOf`.
-    if (src.image && src.dockerfile) {
-      throw new ArkerError(
-        "bad_request",
-        "fork: pass an image or a dockerfile, not both",
-        400,
-      );
+  async fork(options: ForkOptions): Promise<VM> {
+    if (options === null || typeof options !== "object" || Array.isArray(options)) {
+      encodeForkRequest(options as GeneratedForkOptions);
     }
-    if ((src.image || src.dockerfile) && (src.sourceVmId || src.sourceVmName)) {
-      throw new ArkerError(
-        "bad_request",
-        "fork: pass a source VM or an image/dockerfile, not both",
-        400,
-      );
+    const { context, ...operationOptions } = options as ForkOptions & { context?: string };
+    encodeForkRequest(operationOptions as GeneratedForkOptions);
+
+    const dockerfile = (operationOptions as { dockerfile?: unknown }).dockerfile;
+    if (context !== undefined && typeof dockerfile !== "string") {
+      throw new TypeError("context is only valid with dockerfile");
     }
-    if (!src.sourceVmId && !src.sourceVmName && !src.image && !src.dockerfile) {
-      throw new ArkerError(
-        "bad_request",
-        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, image, or dockerfile)",
-        400,
-      );
+    if (typeof dockerfile === "string") {
+      const { dockerfile: _dockerfile, ...forkOptions } = operationOptions as Record<string, unknown>;
+      return this.forkDockerfile(dockerfile, context, forkOptions);
     }
-    // Credentials authorize a registry pull. With no pull to perform they
-    // would be sent for nothing, so refuse rather than quietly drop them.
-    if (src.registryAuth && !src.image && !src.dockerfile) {
-      throw new ArkerError(
-        "bad_request",
-        "fork: registryAuth applies to an image or dockerfile fork",
-        400,
-      );
-    }
-    if (src.sourceVmId && src.sourceVmName) {
-      throw new ArkerError(
-        "bad_request",
-        "fork: pass only one of sourceVmId or sourceVmName",
-        400,
-      );
-    }
-    if (src.context !== undefined && !src.dockerfile) {
-      throw new ArkerError("bad_request", "fork: context applies to a dockerfile fork", 400);
-    }
-    if (src.dockerfile) {
-      const { dockerfile, context, ...rest } = src;
-      return await this.forkDockerfile(dockerfile, context, rest);
-    }
-    const sourceOrgId = src.sourceOrgId;
-    // Forward all contract fields, then normalize defaults and camelCase source
-    // selectors. This keeps additive contract fields available without an SDK
-    // release.
-    //
-    // The excluded keys are NOT contract fields and would be rejected by the
-    // server's request validator: the camelCase source selectors.
-    const {
-      sourceVmId: _sourceVmId,
-      sourceVmName: _sourceVmName,
-      sourceOrgId: _sourceOrgId,
-      image: _image,
-      dockerfile: _dockerfile,
-      // SDK-only: which local directory COPY reads from. Never sent.
-      context: _context,
-      registryAuth: _registryAuth,
-      ...passthrough
-    } = src as ForkSource & Record<string, unknown>;
-    // `source_org_id` is NOT here: it scopes a `source_vm_name` lookup, and
-    // the contract's image/id variants exclude it outright. It is added to the
-    // name-selected body below, which is the only shape that accepts it.
-    const requestOptions = {
-      ...passthrough,
-      name: src.name ?? null,
-      description: src.description ?? null,
-      public: src.public ?? null,
-      ssh_public_keys: src.ssh_public_keys,
-      // Omit disk unless the caller chose it. The server derives the correct
-      // default from the source, including sources without a disk.
-      disk: src.disk,
-      durable: src.durable ?? null,
-      platforms: src.platforms,
-      resources: src.resources ?? null,
-      // Omit to inherit the source's policy; pass a document to replace it.
-      policies: src.policies,
-      // Only present for image/dockerfile forks; refused above otherwise.
-      ...(src.registryAuth ? { registry_auth: src.registryAuth } : {}),
-      queueing_timeout: src.queueing_timeout,
-    };
-    // No `dockerfile` arm: a Dockerfile never reaches here, because
-    // `forkDockerfile` builds it client-side and returns above. The API
-    // refuses the field outright.
-    const body: ForkRequest = src.image
-      ? {
-          ...requestOptions,
-          image: src.image,
-          source_vm_id: null,
-          source_vm_name: null,
-        }
-      : src.sourceVmId
-        ? {
-            ...requestOptions,
-            source_vm_id: src.sourceVmId,
-            source_vm_name: null,
-          }
-        : typeof sourceOrgId === "string"
-          ? {
-              ...requestOptions,
-              source_vm_id: null,
-              source_vm_name: src.sourceVmName!,
-              source_org_id: sourceOrgId,
-            }
-          : {
-              ...requestOptions,
-              source_vm_id: null,
-              source_vm_name: src.sourceVmName!,
-            };
-    const baseUrl = source instanceof VM ? source.baseUrl : this.baseUrl;
-    const vm = await this._request<Vm>(
-      "POST",
-      "/v1/fork",
-      body,
-      baseUrl,
-      undefined,
-      src.queueing_timeout,
-    );
-    const vmId = vm.vm_id;
-    // Child lives on the same host the fork was posted to.
-    return new VM(this, vmId, baseUrl, vm);
+    return this._fork(operationOptions as GeneratedForkOptions, this.baseUrl);
   }
 
-  /**
-   * Build a Dockerfile by forking its `FROM` and driving the rest from here.
-   *
-   * `COPY` is why this runs client-side: its sources are files on this
-   * machine, which a server-side build could not reach without being handed a
-   * build context first. `FROM` is still the server's job — `fork(image=…)`
-   * owns the registry pull, its vetting, the OCI to ext4 conversion and the
-   * template cache.
-   */
+  /** @internal */
+  async _fork(options: GeneratedForkOptions, baseUrl: string): Promise<VM> {
+    const wire = await forkOperation(options, baseUrl, this._request.bind(this));
+    return new VM(this, wire.vm_id, baseUrl, wire);
+  }
+
   private async forkDockerfile(
     dockerfile: string,
     context: string | undefined,
-    rest: Record<string, unknown>,
+    forkOptions: Record<string, unknown>,
   ): Promise<VM> {
     const { applySteps } = await import("./build.js");
     const { DockerfileError, parseDockerfile } = await import("./buildSpec.js");
     const fs = await import("node:fs");
     const nodePath = await import("node:path");
 
-    // A PATH when it names an existing file, TEXT otherwise. Deliberately not
-    // a heuristic on content: "does this file exist" has one answer, so the
-    // rule is predictable. Docker draws the same line between `-f Dockerfile .`
-    // and `docker build -`.
     let path: string | undefined;
     try {
       if (fs.existsSync(dockerfile) && fs.statSync(dockerfile).isFile()) {
         path = nodePath.resolve(dockerfile);
       }
     } catch {
-      // A string that is not a usable path is simply text.
+      path = undefined;
     }
     const text = path ? fs.readFileSync(path, "utf8") : dockerfile;
 
@@ -939,9 +740,6 @@ export class Arker {
       throw error;
     }
 
-    // Where COPY resolves its sources: an explicit context, else the
-    // Dockerfile's own directory, else — for text, which has no directory —
-    // the current one.
     const contextRoot = context
       ? nodePath.resolve(context)
       : path
@@ -951,17 +749,14 @@ export class Arker {
       throw new ArkerError("bad_request", `fork: context is not a directory: ${contextRoot}`, 400);
     }
 
-    const vm = await this.fork({ ...rest, image: parsed.baseImage } as ForkSource);
+    const vm = await this._fork(
+      { ...forkOptions, image: parsed.baseImage } as GeneratedForkOptions,
+      this.baseUrl,
+    );
     await applySteps(vm, parsed.steps, contextRoot);
     return vm;
   }
 
-  /**
-   * List VMs visible to the authenticated caller. **Admin call** —
-   * goes through the control plane (`controlBaseUrl`) so it can
-   * aggregate across providers and regions. Pass `?provider=` /
-   * `?region=` to narrow.
-   */
   async listVms(opts: ListVmsOptions = {}): Promise<{ vms: VM[]; nextCursor: string | null }> {
     const query: ListVmsParameters = opts;
     const resp = await this._request<ListVmsResponse>("GET", buildQuery("/v1/vms", query), undefined, this.controlBaseUrl);
@@ -1049,6 +844,8 @@ export class Arker {
     baseUrl = this.baseUrl,
     extraHeaders?: Record<string, string | undefined>,
     maxQueueingSecs?: number | null,
+    retryWindowField?: string,
+    preserveBody = false,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -1068,6 +865,8 @@ export class Arker {
       this.http2,
       this.retry,
       maxQueueingSecs ?? undefined,
+      retryWindowField,
+      preserveBody,
     );
   }
 
@@ -1167,25 +966,11 @@ export class VM {
   }
 
   /** Fork this VM and return its child. */
-  async fork(request: Partial<ForkRequest> = {}): Promise<VM> {
-    rejectUnsupportedNetworkInputs("fork", request);
-    rejectUnsupportedForkResourceInputs(request);
-    const merged: ForkRequest = {
-      ...request,
-      source_vm_id: request.source_vm_id ?? this.id,
-    } as ForkRequest;
-    const vm = await this._client._request<Vm>(
-      "POST",
-      "/v1/fork",
-      merged,
+  async fork(options: ForkFromVmOptions = {}): Promise<VM> {
+    return this._client._fork(
+      { ...options, sourceVmId: this.id } as GeneratedForkOptions,
       this.baseUrl,
-      undefined,
-      merged.queueing_timeout,
     );
-    const vmId = vm.vm_id;
-    // The child is forked on the same compute host as the source, so it lives
-    // on the same base URL (this.baseUrl) — not whatever the id alone implies.
-    return new VM(this._client, vmId, this.baseUrl, vm);
   }
 
   /**
@@ -1216,7 +1001,7 @@ export class VM {
   ): Promise<CompletedRunResult>;
   async run(command: string, options: RunOptions): Promise<RunResult>;
   async run(command: string, options: RunOptions = {}): Promise<RunResult> {
-    rejectUnsupportedNetworkInputs("run", options);
+    rejectUnsupportedRunNetworkInputs(options);
     const { idempotencyKey, ...body } = options;
     const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
     const request: RunRequest = { ...body, command };
@@ -1227,6 +1012,7 @@ export class VM {
       this.baseUrl,
       headers,
       options.queueing_timeout,
+      "queueing_timeout",
     );
     const result = parseRunResponse(response);
     // The server backgrounds a run that outlived its sync window. When the
@@ -2422,12 +2208,14 @@ async function requestJson<T>(
   http2: boolean,
   retry: RetryConfig,
   maxQueueingSecs?: number,
+  retryWindowField?: string,
+  preserveBody = false,
 ): Promise<T> {
   const headers = { ...requestHeaders };
   let requestBody: string | undefined;
   if (body !== undefined) {
     headers["content-type"] = "application/json";
-    requestBody = JSON.stringify(withoutUndefined(body));
+    requestBody = JSON.stringify(preserveBody ? body : withoutUndefined(body));
   }
 
   // queueing_timeout swaps the retry budget from attempt count to wall-clock
@@ -2438,14 +2226,20 @@ async function requestJson<T>(
       : undefined;
 
   for (let attempt = 0; ; attempt++) {
-    if (queueingDeadline !== undefined && attempt > 0 && isObject(body)) {
+    if (
+      queueingDeadline !== undefined &&
+      attempt > 0 &&
+      retryWindowField !== undefined &&
+      isObject(body)
+    ) {
       // Retries re-send the remaining window.
       const remainingSecs = Math.max(
         1,
         Math.ceil((queueingDeadline - Date.now()) / 1000),
       );
+      const attemptBody = { ...body, [retryWindowField]: remainingSecs };
       requestBody = JSON.stringify(
-        withoutUndefined({ ...body, queueing_timeout: remainingSecs }),
+        preserveBody ? attemptBody : withoutUndefined(attemptBody),
       );
     }
     try {
