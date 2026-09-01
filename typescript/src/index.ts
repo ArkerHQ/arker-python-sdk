@@ -613,11 +613,22 @@ function rejectUnsupportedForkResourceInputs(request: unknown): void {
  * `sourceOrgId` selects which organization owns the name. Omit it to let the
  * service resolve the current public catalog or caller-owned source.
  *
+ * For BYOC (Bring Your Own Compute), set `workerProvider` and `workerRegion`
+ * instead of any source VM identifier — the fork boots on your own BLAST worker
+ * fleet rather than Arker's managed infrastructure.
+ *
  * Distinct from the new VM's `name`, which is the *destination* name. */
 export interface ForkSource {
   sourceVmId?: ForkRequest["source_vm_id"];
   sourceVmName?: ForkRequest["source_vm_name"];
   sourceOrgId?: ForkRequest["source_org_id"];
+  /** BYOC: provider name of the registered BLAST worker fleet.
+   * Must match the `provider` set in `blast.toml` / `BLAST__WORKER__PROVIDER`. */
+  workerProvider?: ForkRequest["worker_provider"];
+  /** BYOC: region label of the registered BLAST worker.
+   * Must match the `region` set in `blast.toml` / `BLAST__WORKER__REGION`.
+   * Required when `workerProvider` is set. */
+  workerRegion?: ForkRequest["worker_region"];
   /** OCI image to create the VM from instead of forking an existing VM —
    * `ubuntu:24.04`, `ghcr.io/org/img:v1`, `img@sha256:...`. A bare reference,
    * never a URI; an unqualified name resolves against Docker Hub. Exclusive
@@ -765,6 +776,44 @@ export class Arker {
         : source instanceof VM
           ? { sourceVmId: source.id, ...opts }
           : source;
+
+    // BYOC path: workerProvider + workerRegion routes the fork to a registered
+    // BLAST worker via the Arker control plane's long-poll dispatch. No source
+    // VM (or image/dockerfile) is required, and none of the VM-source
+    // validations below apply. The request goes to controlBaseUrl (the CF
+    // worker) which resolves the worker and dispatches the command.
+    if (src.workerProvider) {
+      if (!src.workerRegion) {
+        throw new ArkerError(
+          "bad_request",
+          "fork: workerRegion is required when workerProvider is set",
+          400,
+        );
+      }
+      const legacy = src as { vcpu_count?: number | null; memory_mib?: number | null; disk_mib?: number | null };
+      const resources: VmResources | null =
+        src.resources ??
+        (legacy.vcpu_count != null || legacy.memory_mib != null || legacy.disk_mib != null
+          ? { vcpu: legacy.vcpu_count ?? null, memory_mib: legacy.memory_mib ?? null, disk_mib: legacy.disk_mib ?? null }
+          : null);
+      // `as ForkRequest`: the generated type's oneOf discriminant only knows
+      // about source_vm_id / source_vm_name / image / dockerfile (none of
+      // which a BYOC fork sends) — same escape hatch VM.fork() below uses to
+      // build a ForkRequest from a partial shape.
+      const body: ForkRequest = {
+        worker_provider: src.workerProvider,
+        worker_region: src.workerRegion,
+        name: src.name ?? null,
+        public: src.public ?? null,
+        disk: src.disk ?? null,
+        durable: src.durable ?? null,
+        resources,
+      } as ForkRequest;
+      const vm = await this._request<Vm>("POST", "/v1/fork", body, this.controlBaseUrl);
+      const vmId = vm.vm_id ?? (vm as { id?: string }).id ?? "";
+      return new VM(this, vmId, this.controlBaseUrl, vm);
+    }
+
     rejectUnsupportedNetworkInputs("fork", src);
     rejectUnsupportedForkResourceInputs(src);
     // `image` and `dockerfile` are two further sources, each exclusive with
@@ -787,7 +836,7 @@ export class Arker {
     if (!src.sourceVmId && !src.sourceVmName && !src.image && !src.dockerfile) {
       throw new ArkerError(
         "bad_request",
-        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, image, or dockerfile)",
+        "fork requires a source (a name, a VM, sourceVmName, sourceVmId, image, dockerfile, or workerProvider+workerRegion)",
         400,
       );
     }
