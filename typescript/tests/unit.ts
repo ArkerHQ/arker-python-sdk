@@ -351,6 +351,56 @@ async function testUpdateSendsTopLevelSshPublicKeys(): Promise<void> {
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { ssh_public_keys: [] });
 }
 
+async function testUpdateSendsPolicies(): Promise<void> {
+  const vm = {
+    vm_id: "vm_1",
+    owner_org_id: "owner",
+    created_at: "now",
+    public: false,
+    state: "idle",
+    sessions: [],
+    resources: {},
+    network: {},
+  };
+  const isPatch = (method: string, url: string) => method === "PATCH" && url.endsWith("/v1/vms/vm_1");
+  const doc = {
+    policies: [
+      {
+        type: "outbound" as const,
+        match: { hosts: ["example.com"] },
+        action: "allow" as const,
+      },
+    ],
+  };
+
+  // A policy document rides on PATCH /v1/vms/{id} as a top-level `policies`
+  // field, alongside the other patchable fields.
+  const fetch = new FakeFetch();
+  fetch.addJson(isPatch, 200, vm);
+  await client(fetch).vm("vm_1").update({ description: "locked down", policies: doc });
+  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), { description: "locked down", policies: doc });
+
+  // The flat resource form folds vcpu/memory/disk into `resources` and still
+  // carries `policies` through untouched.
+  fetch.addJson(isPatch, 200, vm);
+  await client(fetch).vm("vm_1").update({ vcpu: 2, policies: doc });
+  assert.deepEqual(JSON.parse(fetch.calls[1]!.body!), {
+    resources: { vcpu: 2, memory_mib: null, disk_mib: null },
+    policies: doc,
+  });
+
+  // An empty document is a real replacement (clears to allow-all), so it must
+  // not be pruned like an omitted field.
+  fetch.addJson(isPatch, 200, vm);
+  await client(fetch).vm("vm_1").update({ policies: { policies: [] } });
+  assert.deepEqual(JSON.parse(fetch.calls[2]!.body!), { policies: { policies: [] } });
+
+  // Omitting `policies` leaves the current policy alone: no key on the wire.
+  fetch.addJson(isPatch, 200, vm);
+  await client(fetch).vm("vm_1").update({ vcpu: 4 });
+  assert.equal(JSON.parse(fetch.calls[3]!.body!).policies, undefined);
+}
+
 async function testNestedErrorWithoutOkStillParses(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -1083,6 +1133,7 @@ await testForkOmitsSourceOrgWhenNotExplicit();
 await testForkOmitsUnconfiguredCapabilities();
 await testRemovedNetworkInputsFailBeforeRequests();
 await testUpdateSendsTopLevelSshPublicKeys();
+await testUpdateSendsPolicies();
 await testNestedErrorWithoutOkStillParses();
 await testCompletedRunDecodesOutput();
 await testSyncRunPollsBackgroundedRunToCompletion();

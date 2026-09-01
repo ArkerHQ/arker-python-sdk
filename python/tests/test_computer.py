@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 import arker.computer as sdk
+from arker.generated.api_models import PolicyDoc, PolicyEntry, PolicyMatch
 
 
 class FakeTransport:
@@ -923,6 +924,91 @@ def test_update_replaces_ssh_public_keys_at_the_top_level(keys: list[str]) -> No
         client().vm("vm_1").update(ssh_public_keys=keys)
 
     assert json.loads(t.calls[0]["body"]) == {"ssh_public_keys": keys}
+
+
+def _patched_vm() -> dict[str, Any]:
+    return {
+        "vm_id": "vm_1",
+        "owner_org_id": "owner",
+        "created_at": "now",
+        "description": None,
+        "public": False,
+        "state": "idle",
+        "sessions": [],
+        "resources": {},
+        "network": {},
+    }
+
+
+def _is_patch_vm(method: str, url: str) -> bool:
+    return method == "PATCH" and url.endswith("/v1/vms/vm_1")
+
+
+def test_update_replaces_policies_via_patch() -> None:
+    """A policy document rides on PATCH /v1/vms/{id} as a top-level
+    ``policies`` field: the same shape ``set_policies`` PUTs, so a caller can
+    change the policy alongside the other patchable fields in one request."""
+    doc = {"policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}]}
+    t = FakeTransport()
+    t.add_json(_is_patch_vm, 200, _patched_vm())
+
+    with use_transport(t):
+        client().vm("vm_1").update(policies=doc)
+
+    assert json.loads(t.calls[0]["body"]) == {"policies": doc}
+
+
+def test_update_accepts_a_policy_doc_instance() -> None:
+    doc = PolicyDoc(
+        policies=[
+            PolicyEntry(type="outbound", match=PolicyMatch(hosts=["example.com"]), action="allow"),
+        ],
+    )
+    t = FakeTransport()
+    t.add_json(_is_patch_vm, 200, _patched_vm())
+
+    with use_transport(t):
+        client().vm("vm_1").update(vcpu_count=2, policies=doc)
+
+    assert json.loads(t.calls[0]["body"]) == {
+        "resources": {"vcpu": 2},
+        "policies": {"policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}]},
+    }
+
+
+def test_update_sends_policies_alongside_an_explicit_description() -> None:
+    """The description branch builds the body as a dict (to carry an explicit
+    null); the policy document must survive that path too."""
+    t = FakeTransport()
+    t.add_json(_is_patch_vm, 200, _patched_vm())
+
+    with use_transport(t):
+        client().vm("vm_1").update(description=None, policies={"policies": []})
+
+    assert json.loads(t.calls[0]["body"]) == {"description": None, "policies": {"policies": []}}
+
+
+@pytest.mark.parametrize("doc", [{}, {"policies": []}])
+def test_update_sends_an_empty_policy_doc_to_clear(doc: dict[str, Any]) -> None:
+    """An empty document is a real replacement (clears to allow-all), so it is
+    sent as-is rather than pruned like an omitted field."""
+    t = FakeTransport()
+    t.add_json(_is_patch_vm, 200, _patched_vm())
+
+    with use_transport(t):
+        client().vm("vm_1").update(policies=doc)
+
+    assert json.loads(t.calls[0]["body"]) == {"policies": doc}
+
+
+def test_update_omits_policies_unless_given() -> None:
+    t = FakeTransport()
+    t.add_json(_is_patch_vm, 200, _patched_vm())
+
+    with use_transport(t):
+        client().vm("vm_1").update(vcpu_count=4)
+
+    assert "policies" not in json.loads(t.calls[0]["body"])
 
 
 def test_background_run_response() -> None:

@@ -296,6 +296,7 @@ export async function discoverRegions(
 
 // ── Core resources ─────────────────────────────────────────────────
 export type PolicyDoc = ApiSchema<"PolicyDoc">;
+export type PolicyWriteRequest = ApiSchema<"PolicyWriteRequest">;
 export type PolicyEntry = ApiSchema<"PolicyEntry">;
 export type PolicyMatch = ApiSchema<"PolicyMatch">;
 export type PolicyAction = ApiSchema<"PolicyAction">;
@@ -1848,16 +1849,21 @@ export class VM {
   }
 
   /**
-   * Update this VM's resource allocation and/or authorized SSH keys via
-   * `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
+   * Update this VM's description, resource allocation, authorized SSH keys,
+   * and/or network policy via `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
    *
    * Accepts either a `PatchVmRequest` or flat resource fields
    * (`{ vcpu, memory_mib, disk_mib }`), which are folded into `resources`.
+   * `policies` is a complete replacement for the VM's network policy, the
+   * same document `setPolicies` accepts; an empty doc (`{}` or
+   * `{ policies: [] }`) clears it to allow-all. Omit it to leave the current
+   * policy unchanged.
    */
   async update(
     request:
       | PatchVmRequest
-      | (ResourcesInput & Pick<PatchVmRequest, "ssh_public_keys">),
+      | (ResourcesInput &
+          Pick<PatchVmRequest, "description" | "ssh_public_keys" | "policies">),
   ): Promise<Vm> {
     const r = request as PatchVmRequest &
       ResourcesInput & { resources?: ResourcesInput | null };

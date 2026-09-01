@@ -1084,12 +1084,22 @@ class VM:
         disk_mib: int | None = None,
         description: str | None | _UnsetType = _UNSET,
         ssh_public_keys: list[str] | None = None,
+        policies: PolicyDoc | dict[str, Any] | None = None,
     ) -> Vm:
-        """Update this VM's description, resource allocation, and/or authorized
-        SSH keys via ``PATCH /v1/vms/{id}``.
+        """Update this VM's description, resource allocation, authorized SSH
+        keys, and/or network policy via ``PATCH /v1/vms/{id}``.
+
         Pass an empty ``ssh_public_keys`` list to remove all authorized keys.
+
         Pass ``None`` or an empty description to clear it. Omit
-        ``description`` to leave it unchanged. Returns the updated :class:`Vm`."""
+        ``description`` to leave it unchanged.
+
+        ``policies`` is a complete replacement for the VM's network policy:
+        the same document :meth:`set_policies` accepts. An empty doc (``{}``
+        or ``{"policies": []}``) clears it to allow-all. Omit it to leave the
+        current policy unchanged.
+
+        Returns the updated :class:`Vm`."""
         resources: ResourcesInput | None = None
         if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
             resources = ResourcesInput(
@@ -1097,14 +1107,26 @@ class VM:
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
             )
+        policy_doc = (
+            policies
+            if isinstance(policies, PolicyDoc)
+            else _decode_model(PolicyDoc, policies)
+            if policies is not None
+            else None
+        )
         body: PatchVmRequest | dict[str, Any]
         if description is _UNSET:
-            body = PatchVmRequest(resources=resources, ssh_public_keys=ssh_public_keys)
+            body = PatchVmRequest(
+                resources=resources,
+                ssh_public_keys=ssh_public_keys,
+                policies=policy_doc,
+            )
         else:
             body = {
                 "description": _EXPLICIT_NULL if description is None else description,
                 "resources": resources,
                 "ssh_public_keys": ssh_public_keys,
+                "policies": policy_doc,
             }
         payload = self._client._request("PATCH", _vm_path(self.id), body, base_url=self.base_url)
         return _vm_info(payload)
