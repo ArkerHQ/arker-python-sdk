@@ -2475,6 +2475,9 @@ function loadHttp2(): Promise<Http2Module | null> {
 // Must exceed the server's 120s sync window, or the request is torn down just
 // as the background ack arrives and run() never gets to poll.
 const HTTP2_REQUEST_TIMEOUT_MS = 300_000;
+const BUN_RUNTIME = Boolean((globalThis as unknown as {
+  process?: { versions?: { bun?: string } };
+}).process?.versions?.bun);
 
 // One HTTP/2 session per origin; concurrent requests multiplex over it as streams.
 // `confirmed` flips on the first response so the caller can fall back to fetch if the
@@ -2503,16 +2506,34 @@ class Http2Connection {
       let status = 0;
       let text = "";
       stream.setEncoding("utf8");
-      // Bound the request so a stalled stream — e.g. a half-open session reused after
-      // an idle timeout — rejects instead of hanging the caller indefinitely.
-      stream.setTimeout(HTTP2_REQUEST_TIMEOUT_MS, () => stream.destroy(new Error("HTTP/2 request timed out")));
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      if (BUN_RUNTIME) {
+        // Bun attaches stream timeouts to the shared session socket.
+        timeout = setTimeout(
+          () => stream.destroy(new Error("HTTP/2 request timed out")),
+          HTTP2_REQUEST_TIMEOUT_MS,
+        );
+        timeout.unref();
+      } else {
+        stream.setTimeout(HTTP2_REQUEST_TIMEOUT_MS, () => stream.destroy(new Error("HTTP/2 request timed out")));
+      }
       stream.on("response", (responseHeaders) => {
+        timeout?.refresh();
         this.confirmed = true;
         status = Number(responseHeaders[":status"]) || 0;
       });
-      stream.on("data", (chunk: string) => { text += chunk; });
-      stream.on("end", () => resolve({ status, ok: status >= 200 && status < 300, text }));
-      stream.on("error", reject);
+      stream.on("data", (chunk: string) => {
+        timeout?.refresh();
+        text += chunk;
+      });
+      stream.on("end", () => {
+        if (timeout) clearTimeout(timeout);
+        resolve({ status, ok: status >= 200 && status < 300, text });
+      });
+      stream.on("error", (error) => {
+        if (timeout) clearTimeout(timeout);
+        reject(error);
+      });
       stream.end(body);
     }).finally(() => {
       if (--this.streams === 0) this.session.unref();
