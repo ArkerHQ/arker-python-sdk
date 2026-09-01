@@ -77,7 +77,7 @@ async function main(): Promise<void> {
 
   let vm: VM | undefined;
   try {
-    vm = await arker.fork(source);
+    vm = await arker.fork({ source_vm_name: source });
     // Warm the guest so cold-boot doesn't pollute the sync timing.
     await vm.sync(`/home/user/.bench-warm`, "warm");
 

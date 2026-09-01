@@ -41,15 +41,8 @@ PUBLIC_POLICY = {
 }
 
 
-def test_script_uses_current_python_sdk_release() -> None:
-    pyproject = (REPO_ROOT / "python" / "pyproject.toml").read_text()
-    package_version = re.search(r'^version = "([^"]+)"$', pyproject, re.MULTILINE)
-
-    assert package_version is not None
-    assert (
-        f'# dependencies = ["arker=={package_version.group(1)}"]'
-        in PYTHON_DEMO.read_text()
-    )
+def test_script_does_not_pin_python_sdk_release() -> None:
+    assert '# dependencies = ["arker"]' in PYTHON_DEMO.read_text()
 
 
 def test_react_build_supports_public_node_template() -> None:
@@ -112,7 +105,8 @@ class FakeArker:
         self.vm = FakeVM(self.build_exit_code)
         self.instances.append(self)
 
-    def fork(self, source: str, **kwargs: Any) -> FakeVM:
+    def fork(self, **kwargs: Any) -> FakeVM:
+        source = kwargs.pop("source_vm_name")
         self.forks.append((source, kwargs))
         return self.vm
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["arker==1.2.2"]
+# dependencies = ["arker"]
 # ///
 """Build a local React app in an Arker VM and expose it with a policy.
 
@@ -58,7 +58,7 @@ def main() -> None:
         print('   $ arker fork "$ARKER_SOURCE_VM"')
         print("   $ arker policies set $VM  # allow registry.npmjs.org:443")
         vm = arker.fork(
-            source_vm,
+            source_vm_name=source_vm,
             name="react-policy-demo",
             policies=BUILD_POLICY,
         )

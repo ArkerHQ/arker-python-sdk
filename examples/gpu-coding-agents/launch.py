@@ -29,10 +29,12 @@ def build_base(ar, args, real_key, workspace_id):
         name=f"{spec.PREFIX}-base",
         platforms=spec.PLATFORMS or None,
         policies=spec.policy_doc(real_key, workspace_id),
-        vcpu_count=args.vcpu,
-        memory_mib=args.memory_mib,
-        disk_mib=args.disk_mib,
-        vgpu=args.vgpu,
+        resources={
+            "vcpu": args.vcpu,
+            "memory_mib": args.memory_mib,
+            "disk_mib": args.disk_mib,
+            "vgpu": args.vgpu,
+        },
     )
     try:
         return _prepare_base(base, args, real_key)
@@ -98,8 +100,11 @@ def run_agent(ar, base, policy, thread_idx, cycle, args, base_vram_mib, stop, de
     name = f"{spec.PREFIX}-t{thread_idx}-c{cycle}"
     t_fork = time.time()
     try:
-        vm = ar.fork(source_vm_id=base.id, name=name,
-                     vgpu=args.vgpu, disk_mib=args.disk_mib, policies=policy)
+        vm = base.fork(
+            name=name,
+            resources={"vgpu": args.vgpu, "disk_mib": args.disk_mib},
+            policies=policy,
+        )
     except ArkerError as e:
         # 429 = your API concurrency limit; the fork never reached a GPU.
         # 503 = no GPU slice free — often the previous VM's slice is still held.

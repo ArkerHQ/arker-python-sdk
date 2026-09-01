@@ -23,7 +23,11 @@ def main() -> None:
     ar = Arker()  # reads ARKER_API_KEY + ARKER_REGION/ARKER_BASE_URL
 
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    vm = ar.vm(arg).refresh() if arg else ar.fork(os.environ["ARKER_SOURCE_VM"])
+    vm = (
+        ar.vm(arg).refresh()
+        if arg
+        else ar.fork(source_vm_name=os.environ["ARKER_SOURCE_VM"])
+    )
     if not arg:
         print(f"forked {vm.id}", file=sys.stderr)
 

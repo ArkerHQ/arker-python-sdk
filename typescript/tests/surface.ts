@@ -66,10 +66,10 @@ const sourceVmName = process.env.ARKER_SOURCE_VM;
 if (!sourceVmName) throw new Error("ARKER_SOURCE_VM is required");
 
 let vm = await call("Arker.fork(sourceVmName)",
-  () => arker.fork({ sourceVmName, name: `${stamp}-a` })) as any;
+  () => arker.fork({ source_vm_name: sourceVmName, name: `${stamp}-a` })) as any;
 if (!vm) {
   vm = await call("Arker.fork(sourceVmName, org=ArkerHQ)",
-    () => arker.fork({ sourceVmName, sourceOrgId: ARKER_ORG_ID, name: `${stamp}-b` })) as any;
+    () => arker.fork({ source_vm_name: sourceVmName, source_org_id: ARKER_ORG_ID, name: `${stamp}-b` })) as any;
 }
 if (!vm) { print(); throw new Error("fork failed — cannot exercise per-VM surface"); }
 const vmId: string = vm.id;

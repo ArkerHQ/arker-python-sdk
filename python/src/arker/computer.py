@@ -40,12 +40,6 @@ from .generated.api_models import (
     ErrorResponse,
     Filesystem,
     FilesystemCreateRequest,
-    # `ForkRequest<N>` is positional — N is the index of the variant in the
-    # contract's `oneOf`, so inserting one upstream renumbers the rest. Alias
-    # them by what they select, so the numbers appear exactly here.
-    ForkRequest1 as ForkBySourceVmId,
-    ForkRequest2 as ForkBySourceVmName,
-    ForkRequest5 as ForkByImage,
     ListFilesystemsResponse,
     ListFilesystemsParameters,
     ListOrgRunsResponse,
@@ -65,7 +59,6 @@ from .generated.api_models import (
     PatchSessionResponse,
     PatchVmRequest,
     PolicyDoc,
-    RegistryAuth,
     PtyTicketResponse,
     RegionPlacement,
     Run,
@@ -94,6 +87,7 @@ from .generated.api_models import (
     ResourcesInput,
     VmResources,
 )
+
 
 Model = TypeVar("Model")
 
@@ -400,272 +394,52 @@ class Arker:
     ) -> "VM":
         return VM(self, vm_id, self._base_url_for(vm_id, provider=provider, region=region))
 
-    def fork(
-        self,
-        source: "VM | str | None" = None,
-        *,
-        source_vm_id: str | None = None,
-        source_vm_name: str | None = None,
-        source_org_id: str | None = None,
-        image: str | None = None,
-        dockerfile: str | None = None,
-        context: str | None = None,
-        registry_auth: "RegistryAuth | dict[str, str] | None" = None,
-        name: str | None = None,
-        description: str | None = None,
-        public: bool | None = None,
-        ssh_public_keys: list[str] | None = None,
-        disk: bool | None = None,
-        vcpu_count: int | None = None,
-        memory_mib: int | None = None,
-        disk_mib: int | None = None,
-        vgpu: float | None = None,
-        durable: bool | None = None,
-        platforms: list[str] | None = None,
-        layers: list[str] | None = None,
-        policies: PolicyDoc | dict[str, Any] | None = None,
-        queueing_timeout: int | None = None,
-    ) -> "VM":
-        """Create a new VM by forking from a source.
-
-        The source can be passed positionally or by keyword:
-
-        - ``fork(source_name)`` — fork an API-returned source by name.
-        - ``fork("base")`` — fork a VM by name in your own org.
-        - ``fork(vm)`` — fork an existing ``VM`` (uses its id).
-        - ``fork(source_vm_id="vm_abc...")`` — fork by global id.
-        - ``fork(source_vm_name="base", source_org_id="org_...")`` — fork a
-          named VM in a specific org (it must be ``public``).
-        - ``fork(image="ubuntu:24.04")`` — create a VM from an OCI image
-          instead of an existing VM. A bare reference, never a URI: an
-          unqualified name resolves against Docker Hub, so ``ubuntu:24.04`` is
-          ``docker.io/library/ubuntu:24.04`` and ``ghcr.io/org/img:v1`` is not.
-          Exclusive with the VM selectors. The image is pulled and converted on
-          the host, so the first fork of an image is slow (tens of seconds) and
-          later ones reuse the cached layers. Inputs that only mean something
-          relative to a source VM (``layers``, ``public`` and the GPU fields)
-          are rejected by the service rather than silently ignored.
-
-          ``platforms`` MATTERS here, and is served. The image is pulled for
-          the architecture of whatever host the request lands on, so an image
-          published only for amd64 (``pytorch/pytorch``, for one) fails on an
-          arm64 host: it converts and boots, then the guest cannot execute
-          anything in its own filesystem. Pin an x86 platform for such an
-          image::
-
-              vm = arker.fork(image="pytorch/pytorch:latest",
-                              platforms=["icelake"])
-
-          The image's ``ENV``, ``USER`` and ``WORKDIR`` ARE applied, so a tool
-          on the image's own ``PATH`` runs without a prefix and the first run
-          starts in the image's working directory::
-
-              vm.run('python -c "import torch"')   # /opt/conda/bin is on PATH
-
-          ``CMD``/``ENTRYPOINT`` are recorded but deliberately NOT started.
-          A VM whose entrypoint was running would be busy from birth, which
-          blocks idle suspend; start the workload yourself when you want it::
-
-              vm.run("nginx -g 'daemon off;' &")
-
-        - ``fork(dockerfile="./Dockerfile")`` — build from a Dockerfile instead
-          of pulling a single image. ``dockerfile`` is a PATH when it names an
-          existing file and Dockerfile TEXT otherwise, so
-          ``fork(dockerfile="FROM ubuntu:24.04\nRUN ...")`` works too.
-
-          ``COPY`` resolves its sources against the build context: the
-          Dockerfile's own directory by default, the current directory when the
-          Dockerfile is passed as text, or ``context="./src"`` to name one —
-          the same role as the trailing argument of
-          ``docker build -f ./docker/Dockerfile ./src``.
-
-          The build runs from the client: ``FROM`` forks through the ordinary
-          image path, then each instruction is applied to the resulting VM —
-          ``RUN`` as a command, ``COPY`` as a directory sync that re-sends only
-          what changed. ``ENV``/``WORKDIR`` persist onto the VM you get back;
-          ``USER`` applies to the build's own ``RUN``s only.
-
-        ``registry_auth={"username": ..., "password": ...}`` supplies
-        credentials for a private registry, and applies to the ``image`` and
-        ``dockerfile`` sources only (including a private *base* image in a
-        Dockerfile). Credentials authorize one pull; they are not stored, and a
-        child fork of the resulting VM needs none. Passing them without an
-        image or dockerfile is refused rather than silently ignored.
-
-        ``source_org_id`` is sent only when supplied explicitly. The service
-        resolves omitted ownership from its current source catalog and the
-        caller's organization. It is irrelevant when forking by id. ``name``
-        (optional) is the *new* VM's name in your org. ``description`` is a
-        short description owned by the new VM and is never inherited.
-
-        ``policies`` is the child's network policy document. Omit it to inherit
-        the source VM's policy, re-encrypted under the child's own key. Pass a
-        document to replace it — even an empty
-        ``{"policies": []}``, which clears to allow-all rather than inheriting.
-        Pass ``ssh_public_keys`` to authorize keys on the new VM.
-
-        ``vgpu`` sizes a GPU in eighths of one card: ``0.125``, ``0.25``,
-        ``0.375``, ``0.5``, ``0.625``, ``0.75``, ``0.875``, or ``1``. Anything
-        between two steps is refused. It is a fraction of whichever card serves
-        the fork, so the same value is a different slice per platform —
-        ``vgpu=0.25`` is 35 SMs and 11517 MiB on an L40S, and rather more on a
-        B200. The VM reports back the ``gpu_sms`` and ``gpu_vram_mib`` the
-        fraction resolved to.
-
-        ``layers`` selects which layers of the source the child inherits. Omit
-        it for the default full fork (``["disk", "memory"]``): the child inherits
-        both the filesystem and a copy of the source's live RAM, so it resumes
-        as an exact continuation — same processes, same shell state. Pass
-        ``["disk"]`` for a disk-only fork: the child inherits only the
-        filesystem and cold-boots with fresh RAM. Everything on disk survives
-        (installed packages, checked-out source, files the parent wrote);
-        nothing in memory does (no inherited processes, no environment, no
-        shell state).
-
-        ``queueing_timeout`` (seconds) queues instead of failing fast: retries
-        until the window elapses, then surfaces the error. ``None``/``0`` =
-        fail fast.
-        """
-        # Positional source: a VM handle (use its id) or a name string.
-        if source is not None:
-            if source_vm_id or source_vm_name:
-                raise ArkerError("bad_request", "fork: pass the source positionally or by keyword, not both", 400)
-            if isinstance(source, VM):
-                source_vm_id = source.id
-            elif isinstance(source, str):
-                source_vm_name = source
-            else:
-                raise ArkerError("bad_request", "fork source must be a VM or a source-name string", 400)
-        # `image` and `dockerfile` are two further sources, each exclusive
-        # with the VM selectors and with each other. A body naming more than
-        # one decodes as no variant of the contract's `oneOf`.
-        if image and dockerfile:
-            raise ArkerError("bad_request", "fork: pass an image or a dockerfile, not both", 400)
-        if (image or dockerfile) and (source_vm_id or source_vm_name):
-            raise ArkerError("bad_request", "fork: pass a source VM or an image/dockerfile, not both", 400)
-        if not source_vm_id and not source_vm_name and not image and not dockerfile:
-            raise ArkerError("bad_request", "fork requires a source (a VM, a name, source_vm_name, source_vm_id, image, or dockerfile)", 400)
-        # Credentials authorize a registry pull. With no pull to perform they
-        # would be sent for nothing, so refuse rather than quietly drop them.
-        if registry_auth is not None and not (image or dockerfile):
-            raise ArkerError("bad_request", "fork: registry_auth applies to an image or dockerfile fork", 400)
-        if source_vm_id and source_vm_name:
-            raise ArkerError("bad_request", "fork: pass only one of source_vm_id or source_vm_name", 400)
-        if context is not None and not dockerfile:
-            raise ArkerError("bad_request", "fork: context applies to a dockerfile fork", 400)
-        if dockerfile:
+    def fork(self, **options: Any) -> "VM":
+        """Create a VM from exactly one source accepted by POST /v1/fork."""
+        has_context = "context" in options
+        context = options.pop("context", None)
+        dockerfile = options.get("dockerfile")
+        if has_context and not isinstance(dockerfile, str):
+            raise TypeError("context is only valid with dockerfile")
+        if context is not None and not isinstance(context, str):
+            raise TypeError("context must be a string")
+        if isinstance(dockerfile, str):
+            del options["dockerfile"]
             return self._fork_dockerfile(
                 dockerfile,
                 context,
-                source_org_id=source_org_id,
-                name=name,
-                description=description,
-                public=public,
-                ssh_public_keys=ssh_public_keys,
-                disk=disk,
-                durable=durable,
-                platforms=platforms,
-                layers=layers,
-                vcpu_count=vcpu_count,
-                memory_mib=memory_mib,
-                disk_mib=disk_mib,
-                vgpu=vgpu,
-                policies=policies,
-                registry_auth=registry_auth,
-                queueing_timeout=queueing_timeout,
+                options,
+                base_url=self.base_url,
             )
-        # The contract folds vcpu/memory/disk/gpu into a single `resources` object.
-        # GPU bounds are per-platform (`Vm.gpu_platforms`); a request above a
-        # platform's max is a 400 from the server, not a silent clamp.
-        resources: ResourcesInput | None = None
-        if any(v is not None for v in (vcpu_count, memory_mib, disk_mib, vgpu)):
-            resources = ResourcesInput(
-                vcpu=vcpu_count,
-                memory_mib=memory_mib,
-                disk_mib=disk_mib,
-                vgpu=vgpu,
+        return self._fork(options, base_url=self.base_url)
+
+    def _fork(self, options: dict[str, Any], *, base_url: str) -> "VM":
+        queueing_timeout = options.get("queueing_timeout")
+        info = _vm_info(
+            self._request(
+                "POST",
+                "/v1/fork",
+                options,
+                base_url=base_url,
+                max_queueing_s=(
+                    queueing_timeout if type(queueing_timeout) is int else None
+                ),
+                preserve_nulls=True,
             )
-        policy_doc = (
-            policies
-            if isinstance(policies, PolicyDoc)
-            else _decode_model(PolicyDoc, policies)
-            if policies is not None
-            else None
         )
-        auth = (
-            registry_auth
-            if isinstance(registry_auth, RegistryAuth)
-            else _decode_model(RegistryAuth, registry_auth)
-            if registry_auth is not None
-            else None
-        )
-        request_options = dict(
-            source_org_id=source_org_id,
-            name=name,
-            description=description,
-            public=public,
-            ssh_public_keys=ssh_public_keys,
-            # Do NOT default `disk` to True. A source without a disk rejects a
-            # disk-backed fork. Omitting it lets the server inherit the source
-            # configuration. Only emit this field when the caller opts in.
-            disk=disk,
-            durable=durable,
-            platforms=platforms,
-            layers=layers,
-            resources=resources,
-            policies=policy_doc,
-            registry_auth=auth,
-            queueing_timeout=queueing_timeout,
-        )
-        # No `dockerfile` arm: a Dockerfile never reaches here, because
-        # `_fork_dockerfile` builds it client-side and returns above. The API
-        # refuses the field outright.
-        body = (
-            # Truthiness, matching the exclusivity checks above and the TS SDK:
-            # `image=""` is caller error, and treating it as "an image was
-            # given" would discard a `source_vm_name` the caller did supply.
-            ForkByImage(image=image, **request_options)
-            if image
-            else ForkBySourceVmId(source_vm_id=source_vm_id, **request_options)
-            if source_vm_id is not None
-            else ForkBySourceVmName(source_vm_name=source_vm_name, **request_options)
-        )
-        base_url = source.base_url if isinstance(source, VM) else self.base_url
-        payload = self._request(
-            "POST", "/v1/fork", body, base_url=base_url, max_queueing_s=queueing_timeout
-        )
-        info = _vm_info(payload)
-        # Child lives on the host the fork was posted to.
         return VM(self, info.vm_id, base_url, info)
 
     def _fork_dockerfile(
         self,
         dockerfile: str,
         context: str | None,
-        **fork_options,
+        fork_options: dict[str, Any],
+        *,
+        base_url: str,
     ) -> "VM":
-        """Build a Dockerfile by forking its ``FROM`` and driving the rest.
-
-        The build runs from HERE rather than on the server, and ``COPY`` is why.
-        Its sources are files on this machine; a server-side build would have to
-        be handed them first, which means uploading a build context — an upload
-        endpoint, object storage, and a ceiling on how big a project may be.
-        Driving it here turns ``COPY`` into ``vm.sync_dir``, which streams
-        straight into the guest and, being manifest-diffed, re-sends only the
-        files that changed since a previous build.
-
-        ``FROM`` is still the server's job: ``fork(image=…)`` owns the registry
-        pull, its vetting, the OCI→ext4 conversion and the template cache. This
-        only orchestrates what comes after it.
-        """
         from .build import apply_steps
         from .build_spec import DockerfileError, parse_dockerfile
 
-        # `dockerfile` is a PATH if it names an existing file, and Dockerfile
-        # TEXT otherwise. Deliberately not a heuristic on content (newlines,
-        # leading keyword): "does this file exist" is a question with one
-        # answer, so the rule is predictable and explainable. Docker draws the
-        # same distinction between `-f Dockerfile .` and `docker build -`.
         path = os.path.abspath(dockerfile) if os.path.isfile(dockerfile) else None
         if path is not None:
             with open(path, "r", encoding="utf-8") as handle:
@@ -678,23 +452,18 @@ class Arker:
         except DockerfileError as error:
             raise ArkerError("bad_request", f"fork: {error}", 400) from error
 
-        # The context is where COPY resolves its sources: an explicit
-        # `context`, else the Dockerfile's own directory, else — for text,
-        # which has no directory — the current one. Same defaulting `docker
-        # build` has, and nothing here inspects the instructions to decide it:
-        # a Dockerfile with no COPY simply never reads it.
-        if context:
-            context_root = os.path.abspath(context)
-        elif path is not None:
-            context_root = os.path.dirname(path)
-        else:
-            context_root = os.getcwd()
+        context_root = os.path.abspath(context) if context else (
+            os.path.dirname(path) if path is not None else os.getcwd()
+        )
         if not os.path.isdir(context_root):
             raise ArkerError(
                 "bad_request", f"fork: context is not a directory: {context_root}", 400
             )
 
-        vm = self.fork(image=parsed.base_image, **fork_options)
+        vm = self._fork(
+            {**fork_options, "image": parsed.base_image},
+            base_url=base_url,
+        )
         apply_steps(vm, parsed.steps, context_root)
         return vm
 
@@ -835,6 +604,7 @@ class Arker:
         base_url: str | None = None,
         extra_headers: dict[str, str] | None = None,
         max_queueing_s: int | None = None,
+        preserve_nulls: bool = False,
     ) -> dict[str, Any]:
         return _request_json(
             method,
@@ -845,6 +615,7 @@ class Arker:
             api_key=self._api_key,
             extra_headers=extra_headers,
             max_queueing_s=max_queueing_s,
+            preserve_nulls=preserve_nulls,
         )
 
     def _retry_delay(self, attempt: int) -> float:
@@ -906,9 +677,12 @@ class VM:
         info = _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
         return VM(self._client, self.id, self.base_url, info)
 
-    def fork(self, **kwargs: Any) -> VM:
+    def fork(self, **options: Any) -> VM:
         """Fork this VM and return its child."""
-        return self._client.fork(source_vm_id=self.id, **kwargs)
+        return self._client._fork(
+            {**options, "source_vm_id": self.id},
+            base_url=self.base_url,
+        )
 
     def run(
         self,
@@ -1346,12 +1120,9 @@ class VM:
         so it can never cause a stale or missing upload — worst case it hashes a
         file it didn't need to.
 
-``ignore`` is called with each file's context-relative, ``/``-separated
+        ``ignore`` is called with each file's context-relative, ``/``-separated
         path; returning True drops it. Applied BEFORE hashing, so an ignored
-        file costs nothing and cannot perturb the incremental diff — a filter
-        applied after hashing would still let an ignored file's appearance or
-        removal change the comparison. The Dockerfile build driver uses it to
-        apply `.dockerignore`.
+        file costs nothing and cannot perturb the incremental diff.
 
         Returns a :class:`SyncDirResult` (sent / skipped / bytes).
         """
@@ -1927,6 +1698,7 @@ def _request_json(
     api_key: str | None = None,
     extra_headers: dict[str, str] | None = None,
     max_queueing_s: int | None = None,
+    preserve_nulls: bool = False,
 ) -> dict[str, Any]:
     url = base_url + path
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
@@ -1939,7 +1711,7 @@ def _request_json(
 
     if body is not None:
         headers["content-type"] = "application/json"
-        payload_dict = _drop_none(body)
+        payload_dict = body if preserve_nulls else _drop_none(body)
         data = json.dumps(payload_dict).encode("utf-8")
 
     # queueing_timeout swaps the retry budget from attempt count to wall-clock

@@ -12,7 +12,6 @@ import {
   Arker,
   ArkerError,
   type ArkerOptions,
-  type ForkOptions,
   type RunOptions,
   type VM,
 } from "../index.js";
@@ -198,10 +197,10 @@ export function createArkerComputeProvider(config: ArkerComputeProviderConfig = 
         if (!source) {
           throw new Error("Arker source is required; pass templateId, configure source, or set ARKER_SOURCE or ARKER_SOURCE_VM");
         }
-        const forkRequest: Partial<ForkOptions> = {};
-        if (options?.name) forkRequest.name = options.name;
-
-        const vm = await client.fork(source, forkRequest);
+        const vm = await client.fork({
+          source_vm_name: source,
+          ...(options?.name ? { name: options.name } : {}),
+        });
         return wrap(vm);
       },
       getById: async (sandboxId: string): Promise<SandboxInterface | null> => {

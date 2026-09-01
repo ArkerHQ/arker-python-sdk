@@ -152,8 +152,6 @@ def test_public_wire_types_are_generated() -> None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert {
-        "ForkRequest1",
-        "ForkRequest2",
         "ListFilesystemsParameters",
         "ListOrgRunsParameters",
         "ListRunsParameters",
@@ -237,18 +235,8 @@ def test_public_surface_uses_only_current_names_and_copy() -> None:
 
     assert "network" not in schemas["ForkRequest"]["properties"]
     assert "egress" not in schemas["ForkRequest"]["properties"]
-    assert "background" not in schemas["RunRequest"]["properties"]
-
-    def assert_not_deprecated(value: object) -> None:
-        if isinstance(value, dict):
-            assert value.get("deprecated") is not True
-            for child in value.values():
-                assert_not_deprecated(child)
-        elif isinstance(value, list):
-            for child in value:
-                assert_not_deprecated(child)
-
-    assert_not_deprecated(contract)
+    assert schemas["RunRequest"]["properties"]["background"]["deprecated"] is True
+    assert schemas["ForkRequest"]["properties"]["source_org_id"]["deprecated"] is True
 
     typescript = (REPO_ROOT / "typescript/src/index.ts").read_text()
     python_init = (REPO_ROOT / "python/src/arker/__init__.py").read_text()
