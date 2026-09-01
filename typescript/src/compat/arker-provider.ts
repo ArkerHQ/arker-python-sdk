@@ -198,7 +198,7 @@ export function createArkerComputeProvider(config: ArkerComputeProviderConfig = 
           throw new Error("Arker source is required; pass templateId, configure source, or set ARKER_SOURCE or ARKER_SOURCE_VM");
         }
         const vm = await client.fork({
-          sourceVmName: source,
+          source_vm_name: source,
           ...(options?.name ? { name: options.name } : {}),
         });
         return wrap(vm);

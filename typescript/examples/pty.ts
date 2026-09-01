@@ -18,7 +18,7 @@ async function main() {
   const arg = process.argv[2];
   const source = process.env.ARKER_SOURCE_VM;
   if (!arg && !source) throw new Error("pass a VM id or set ARKER_SOURCE_VM");
-  const vm = arg ? await ar.vm(arg).refresh() : await ar.fork({ sourceVmName: source! });
+  const vm = arg ? await ar.vm(arg).refresh() : await ar.fork({ source_vm_name: source! });
   if (!arg) console.error(`forked ${vm.id}`);
 
   const stdin = process.stdin;

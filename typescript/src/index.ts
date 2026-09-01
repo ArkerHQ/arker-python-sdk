@@ -7,29 +7,6 @@
 
 import { runPollBudgetMs } from "./internal/run-poll.js";
 import type { components, operations } from "./generated/api-types.js";
-import {
-  encodeForkRequest,
-  forkOperation,
-  type ForkByDockerfileOptions as GeneratedForkByDockerfileOptions,
-  type ForkFromVmOptions,
-  type ForkOptions as GeneratedForkOptions,
-} from "./generated/fork.js";
-export type {
-  ForkByImageOptions,
-  ForkByNameOptions,
-  ForkByVmIdOptions,
-  ForkByVmNameAndOrgIdOptions,
-  ForkByVmNameAndOrgNameOptions,
-  ForkByVmNameOptions,
-  ForkFromVmOptions,
-} from "./generated/fork.js";
-
-export type ForkByDockerfileOptions = GeneratedForkByDockerfileOptions & {
-  context?: string;
-};
-export type ForkOptions =
-  | Exclude<GeneratedForkOptions, GeneratedForkByDockerfileOptions>
-  | ForkByDockerfileOptions;
 
 type ApiSchema<Name extends keyof components["schemas"]> = components["schemas"][Name];
 type ApiQuery<Name extends keyof operations> = NonNullable<
@@ -328,6 +305,7 @@ export type Rewrite = ApiSchema<"Rewrite">;
  * range (`[1000, 2000]`). A `ports` list may mix the two. */
 export type PortSpec = NonNullable<PolicyMatch["ports"]>[number];
 export type ForkRequest = ApiSchema<"ForkRequest">;
+export type ForkOptions = ForkRequest & { context?: string };
 export type VmResources = ApiSchema<"VmResources">;
 export type ResourcesInput = ApiSchema<"ResourcesInput">;
 export type VmNetwork = ApiSchema<"VmNetwork">;
@@ -679,34 +657,37 @@ export class Arker {
   /**
    * Create a VM from one VM, image, or local Dockerfile source.
    *
-   *     fork({ sourceVmName: "base" })
-   *     fork({ sourceVmId: "vm_abc", layers: ["disk"] })
+   *     fork({ source_vm_name: "base" })
+   *     fork({ source_vm_id: "vm_abc", layers: ["disk"] })
    *     fork({ image: "ubuntu:24.04" })
    *     fork({ dockerfile: "FROM ubuntu:24.04\nRUN echo ready" })
    *
    * Use {@link VM.fork} when the source is already a VM handle.
    */
   async fork(options: ForkOptions): Promise<VM> {
-    if (options === null || typeof options !== "object" || Array.isArray(options)) {
-      encodeForkRequest(options as GeneratedForkOptions);
-    }
-    const { context, ...operationOptions } = options as ForkOptions & { context?: string };
-    encodeForkRequest(operationOptions as GeneratedForkOptions);
+    const { context, ...request } = options;
 
-    const dockerfile = (operationOptions as { dockerfile?: unknown }).dockerfile;
+    const dockerfile = request.dockerfile;
     if (context !== undefined && typeof dockerfile !== "string") {
       throw new TypeError("context is only valid with dockerfile");
     }
     if (typeof dockerfile === "string") {
-      const { dockerfile: _dockerfile, ...forkOptions } = operationOptions as Record<string, unknown>;
+      const { dockerfile: _dockerfile, ...forkOptions } = request;
       return this.forkDockerfile(dockerfile, context, forkOptions);
     }
-    return this._fork(operationOptions as GeneratedForkOptions, this.baseUrl);
+    return this._fork(request as ForkRequest, this.baseUrl);
   }
 
   /** @internal */
-  async _fork(options: GeneratedForkOptions, baseUrl: string): Promise<VM> {
-    const wire = await forkOperation(options, baseUrl, this._request.bind(this));
+  async _fork(options: ForkRequest, baseUrl: string): Promise<VM> {
+    const wire = await this._request<Vm>(
+      "POST",
+      "/v1/fork",
+      options,
+      baseUrl,
+      undefined,
+      options.queueing_timeout,
+    );
     return new VM(this, wire.vm_id, baseUrl, wire);
   }
 
@@ -750,7 +731,7 @@ export class Arker {
     }
 
     const vm = await this._fork(
-      { ...forkOptions, image: parsed.baseImage } as GeneratedForkOptions,
+      { ...forkOptions, image: parsed.baseImage } as ForkRequest,
       this.baseUrl,
     );
     await applySteps(vm, parsed.steps, contextRoot);
@@ -844,8 +825,6 @@ export class Arker {
     baseUrl = this.baseUrl,
     extraHeaders?: Record<string, string | undefined>,
     maxQueueingSecs?: number | null,
-    retryWindowField?: string,
-    preserveBody = false,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -865,8 +844,6 @@ export class Arker {
       this.http2,
       this.retry,
       maxQueueingSecs ?? undefined,
-      retryWindowField,
-      preserveBody,
     );
   }
 
@@ -966,9 +943,9 @@ export class VM {
   }
 
   /** Fork this VM and return its child. */
-  async fork(options: ForkFromVmOptions = {}): Promise<VM> {
+  async fork(options: Partial<ForkRequest> = {}): Promise<VM> {
     return this._client._fork(
-      { ...options, sourceVmId: this.id } as GeneratedForkOptions,
+      { ...options, source_vm_id: this.id } as ForkRequest,
       this.baseUrl,
     );
   }
@@ -1012,7 +989,6 @@ export class VM {
       this.baseUrl,
       headers,
       options.queueing_timeout,
-      "queueing_timeout",
     );
     const result = parseRunResponse(response);
     // The server backgrounds a run that outlived its sync window. When the
@@ -2208,14 +2184,12 @@ async function requestJson<T>(
   http2: boolean,
   retry: RetryConfig,
   maxQueueingSecs?: number,
-  retryWindowField?: string,
-  preserveBody = false,
 ): Promise<T> {
   const headers = { ...requestHeaders };
   let requestBody: string | undefined;
   if (body !== undefined) {
     headers["content-type"] = "application/json";
-    requestBody = JSON.stringify(preserveBody ? body : withoutUndefined(body));
+    requestBody = JSON.stringify(withoutUndefined(body));
   }
 
   // queueing_timeout swaps the retry budget from attempt count to wall-clock
@@ -2226,20 +2200,14 @@ async function requestJson<T>(
       : undefined;
 
   for (let attempt = 0; ; attempt++) {
-    if (
-      queueingDeadline !== undefined &&
-      attempt > 0 &&
-      retryWindowField !== undefined &&
-      isObject(body)
-    ) {
+    if (queueingDeadline !== undefined && attempt > 0 && isObject(body)) {
       // Retries re-send the remaining window.
       const remainingSecs = Math.max(
         1,
         Math.ceil((queueingDeadline - Date.now()) / 1000),
       );
-      const attemptBody = { ...body, [retryWindowField]: remainingSecs };
       requestBody = JSON.stringify(
-        preserveBody ? attemptBody : withoutUndefined(attemptBody),
+        withoutUndefined({ ...body, queueing_timeout: remainingSecs }),
       );
     }
     try {

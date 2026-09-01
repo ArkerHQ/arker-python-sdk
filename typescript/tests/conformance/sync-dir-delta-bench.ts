@@ -90,7 +90,7 @@ async function main(): Promise<void> {
   // Track the VMs WE fork so cleanup deletes only those (never a stray VM).
   const createdVms: VM[] = [];
   try {
-    const vm = await arker.fork({ sourceVmName: source });
+    const vm = await arker.fork({ source_vm_name: source });
     createdVms.push(vm);
     // Warm the guest so cold-boot doesn't pollute the first sync timing.
     await vm.sync(`/home/user/.bench-warm`, "warm");

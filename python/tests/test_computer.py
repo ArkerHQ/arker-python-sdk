@@ -235,7 +235,7 @@ def test_fork_preserves_the_canonical_wire_shape() -> None:
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/v1/fork"),
         200,
-        {**_fork_response("vm_child"), "future_response_field": {"value": 1}},
+        _fork_response("vm_child"),
     )
 
     with use_transport(t):
@@ -245,20 +245,7 @@ def test_fork_preserves_the_canonical_wire_shape() -> None:
             resources={"vcpu": 2, "memory_mib": 2048},
             description=None,
             disk=False,
-            policies={
-                "policies": [
-                    {
-                        "type": "outbound",
-                        "action": {
-                            "gate": {
-                                "host": "https://auth.example.com",
-                                "allow_on_status": [200],
-                                "body": {"keep_null": None},
-                            }
-                        },
-                    }
-                ]
-            },
+            layers=["disk"],
         )
 
     assert json.loads(t.calls[0]["body"]) == {
@@ -267,20 +254,7 @@ def test_fork_preserves_the_canonical_wire_shape() -> None:
         "resources": {"vcpu": 2, "memory_mib": 2048},
         "description": None,
         "disk": False,
-        "policies": {
-            "policies": [
-                {
-                    "type": "outbound",
-                    "action": {
-                        "gate": {
-                            "host": "https://auth.example.com",
-                            "allow_on_status": [200],
-                            "body": {"keep_null": None},
-                        }
-                    },
-                }
-            ]
-        },
+        "layers": ["disk"],
     }
 
 
@@ -295,34 +269,12 @@ def test_vm_fork_uses_its_id_and_attached_endpoint() -> None:
     vm = sdk.VM(client(), "vm_source", "https://attached.invalid/api")
 
     with use_transport(t):
-        child = vm.fork(resources={"vcpu": 4})
+        child = vm.fork(source_vm_id="ignored", resources={"vcpu": 4})
 
     assert child.base_url == "https://attached.invalid/api"
     assert json.loads(t.calls[0]["body"]) == {
         "resources": {"vcpu": 4},
         "source_vm_id": "vm_source",
-    }
-
-
-def test_fork_sends_an_organization_name_scope() -> None:
-    t = FakeTransport()
-    t.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
-        200,
-        _fork_response("vm_child"),
-    )
-
-    with use_transport(t):
-        client().fork(
-            source_vm_name="ubuntu",
-            source_org_name="ArkerHQ",
-            description="",
-        )
-
-    assert json.loads(t.calls[0]["body"]) == {
-        "source_vm_name": "ubuntu",
-        "source_org_name": "ArkerHQ",
-        "description": "",
     }
 
 
@@ -385,23 +337,9 @@ def test_fork_from_image_sends_only_the_image() -> None:
     assert body == {"image": "ubuntu:24.04", "name": "from-image"}
 
 
-def test_fork_rejects_an_image_alongside_a_source_vm() -> None:
-    for kwargs in (
-        {"image": "ubuntu:24.04", "source_vm_name": "base"},
-        {"image": "ubuntu:24.04", "source_vm_id": "vm_abc"},
-    ):
-        with pytest.raises(TypeError, match="exactly one source variant"):
-            client().fork(**kwargs)  # type: ignore[arg-type]
-
-
 def test_fork_rejects_positional_sources() -> None:
     with pytest.raises(TypeError):
         client().fork("base", image="ubuntu:24.04")
-
-
-def test_fork_rejects_flat_resource_arguments() -> None:
-    with pytest.raises(TypeError, match="vcpu_count"):
-        client().fork(source_vm_name="base", vcpu_count=2)  # type: ignore[call-overload]
 
 
 def _fork_response(vm_id: str) -> dict:
@@ -473,20 +411,6 @@ def test_fork_from_a_dockerfile_forks_the_base_image_then_drives_the_rest() -> N
     assert json.loads(t.calls[0]["body"]) == {"image": "ubuntu:24.04"}
     assert t.calls[1]["url"].endswith("/vms/vm_dockerfile/runs")
     assert json.loads(t.calls[1]["body"])["command"] == "echo hi"
-
-
-def test_fork_rejects_an_image_and_a_dockerfile_together() -> None:
-    with pytest.raises(TypeError, match="exactly one source variant"):
-        client().fork(image="ubuntu:24.04", dockerfile="FROM ubuntu:24.04\n")
-
-
-def test_fork_rejects_a_dockerfile_alongside_a_source_vm() -> None:
-    for kwargs in (
-        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_name": "base"},
-        {"dockerfile": "FROM ubuntu:24.04\n", "source_vm_id": "vm_abc"},
-    ):
-        with pytest.raises(TypeError, match="exactly one source variant"):
-            client().fork(**kwargs)  # type: ignore[arg-type]
 
 
 def test_fork_rejects_a_response_without_vm_id() -> None:
@@ -2087,7 +2011,7 @@ def test_queueing_timeout_respects_retry_false() -> None:
 
 
 def test_fork_forwards_queueing_timeout() -> None:
-    # The generated operation supplies retry metadata to the shared transport.
+    # fork() passes the caller's retry window to the shared transport.
     t = FakeTransport()
     t.add_json(lambda method, url: method == "POST" and url.endswith("/v1/fork"), 200, {
         "vm_id": "vm_child", "owner_org_id": "owner", "created_at": "now",

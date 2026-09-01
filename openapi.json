@@ -116,9 +116,7 @@
     "/v1/whoami": {
       "get": {
         "operationId": "whoami",
-        "tags": [
-          "Service"
-        ],
+        "tags": ["Service"],
         "summary": "Show the authenticated organization",
         "description": "Returns the organization associated with the authenticated API key or session.",
         "responses": {
@@ -126,15 +124,11 @@
             "description": "The authenticated organization.",
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WhoamiResponse"
-                }
+                "schema": { "$ref": "#/components/schemas/WhoamiResponse" }
               }
             }
           },
-          "default": {
-            "$ref": "#/components/responses/Error"
-          }
+          "default": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -145,10 +139,6 @@
           "VMs"
         ],
         "summary": "Fork a VM",
-        "x-arker-retry-window": {
-          "field": "queueing_timeout",
-          "unit": "seconds"
-        },
         "requestBody": {
           "required": true,
           "content": {
@@ -1740,10 +1730,7 @@
       },
       "WhoamiResponse": {
         "type": "object",
-        "required": [
-          "org_id",
-          "org_name"
-        ],
+        "required": ["org_id", "org_name"],
         "additionalProperties": false,
         "properties": {
           "org_id": {

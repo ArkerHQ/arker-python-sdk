@@ -32,7 +32,7 @@ Fork a source VM, run a command, sync a file, and delete the VM:
 import { Arker } from "@arker-ai/sdk";
 
 const arker = new Arker();
-const vm = await arker.fork({ sourceVmName: "ubuntu-coding" });
+const vm = await arker.fork({ source_vm_name: "ubuntu-coding" });
 
 const result = await vm.run("python3 -c 'print(2 + 2)'");
 if (result.type === "completed") {

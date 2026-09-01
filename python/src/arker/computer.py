@@ -24,9 +24,7 @@ import time
 import types
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, get_args, get_origin, get_type_hints, overload
-
-from typing_extensions import NotRequired, Unpack
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, get_args, get_origin, get_type_hints
 
 import httpx
 
@@ -89,22 +87,6 @@ from .generated.api_models import (
     ResourcesInput,
     VmResources,
 )
-from .generated.fork import (
-    ForkByDockerfileOptions,
-    ForkByImageOptions,
-    ForkByVmIdOptions,
-    ForkByVmNameAndOrgIdOptions,
-    ForkByVmNameAndOrgNameOptions,
-    ForkByVmNameOptions,
-    ForkFromVmOptions,
-    ForkOptions,
-    fork_operation,
-    validate_fork_options,
-)
-
-
-class DockerfileForkOptions(ForkByDockerfileOptions, total=False):
-    context: NotRequired[str | None]
 
 
 Model = TypeVar("Model")
@@ -412,49 +394,39 @@ class Arker:
     ) -> "VM":
         return VM(self, vm_id, self._base_url_for(vm_id, provider=provider, region=region))
 
-    @overload
-    def fork(self, **options: Unpack[ForkByVmIdOptions]) -> "VM": ...
-
-    @overload
-    def fork(self, **options: Unpack[ForkByVmNameOptions]) -> "VM": ...
-
-    @overload
-    def fork(self, **options: Unpack[ForkByVmNameAndOrgIdOptions]) -> "VM": ...
-
-    @overload
-    def fork(self, **options: Unpack[ForkByVmNameAndOrgNameOptions]) -> "VM": ...
-
-    @overload
-    def fork(self, **options: Unpack[ForkByImageOptions]) -> "VM": ...
-
-    @overload
-    def fork(self, **options: Unpack[DockerfileForkOptions]) -> "VM": ...
-
     def fork(self, **options: Any) -> "VM":
         """Create a VM from exactly one source accepted by POST /v1/fork."""
-        operation_options = dict(options)
-        has_context = "context" in operation_options
-        context = operation_options.pop("context", None)
-        validate_fork_options(operation_options)
-
-        dockerfile = operation_options.get("dockerfile")
+        has_context = "context" in options
+        context = options.pop("context", None)
+        dockerfile = options.get("dockerfile")
         if has_context and not isinstance(dockerfile, str):
             raise TypeError("context is only valid with dockerfile")
         if context is not None and not isinstance(context, str):
             raise TypeError("context must be a string")
         if isinstance(dockerfile, str):
-            fork_options = dict(operation_options)
-            del fork_options["dockerfile"]
+            del options["dockerfile"]
             return self._fork_dockerfile(
                 dockerfile,
                 context,
-                fork_options,
+                options,
                 base_url=self.base_url,
             )
-        return self._fork(operation_options, base_url=self.base_url)
+        return self._fork(options, base_url=self.base_url)
 
-    def _fork(self, options: ForkOptions, *, base_url: str) -> "VM":
-        info = _vm_info(fork_operation(options, request=self._request, base_url=base_url))
+    def _fork(self, options: dict[str, Any], *, base_url: str) -> "VM":
+        queueing_timeout = options.get("queueing_timeout")
+        info = _vm_info(
+            self._request(
+                "POST",
+                "/v1/fork",
+                options,
+                base_url=base_url,
+                max_queueing_s=(
+                    queueing_timeout if type(queueing_timeout) is int else None
+                ),
+                preserve_nulls=True,
+            )
+        )
         return VM(self, info.vm_id, base_url, info)
 
     def _fork_dockerfile(
@@ -633,7 +605,6 @@ class Arker:
         extra_headers: dict[str, str] | None = None,
         max_queueing_s: int | None = None,
         preserve_nulls: bool = False,
-        retry_window_field: str | None = None,
     ) -> dict[str, Any]:
         return _request_json(
             method,
@@ -645,7 +616,6 @@ class Arker:
             extra_headers=extra_headers,
             max_queueing_s=max_queueing_s,
             preserve_nulls=preserve_nulls,
-            retry_window_field=retry_window_field,
         )
 
     def _retry_delay(self, attempt: int) -> float:
@@ -707,7 +677,7 @@ class VM:
         info = _vm_info(self._client._request("GET", _vm_path(self.id), base_url=self.base_url))
         return VM(self._client, self.id, self.base_url, info)
 
-    def fork(self, **options: Unpack[ForkFromVmOptions]) -> VM:
+    def fork(self, **options: Any) -> VM:
         """Fork this VM and return its child."""
         return self._client._fork(
             {**options, "source_vm_id": self.id},
@@ -827,7 +797,6 @@ class VM:
             base_url=self.base_url,
             extra_headers=headers,
             max_queueing_s=queueing_timeout,
-            retry_window_field="queueing_timeout",
         ))
         # The server backgrounds a run that outlived its sync window. When the
         # caller did NOT request background, poll get_run() to a terminal state
@@ -1730,7 +1699,6 @@ def _request_json(
     extra_headers: dict[str, str] | None = None,
     max_queueing_s: int | None = None,
     preserve_nulls: bool = False,
-    retry_window_field: str | None = None,
 ) -> dict[str, Any]:
     url = base_url + path
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
@@ -1756,15 +1724,10 @@ def _request_json(
 
     attempt = 0
     while True:
-        if (
-            deadline is not None
-            and attempt > 0
-            and retry_window_field is not None
-            and isinstance(payload_dict, dict)
-        ):
+        if deadline is not None and attempt > 0 and isinstance(payload_dict, dict):
             # Retries re-send the remaining window.
             remaining = max(1, math.ceil(deadline - time.monotonic()))
-            data = json.dumps({**payload_dict, retry_window_field: remaining}).encode("utf-8")
+            data = json.dumps({**payload_dict, "queueing_timeout": remaining}).encode("utf-8")
         try:
             status, raw = _http(method, url, headers, data)
         except httpx.RequestError as error:

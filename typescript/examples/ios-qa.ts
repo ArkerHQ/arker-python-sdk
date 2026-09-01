@@ -150,9 +150,9 @@ let vm: VM | undefined;
 
 try {
   vm = await ar.fork({
-    sourceVmName: source,
+    source_vm_name: source,
     name: `ios-qa-${Date.now()}`,
-    resources: { vcpu, memoryMib },
+    resources: { vcpu, memory_mib: memoryMib },
   });
   console.log(`forked ${vm.id} from ${source}${vmMetadata(vm)}`);
 

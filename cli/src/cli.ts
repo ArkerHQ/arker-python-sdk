@@ -648,8 +648,8 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
   const resources = hasResources
     ? {
         ...(vcpu !== undefined ? { vcpu } : {}),
-        ...(memoryMib !== undefined ? { memoryMib } : {}),
-        ...(diskMib !== undefined ? { diskMib } : {}),
+        ...(memoryMib !== undefined ? { memory_mib: memoryMib } : {}),
+        ...(diskMib !== undefined ? { disk_mib: diskMib } : {}),
         ...(vgpu !== undefined ? { vgpu } : {}),
       }
     : undefined;
@@ -661,10 +661,10 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
 
   const queueingTimeout = numFlag(args, "queueing-timeout");
   const source = sourceVmId
-    ? { sourceVmId }
+    ? { source_vm_id: sourceVmId }
     : sourceOrgId
-      ? { sourceVmName: sourceVmName!, sourceOrgId }
-      : { sourceVmName: sourceVmName! };
+      ? { source_vm_name: sourceVmName!, source_org_id: sourceOrgId }
+      : { source_vm_name: sourceVmName! };
   const computer = await client.fork({
     ...source,
     name,
@@ -673,7 +673,7 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     ...(platforms && platforms.length > 0 ? { platforms } : {}),
     ...(resources ? { resources } : {}),
     ...(disk !== undefined ? { disk } : {}),
-    ...(queueingTimeout !== undefined ? { queueingTimeout } : {}),
+    ...(queueingTimeout !== undefined ? { queueing_timeout: queueingTimeout } : {}),
   });
   out({ vm_id: computer.id });
 }
@@ -1134,7 +1134,9 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
     }
     const sourceOrgId = args.flags["source-org-id"] as string | undefined;
     computer = await client.fork(
-      sourceOrgId ? { sourceVmName, sourceOrgId } : { sourceVmName },
+      sourceOrgId
+        ? { source_vm_name: sourceVmName, source_org_id: sourceOrgId }
+        : { source_vm_name: sourceVmName },
     );
     err(`forked ${computer.id}`);
   }

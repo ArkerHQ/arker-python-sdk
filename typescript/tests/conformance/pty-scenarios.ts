@@ -84,7 +84,7 @@ async function live(vmId: string, sessionId: string, opts: Record<string, unknow
 
 async function main(): Promise<void> {
   console.log(`==== PTY scenarios e2e vs ${BASE_URL ?? REGION} (source=${SOURCE}) ====`);
-  const vm = await arker.fork({ sourceVmName: SOURCE!, sourceOrgId: SOURCE_ORG_ID, name: "pty-scenarios" });
+  const vm = await arker.fork({ source_vm_name: SOURCE!, source_org_id: SOURCE_ORG_ID, name: "pty-scenarios" });
   const vmId = vm.id;
   console.log(`  (vm=${vmId})`);
   try {

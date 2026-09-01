@@ -149,9 +149,10 @@ async function testForkPostsDirectlyToSourceVm(): Promise<void> {
 
   const source = new VM(client(fetch), "source-vm-id", "https://attached.invalid/api");
   const vm = await source.fork({
+    source_vm_id: "ignored",
     name: "demo",
     description: "CI runner",
-    sshPublicKeys: ["ssh-ed25519 AAAA test@example.com"],
+    ssh_public_keys: ["ssh-ed25519 AAAA test@example.com"],
   });
 
   assert.equal(vm.id, "vm_child");
@@ -179,29 +180,17 @@ async function testForkPreservesTheCanonicalWireShape(): Promise<void> {
       public: false,
       state: "idle",
       sessions: [],
-      future_response_field: { value: 1 },
     },
   );
 
   await client(fetch).fork({
-    sourceVmName: "ubuntu",
-    sourceOrgName: "ArkerHQ",
-    resources: { vcpu: 2, memoryMib: 2048 },
+    source_vm_name: "ubuntu",
+    source_org_name: "ArkerHQ",
+    resources: { vcpu: 2, memory_mib: 2048 },
     description: null,
     disk: false,
-    policies: {
-      policies: [{
-        type: "outbound",
-        action: {
-          gate: {
-            host: "https://auth.example.com",
-            allowOnStatus: [200],
-            body: { keep_null: null },
-          },
-        },
-      }],
-    },
-  } as never);
+    layers: ["disk"],
+  });
 
   assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), {
     source_vm_name: "ubuntu",
@@ -209,69 +198,8 @@ async function testForkPreservesTheCanonicalWireShape(): Promise<void> {
     resources: { vcpu: 2, memory_mib: 2048 },
     description: null,
     disk: false,
-    policies: {
-      policies: [{
-        type: "outbound",
-        action: {
-          gate: {
-            host: "https://auth.example.com",
-            allow_on_status: [200],
-            body: { keep_null: null },
-          },
-        },
-      }],
-    },
+    layers: ["disk"],
   });
-}
-
-async function testForkOmitsFieldsThatWereNotSupplied(): Promise<void> {
-  const fetch = new FakeFetch();
-  fetch.addJson(
-    (method, url) => method === "POST" && url.endsWith("/v1/fork"),
-    200,
-    { vm_id: "vm_child", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
-  );
-
-  await client(fetch).fork({ sourceVmName: "ubuntu" });
-
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), {
-    source_vm_name: "ubuntu",
-  });
-}
-
-async function testForkSendsAnOrganizationIdScope(): Promise<void> {
-  const fetch = new FakeFetch();
-  fetch.addJson(
-    (method, url) => method === "POST" && url.endsWith("/v1/fork"),
-    200,
-    { vm_id: "vm_child", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
-  );
-
-  await client(fetch).fork({
-    sourceVmName: "ubuntu",
-    sourceOrgId: "org_123",
-    description: "",
-  });
-
-  assert.deepEqual(JSON.parse(fetch.calls[0]!.body!), {
-    source_vm_name: "ubuntu",
-    source_org_id: "org_123",
-    description: "",
-  });
-}
-
-async function testForkSendsLayers(): Promise<void> {
-  const fetch = new FakeFetch();
-  fetch.addJson(
-    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
-    200,
-    { vm_id: "vm_child", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
-  );
-
-  await client(fetch).fork({ sourceVmName: "source-vm", layers: ["disk"] });
-
-  const body = JSON.parse(fetch.calls[0]!.body!);
-  assert.deepEqual(body.layers, ["disk"], "layers must reach the wire, not be dropped");
 }
 
 // `image` is a third fork source. The service models the three as a `oneOf`,
@@ -320,52 +248,6 @@ async function testForkFromDockerfileBuildsFromItsBaseImage(): Promise<void> {
   assert.equal(JSON.parse(fetch.calls[1]!.body!).command, "echo hi");
 }
 
-async function testForkRejectsImageAlongsideASourceVm(): Promise<void> {
-  const fetch = new FakeFetch();
-  for (const src of [
-    { image: "ubuntu:24.04", sourceVmName: "base" },
-    { image: "ubuntu:24.04", sourceVmId: "vm_abc" },
-  ]) {
-    let threw = false;
-    try {
-      await client(fetch).fork(src as never);
-    } catch (err) {
-      threw = true;
-      assert.match((err as Error).message, /exactly one source variant/);
-    }
-    assert.equal(threw, true, `${JSON.stringify(src)} must be refused before any request`);
-  }
-  assert.equal(fetch.calls.length, 0, "a refused fork must not reach the network");
-}
-
-async function testForkRejectsUnsupportedFlatResourceInputs(): Promise<void> {
-  const fetch = new FakeFetch();
-  await assert.rejects(
-    () => client(fetch).fork({
-      sourceVmName: "source-vm",
-      vcpu_count: 2,
-    } as never),
-    (error: unknown) =>
-      error instanceof TypeError && error.message.includes("vcpu_count"),
-  );
-  assert.equal(fetch.calls.length, 0);
-}
-
-async function testForkRejectsOldJavaScriptInputs(): Promise<void> {
-  const fetch = new FakeFetch();
-  await assert.rejects(
-    () => client(fetch).fork("source-vm" as never),
-    (error: unknown) =>
-      error instanceof TypeError && error.message.includes("must be an object"),
-  );
-  await assert.rejects(
-    () => client(fetch).fork({ source_vm_name: "source-vm" } as never),
-    (error: unknown) =>
-      error instanceof TypeError && error.message.includes("source variant"),
-  );
-  assert.equal(fetch.calls.length, 0);
-}
-
 async function testForkOmitsSourceOrgWhenNotExplicit(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -384,8 +266,8 @@ async function testForkOmitsSourceOrgWhenNotExplicit(): Promise<void> {
   );
 
   const vm = await client(fetch).fork({
-    sourceVmName: "catalog-template",
-    sshPublicKeys: ["ssh-ed25519 AAAA test@example"],
+    source_vm_name: "catalog-template",
+    ssh_public_keys: ["ssh-ed25519 AAAA test@example"],
     policies: { policies: [] },
   });
 
@@ -418,26 +300,15 @@ async function testForkOmitsUnconfiguredCapabilities(): Promise<void> {
     },
   );
 
-  await client(fetch).fork({ sourceVmName: "catalog-template" });
+  await client(fetch).fork({ source_vm_name: "catalog-template" });
 
   const body = JSON.parse(fetch.calls[0]!.body!);
   assert.equal(body.policies, undefined);
   assert.equal(body.ssh_public_keys, undefined);
 }
 
-async function testRemovedNetworkInputsFailBeforeRequests(): Promise<void> {
+async function testRemovedRunNetworkInputsFailBeforeRequests(): Promise<void> {
   const fetch = new FakeFetch();
-  const isUnknownOption = (error: unknown) =>
-    error instanceof TypeError && error.message.includes("unknown fork option");
-
-  await assert.rejects(
-    () => client(fetch).fork({ sourceVmName: "source-vm", network: { reachable: false } } as never),
-    isUnknownOption,
-  );
-  await assert.rejects(
-    () => client(fetch).vm("vm_1").fork({ egress: "blocked" } as never),
-    isUnknownOption,
-  );
   const isBadRequest = (error: unknown) =>
     error instanceof ArkerError && error.code === "bad_request";
   await assert.rejects(
@@ -1248,17 +1119,11 @@ async function testConnectPtyUsesTicketForBrowserWebSocket(): Promise<void> {
 
 await testForkPostsDirectlyToSourceVm();
 await testForkPreservesTheCanonicalWireShape();
-await testForkOmitsFieldsThatWereNotSupplied();
-await testForkSendsAnOrganizationIdScope();
-await testForkSendsLayers();
-await testForkRejectsUnsupportedFlatResourceInputs();
-await testForkRejectsOldJavaScriptInputs();
 await testForkFromImageSendsOnlyTheImage();
 await testForkFromDockerfileBuildsFromItsBaseImage();
-await testForkRejectsImageAlongsideASourceVm();
 await testForkOmitsSourceOrgWhenNotExplicit();
 await testForkOmitsUnconfiguredCapabilities();
-await testRemovedNetworkInputsFailBeforeRequests();
+await testRemovedRunNetworkInputsFailBeforeRequests();
 await testUpdateSendsTopLevelSshPublicKeys();
 await testUpdateSendsPolicies();
 await testNestedErrorWithoutOkStillParses();
@@ -1594,7 +1459,7 @@ async function testRetryAfterHintDrivesTheActualSleep(): Promise<void> {
     retry: { attempts: 2, baseDelayMs: 1, jitterMs: 0 },
   });
   const started = Date.now();
-  const vm = await client.fork({ sourceVmName: "source-vm" });
+  const vm = await client.fork({ source_vm_name: "source-vm" });
   assert.equal(vm.id, "vm-1");
   assert.ok(Date.now() - started >= 45, "the 50ms hint must drive the sleep");
   assert.equal(fetchImpl.calls.length, 2);
@@ -1680,11 +1545,11 @@ async function testQueueingTimeoutRespectsRetryFalse(): Promise<void> {
 }
 
 async function testForkForwardsQueueingTimeout(): Promise<void> {
-  // The generated operation supplies retry metadata to the shared transport.
+  // fork() passes the caller's retry window to the shared transport.
   const fetchImpl = new FakeFetch();
   fetchImpl.addJson((m, u) => m === "POST" && u.includes("/fork"), 200, { vm_id: "vm-9", state: "running" });
   const client = new Arker({ apiKey: "k", baseUrl: "http://x", fetch: fetchImpl.fetch, retry: false });
-  await client.fork({ sourceVmName: "arkuntu", queueingTimeout: 30 });
+  await client.fork({ source_vm_name: "arkuntu", queueing_timeout: 30 });
   const body = JSON.parse(fetchImpl.calls[0]!.body ?? "{}") as { queueing_timeout?: number };
   assert.equal(body.queueing_timeout, 30);
 }
