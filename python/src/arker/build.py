@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import glob as _glob
 import os
+import posixpath
 import hashlib
 import shlex
 import urllib.request
@@ -130,16 +131,21 @@ def _resolve_sources(source: str, context_root: str) -> list[str]:
     return resolved
 
 
-def _copy_destination(dest: str, source_path: str, multiple: bool) -> str:
+def _copy_destination(
+    dest: str, source_path: str, multiple: bool, workdir: str = "/"
+) -> str:
     """Where one resolved source lands in the guest.
 
     Docker's rule: a destination ending in `/`, or one receiving several
     sources, is a directory and each source keeps its basename. Otherwise the
-    destination names the file itself.
+    destination names the file itself. Either way a relative destination
+    resolves against the current WORKDIR.
     """
     if dest.endswith("/") or multiple:
-        return dest.rstrip("/") + "/" + os.path.basename(source_path)
-    return dest
+        return posixpath.join(
+            _join_workdir(workdir, dest), os.path.basename(source_path)
+        )
+    return _join_workdir(workdir, dest)
 
 
 def _verify_checksum(step: Add, payload: bytes) -> None:
@@ -161,7 +167,20 @@ def _verify_checksum(step: Add, payload: bytes) -> None:
         )
 
 
-def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
+def _join_workdir(workdir: str, dest: str) -> str:
+    """Resolve a copy destination the way Docker does.
+
+    Absolute destinations are untouched; a relative one hangs off the current
+    WORKDIR. `posixpath.normpath` collapses the `./` and `..` a Dockerfile may
+    write, and the result always keeps a leading slash so it names a real path
+    rather than the empty component list the API rejects.
+    """
+    joined = dest if dest.startswith("/") else posixpath.join(workdir, dest)
+    normalised = posixpath.normpath(joined)
+    return normalised if normalised.startswith("/") else "/" + normalised
+
+
+def _apply_copy(vm: _VM, step: Copy, context_root: str, workdir: str = "/") -> None:
     resolved: list[str] = []
     for source in step.sources:
         resolved.extend(_resolve_sources(source, context_root))
@@ -185,14 +204,14 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str) -> None:
             # A directory source copies its CONTENTS into the destination,
             # which is what sync_dir does — `COPY src /app/src` puts src's
             # files at /app/src, not at /app/src/src.
-            target = step.dest.rstrip("/")
+            target = _join_workdir(workdir, step.dest)
             # Patterns are context-relative but sync_dir reports paths
             # relative to the synced directory: `COPY src /app` hands us
             # `index.js`, which must be tested as `src/index.js`.
             prefix = "" if rel(path) == "." else rel(path) + "/"
             vm.sync_dir(path, target, ignore=lambda r, p=prefix: ignore.ignores(p + r))
         else:
-            target = _copy_destination(step.dest, path, multiple)
+            target = _copy_destination(step.dest, path, multiple, workdir)
             with open(path, "rb") as handle:
                 vm.sync(target, handle.read())
             if os.stat(path).st_mode & 0o111:
@@ -275,6 +294,12 @@ def _run_checked(vm: _VM, command: str, what: str) -> None:
 def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
     """Execute every step after ``FROM`` against ``vm``, in file order."""
     current_user: str | None = None
+    # Docker resolves a RELATIVE copy destination against the current WORKDIR,
+    # whose implicit value is `/`. Without tracking it, `COPY x ./` sends "."
+    # as the destination and the API refuses it — "path must name a file",
+    # because "." normalises to no path components at all. MEASURED on
+    # aider-polyglot, whose Dockerfiles all use `WORKDIR /app` + `COPY … ./`.
+    current_workdir = "/"
 
     for step in steps:
         if isinstance(step, Run):
@@ -290,6 +315,7 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
                 continue
             command = f"export {step.name}={_env_value(step.default)}"
         elif isinstance(step, Workdir):
+            current_workdir = _join_workdir(current_workdir, step.path)
             quoted = shlex.quote(step.path)
             # Docker creates a WORKDIR that doesn't exist; a bare `cd` would
             # fail on the first build of a fresh image.
@@ -306,11 +332,11 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
             except Exception as error:  # noqa: BLE001 - any fetch failure is a build failure
                 raise BuildError(f"ADD {step.url}: {error}") from error
             _verify_checksum(step, payload)
-            vm.sync(step.dest, payload)
+            vm.sync(_join_workdir(current_workdir, step.dest), payload)
             continue
         elif isinstance(step, Copy):
             # Unwrapped by design — see the module docstring.
-            _apply_copy(vm, step, context_root)
+            _apply_copy(vm, step, context_root, current_workdir)
             continue
         elif isinstance(step, (Label, Expose, Entrypoint, Cmd)):
             # Recorded by the parser, no effect on a VM: nothing invokes a VM
