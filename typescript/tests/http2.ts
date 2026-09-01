@@ -89,9 +89,17 @@ async function testHttp2MultiplexesConcurrentRequests(): Promise<void> {
   const port = await listen(server);
 
   const arker = h2client(port);
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => {
+    if (warning.name === "MaxListenersExceededWarning") warnings.push(warning);
+  };
+  process.on("warning", onWarning);
   await Promise.all(Array.from({ length: 5 }, () => arker.vm("vm_1").run("printf hi")));
+  for (let i = 0; i < 20; i++) await arker.vm("vm_1").run("printf hi");
+  await sleep(0);
 
-  // Five concurrent requests must multiplex over ONE session, not open five.
+  process.off("warning", onWarning);
+  assert.deepEqual(warnings, [], "reused requests must not leak timeout listeners");
   assert.equal(sessions.size, 1, `expected one multiplexed session, got ${sessions.size}`);
 
   await shutdown(server, sessions);
