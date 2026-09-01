@@ -362,3 +362,39 @@ def test_add_checksum_match_is_accepted(context, monkeypatch):
     vm = FakeVM()
     apply_steps(vm, steps, str(context))
     assert ("sync", "/f", len(payload)) in vm.calls, vm.calls
+
+def test_copy_dir_to_a_relative_dest_resolves_against_workdir(context):
+    """MEASURED on aider-polyglot: `WORKDIR /app` + `COPY workspace/ ./`.
+
+    `dest.rstrip("/")` turns "./" into ".", which normalises to no path
+    components at all, and the API rejects it with `path must name a file`.
+    Docker resolves a relative destination against the current WORKDIR.
+    """
+    vm = build("FROM x\nWORKDIR /app\nCOPY src/ ./\n", context)
+    dests = [c[2] for c in vm.calls if c[0] == "sync_dir"]
+    assert dests == ["/app"], dests
+
+
+def test_copy_file_to_a_relative_dest_resolves_against_workdir(context):
+    vm = build("FROM x\nWORKDIR /app\nCOPY app.js ./\n", context)
+    dests = [c[1] for c in vm.calls if c[0] == "sync"]
+    assert dests == ["/app/app.js"], dests
+
+
+def test_copy_to_a_relative_subdir_resolves_against_workdir(context):
+    vm = build("FROM x\nWORKDIR /app\nCOPY src/ ./lib\n", context)
+    dests = [c[2] for c in vm.calls if c[0] == "sync_dir"]
+    assert dests == ["/app/lib"], dests
+
+
+def test_copy_with_no_workdir_resolves_against_root(context):
+    """Docker's implicit WORKDIR is /."""
+    vm = build("FROM x\nCOPY src/ ./\n", context)
+    dests = [c[2] for c in vm.calls if c[0] == "sync_dir"]
+    assert dests == ["/"], dests
+
+
+def test_absolute_copy_dest_is_unchanged_by_workdir(context):
+    vm = build("FROM x\nWORKDIR /app\nCOPY src/ /opt/src\n", context)
+    dests = [c[2] for c in vm.calls if c[0] == "sync_dir"]
+    assert dests == ["/opt/src"], dests
