@@ -1088,13 +1088,18 @@ class VM:
     ) -> Vm:
         """Update this VM's description, resource allocation, authorized SSH
         keys, and/or network policy via ``PATCH /v1/vms/{id}``.
+
         Pass an empty ``ssh_public_keys`` list to remove all authorized keys.
+
         Pass ``None`` or an empty description to clear it. Omit
         ``description`` to leave it unchanged.
+
         ``policies`` is a complete replacement for the VM's network policy:
         the same document :meth:`set_policies` accepts. An empty doc (``{}``
         or ``{"policies": []}``) clears it to allow-all. Omit it to leave the
-        current policy unchanged. Returns the updated :class:`Vm`."""
+        current policy unchanged.
+
+        Returns the updated :class:`Vm`."""
         resources: ResourcesInput | None = None
         if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
             resources = ResourcesInput(
