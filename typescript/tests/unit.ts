@@ -407,6 +407,22 @@ async function testUpdateSendsPolicies(): Promise<void> {
   fetch.addJson(isPatch, 200, vm);
   await client(fetch).vm("vm_1").update({ vcpu: 4 });
   assert.equal(JSON.parse(fetch.calls[3]!.body!).policies, undefined);
+
+  // `vgpu` is a resource like any other: alone in the flat form it must still
+  // build `resources`, or a GPU resize is silently dropped.
+  fetch.addJson(isPatch, 200, vm);
+  await client(fetch).vm("vm_1").update({ vgpu: 0.25 });
+  assert.deepEqual(JSON.parse(fetch.calls[4]!.body!), {
+    resources: { vcpu: null, memory_mib: null, disk_mib: null, vgpu: 0.25 },
+  });
+
+  // A CPU-only resize must not carry `vgpu` at all — it is mutually exclusive
+  // with the hardware GPU fields, so a null is not a safe stand-in.
+  fetch.addJson(isPatch, 200, vm);
+  await client(fetch).vm("vm_1").update({ memory_mib: 2048 });
+  assert.deepEqual(JSON.parse(fetch.calls[5]!.body!), {
+    resources: { vcpu: null, memory_mib: 2048, disk_mib: null },
+  });
 }
 
 async function testNestedErrorWithoutOkStillParses(): Promise<void> {

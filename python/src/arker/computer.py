@@ -863,6 +863,7 @@ class VM:
         vcpu_count: int | None = None,
         memory_mib: int | None = None,
         disk_mib: int | None = None,
+        vgpu: float | None = None,
         description: str | None | _UnsetType = _UNSET,
         ssh_public_keys: list[str] | None = None,
         policies: PolicyDoc | dict[str, Any] | None = None,
@@ -882,11 +883,12 @@ class VM:
 
         Returns the updated :class:`Vm`."""
         resources: ResourcesInput | None = None
-        if vcpu_count is not None or memory_mib is not None or disk_mib is not None:
+        if vcpu_count is not None or memory_mib is not None or disk_mib is not None or vgpu is not None:
             resources = ResourcesInput(
                 vcpu=vcpu_count,
                 memory_mib=memory_mib,
                 disk_mib=disk_mib,
+                vgpu=vgpu,
             )
         policy_doc = (
             policies

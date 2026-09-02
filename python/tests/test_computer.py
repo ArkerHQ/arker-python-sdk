@@ -833,6 +833,36 @@ def test_resize_patches_vm_resources() -> None:
     assert result is not None
 
 
+def test_resize_patches_vgpu_on_its_own() -> None:
+    """A GPU resize is a PATCH like any other resize.
+
+    `vgpu` is the one non-int resource arg, so it has to be in the "any of
+    these were passed" guard as well as the `ResourcesInput` construction —
+    miss the guard and `resources` is dropped and the VM keeps its old share.
+    """
+    t = FakeTransport()
+    t.add_json(
+        lambda method, url: method == "PATCH" and url.endswith("/v1/vms/vm_1"),
+        200,
+        {
+            "vm_id": "vm_1",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [],
+            "resources": {"gpu_sms": 66, "gpu_vram_mib": 40779},
+            "network": {},
+        },
+    )
+
+    with use_transport(t):
+        client().vm("vm_1").update(vgpu=0.5)
+
+    assert json.loads(t.calls[0]["body"]) == {"resources": {"vgpu": 0.5}}
+
+
 def test_update_patches_vm_description() -> None:
     t = FakeTransport()
     t.add_json(
