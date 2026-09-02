@@ -51,7 +51,7 @@ def install_http_tracer() -> list[dict]:
     def traced(method, url, headers, body):
         t0 = time.monotonic()
         try:
-            status, raw = original(method, url, headers, body)
+            status, raw, response_headers = original(method, url, headers, body)
             elapsed = time.monotonic() - t0
             trace.append({
                 "method": method, "url": url, "status": status,
@@ -60,7 +60,7 @@ def install_http_tracer() -> list[dict]:
                 "resp_size": len(raw) if raw else 0,
                 "is_transient": status in sdk.RETRYABLE_HTTP,
             })
-            return status, raw
+            return status, raw, response_headers
         except Exception as e:
             elapsed = time.monotonic() - t0
             trace.append({

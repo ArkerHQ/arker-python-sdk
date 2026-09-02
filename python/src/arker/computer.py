@@ -605,6 +605,7 @@ class Arker:
         extra_headers: dict[str, str] | None = None,
         max_queueing_s: int | None = None,
         preserve_nulls: bool = False,
+        network_failure_policy: Literal["safe", "unsafe"] | None = None,
     ) -> dict[str, Any]:
         return _request_json(
             method,
@@ -616,6 +617,7 @@ class Arker:
             extra_headers=extra_headers,
             max_queueing_s=max_queueing_s,
             preserve_nulls=preserve_nulls,
+            network_failure_policy=network_failure_policy,
         )
 
     def _retry_delay(self, attempt: int) -> float:
@@ -765,6 +767,9 @@ class VM:
         ``queueing_timeout`` (seconds) queues instead of failing fast: retries
         until the window elapses, then surfaces the error. ``None``/``0`` =
         fail fast.
+
+        ``idempotency_key`` asks the server to deduplicate the command. It does
+        not make an ambiguous network failure safe to retry automatically.
         """
         policy_doc = (
             policies
@@ -975,29 +980,41 @@ class VM:
         }
         for attempt in range(self._client._retry.attempts):
             try:
-                response = _http_client.post(
-                    url, params=params, content=body(),
-                    headers=headers, timeout=PRESIGNED_PUT_TIMEOUT_S,
-                )
+                with _http_client.stream(
+                    "POST",
+                    url,
+                    params=params,
+                    content=body(),
+                    headers=headers,
+                    timeout=PRESIGNED_PUT_TIMEOUT_S,
+                ) as response:
+                    status = response.status_code
+                    response_headers = dict(response.headers)
+                    if status < 400:
+                        return
+                    try:
+                        raw = response.read()
+                    except httpx.RequestError:
+                        raw = b""
             except httpx.RequestError as error:
-                if attempt == self._client._retry.attempts - 1:
-                    raise ArkerError("unavailable", f"{what} failed: {error}", 0) from error
-                time.sleep(self._client._retry_delay(attempt))
-                continue
-            if response.status_code < 400:
-                return
-            status = response.status_code
-            code, message = "internal", f"{what} failed ({status})"
+                raise _unknown_outcome_error("POST", "/sync-stream", error) from error
+            parsed_error: dict[str, Any] = {
+                "code": "internal",
+                "message": f"{what} failed ({status})",
+                "retry_after": _retry_after_header(response_headers.get("retry-after")),
+            }
             try:
-                error_body = response.json().get("error") or {}
-                code = error_body.get("code") or code
-                message = error_body.get("message") or message
+                error_body = _parse_json(raw.decode("utf-8", "replace")).get("error") or {}
+                parsed_error["code"] = error_body.get("code") or parsed_error["code"]
+                parsed_error["message"] = error_body.get("message") or parsed_error["message"]
+                if parsed_error["retry_after"] is None:
+                    parsed_error["retry_after"] = _wire_retry_after(error_body.get("retry_after"))
             except Exception:
                 pass
             # 413 is the router's body cap, not a transient fault.
-            if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
-                raise ArkerError(code, message, status)
-            time.sleep(self._client._retry_delay(attempt))
+            if not _is_retryable(status, parsed_error) or attempt == self._client._retry.attempts - 1:
+                raise ArkerError(parsed_error["code"], parsed_error["message"], status)
+            time.sleep(_retry_delay(self._client._retry, attempt, parsed_error))
 
     def _sync_write_stream(self, path: str, data: bytes, sha256: str | None = None) -> None:
         params = {"path": path, "size": str(len(data))}
@@ -1033,6 +1050,7 @@ class VM:
         payload = self._client._request(
             "POST", f"{_vm_path(self.id)}/sync",
             request, base_url=self.base_url,
+            network_failure_policy="safe",
         )
         response = _decode_value(SyncReadResponse, payload)
         if isinstance(response, SyncReadInlineResponse):
@@ -1201,6 +1219,7 @@ class VM:
         payload = self._client._request(
             "POST", f"{_vm_path(self.id)}/sync",
             request, base_url=self.base_url,
+            network_failure_policy="safe",
         )
         response = _decode_model(SyncManifestResponse, payload)
         return (
@@ -1683,9 +1702,20 @@ _http_client = httpx.Client(
 atexit.register(_http_client.close)
 
 
-def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) -> tuple[int, bytes]:
-    response = _http_client.request(method, url, headers=headers, content=data, timeout=REQUEST_TIMEOUT_S)
-    return response.status_code, response.content
+def _http(
+    method: str, url: str, headers: dict[str, str], data: bytes | None
+) -> tuple[int, bytes, dict[str, str]]:
+    with _http_client.stream(
+        method, url, headers=headers, content=data, timeout=REQUEST_TIMEOUT_S
+    ) as response:
+        response_headers = dict(response.headers)
+        try:
+            content = response.read()
+        except httpx.RequestError:
+            if response.status_code >= 400:
+                return response.status_code, b"", response_headers
+            raise
+        return response.status_code, content, response_headers
 
 
 def _request_json(
@@ -1699,6 +1729,7 @@ def _request_json(
     extra_headers: dict[str, str] | None = None,
     max_queueing_s: int | None = None,
     preserve_nulls: bool = False,
+    network_failure_policy: Literal["safe", "unsafe"] | None = None,
 ) -> dict[str, Any]:
     url = base_url + path
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
@@ -1721,6 +1752,9 @@ def _request_json(
         if max_queueing_s and retry.attempts > 1
         else None
     )
+    resolved_network_policy = network_failure_policy or (
+        "safe" if method.upper() == "GET" else "unsafe"
+    )
 
     attempt = 0
     while True:
@@ -1729,8 +1763,10 @@ def _request_json(
             remaining = max(1, math.ceil(deadline - time.monotonic()))
             data = json.dumps({**payload_dict, "queueing_timeout": remaining}).encode("utf-8")
         try:
-            status, raw = _http(method, url, headers, data)
+            status, raw, response_headers = _http(method, url, headers, data)
         except httpx.RequestError as error:
+            if resolved_network_policy == "unsafe":
+                raise _unknown_outcome_error(method, path, error) from error
             delay = _retry_delay(retry, attempt)
             if _can_retry_again(retry, attempt, deadline, delay):
                 time.sleep(delay)
@@ -1741,9 +1777,14 @@ def _request_json(
         text = raw.decode("utf-8", "replace")
         payload = _parse_json(text)
         parsed_error = _extract_error(payload)
+        retry_error = dict(parsed_error) if parsed_error else None
+        header_retry_after = _retry_after_header(response_headers.get("retry-after"))
+        if header_retry_after is not None:
+            retry_error = retry_error or {}
+            retry_error["retry_after"] = header_retry_after
 
         if _is_retryable(status, parsed_error):
-            delay = _retry_delay(retry, attempt, parsed_error)
+            delay = _retry_delay(retry, attempt, retry_error)
             if _can_retry_again(retry, attempt, deadline, delay):
                 time.sleep(delay)
                 attempt += 1
@@ -1789,6 +1830,15 @@ def _retry_delay(
     # the doubling stays convertible to float. It is long past max_delay by 32.
     base = min(max_delay, retry.base_delay_s * (2 ** min(attempt, 32)))
     return base + jitter
+
+
+def _unknown_outcome_error(method: str, path: str, error: Exception) -> ArkerError:
+    return ArkerError(
+        "unavailable",
+        f"Network failure during {method.upper()} {path}. The operation outcome is unknown. "
+        f"Reconcile the resource state before a manual retry. Transport error: {error}",
+        0,
+    )
 
 
 def _build_query(
@@ -2031,6 +2081,16 @@ def _wire_retry_after(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value) if value > 0 else None
+
+
+def _retry_after_header(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if math.isfinite(seconds) and seconds > 0 else None
 
 
 def _is_retryable(status: int, error: dict[str, Any] | None) -> bool:

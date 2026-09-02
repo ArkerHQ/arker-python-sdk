@@ -26,21 +26,43 @@ type FetchCall = {
 
 type FetchScript = {
   predicate: (method: string, url: string) => boolean;
-  response: Response;
+  response: Response | Error;
 };
 
 class FakeFetch {
   readonly calls: FetchCall[] = [];
   private readonly script: FetchScript[] = [];
 
-  addJson(predicate: FetchScript["predicate"], status: number, body: unknown): void {
+  addJson(
+    predicate: FetchScript["predicate"],
+    status: number,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ): void {
     this.script.push({
       predicate,
       response: new Response(JSON.stringify(body), {
         status,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...headers },
       }),
     });
+  }
+
+  addNetworkError(predicate: FetchScript["predicate"], message = "response lost"): void {
+    this.script.push({ predicate, response: new TypeError(message) });
+  }
+
+  addResponseBodyError(
+    predicate: FetchScript["predicate"],
+    status: number,
+    headers: Record<string, string> = {},
+  ): void {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.error(new TypeError("response body lost"));
+      },
+    });
+    this.script.push({ predicate, response: new Response(body, { status, headers }) });
   }
 
   fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -55,7 +77,9 @@ class FakeFetch {
 
     const index = this.script.findIndex((entry) => entry.predicate(method, url));
     assert.notEqual(index, -1, `no scripted response for ${method} ${url}`);
-    return this.script.splice(index, 1)[0]!.response;
+    const response = this.script.splice(index, 1)[0]!.response;
+    if (response instanceof Error) throw response;
+    return response;
   };
 }
 
@@ -923,6 +947,166 @@ async function testNonRetryableStatusFailsImmediately(): Promise<void> {
   assert.equal(fetch.calls.length, 1, "a non-retryable status must not be retried");
 }
 
+async function testGetRetriesNetworkFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "GET" && url.endsWith("/v1/vms/vm_1");
+  fetch.addNetworkError(match);
+  fetch.addJson(match, 200, {
+    vm_id: "vm_1", owner_org_id: "owner", created_at: "now",
+    public: false, state: "idle", sessions: [], network: {}, resources: {},
+  });
+
+  const vm = await clientWithRetry(fetch, 2).getVm("vm_1");
+
+  assert.equal(vm.id, "vm_1");
+  assert.equal(fetch.calls.length, 2);
+}
+
+async function testSyncReadRetriesNetworkFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/vms/vm_1/sync");
+  fetch.addNetworkError(match);
+  fetch.addJson(match, 200, {
+    ok: true,
+    op: "read",
+    path: "/home/user/x",
+    size: 2,
+    content: "ok",
+    encoding: "utf-8",
+  });
+
+  const content = await clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x");
+
+  assert.equal(decode(content), "ok");
+  assert.equal(fetch.calls.length, 2);
+}
+
+async function testForkDoesNotRetryAmbiguousNetworkFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/fork");
+  fetch.addNetworkError(match);
+  fetch.addJson(match, 200, {
+    vm_id: "vm_duplicate", owner_org_id: "owner", created_at: "now",
+    public: false, state: "idle", sessions: [], network: {}, resources: {},
+  });
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).fork({ source_vm_name: "ubuntu" }),
+    (error: unknown) => error instanceof ArkerError
+      && error.code === "unavailable"
+      && error.status === 0
+      && error.message.includes("outcome is unknown")
+      && error.message.toLowerCase().includes("reconcile"),
+  );
+  assert.equal(fetch.calls.length, 1);
+}
+
+async function testOtherMutatingMethodsDoNotRetryAmbiguousNetworkFailures(): Promise<void> {
+  for (const method of ["PUT", "PATCH", "DELETE"] as const) {
+    const fetch = new FakeFetch();
+    const client = clientWithRetry(fetch, 2);
+    const vm = client.vm("vm_1");
+    let operation: () => Promise<unknown>;
+    if (method === "PUT") operation = () => vm.setPolicies({ policies: [] });
+    else if (method === "PATCH") operation = () => vm.update({ description: "changed" });
+    else operation = () => vm.delete();
+    fetch.addNetworkError((candidate) => candidate === method);
+    fetch.addJson((candidate) => candidate === method, 200, {});
+
+    await assert.rejects(
+      operation,
+      (error: unknown) => error instanceof ArkerError && error.message.includes("outcome is unknown"),
+    );
+    assert.equal(fetch.calls.length, 1, `${method} must not be replayed`);
+  }
+}
+
+async function testRunDoesNotRetryAmbiguousNetworkFailure(): Promise<void> {
+  for (const idempotencyKey of [undefined, "run-key"] as const) {
+    const fetch = new FakeFetch();
+    const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/vms/vm_1/runs");
+    fetch.addNetworkError(match);
+    fetch.addJson(match, 200, { run_id: "run_1", state: "running", session_id: "session_1" });
+
+    await assert.rejects(
+      () => clientWithRetry(fetch, 2).vm("vm_1").run(
+        "touch /tmp/once",
+        { time_to_background: 0, idempotencyKey },
+      ),
+      (error: unknown) => error instanceof ArkerError
+        && error.code === "unavailable"
+        && error.message.includes("outcome is unknown")
+        && error.message.toLowerCase().includes("reconcile"),
+    );
+    assert.equal(fetch.calls.length, 1);
+    if (idempotencyKey !== undefined) {
+      assert.equal(fetch.calls[0]?.headers["idempotency-key"], idempotencyKey);
+    }
+  }
+}
+
+async function testRetryableHeadersSurviveResponseBodyFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/fork");
+  fetch.addResponseBodyError(match, 503);
+  fetch.addJson(match, 200, {
+    vm_id: "vm_1", owner_org_id: "owner", created_at: "now",
+    public: false, state: "idle", sessions: [], network: {}, resources: {},
+  });
+
+  const vm = await clientWithRetry(fetch, 2).fork({ source_vm_name: "ubuntu" });
+
+  assert.equal(vm.id, "vm_1");
+  assert.equal(fetch.calls.length, 2);
+}
+
+
+async function testSyncStreamDoesNotRetryAmbiguousNetworkFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
+  fetch.addNetworkError(match);
+  fetch.addJson(match, 200, { ok: true });
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x", "content"),
+    (error: unknown) => error instanceof ArkerError && error.message.includes("outcome is unknown"),
+  );
+  assert.equal(fetch.calls.length, 1);
+}
+
+async function testSyncStreamRetriesExplicitRetryableResponse(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
+  fetch.addJson(match, 503, RETRYABLE_ERROR_BODY);
+  fetch.addJson(match, 200, { ok: true });
+
+  await clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x", "content");
+
+  assert.equal(fetch.calls.length, 2);
+}
+
+async function testRetryAfterHeaderDrivesExplicitResponseRetry(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/fork");
+  fetch.addJson(match, 503, RETRYABLE_ERROR_BODY, { "retry-after": "0.05" });
+  fetch.addJson(match, 200, {
+    vm_id: "vm_1", owner_org_id: "owner", created_at: "now",
+    public: false, state: "idle", sessions: [], network: {}, resources: {},
+  });
+  const started = Date.now();
+
+  const retryingClient = new Arker({
+    apiKey: "ark_live_test",
+    baseUrl: "https://test.invalid/api/",
+    fetch: fetch.fetch,
+    retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 100, jitterMs: 0 },
+  });
+  await retryingClient.fork({ source_vm_name: "ubuntu" });
+
+  assert.ok(Date.now() - started >= 45);
+  assert.equal(fetch.calls.length, 2);
+}
+
 async function testGetAndSetPolicies(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -1416,6 +1600,15 @@ testSurfaceStubClassificationUsesStructuredErrorCodes();
 await testRetryOnRetryableStatusThenSucceeds();
 await testRetryGivesUpAfterExhaustingAttempts();
 await testNonRetryableStatusFailsImmediately();
+await testGetRetriesNetworkFailure();
+await testSyncReadRetriesNetworkFailure();
+await testForkDoesNotRetryAmbiguousNetworkFailure();
+await testOtherMutatingMethodsDoNotRetryAmbiguousNetworkFailures();
+await testRunDoesNotRetryAmbiguousNetworkFailure();
+await testRetryableHeadersSurviveResponseBodyFailure();
+await testSyncStreamDoesNotRetryAmbiguousNetworkFailure();
+await testSyncStreamRetriesExplicitRetryableResponse();
+await testRetryAfterHeaderDrivesExplicitResponseRetry();
 await testGetAndSetPolicies();
 await testCreateFilesystem();
 await testCancelRun();

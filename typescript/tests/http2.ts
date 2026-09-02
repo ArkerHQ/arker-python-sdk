@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import http2 from "node:http2";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 
 import { Arker, type CompletedRunResult } from "../src/index.js";
 
@@ -135,9 +135,81 @@ async function testAbortedRequestSettlesWithoutHanging(): Promise<void> {
   await shutdown(server, sessions);
 }
 
+async function testHttp2RetryAfterHeaderControlsExplicitResponseRetry(): Promise<void> {
+  let streamCount = 0;
+  const server = http2.createServer();
+  const sessions = trackSessions(server);
+  server.on("stream", (stream: http2.ServerHttp2Stream) => {
+    streamCount++;
+    if (streamCount === 1) {
+      stream.respond({
+        ":status": 503,
+        "content-type": "application/json",
+        "retry-after": "0.05",
+      });
+      stream.end(JSON.stringify({ error: { code: "unavailable", message: "wait" } }));
+      return;
+    }
+    stream.respond({ ":status": 200, "content-type": "application/json" });
+    stream.end(RUN_BODY);
+  });
+  const port = await listen(server);
+  const arker = new Arker({
+    apiKey: "ark_live_test",
+    baseUrl: `http://127.0.0.1:${port}/api`,
+    retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 100, jitterMs: 0 },
+  });
+  const started = Date.now();
+
+  await arker.vm("vm_1").run("printf hi");
+
+  assert.ok(Date.now() - started >= 45, "the HTTP/2 Retry-After header must control the delay");
+  assert.equal(streamCount, 2);
+  await shutdown(server, sessions);
+}
+
+async function testUnconfirmedHttp2FailureDoesNotReplayOrDisableHttp2(): Promise<void> {
+  let connections = 0;
+  const failingServer = net.createServer((socket) => {
+    connections++;
+    socket.once("data", () => socket.destroy());
+  });
+  const port = await new Promise<number>((resolve) => {
+    failingServer.listen(0, "127.0.0.1", () => resolve((failingServer.address() as AddressInfo).port));
+  });
+  const arker = h2client(port);
+
+  await assert.rejects(
+    () => arker.vm("vm_1").run("printf once", { idempotencyKey: "one-attempt" }),
+    (error: unknown) => error instanceof Error,
+  );
+  await sleep(20);
+
+  assert.equal(connections, 1, "an unconfirmed HTTP/2 mutation must not fall back to fetch");
+  await new Promise<void>((resolve) => failingServer.close(() => resolve()));
+
+  const recoveredServer = http2.createServer();
+  const sessions = trackSessions(recoveredServer);
+  let recoveredRequests = 0;
+  recoveredServer.on("stream", (stream: http2.ServerHttp2Stream) => {
+    recoveredRequests++;
+    stream.respond({ ":status": 200, "content-type": "application/json" });
+    stream.end(RUN_BODY);
+  });
+  await new Promise<void>((resolve) => recoveredServer.listen(port, "127.0.0.1", resolve));
+
+  const result = await arker.vm("vm_1").run("printf after-reconcile");
+
+  assert.equal((result as CompletedRunResult).exitCode, 0);
+  assert.equal(recoveredRequests, 1, "an ambiguous failure must not disable HTTP/2 for later requests");
+  await shutdown(recoveredServer, sessions);
+}
+
 await testHttp2HappyPath();
 await testHttp2MultiplexesConcurrentRequests();
 await testAbortedRequestSettlesWithoutHanging();
+await testHttp2RetryAfterHeaderControlsExplicitResponseRetry();
+await testUnconfirmedHttp2FailureDoesNotReplayOrDisableHttp2();
 
 console.log("PASS http2");
 // Real sockets (server sessions) can keep the event loop alive; everything is
