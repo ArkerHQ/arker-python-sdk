@@ -163,12 +163,15 @@ async function saveStatCache(
 async function parseErrorResponse(
   res: Response,
   fallbackMessage: string,
-): Promise<{ code: string; message: string }> {
+): Promise<ParsedError> {
   try {
-    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    const body: unknown = await res.json();
+    const parsed = extractError(body);
+    if (parsed) return parsed;
+    const error = isObject(body) && isObject(body.error) ? body.error : undefined;
     return {
-      code: body?.error?.code ?? "internal",
-      message: body?.error?.message ?? fallbackMessage,
+      code: typeof error?.code === "string" ? error.code : "internal",
+      message: typeof error?.message === "string" ? error.message : fallbackMessage,
     };
   } catch {
     return { code: "internal", message: fallbackMessage };
@@ -354,8 +357,8 @@ export type RunRequest = ApiSchema<"RunRequest">;
 export type RunSignal = NonNullable<RunRequest["signal"]>;
 export type RunOptions = Partial<Omit<RunRequest, "command">> & {
   /**
-   * Optional idempotency key for retrying the run. Sent as the
-   * `Idempotency-Key` HTTP header.
+   * Optional server-side deduplication key. Sent as the `Idempotency-Key`
+   * HTTP header. It does not enable automatic network-failure retries.
    */
   idempotencyKey?: string;
 };
@@ -565,6 +568,7 @@ interface ParsedError {
   message: string;
   /** Seconds the server asked us to wait, if it said. */
   retryAfterS?: number;
+  retryable?: boolean;
 }
 
 export class ArkerError extends Error {
@@ -825,6 +829,7 @@ export class Arker {
     baseUrl = this.baseUrl,
     extraHeaders?: Record<string, string | undefined>,
     maxQueueingSecs?: number | null,
+    retryNetworkFailures?: boolean,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -844,6 +849,7 @@ export class Arker {
       this.http2,
       this.retry,
       maxQueueingSecs ?? undefined,
+      retryNetworkFailures,
     );
   }
 
@@ -1318,7 +1324,15 @@ export class VM {
     const payload = await this._client._request<{
       entries?: Array<{ path?: unknown; hash?: unknown }>;
       truncated?: unknown;
-    }>("POST", `${vmPath(this.id)}/sync`, { op: "manifest", path }, this.baseUrl);
+    }>(
+      "POST",
+      `${vmPath(this.id)}/sync`,
+      { op: "manifest", path },
+      this.baseUrl,
+      undefined,
+      undefined,
+      true,
+    );
     const out = new Map<string, string>();
     if (Array.isArray(payload.entries)) {
       for (const entry of payload.entries) {
@@ -1378,20 +1392,15 @@ export class VM {
         }
         res = await this._client._fetch(url, init);
       } catch (error) {
-        if (attempt === attempts - 1) {
-          const message = error instanceof Error ? error.message : String(error);
-          throw new ArkerError("unavailable", `${what} failed: ${message}`, 0);
-        }
-        await sleep(this._client._retryDelay(attempt));
-        continue;
+        throw unknownOutcomeError("POST", "/sync-stream", error);
       }
       if (res.ok) return;
       const parsed = await parseErrorResponse(res, `${what} failed (${res.status})`);
       // 413 is the router's body cap, not a transient fault — never retry it.
-      if (!RETRYABLE_HTTP.has(res.status) || attempt === attempts - 1) {
+      if (!isRetryable(res.status, parsed) || attempt === attempts - 1) {
         throw new ArkerError(parsed.code, parsed.message, res.status);
       }
-      await sleep(this._client._retryDelay(attempt));
+      await sleep(this._client._retryDelay(attempt, parsed));
     }
   }
 
@@ -1570,6 +1579,9 @@ export class VM {
       `${vmPath(this.id)}/sync`,
       request,
       this.baseUrl,
+      undefined,
+      undefined,
+      true,
     );
     if ("content" in response) return decodeBytes(response.content, response.encoding);
     const signed = await this._client._fetch(response.presigned_url);
@@ -2184,6 +2196,7 @@ async function requestJson<T>(
   http2: boolean,
   retry: RetryConfig,
   maxQueueingSecs?: number,
+  retryNetworkFailures?: boolean,
 ): Promise<T> {
   const headers = { ...requestHeaders };
   let requestBody: string | undefined;
@@ -2198,6 +2211,7 @@ async function requestJson<T>(
     maxQueueingSecs !== undefined && maxQueueingSecs > 0 && retry.attempts > 1
       ? Date.now() + maxQueueingSecs * 1000
       : undefined;
+  const shouldRetryNetworkFailures = retryNetworkFailures ?? (method === "GET");
 
   for (let attempt = 0; ; attempt++) {
     if (queueingDeadline !== undefined && attempt > 0 && isObject(body)) {
@@ -2216,6 +2230,7 @@ async function requestJson<T>(
         { method, headers, body: requestBody },
         fetchImpl,
         http2,
+        shouldRetryNetworkFailures,
       );
       const payload = parseJson(text);
       const parsedError = extractError(payload);
@@ -2242,6 +2257,9 @@ async function requestJson<T>(
       return payload as T;
     } catch (error) {
       if (error instanceof ArkerError) throw error;
+      if (!shouldRetryNetworkFailures) {
+        throw unknownOutcomeError(method, new URL(url).pathname, error);
+      }
       const delay = retryDelay(retry, attempt);
       if (canRetryAgain(retry, attempt, queueingDeadline, delay)) {
         await sleep(delay);
@@ -2283,6 +2301,7 @@ function extractError(payload: unknown): ParsedError | undefined {
         code: error.code,
         message: error.message,
         retryAfterS: wireRetryAfter(error.retry_after),
+        retryable: typeof error.retryable === "boolean" ? error.retryable : undefined,
       };
     }
   }
@@ -2296,6 +2315,7 @@ function wireRetryAfter(value: unknown): number | undefined {
 }
 
 function isRetryable(status: number, error?: ParsedError): boolean {
+  if (error?.retryable !== undefined) return error.retryable;
   if (RETRYABLE_HTTP.has(status)) return true;
   if (!error) return false;
   if (RETRYABLE_CODES.has(error.code as ErrorCode)) return true;
@@ -2313,6 +2333,16 @@ function retryDelay(retry: RetryConfig, attempt: number, error?: ParsedError): n
   }
   const base = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** attempt);
   return base + jitter(retry.jitterMs);
+}
+
+function unknownOutcomeError(method: HttpMethod, path: string, error: unknown): ArkerError {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new ArkerError(
+    "unavailable",
+    `Network failure during ${method} ${path}. The operation outcome is unknown. ` +
+      `Reconcile the resource state before a manual retry. Transport error: ${detail}`,
+    0,
+  );
 }
 
 function jitter(maxMs: number): number { return Math.floor(Math.random() * (maxMs + 1)); }
@@ -2528,10 +2558,18 @@ class Http2Connection {
       });
       stream.on("end", () => {
         if (timeout) clearTimeout(timeout);
+        if (status === 0) {
+          reject(new Error("HTTP/2 stream ended before response headers"));
+          return;
+        }
         resolve({ status, ok: status >= 200 && status < 300, text });
       });
       stream.on("error", (error) => {
         if (timeout) clearTimeout(timeout);
+        if (RETRYABLE_HTTP.has(status)) {
+          resolve({ status, ok: false, text });
+          return;
+        }
         reject(error);
       });
       stream.end(body);
@@ -2548,6 +2586,7 @@ async function sendRequest(
   init: { method: string; headers: Record<string, string>; body?: string },
   fetchImpl: FetchLike,
   http2Enabled: boolean,
+  allowUnconfirmedHttp2Fallback: boolean,
 ): Promise<TransportResponse> {
   if (http2Enabled) {
     const http2 = await loadHttp2();
@@ -2563,13 +2602,26 @@ async function sendRequest(
         try {
           return await connection.request(init.method, `${pathname}${search}`, init.headers, init.body);
         } catch (error) {
-          // Origin proved non-HTTP/2 before any success: disable it, use fetch.
-          if (connection.confirmed) throw error;
-          http2Connections.set(origin, null);
+          // A safe request can probe the fetch transport on its next attempt.
+          // An unsafe request has an unknown outcome, so preserve the origin's
+          // HTTP/2 transport choice for later reconciliation.
+          if (!connection.confirmed && allowUnconfirmedHttp2Fallback) {
+            http2Connections.set(origin, null);
+          }
+          throw error;
         }
       }
     }
   }
   const response = await fetchImpl(url, init as RequestInit);
-  return { status: response.status, ok: response.ok, text: await response.text() };
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    if (RETRYABLE_HTTP.has(response.status)) {
+      return { status: response.status, ok: false, text: "" };
+    }
+    throw error;
+  }
+  return { status: response.status, ok: response.ok, text };
 }

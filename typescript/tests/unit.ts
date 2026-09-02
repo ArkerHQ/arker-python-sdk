@@ -26,7 +26,7 @@ type FetchCall = {
 
 type FetchScript = {
   predicate: (method: string, url: string) => boolean;
-  response: Response;
+  response: Response | Error;
 };
 
 class FakeFetch {
@@ -43,6 +43,10 @@ class FakeFetch {
     });
   }
 
+  addNetworkError(predicate: FetchScript["predicate"], message = "response lost"): void {
+    this.script.push({ predicate, response: new TypeError(message) });
+  }
+
   fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? "GET";
@@ -55,7 +59,9 @@ class FakeFetch {
 
     const index = this.script.findIndex((entry) => entry.predicate(method, url));
     assert.notEqual(index, -1, `no scripted response for ${method} ${url}`);
-    return this.script.splice(index, 1)[0]!.response;
+    const response = this.script.splice(index, 1)[0]!.response;
+    if (response instanceof Error) throw response;
+    return response;
   };
 }
 
@@ -124,6 +130,15 @@ function clientWithRetry(fetch: FakeFetch, attempts: number): Arker {
 
 const RETRYABLE_ERROR_BODY = {
   error: { code: "unavailable", message: "temporarily unavailable", timestamp: "2026-01-01T00:00:00.000Z" },
+};
+
+const UNKNOWN_OUTCOME_ERROR_BODY = {
+  error: {
+    code: "unavailable",
+    message: "operation outcome is unknown; reconcile resource state before retry",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    retryable: false,
+  },
 };
 
 function decode(bytes: Uint8Array): string {
@@ -923,6 +938,68 @@ async function testNonRetryableStatusFailsImmediately(): Promise<void> {
   assert.equal(fetch.calls.length, 1, "a non-retryable status must not be retried");
 }
 
+async function testGetRetriesNetworkFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "GET" && url.endsWith("/v1/vms/vm_1");
+  fetch.addNetworkError(match);
+  fetch.addJson(match, 200, {
+    vm_id: "vm_1", owner_org_id: "owner", created_at: "now",
+    public: false, state: "idle", sessions: [], network: {}, resources: {},
+  });
+
+  const vm = await clientWithRetry(fetch, 2).getVm("vm_1");
+
+  assert.equal(vm.id, "vm_1");
+  assert.equal(fetch.calls.length, 2);
+}
+
+async function testKeyedRunDoesNotRetryAmbiguousNetworkFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/vms/vm_1/runs");
+  fetch.addNetworkError(match);
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).vm("vm_1").run(
+      "touch /tmp/once",
+      { time_to_background: 0, idempotencyKey: "run-key" },
+    ),
+    (error: unknown) => error instanceof ArkerError
+      && error.code === "unavailable"
+      && error.message.includes("outcome is unknown")
+      && error.message.toLowerCase().includes("reconcile"),
+  );
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0]?.headers["idempotency-key"], "run-key");
+}
+
+async function testMutationDoesNotRetryServerUnknownOutcome(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/vms/vm_1/runs");
+  fetch.addJson(match, 503, UNKNOWN_OUTCOME_ERROR_BODY);
+  fetch.addJson(match, 200, { run_id: "run_2", exit_code: 0 });
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).vm("vm_1").run("touch /tmp/once", { time_to_background: 0 }),
+    (error: unknown) => error instanceof ArkerError
+      && error.code === "unavailable"
+      && error.status === 503
+      && error.message.includes("outcome is unknown"),
+  );
+  assert.equal(fetch.calls.length, 1);
+}
+
+async function testSyncStreamDoesNotRetryAmbiguousNetworkFailure(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
+  fetch.addNetworkError(match);
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x", "content"),
+    (error: unknown) => error instanceof ArkerError && error.message.includes("outcome is unknown"),
+  );
+  assert.equal(fetch.calls.length, 1);
+}
+
 async function testGetAndSetPolicies(): Promise<void> {
   const fetch = new FakeFetch();
   fetch.addJson(
@@ -1416,6 +1493,10 @@ testSurfaceStubClassificationUsesStructuredErrorCodes();
 await testRetryOnRetryableStatusThenSucceeds();
 await testRetryGivesUpAfterExhaustingAttempts();
 await testNonRetryableStatusFailsImmediately();
+await testGetRetriesNetworkFailure();
+await testKeyedRunDoesNotRetryAmbiguousNetworkFailure();
+await testMutationDoesNotRetryServerUnknownOutcome();
+await testSyncStreamDoesNotRetryAmbiguousNetworkFailure();
 await testGetAndSetPolicies();
 await testCreateFilesystem();
 await testCancelRun();
