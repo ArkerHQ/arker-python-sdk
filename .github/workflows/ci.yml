@@ -1,0 +1,82 @@
+name: CI
+
+# Runs on every PR and on main after merge. `pull_request` defaults to
+# opened + synchronize + reopened, and `synchronize` fires on every push to the
+# PR branch — so a new commit re-runs this with no extra wiring.
+#
+# The jobs mirror ./scripts/check-local, split so a red X names the thing that
+# broke. Live suites (python `test_e2e.py`/`test_presigned.py`, the TS
+# `*-live.ts` tests) skip themselves without ARKER_API_KEY, so nothing here
+# needs a credential or touches real infrastructure.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A PR that gets three pushes in a minute only needs the last one. main is
+# never cancelled — post-merge results are the record.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: openapi contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: bun ci
+      - name: Generated artifacts match openapi.json
+        run: ./scripts/check-openapi
+      - name: OpenAPI enforcement
+        run: python3 tests/test_openapi_enforcement.py
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync (fails if uv.lock is stale)
+        run: uv sync --project python --locked --group dev --extra test
+      - run: uv run --project python --locked --group dev --extra test python -m pytest
+
+  typescript:
+    name: typescript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - run: bun ci
+      - run: bun run typecheck
+        working-directory: typescript
+      - run: bun run test
+        working-directory: typescript
+
+  cli:
+    name: cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - run: bun ci
+      - run: bun run typecheck
+        working-directory: cli
+      - run: bun run test
+        working-directory: cli
