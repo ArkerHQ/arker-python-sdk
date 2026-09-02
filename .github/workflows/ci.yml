@@ -24,8 +24,10 @@ permissions:
   contents: read
 
 jobs:
+  # Repo-level tests, not SDK tests: contract generation, the CLI examples and
+  # the React demo. They drive scripts/ and bun, so they need the full toolchain.
   contract:
-    name: openapi contract
+    name: contract + tooling
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,20 +40,25 @@ jobs:
       - run: bun ci
       - name: Generated artifacts match openapi.json
         run: ./scripts/check-openapi
-      - name: OpenAPI enforcement
-        run: python3 tests/test_openapi_enforcement.py
+      - name: Repo tooling tests
+        run: uv run --project python --locked --group dev --extra test python -m pytest tests
 
+  # The Python SDK's own suite, run from python/ so it collects python/tests and
+  # nothing else. Needs no bun and no toolchain beyond uv.
   python:
     name: python
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
       - name: Sync (fails if uv.lock is stale)
-        run: uv sync --project python --locked --group dev --extra test
-      - run: uv run --project python --locked --group dev --extra test python -m pytest
+        run: uv sync --locked --group dev --extra test
+      - run: uv run --locked --group dev --extra test python -m pytest
 
   typescript:
     name: typescript

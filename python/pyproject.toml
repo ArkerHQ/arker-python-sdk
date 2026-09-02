@@ -45,9 +45,12 @@ Issues = "https://github.com/ArkerHQ/arker-sdk/issues"
 packages = ["src/arker"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-# `test_e2e.py` and `test_presigned.py` hit a live deployment; skip
-# unless ARKER_API_KEY is set in the environment.
+# `tests/unit` is the offline suite and the default. `tests/e2e` hits a live
+# deployment, so it is never collected by default — run it deliberately with
+# `pytest tests/e2e` and ARKER_API_KEY set. Those files keep their own
+# credential guard as well, so a stray direct run skips instead of reaching
+# for production.
+testpaths = ["tests/unit"]
 addopts = "-q"
 
 [dependency-groups]

@@ -1,4 +1,4 @@
-"""Live Python SDK smoke test.
+"""Live presigned-write probe.
 
 Run directly with live credentials:
 
@@ -6,12 +6,14 @@ Run directly with live credentials:
     ARKER_PROVIDER=aws \\
     ARKER_REGION=us-west-2 \\
     ARKER_SOURCE_VM=<source-name> \\
-    python tests/test_e2e.py
+    python tests/e2e/test_presigned.py
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 import sys
 
 try:
@@ -36,25 +38,20 @@ if not API_KEY or not (BASE_URL or (PROVIDER and REGION)) or not SOURCE_VM:
 
 
 def main() -> int:
+    payload = secrets.token_bytes(5 * 1024 * 1024)
+    expected = hashlib.sha256(payload).hexdigest()
+
     arker = Arker(api_key=API_KEY, base_url=BASE_URL, provider=PROVIDER, region=REGION)
-    vm = arker.vm(SOURCE_VM).fork(name="python-sdk-e2e")
+    vm = arker.vm(SOURCE_VM).fork(name="python-sdk-presigned")
 
     try:
-        run = vm.run("printf 'hello-from-python-sdk\\n'")
+        vm.sync("/home/user/presigned.bin", payload)
+        assert hashlib.sha256(vm.sync("/home/user/presigned.bin")).hexdigest() == expected
+
+        run = vm.run("sha256sum /home/user/presigned.bin")
         assert isinstance(run, CompletedRunResult)
         assert run.exit_code == 0
-        assert run.stdout == "hello-from-python-sdk\n"
-
-        vm.sync("/home/user/python-sdk-e2e.txt", b"hello-from-python-sdk\n")
-        assert vm.sync("/home/user/python-sdk-e2e.txt") == b"hello-from-python-sdk\n"
-
-        child = vm.fork(name="python-sdk-e2e-child")
-        try:
-            child_run = child.run("cat /home/user/python-sdk-e2e.txt")
-            assert isinstance(child_run, CompletedRunResult)
-            assert child_run.stdout == "hello-from-python-sdk\n"
-        finally:
-            child.delete()
+        assert run.stdout.decode().split()[0] == expected
 
         print("PASS")
         return 0
@@ -66,5 +63,5 @@ if __name__ == "__main__":
     sys.exit(main())
 
 
-def test_live_e2e() -> None:
+def test_live_presigned() -> None:
     assert main() == 0

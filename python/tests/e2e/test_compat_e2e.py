@@ -2,7 +2,7 @@
 
 Run with:
 
-    ARKER_API_KEY=... python -m pytest tests/test_compat_e2e.py
+    ARKER_API_KEY=... python -m pytest tests/e2e/test_compat_e2e.py
 """
 
 from __future__ import annotations

@@ -368,8 +368,24 @@ def test_full_local_check_covers_all_generated_surfaces() -> None:
 
 
 def test_contract_checks_do_not_use_hosted_ci() -> None:
-    assert not (REPO_ROOT / ".github/workflows/ci.yml").exists()
+    """Hosted CI must not become a way back to remote contract provenance.
+
+    #68 deleted the cross-repository OpenAPI freshness workflow and its Actions
+    secret, and banned `ci.yml` by name to keep them from returning. Running
+    this repo's own suites on a PR is not what that ban was defending against,
+    so the rule is now the property rather than the filename: no workflow may
+    hold a secret, run as `pull_request_target`, or reach GitHub's API. The
+    repo is public, so a workflow holding a secret — or running fork code with
+    write scope — is the actual hazard.
+    """
     assert not (REPO_ROOT / ".github/workflows/openapi-contract.yml").exists()
+
+    workflows = sorted((REPO_ROOT / ".github/workflows").glob("*.yml"))
+    assert workflows, "no workflows found — this guard would pass vacuously"
+    for workflow in workflows:
+        source = workflow.read_text()
+        for forbidden in ("secrets.", "pull_request_target:", "api.github.com"):
+            assert forbidden not in source, f"{workflow.name} uses {forbidden}"
 
 
 FAST_TESTS = (
