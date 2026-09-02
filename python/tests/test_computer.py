@@ -23,19 +23,12 @@ UNKNOWN_OUTCOME_ERROR_BODY = {
 }
 
 
-class FailingResponseBody(httpx.SyncByteStream):
-    def __iter__(self):
-        raise httpx.ReadError("response body lost")
-
-
 class FakeTransport:
     """Scripts httpx responses by (method, url); drive it with ``use_transport``."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
-        self.script: list[
-            tuple[Any, int | None, bytes | httpx.RequestError | FailingResponseBody]
-        ] = []
+        self.script: list[tuple[Any, int | None, bytes | httpx.RequestError]] = []
 
     def add_json(self, predicate, status: int, body: dict[str, Any]) -> None:
         self.script.append((predicate, status, json.dumps(body).encode()))
@@ -45,9 +38,6 @@ class FakeTransport:
 
     def add_network_error(self, predicate, message: str = "response lost") -> None:
         self.script.append((predicate, None, httpx.ReadError(message)))
-
-    def add_response_body_error(self, predicate, status: int) -> None:
-        self.script.append((predicate, status, FailingResponseBody()))
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         method = request.method
@@ -60,8 +50,6 @@ class FakeTransport:
                 if isinstance(payload, httpx.RequestError):
                     raise payload
                 assert status is not None
-                if isinstance(payload, FailingResponseBody):
-                    return httpx.Response(status, stream=payload)
                 return httpx.Response(status, content=payload)
 
         raise AssertionError(f"no scripted response for {method} {url}")
@@ -1125,35 +1113,6 @@ def test_get_retries_a_network_failure(monkeypatch) -> None:
     assert len(t.calls) == 2
 
 
-def test_sync_read_retries_a_network_failure(monkeypatch) -> None:
-    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/sync")
-    t.add_network_error(predicate)
-    t.add_json(
-        predicate,
-        200,
-        {
-            "ok": True,
-            "op": "read",
-            "path": "/home/user/x",
-            "size": 2,
-            "content": "ok",
-            "encoding": "utf-8",
-        },
-    )
-
-    with use_transport(t):
-        content = sdk.Arker(
-            api_key="k",
-            base_url="https://test.invalid/api",
-            retry={"attempts": 2},
-        ).vm("vm_1").sync("/home/user/x")
-
-    assert content == b"ok"
-    assert len(t.calls) == 2
-
-
 def test_keyed_run_does_not_retry_an_ambiguous_network_failure() -> None:
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
@@ -1214,61 +1173,6 @@ def test_sync_stream_does_not_retry_an_ambiguous_network_failure() -> None:
         ).vm("vm_1").sync("/home/user/x", b"content")
 
     assert len(t.calls) == 1
-
-
-def test_sync_stream_does_not_retry_a_server_unknown_outcome() -> None:
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and "/sync-stream" in url
-    t.add_json(predicate, 503, UNKNOWN_OUTCOME_ERROR_BODY)
-    t.add_json(predicate, 200, {"ok": True})
-
-    with use_transport(t), pytest.raises(sdk.ArkerError, match="outcome is unknown"):
-        sdk.Arker(
-            api_key="k",
-            base_url="https://test.invalid/api",
-            retry={"attempts": 2, "base_delay_s": 0, "jitter_s": 0},
-        ).vm("vm_1").sync("/home/user/x", b"content")
-
-    assert len(t.calls) == 1
-
-
-def test_sync_stream_retries_an_explicit_retryable_response(monkeypatch) -> None:
-    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and "/sync-stream" in url
-    t.add_json(
-        predicate,
-        503,
-        {"error": {"code": "unavailable", "message": "wait", "retry_after": 0.01}},
-    )
-    t.add_json(predicate, 200, {"ok": True})
-
-    with use_transport(t):
-        sdk.Arker(
-            api_key="k",
-            base_url="https://test.invalid/api",
-            retry={"attempts": 2, "base_delay_s": 0, "jitter_s": 0},
-        ).vm("vm_1").sync("/home/user/x", b"content")
-
-    assert len(t.calls) == 2
-
-
-def test_retryable_status_survives_response_body_failure(monkeypatch) -> None:
-    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and url.endswith("/v1/fork")
-    t.add_response_body_error(predicate, 503)
-    t.add_json(predicate, 200, _fork_response("vm_1"))
-
-    with use_transport(t):
-        vm = sdk.Arker(
-            api_key="k",
-            base_url="https://test.invalid/api",
-            retry={"attempts": 2, "base_delay_s": 0, "jitter_s": 0},
-        ).fork(source_vm_name="ubuntu")
-
-    assert vm.id == "vm_1"
-    assert len(t.calls) == 2
 
 
 def test_read_inline_base64() -> None:

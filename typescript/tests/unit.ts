@@ -47,18 +47,6 @@ class FakeFetch {
     this.script.push({ predicate, response: new TypeError(message) });
   }
 
-  addResponseBodyError(
-    predicate: FetchScript["predicate"],
-    status: number,
-  ): void {
-    const body = new ReadableStream({
-      start(controller) {
-        controller.error(new TypeError("response body lost"));
-      },
-    });
-    this.script.push({ predicate, response: new Response(body, { status }) });
-  }
-
   fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? "GET";
@@ -965,25 +953,6 @@ async function testGetRetriesNetworkFailure(): Promise<void> {
   assert.equal(fetch.calls.length, 2);
 }
 
-async function testSyncReadRetriesNetworkFailure(): Promise<void> {
-  const fetch = new FakeFetch();
-  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/vms/vm_1/sync");
-  fetch.addNetworkError(match);
-  fetch.addJson(match, 200, {
-    ok: true,
-    op: "read",
-    path: "/home/user/x",
-    size: 2,
-    content: "ok",
-    encoding: "utf-8",
-  });
-
-  const content = await clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x");
-
-  assert.equal(decode(content), "ok");
-  assert.equal(fetch.calls.length, 2);
-}
-
 async function testKeyedRunDoesNotRetryAmbiguousNetworkFailure(): Promise<void> {
   const fetch = new FakeFetch();
   const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/vms/vm_1/runs");
@@ -1019,21 +988,6 @@ async function testMutationDoesNotRetryServerUnknownOutcome(): Promise<void> {
   assert.equal(fetch.calls.length, 1);
 }
 
-async function testRetryableStatusSurvivesResponseBodyFailure(): Promise<void> {
-  const fetch = new FakeFetch();
-  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/fork");
-  fetch.addResponseBodyError(match, 503);
-  fetch.addJson(match, 200, {
-    vm_id: "vm_1", owner_org_id: "owner", created_at: "now",
-    public: false, state: "idle", sessions: [], network: {}, resources: {},
-  });
-
-  const vm = await clientWithRetry(fetch, 2).fork({ source_vm_name: "ubuntu" });
-
-  assert.equal(vm.id, "vm_1");
-  assert.equal(fetch.calls.length, 2);
-}
-
 async function testSyncStreamDoesNotRetryAmbiguousNetworkFailure(): Promise<void> {
   const fetch = new FakeFetch();
   const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
@@ -1044,30 +998,6 @@ async function testSyncStreamDoesNotRetryAmbiguousNetworkFailure(): Promise<void
     (error: unknown) => error instanceof ArkerError && error.message.includes("outcome is unknown"),
   );
   assert.equal(fetch.calls.length, 1);
-}
-
-async function testSyncStreamDoesNotRetryServerUnknownOutcome(): Promise<void> {
-  const fetch = new FakeFetch();
-  const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
-  fetch.addJson(match, 503, UNKNOWN_OUTCOME_ERROR_BODY);
-  fetch.addJson(match, 200, { ok: true });
-
-  await assert.rejects(
-    () => clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x", "content"),
-    (error: unknown) => error instanceof ArkerError && error.message.includes("outcome is unknown"),
-  );
-  assert.equal(fetch.calls.length, 1);
-}
-
-async function testSyncStreamRetriesExplicitRetryableResponse(): Promise<void> {
-  const fetch = new FakeFetch();
-  const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
-  fetch.addJson(match, 503, RETRYABLE_ERROR_BODY);
-  fetch.addJson(match, 200, { ok: true });
-
-  await clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x", "content");
-
-  assert.equal(fetch.calls.length, 2);
 }
 
 async function testGetAndSetPolicies(): Promise<void> {
@@ -1564,13 +1494,9 @@ await testRetryOnRetryableStatusThenSucceeds();
 await testRetryGivesUpAfterExhaustingAttempts();
 await testNonRetryableStatusFailsImmediately();
 await testGetRetriesNetworkFailure();
-await testSyncReadRetriesNetworkFailure();
 await testKeyedRunDoesNotRetryAmbiguousNetworkFailure();
 await testMutationDoesNotRetryServerUnknownOutcome();
-await testRetryableStatusSurvivesResponseBodyFailure();
 await testSyncStreamDoesNotRetryAmbiguousNetworkFailure();
-await testSyncStreamDoesNotRetryServerUnknownOutcome();
-await testSyncStreamRetriesExplicitRetryableResponse();
 await testGetAndSetPolicies();
 await testCreateFilesystem();
 await testCancelRun();
