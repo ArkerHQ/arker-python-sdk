@@ -22,7 +22,7 @@
  * Placement: `ARKER_PROVIDER` + `ARKER_REGION`, or the matching flags.
  */
 
-import { readFileSync, existsSync, fstatSync } from "node:fs";
+import { readFileSync, existsSync, fstatSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +35,7 @@ import {
 import { bridgePty } from "./cli-pty.js";
 import type {
   PolicyDoc,
+  ForkOptions,
   RunRecord,
   RunSignal,
   VM,
@@ -62,12 +63,12 @@ const VERSION: string = (() => {
 
 interface ParsedArgs {
   positional: string[];
-  flags: Record<string, string | boolean | number>;
+  flags: Record<string, string | string[] | boolean | number>;
 }
 
 type OptionSpec =
   | { type: "boolean" }
-  | { type: "string"; values?: readonly string[] }
+  | { type: "string"; values?: readonly string[]; repeatable?: boolean; allowEmpty?: boolean }
   | { type: "integer"; min: number; max?: number }
   // Fractional, for `--vgpu 0.25`. `min` is INCLUSIVE when a `step` is given
   // (the smallest rung is a legal value); exclusive otherwise. `step` states a
@@ -101,15 +102,91 @@ const FORK_RESOURCE_OPTIONS: OptionSpecs = {
   vgpu: { type: "number", min: 0.125, max: 1, step: 0.125 },
 };
 
+const FORK_OPTIONS: OptionSpecs = {
+  ...GLOBAL_OPTIONS,
+  ...FORK_RESOURCE_OPTIONS,
+  context: { type: "string" },
+  description: { type: "string", allowEmpty: true },
+  disk: { type: "boolean" },
+  dockerfile: { type: "string" },
+  durable: { type: "boolean" },
+  image: { type: "string" },
+  layers: { type: "string" },
+  name: { type: "string" },
+  nestedvirt: { type: "boolean" },
+  "no-disk": { type: "boolean" },
+  platform: { type: "string" },
+  "policies-file": { type: "string" },
+  public: { type: "boolean" },
+  "queueing-timeout": { type: "integer", min: 0 },
+  "registry-auth-file": { type: "string" },
+  "source-org-id": { type: "string" },
+  "source-org-name": { type: "string" },
+  "source-vm-id": { type: "string" },
+  "source-vm-name": { type: "string" },
+  "ssh-public-key": { type: "string", repeatable: true },
+  "ssh-public-keys-file": { type: "string" },
+};
+
 const RUN_OPTIONS: OptionSpecs = {
   ...GLOBAL_OPTIONS,
+  ...RESOURCE_OPTIONS,
   acquire: { type: "string" },
+  "end-symbol": { type: "string" },
+  "idempotency-key": { type: "string" },
+  "memory-backend": { type: "string", values: ["file", "uffd"] },
+  "policies-file": { type: "string" },
   "queueing-timeout": { type: "integer", min: 0 },
   release: { type: "string" },
   "session-id": { type: "string" },
   "session-idx": { type: "integer", min: 0 },
   timeout: { type: "integer", min: 0 },
   "time-to-background": { type: "integer", min: 0 },
+};
+
+const VM_LIST_OPTIONS: OptionSpecs = {
+  ...GLOBAL_OPTIONS,
+  ...PAGINATION_OPTIONS,
+  "created-after": { type: "string" },
+  "created-before": { type: "string" },
+  platform: { type: "string" },
+  public: { type: "boolean" },
+  "source-org-id": { type: "string" },
+  state: { type: "string", values: ["idle", "running"] },
+};
+
+const RUN_LIST_OPTIONS: OptionSpecs = {
+  ...GLOBAL_OPTIONS,
+  actions: { type: "string" },
+  "completed-after": { type: "string" },
+  cursor: { type: "string" },
+  dir: { type: "string", values: ["asc", "desc"] },
+  endpoint: { type: "string", values: ["run", "fork", "sync"] },
+  limit: { type: "integer", min: 1, max: 20_000 },
+  lite: { type: "boolean" },
+  offset: { type: "integer", min: 0 },
+  runtime: { type: "string" },
+  search: { type: "string" },
+  since: { type: "integer", min: 0 },
+  sort: { type: "string", values: ["when", "status", "path", "total", "queue", "your_code", "runtime"] },
+  "started-after": { type: "string" },
+  "started-before": { type: "string" },
+  state: { type: "string", values: ["pending", "running", "completed", "cancelled", "failed"] },
+  status: { type: "string" },
+  "status-max": { type: "integer", min: 0 },
+  "status-min": { type: "integer", min: 0 },
+  until: { type: "integer", min: 0 },
+  vm: { type: "string" },
+  vms: { type: "string" },
+};
+
+const UPDATE_OPTIONS: OptionSpecs = {
+  ...GLOBAL_OPTIONS,
+  ...FORK_RESOURCE_OPTIONS,
+  description: { type: "string", allowEmpty: true },
+  "policies-file": { type: "string" },
+  "ssh-public-key": { type: "string", repeatable: true },
+  "ssh-public-keys-file": { type: "string" },
 };
 
 const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
@@ -121,45 +198,23 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     "name-prefix": { type: "string" },
   },
   fork: {
-    ...GLOBAL_OPTIONS,
-    ...FORK_RESOURCE_OPTIONS,
-    description: { type: "string" },
-    name: { type: "string" },
-    "no-disk": { type: "boolean" },
-    platform: { type: "string" },
-    public: { type: "boolean" },
-    "queueing-timeout": { type: "integer", min: 0 },
-    "source-org-id": { type: "string" },
-    "source-vm-id": { type: "string" },
-    "source-vm-name": { type: "string" },
+    ...FORK_OPTIONS,
   },
   fs: {},
-  list: {
-    ...GLOBAL_OPTIONS,
-    ...PAGINATION_OPTIONS,
-    public: { type: "boolean" },
-    "source-org-id": { type: "string" },
-    state: { type: "string", values: ["idle", "running"] },
-  },
-  ls: {
-    ...GLOBAL_OPTIONS,
-    ...PAGINATION_OPTIONS,
-    public: { type: "boolean" },
-    "source-org-id": { type: "string" },
-    state: { type: "string", values: ["idle", "running"] },
-  },
+  list: VM_LIST_OPTIONS,
+  ls: VM_LIST_OPTIONS,
   rm: GLOBAL_OPTIONS,
   run: RUN_OPTIONS,
-  runs: {
-    ...GLOBAL_OPTIONS,
-    ...PAGINATION_OPTIONS,
-    state: { type: "string", values: ["running", "completed", "cancelled", "failed"] },
-  },
+  runs: RUN_LIST_OPTIONS,
   sessions: {
     ...GLOBAL_OPTIONS,
     ...PAGINATION_OPTIONS,
     cols: { type: "integer", min: 1 },
+    command: { type: "string" },
     cwd: { type: "string" },
+    env: { type: "string", repeatable: true },
+    "env-file": { type: "string" },
+    pty: { type: "boolean" },
     rows: { type: "integer", min: 1 },
     state: { type: "string", values: ["idle", "running"] },
     "timeout-secs": { type: "integer", min: 0 },
@@ -174,6 +229,8 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     persist: { type: "boolean" },
     rows: { type: "integer", min: 1 },
     "session-id": { type: "string" },
+    "source-org-id": { type: "string" },
+    "source-org-name": { type: "string" },
     "source-vm-name": { type: "string" },
     "vm-id": { type: "string" },
   },
@@ -205,31 +262,12 @@ const COMMAND_OPTIONS: Record<string, OptionSpecs> = {
     "filesystem-id": { type: "string" },
     path: { type: "string" },
   },
-  update: {
-    ...GLOBAL_OPTIONS,
-    ...RESOURCE_OPTIONS,
-    description: { type: "string" },
-  },
+  update: UPDATE_OPTIONS,
   vms: {
-    ...GLOBAL_OPTIONS,
+    ...FORK_OPTIONS,
+    ...RUN_OPTIONS,
+    ...VM_LIST_OPTIONS,
     ...PAGINATION_OPTIONS,
-    ...FORK_RESOURCE_OPTIONS,
-    acquire: { type: "string" },
-    description: { type: "string" },
-    name: { type: "string" },
-    "no-disk": { type: "boolean" },
-    platform: { type: "string" },
-    public: { type: "boolean" },
-    "queueing-timeout": { type: "integer", min: 0 },
-    release: { type: "string" },
-    "session-id": { type: "string" },
-    "session-idx": { type: "integer", min: 0 },
-    "source-org-id": { type: "string" },
-    "source-vm-id": { type: "string" },
-    "source-vm-name": { type: "string" },
-    state: { type: "string", values: ["idle", "running"] },
-    timeout: { type: "integer", min: 0 },
-    "time-to-background": { type: "integer", min: 0 },
   },
 };
 
@@ -283,33 +321,36 @@ function validateInvocationOptions(command: string, args: ParsedArgs): void {
   if (command === "vms") {
     context = `vms ${subcommand ?? "ls"}`;
     if (subcommand === undefined || subcommand === "ls" || subcommand === "list") {
-      allowed = {
-        ...GLOBAL_OPTIONS,
-        ...PAGINATION_OPTIONS,
-        public: { type: "boolean" },
-        "source-org-id": { type: "string" },
-        state: { type: "string" },
-      };
+      allowed = VM_LIST_OPTIONS;
     } else if (subcommand === "fork") {
       allowed = COMMAND_OPTIONS.fork!;
     } else if (subcommand === "run") {
       allowed = RUN_OPTIONS;
     } else if (subcommand === "update") {
-      allowed = COMMAND_OPTIONS.update!;
+      allowed = UPDATE_OPTIONS;
     } else {
       allowed = GLOBAL_OPTIONS;
     }
   } else if (command === "runs") {
     context = `runs ${subcommand ?? ""}`.trim();
     allowed = subcommand === "ls" || subcommand === "list"
-      ? { ...GLOBAL_OPTIONS, ...PAGINATION_OPTIONS, state: { type: "string" } }
+      ? RUN_LIST_OPTIONS
       : GLOBAL_OPTIONS;
   } else if (command === "sessions") {
     context = `sessions ${subcommand ?? ""}`.trim();
     allowed = subcommand === "ls" || subcommand === "list"
       ? { ...GLOBAL_OPTIONS, ...PAGINATION_OPTIONS, state: { type: "string" } }
       : subcommand === "create"
-        ? { ...GLOBAL_OPTIONS, cwd: { type: "string" } }
+        ? {
+            ...GLOBAL_OPTIONS,
+            cols: { type: "integer", min: 1 },
+            command: { type: "string" },
+            cwd: { type: "string" },
+            env: { type: "string", repeatable: true },
+            "env-file": { type: "string" },
+            pty: { type: "boolean" },
+            rows: { type: "integer", min: 1 },
+          }
         : subcommand === "update"
           ? {
               ...GLOBAL_OPTIONS,
@@ -391,10 +432,22 @@ function parseOption(
   const value = inline ?? argv[index + 1];
   if (value === undefined) die(`parameter "${name}" requires a value`);
   if (spec.type === "string") {
+    if (!spec.allowEmpty && value.trim().length === 0) {
+      die(`parameter "${name}" must not be empty`);
+    }
     if (spec.values && !spec.values.includes(value)) {
       die(`parameter "${name}" must be one of: ${spec.values.join(", ")}`);
     }
-    flags[name] = value;
+    if (spec.repeatable) {
+      const previous = flags[name];
+      flags[name] = previous === undefined
+        ? [value]
+        : Array.isArray(previous)
+          ? [...previous, value]
+          : [String(previous), value];
+    } else {
+      flags[name] = value;
+    }
   } else if (spec.type === "number") {
     const parsed = Number(value);
     if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(value) || !Number.isFinite(parsed)) {
@@ -484,8 +537,8 @@ function clientFromArgs(
   return new Arker({
     apiKey,
     baseUrl: resolvedBaseUrl,
-    region: configuredRegion,
-    provider,
+    region: requiresComputePlacement ? configuredRegion : undefined,
+    provider: requiresComputePlacement ? provider : undefined,
     controlBaseUrl,
   });
 }
@@ -495,6 +548,10 @@ function commandRequiresComputePlacement(
   args: ParsedArgs,
 ): boolean {
   if (command === "ls" || command === "list" || command === "whoami") return false;
+  if (command === "runs") {
+    const [subcommand, vm] = args.positional;
+    if ((subcommand === "ls" || subcommand === "list") && vm === undefined) return false;
+  }
   if (command !== "vms") return true;
   const subcommand = args.positional[0];
   return subcommand !== undefined && subcommand !== "ls" && subcommand !== "list";
@@ -563,6 +620,9 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
         public: boolFlag(args, "public"),
         cursor: args.flags.cursor as string | undefined,
         limit: numFlag(args, "limit"),
+        platform: args.flags.platform as string | undefined,
+        created_after: args.flags["created-after"] as string | undefined,
+        created_before: args.flags["created-before"] as string | undefined,
       });
       if (args.flags.json) return out({ vms: res.vms, next_cursor: res.nextCursor });
       for (const vm of res.vms) out(fmtVm(vm));
@@ -599,32 +659,32 @@ async function cmdVms(args: ParsedArgs, client: Arker): Promise<void> {
 }
 
 async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
-  // Source resolution is strict: exactly one of source-vm-id or
-  // source-vm-name. A positional arg without flags is treated as a
-  // source-vm-name.
   const refPositional = args.positional[0];
   const srcVmIdFlag = args.flags["source-vm-id"] as string | undefined;
   const srcVmNameFlag = args.flags["source-vm-name"] as string | undefined;
   const srcOrgIdFlag = args.flags["source-org-id"] as string | undefined;
+  const srcOrgNameFlag = args.flags["source-org-name"] as string | undefined;
+  const image = args.flags.image as string | undefined;
+  const dockerfile = args.flags.dockerfile as string | undefined;
+  const context = args.flags.context as string | undefined;
   const name = args.flags.name as string | undefined;
   const description = args.flags.description as string | undefined;
   const publicFlag = boolFlag(args, "public");
 
-  let sourceVmId: string | undefined = srcVmIdFlag;
-  let sourceVmName: string | undefined = srcVmNameFlag;
-  let sourceOrgId: string | undefined = srcOrgIdFlag;
-
-  if (!sourceVmId && !sourceVmName && refPositional) {
-    // A positional source is a source VM name. Pass --source-org-id to select
-    // an owner explicitly.
-    sourceVmName = refPositional;
+  if (args.positional.length > 1) die("fork accepts only one positional source VM name");
+  if (refPositional && srcVmNameFlag) die("positional source cannot be combined with --source-vm-name");
+  const sourceVmName = srcVmNameFlag ?? refPositional;
+  const sources = [srcVmIdFlag, sourceVmName, image, dockerfile].filter((value) => value !== undefined);
+  if (sources.length !== 1) {
+    die("fork requires exactly one source: a positional VM name, --source-vm-id, --source-vm-name, --image, or --dockerfile");
   }
-
-  if (!sourceVmId && !sourceVmName) {
-    die("usage: arker fork <vm_name> | --source-vm-id <id> | --source-vm-name <name> [--source-org-id <org>]\n" +
-        "       [--platform <token[,token...]>] [--vcpu N] [--memory-mib N] [--disk-mib N]\n" +
-        "       [--vgpu F] [--no-disk]");
+  if (srcOrgIdFlag && srcOrgNameFlag) die("--source-org-id and --source-org-name are mutually exclusive");
+  if ((srcOrgIdFlag || srcOrgNameFlag) && !sourceVmName) {
+    die("--source-org-id and --source-org-name require a source VM name");
   }
+  if (context && !dockerfile) die("--context requires --dockerfile");
+  if (dockerfile) requirePathKind(dockerfile, "Dockerfile", "file");
+  if (context) requirePathKind(context, "build context", "directory");
 
   // Hard platform pin: `--platform icelake` (or graviton2/x86_64/...) forces
   // the fork onto a worker of that compute platform and fails closed if none
@@ -654,18 +714,59 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
       }
     : undefined;
 
-  // --no-disk forks a nodisk (memory-backed) VM; by default the server derives
-  // disk behavior from the source. Inbound reachability is intentionally not
-  // exposed on the CLI yet.
-  const disk = boolFlag(args, "no-disk") ? false : undefined;
+  if (args.flags.disk !== undefined && args.flags["no-disk"] !== undefined) {
+    die("--disk and --no-disk are mutually exclusive");
+  }
+  const diskFlag = boolFlag(args, "disk");
+  const noDiskFlag = boolFlag(args, "no-disk");
+  const disk = diskFlag !== undefined ? diskFlag : noDiskFlag ? false : undefined;
+  if (args.flags.nestedvirt !== undefined && !image && !dockerfile) {
+    die("--nestedvirt is only valid with --image or --dockerfile");
+  }
+
+  const layersFlag = args.flags.layers as string | undefined;
+  const layers = layersFlag?.split(",").map((layer) => layer.trim()).filter(Boolean);
+  if (layers) {
+    if (!sourceVmName && !srcVmIdFlag) die("--layers is only valid with a VM source");
+    if (layers.some((layer) => layer !== "disk" && layer !== "memory")) {
+      die('--layers accepts only "disk" and "memory"');
+    }
+    if (!layers.includes("disk")) die('--layers must include "disk"');
+  }
+
+  const sshPublicKeys = sshPublicKeysFromArgs(args).values;
+
+  const policiesFile = args.flags["policies-file"] as string | undefined;
+  const policies = policiesFile !== undefined ? readJsonObject(policiesFile, "policy document") : undefined;
+
+  const registryAuthFile = args.flags["registry-auth-file"] as string | undefined;
+  if (registryAuthFile !== undefined && image === undefined && dockerfile === undefined) {
+    die("--registry-auth-file is only valid with --image or --dockerfile");
+  }
+  const registryAuth = registryAuthFile !== undefined
+    ? readJsonObject(registryAuthFile, "registry authentication")
+    : undefined;
+  if (registryAuth) {
+    const keys = Object.keys(registryAuth);
+    if (keys.some((key) => key !== "username" && key !== "password") ||
+        typeof registryAuth.username !== "string" || typeof registryAuth.password !== "string") {
+      die('registry authentication must contain only string fields "username" and "password"');
+    }
+  }
 
   const queueingTimeout = numFlag(args, "queueing-timeout");
-  const source = sourceVmId
-    ? { source_vm_id: sourceVmId }
-    : sourceOrgId
-      ? { source_vm_name: sourceVmName!, source_org_id: sourceOrgId }
-      : { source_vm_name: sourceVmName! };
-  const computer = await client.fork({
+  const source = srcVmIdFlag
+    ? { source_vm_id: srcVmIdFlag }
+    : sourceVmName
+      ? {
+          source_vm_name: sourceVmName,
+          ...(srcOrgIdFlag ? { source_org_id: srcOrgIdFlag } : {}),
+          ...(srcOrgNameFlag ? { source_org_name: srcOrgNameFlag } : {}),
+        }
+      : image
+        ? { image }
+        : { dockerfile: dockerfile!, ...(context ? { context } : {}) };
+  const forkOptions: ForkOptions = {
     ...source,
     name,
     description,
@@ -673,9 +774,94 @@ async function cmdFork(args: ParsedArgs, client: Arker): Promise<void> {
     ...(platforms && platforms.length > 0 ? { platforms } : {}),
     ...(resources ? { resources } : {}),
     ...(disk !== undefined ? { disk } : {}),
+    ...(args.flags.durable !== undefined ? { durable: boolFlag(args, "durable") } : {}),
+    ...(args.flags.nestedvirt !== undefined ? { nestedvirt: boolFlag(args, "nestedvirt") } : {}),
+    ...(layers ? { layers } : {}),
+    ...(sshPublicKeys.length > 0 ? { ssh_public_keys: sshPublicKeys } : {}),
+    ...(policies !== undefined ? { policies } : {}),
+    ...(registryAuth !== undefined ? { registry_auth: registryAuth as { username: string; password: string } } : {}),
     ...(queueingTimeout !== undefined ? { queueing_timeout: queueingTimeout } : {}),
-  });
+  } as ForkOptions;
+  const sensitiveValues = [
+    ...(registryAuth
+      ? [registryAuth.username, registryAuth.password].filter((value): value is string => typeof value === "string")
+      : []),
+    ...policySecretValues(policies),
+  ];
+  const computer = await withSecretRedaction(sensitiveValues, () => client.fork(forkOptions));
   out({ vm_id: computer.id });
+}
+
+function readTextFile(path: string, label: string): string {
+  requirePathKind(path, label, "file");
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    die(`cannot read ${label} file: ${path}: ${(error as Error).message}`);
+  }
+}
+
+function requirePathKind(path: string, label: string, kind: "file" | "directory"): void {
+  try {
+    const stat = statSync(path);
+    const valid = kind === "file" ? stat.isFile() : stat.isDirectory();
+    if (!valid) die(`${label} is not a ${kind}: ${path}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") die(`${label} does not exist: ${path}`);
+    die(`cannot inspect ${label}: ${path}: ${(error as Error).message}`);
+  }
+}
+
+function readJsonObject(path: string, label: string): Record<string, unknown> {
+  const raw = readTextFile(path, label);
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    die(`${label} is not valid JSON`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    die(`${label} must be a JSON object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function sshPublicKeysFromArgs(args: ParsedArgs): { provided: boolean; values: string[] } {
+  const direct = args.flags["ssh-public-key"] as string[] | undefined;
+  const file = args.flags["ssh-public-keys-file"] as string | undefined;
+  const fromFile = file === undefined
+    ? []
+    : readTextFile(file, "SSH public keys").split(/\r?\n/).map((key) => key.trim()).filter(Boolean);
+  const values = [...(direct ?? []), ...fromFile];
+  if (values.some((key) => key.trim().length === 0)) die("SSH public keys must not be empty");
+  return { provided: direct !== undefined || file !== undefined, values };
+}
+
+function policySecretValues(policies: { secrets?: unknown } | undefined): string[] {
+  const secrets = policies?.secrets;
+  if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) return [];
+  return Object.values(secrets).filter((value): value is string => typeof value === "string");
+}
+
+function redactValues(message: string, values: string[]): string {
+  const representations = [...new Set(values.flatMap((value) => [
+    value,
+    JSON.stringify(value).slice(1, -1),
+  ]))]
+    .filter((value) => value.length > 0)
+    .sort((left, right) => right.length - left.length);
+  return representations
+    .reduce((redacted, value) => redacted.split(value).join("[REDACTED]"), message);
+}
+
+async function withSecretRedaction<T>(values: string[], action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    if (values.length === 0) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    die(redactValues(message, values));
+  }
 }
 
 async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
@@ -683,15 +869,29 @@ async function cmdRun(args: ParsedArgs, client: Arker): Promise<void> {
   const command = joinRemoteCommand(args.positional.slice(1));
   if (!command) die("missing command to run");
   const sessionIdx = numFlag(args, "session-idx");
-  const result: RunResult = await client.vm(vmId).run(command, {
-    timeout: numFlag(args, "timeout"),
-    time_to_background: numFlag(args, "time-to-background"),
-    queueing_timeout: numFlag(args, "queueing-timeout"),
-    acquire: args.flags.acquire as string | undefined,
-    release: args.flags.release as string | undefined,
-    session_id: args.flags["session-id"] as string | undefined,
-    ...(sessionIdx !== undefined ? { session_idx: sessionIdx } : {}),
-  });
+  const policiesFile = args.flags["policies-file"] as string | undefined;
+  const policies = policiesFile === undefined
+    ? undefined
+    : readJsonObject(policiesFile, "policy document") as PolicyDoc;
+  const result: RunResult = await withSecretRedaction(
+    policySecretValues(policies),
+    () => client.vm(vmId).run(command, {
+      timeout: numFlag(args, "timeout"),
+      time_to_background: numFlag(args, "time-to-background"),
+      queueing_timeout: numFlag(args, "queueing-timeout"),
+      acquire: args.flags.acquire as string | undefined,
+      release: args.flags.release as string | undefined,
+      session_id: args.flags["session-id"] as string | undefined,
+      ...(sessionIdx !== undefined ? { session_idx: sessionIdx } : {}),
+      end_symbol: args.flags["end-symbol"] as string | undefined,
+      vcpu_count: numFlag(args, "vcpu"),
+      memory_mib: numFlag(args, "memory-mib"),
+      disk_mib: numFlag(args, "disk-mib"),
+      memory_backend: args.flags["memory-backend"] as "file" | "uffd" | undefined,
+      ...(policies !== undefined ? { policies } : {}),
+      idempotencyKey: args.flags["idempotency-key"] as string | undefined,
+    }),
+  );
   printRunResult(result, Boolean(args.flags.json));
 }
 
@@ -777,17 +977,65 @@ async function cmdRuns(args: ParsedArgs, client: Arker): Promise<void> {
   switch (sub) {
     case "ls":
     case "list": {
-      const vm = rest[0] ?? die("usage: arker runs ls <vm_id>");
-      const res = await client.vm(vm).listRuns({
-        state: args.flags.state as "running" | "completed" | "cancelled" | undefined,
-        cursor: args.flags.cursor as string | undefined,
-        limit: numFlag(args, "limit"),
+      if (rest.length > 1) die("usage: arker runs ls [vm_id] [flags]");
+      const vm = rest[0];
+      if (vm) {
+        rejectPresentFlags(args, [
+          "actions", "dir", "endpoint", "lite", "offset", "provider", "region",
+          "runtime", "search", "since", "sort", "status", "status-max", "status-min",
+          "until", "vm", "vms",
+        ], "runs ls <vm_id>");
+        const limit = numFlag(args, "limit");
+        if (limit !== undefined && limit > 1000) {
+          die('parameter "limit" must be an integer >= 1 and <= 1000 for "runs ls <vm_id>"');
+        }
+        const res = await client.vm(vm).listRuns({
+          state: args.flags.state as "pending" | "running" | "completed" | "cancelled" | "failed" | undefined,
+          cursor: args.flags.cursor as string | undefined,
+          limit,
+          startedAfter: args.flags["started-after"] as string | undefined,
+          startedBefore: args.flags["started-before"] as string | undefined,
+          completedAfter: args.flags["completed-after"] as string | undefined,
+        });
+        if (args.flags.json) return out(res);
+        for (const r of res.runs) {
+          out(`${r.run_id}\t${r.state}\t${r.exit_code ?? "-"}\t${r.command ?? ""}`);
+        }
+        if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
+        return;
+      }
+
+      rejectPresentFlags(args, [
+        "completed-after", "cursor", "started-after", "started-before", "state",
+      ], "organization-wide runs ls");
+      const limit = numFlag(args, "limit");
+      if (limit !== undefined && limit > 200 && boolFlag(args, "lite") !== true) {
+        die('parameter "limit" must be <= 200 unless --lite is enabled');
+      }
+      const res = await client.listRuns({
+        since: numFlag(args, "since"),
+        until: numFlag(args, "until"),
+        vm: args.flags.vm as string | undefined,
+        vmIds: commaListFlag(args, "vms"),
+        region: args.flags.region as string | undefined,
+        provider: args.flags.provider as string | undefined,
+        search: args.flags.search as string | undefined,
+        limit,
+        offset: numFlag(args, "offset"),
+        lite: boolFlag(args, "lite"),
+        runtime: args.flags.runtime as string | undefined,
+        endpoint: args.flags.endpoint as "run" | "fork" | "sync" | undefined,
+        actions: commaListFlag(args, "actions"),
+        status: commaListFlag(args, "status"),
+        statusMin: numFlag(args, "status-min"),
+        statusMax: numFlag(args, "status-max"),
+        sort: args.flags.sort as "when" | "status" | "path" | "total" | "queue" | "your_code" | "runtime" | undefined,
+        dir: args.flags.dir as "asc" | "desc" | undefined,
       });
       if (args.flags.json) return out(res);
-      for (const r of res.runs) {
-        out(`${r.run_id}\t${r.state}\t${r.exit_code ?? "-"}\t${r.command ?? ""}`);
+      for (const r of res.rows) {
+        out(`${r.t_ms}\t${r.vm_id}\t${r.endpoint}\t${r.status}\t${r.command || r.path}`);
       }
-      if (res.next_cursor) out(`# next_cursor=${res.next_cursor}`);
       return;
     }
     case "get": {
@@ -838,7 +1086,15 @@ async function cmdSessions(args: ParsedArgs, client: Arker): Promise<void> {
     }
     case "create": {
       if (!vm) die("usage: arker sessions create <vm_id>");
-      out(await client.vm(vm).createSession({ cwd: args.flags.cwd as string | undefined }));
+      const env = sessionEnvFromArgs(args);
+      out(await client.vm(vm).createSession({
+        ...(env.provided ? { env: env.values } : {}),
+        cwd: args.flags.cwd as string | undefined,
+        ...(args.flags.pty !== undefined ? { pty: boolFlag(args, "pty") } : {}),
+        cols: numFlag(args, "cols"),
+        rows: numFlag(args, "rows"),
+        command: args.flags.command as string | undefined,
+      }));
       return;
     }
     case "rm":
@@ -943,7 +1199,11 @@ async function cmdPolicies(args: ParsedArgs, client: Arker): Promise<void> {
       if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
         return die("policy document must be a JSON object");
       }
-      return out(await client.vm(vm).setPolicies(doc as PolicyDoc));
+      const policies = doc as PolicyDoc;
+      return out(await withSecretRedaction(
+        policySecretValues(policies),
+        () => client.vm(vm).setPolicies(policies),
+      ));
     }
     default:
       return die(`unknown policies subcommand: ${sub}. Use get|set.`);
@@ -1047,26 +1307,41 @@ async function cmdSync(args: ParsedArgs, client: Arker): Promise<void> {
 
 async function cmdUpdate(args: ParsedArgs, client: Arker): Promise<void> {
   const vm = args.positional[0];
-  if (!vm) die("usage: arker update <vm_id> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]");
+  if (!vm) die("usage: arker update <vm_id> [--description TEXT] [resource, SSH key, or policy flags]");
   const memoryMib = numFlag(args, "memory-mib");
   const vcpu = numFlag(args, "vcpu");
   const diskMib = numFlag(args, "disk-mib");
+  const vgpu = numFlag(args, "vgpu");
   const description = args.flags.description as string | undefined;
-  if (memoryMib === undefined && vcpu === undefined && diskMib === undefined && description === undefined) {
-    die("update: pass at least one of --description, --memory-mib, --vcpu, --disk-mib");
+  const sshPublicKeys = sshPublicKeysFromArgs(args);
+  const policiesFile = args.flags["policies-file"] as string | undefined;
+  const policies = policiesFile === undefined
+    ? undefined
+    : readJsonObject(policiesFile, "policy document") as PolicyDoc;
+  if (
+    memoryMib === undefined && vcpu === undefined && diskMib === undefined && vgpu === undefined &&
+    description === undefined && !sshPublicKeys.provided && policies === undefined
+  ) {
+    die("update: pass at least one description, resource, SSH key, or policy flag");
   }
-  const updated = await client.vm(vm).update({
-    ...(description !== undefined ? { description } : {}),
-    ...(memoryMib !== undefined || vcpu !== undefined || diskMib !== undefined
-      ? {
-          resources: {
-            vcpu: vcpu ?? null,
-            memory_mib: memoryMib ?? null,
-            disk_mib: diskMib ?? null,
-          },
-        }
-      : {}),
-  });
+  const updated = await withSecretRedaction(
+    policySecretValues(policies),
+    () => client.vm(vm).update({
+      ...(description !== undefined ? { description } : {}),
+      ...(memoryMib !== undefined || vcpu !== undefined || diskMib !== undefined || vgpu !== undefined
+        ? {
+            resources: {
+              vcpu: vcpu ?? null,
+              memory_mib: memoryMib ?? null,
+              disk_mib: diskMib ?? null,
+              ...(vgpu !== undefined ? { vgpu } : {}),
+            },
+          }
+        : {}),
+      ...(sshPublicKeys.provided ? { ssh_public_keys: sshPublicKeys.values } : {}),
+      ...(policies !== undefined ? { policies } : {}),
+    }),
+  );
   if (args.flags.json) return out(updated);
   out(fmtVm(updated));
 }
@@ -1120,24 +1395,41 @@ async function cmdShell(args: ParsedArgs, client: Arker): Promise<void> {
   // Attach to an explicit VM by id (--vm-id or a positional vm id), otherwise
   // fork a fresh one from an explicit source name.
   let computer: VM;
-  const vmIdArg = (args.flags["vm-id"] as string | undefined) ?? args.positional[0];
+  const positionalVmId = args.positional[0];
+  const vmIdFlag = args.flags["vm-id"] as string | undefined;
+  const sourceVmName = args.flags["source-vm-name"] as string | undefined;
+  if (args.positional.length > 1) die("shell accepts only one positional VM ID");
+  if (positionalVmId && vmIdFlag) {
+    die("shell: positional VM ID and --vm-id are mutually exclusive");
+  }
+  const vmIdArg = vmIdFlag ?? positionalVmId;
+  if (vmIdArg && sourceVmName) {
+    die("shell: VM ID and --source-vm-name are mutually exclusive");
+  }
   const explicitSessionId = args.flags["session-id"] as string | undefined;
+  const sourceOrgId = args.flags["source-org-id"] as string | undefined;
+  const sourceOrgName = args.flags["source-org-name"] as string | undefined;
+  if (sourceOrgId && sourceOrgName) {
+    die("shell: --source-org-id and --source-org-name are mutually exclusive");
+  }
   if (!vmIdArg && explicitSessionId) {
     die("usage: arker shell <vm_id> --session-id <session_id>");
   }
   if (vmIdArg) {
+    if (sourceOrgId || sourceOrgName) {
+      die("shell: source organization flags require --source-vm-name");
+    }
     computer = await client.vm(vmIdArg).refresh();
   } else {
-    const sourceVmName = args.flags["source-vm-name"] as string | undefined;
     if (!sourceVmName) {
-      die("usage: arker shell <vm_id> | --source-vm-name <name> [--source-org-id <org>]");
+      die("usage: arker shell <vm_id> | --source-vm-name <name> [--source-org-id <org> | --source-org-name <name>]");
     }
-    const sourceOrgId = args.flags["source-org-id"] as string | undefined;
-    computer = await client.fork(
-      sourceOrgId
-        ? { source_vm_name: sourceVmName, source_org_id: sourceOrgId }
-        : { source_vm_name: sourceVmName },
-    );
+    const source: ForkOptions = sourceOrgId
+      ? { source_vm_name: sourceVmName, source_org_id: sourceOrgId }
+      : sourceOrgName
+        ? { source_vm_name: sourceVmName, source_org_name: sourceOrgName }
+        : { source_vm_name: sourceVmName };
+    computer = await client.fork(source);
     err(`forked ${computer.id}`);
   }
 
@@ -1186,6 +1478,41 @@ function numFlag(args: ParsedArgs, name: string): number | undefined {
 function boolFlag(args: ParsedArgs, name: string): boolean | undefined {
   const v = args.flags[name];
   return typeof v === "boolean" ? v : undefined;
+}
+
+function commaListFlag(args: ParsedArgs, name: string): string[] | undefined {
+  const value = args.flags[name];
+  if (typeof value !== "string") return undefined;
+  const items = value.split(",").map((item) => item.trim()).filter(Boolean);
+  if (items.length === 0) die(`parameter "${name}" must include at least one value`);
+  return items;
+}
+
+function rejectPresentFlags(args: ParsedArgs, names: string[], context: string): void {
+  for (const name of names) {
+    if (args.flags[name] !== undefined) {
+      die(`parameter "${name}" is not valid for "${context}"`);
+    }
+  }
+}
+
+function sessionEnvFromArgs(args: ParsedArgs): { provided: boolean; values: Record<string, string> } {
+  const file = args.flags["env-file"] as string | undefined;
+  const values: Record<string, string> = {};
+  if (file !== undefined) {
+    const fromFile = readJsonObject(file, "session environment");
+    for (const [name, value] of Object.entries(fromFile)) {
+      if (typeof value !== "string") die(`session environment value for "${name}" must be a string`);
+      values[name] = value;
+    }
+  }
+  const direct = args.flags.env as string[] | undefined;
+  for (const assignment of direct ?? []) {
+    const equal = assignment.indexOf("=");
+    if (equal <= 0) die('parameter "env" must use NAME=VALUE');
+    values[assignment.slice(0, equal)] = assignment.slice(equal + 1);
+  }
+  return { provided: file !== undefined || direct !== undefined, values };
 }
 
 function joinRemoteCommand(argv: string[]): string {
@@ -1256,47 +1583,85 @@ async function readAllStdinWithFirstByteDeadline(ms: number): Promise<Uint8Array
 // a command gains an option.
 const OPTION_HELP: Record<string, { placeholder?: string; desc: string }> = {
   acquire: { placeholder: "<list>", desc: "warm resources before the run (cpu,memory,disk)" },
+  actions: { placeholder: "<action[,action...]>", desc: "filter organization-wide activity by action" },
   "assume-empty": { desc: "skip the remote manifest; treat the destination as empty" },
   "cancel-ttl": { placeholder: "<seconds>", desc: "grace period before a disconnected PTY is reaped" },
+  "completed-after": { placeholder: "<timestamp>", desc: "include per-VM runs completed at or after this RFC 3339 time" },
+  context: { placeholder: "<directory>", desc: "local build context for --dockerfile" },
   cols: { placeholder: "<n>", desc: "initial terminal width" },
-  command: { placeholder: "<path>", desc: "shell executable path (default: /bin/bash)" },
+  command: { placeholder: "<command>", desc: "initial command for an interactive session" },
+  "created-after": { placeholder: "<timestamp>", desc: "include VMs created at or after this RFC 3339 time" },
+  "created-before": { placeholder: "<timestamp>", desc: "include VMs created at or before this RFC 3339 time" },
   cursor: { placeholder: "<cursor>", desc: "continue from a previous page's next_cursor" },
   cwd: { placeholder: "<path>", desc: "working directory for the session" },
   description: { placeholder: "<text>", desc: "short description for the VM (empty clears it)" },
+  dir: { placeholder: "<asc|desc>", desc: "sort direction for organization-wide activity" },
+  disk: { desc: "explicitly request a disk-backed VM" },
+  dockerfile: { placeholder: "<path>", desc: "fork from a local Dockerfile" },
+  durable: { desc: "preserve recoverable state across compute interruptions" },
   "disk-mib": { placeholder: "<n>", desc: "disk size in MiB" },
+  "end-symbol": { placeholder: "<text>", desc: "stop synchronous output collection after this marker" },
+  endpoint: { placeholder: "<run|fork|sync>", desc: "filter organization-wide activity by endpoint" },
+  env: { placeholder: "<name=value>", desc: "set a session environment variable; repeatable" },
+  "env-file": { placeholder: "<path>", desc: "JSON object of session environment variables" },
   file: { placeholder: "<path>", desc: "read the policy document from this file" },
   "filesystem-id": { placeholder: "<id>", desc: "filter by filesystem" },
   "gpu-sms": { placeholder: "<n>", desc: "GPU SM count, in hardware units" },
   "gpu-vram-mib": { placeholder: "<n>", desc: "GPU VRAM in MiB, in hardware units" },
   help: { desc: "show help without connecting" },
+  image: { placeholder: "<reference>", desc: "fork from an OCI image" },
+  "idempotency-key": { placeholder: "<key>", desc: "deduplicate retries of this run request" },
   json: { desc: "emit JSON instead of tabular output" },
-  limit: { placeholder: "<n>", desc: "max rows to return (1-1000)" },
+  limit: { placeholder: "<n>", desc: "maximum rows to return; the command-specific service cap applies" },
+  layers: { placeholder: "<disk[,memory]>", desc: "state layers to inherit from a source VM" },
+  lite: { desc: "omit large activity previews and permit up to 20,000 rows" },
+  nestedvirt: { desc: "request nested virtualization for an image-based fork" },
+  "memory-backend": { placeholder: "<file|uffd>", desc: "memory backend for this run" },
   "memory-mib": { placeholder: "<n>", desc: "memory in MiB" },
   name: { placeholder: "<name>", desc: "name for the new resource, scoped to your org" },
   "name-prefix": { placeholder: "<prefix>", desc: "filter by name prefix" },
   "no-disk": { desc: "fork a memory-backed (nodisk) VM" },
   "no-persist": { desc: "close the remote PTY process on disconnect" },
+  offset: { placeholder: "<n>", desc: "skip matching organization-wide activity rows" },
   path: { placeholder: "<path>", desc: "filter by guest path" },
   persist: { desc: "keep the remote PTY process alive on disconnect" },
-  platform: { placeholder: "<token[,token...]>", desc: "pin to a compute platform (e.g. icelake, graviton2)" },
-  provider: { placeholder: "<provider>", desc: "compute provider (or env ARKER_PROVIDER)" },
-  public: { desc: "restrict the listing to public VMs" },
+  platform: { placeholder: "<token[,token...]>", desc: "filter VMs or pin a fork to a compute platform" },
+  "policies-file": { placeholder: "<path>", desc: "JSON policy document for a fork, run, or VM update" },
+  provider: { placeholder: "<provider>", desc: "compute provider or activity filter (or env ARKER_PROVIDER)" },
+  pty: { desc: "mark the new session for interactive PTY use" },
+  public: { desc: "filter public VMs or make the forked VM public" },
   "queueing-timeout": { placeholder: "<seconds>", desc: "queue up to this long instead of failing fast" },
+  "registry-auth-file": { placeholder: "<path>", desc: "JSON registry credentials for an image pull" },
   read: { desc: "read the file, ignoring stdin" },
-  region: { placeholder: "<region>", desc: "service region (or env ARKER_REGION)" },
+  region: { placeholder: "<region>", desc: "service region or activity filter (or env ARKER_REGION)" },
   release: { placeholder: "<list>", desc: "release resources after the run (cpu,memory,disk)" },
   rows: { placeholder: "<n>", desc: "initial terminal height" },
+  runtime: { placeholder: "<runtime>", desc: "filter organization-wide activity by runtime" },
+  search: { placeholder: "<text>", desc: "search organization-wide run metadata" },
   "session-id": { placeholder: "<ulid>", desc: "target a specific existing session" },
   "session-idx": { placeholder: "<n>", desc: "target the session at this index (default 0)" },
-  "source-org-id": { placeholder: "<org>", desc: "list that org's VMs (only ArkerHQ, with --public)" },
+  since: { placeholder: "<epoch-seconds>", desc: "include organization-wide activity at or after this time" },
+  sort: { placeholder: "<column>", desc: "sort column for organization-wide activity" },
+  "source-org-id": { placeholder: "<org>", desc: "organization ID for a VM listing or named source VM" },
+  "source-org-name": { placeholder: "<name>", desc: "organization name that owns the source VM" },
   "source-vm-id": { placeholder: "<id>", desc: "fork by global source VM id" },
   "source-vm-name": { placeholder: "<name>", desc: "fork by source VM name" },
+  "ssh-public-key": { placeholder: "<key>", desc: "supply one authorized SSH key; repeatable (update replaces the set)" },
+  "ssh-public-keys-file": { placeholder: "<path>", desc: "read SSH keys; an empty file clears them during update" },
+  "started-after": { placeholder: "<timestamp>", desc: "include per-VM runs started at or after this RFC 3339 time" },
+  "started-before": { placeholder: "<timestamp>", desc: "include per-VM runs started at or before this RFC 3339 time" },
   state: { desc: "filter by lifecycle state" },
+  status: { placeholder: "<status[,status...]>", desc: "filter organization-wide activity by status class" },
+  "status-max": { placeholder: "<code>", desc: "maximum organization-wide activity status code" },
+  "status-min": { placeholder: "<code>", desc: "minimum organization-wide activity status code" },
   timeout: { placeholder: "<seconds>", desc: "exec/kill bound in seconds (omitted or 0 = unbounded)" },
   "time-to-background": { placeholder: "<seconds>", desc: "sync window; 0 returns a run id immediately (default 120)" },
+  until: { placeholder: "<epoch-seconds>", desc: "include organization-wide activity before this time" },
   vcpu: { placeholder: "<n>", desc: "vCPU count" },
   vgpu: { placeholder: "<fraction>", desc: "GPU size in eighths of a card (0.125 - 1)" },
   "vm-id": { placeholder: "<id>", desc: "target VM by global id" },
+  vm: { placeholder: "<id>", desc: "filter organization-wide activity by one VM" },
+  vms: { placeholder: "<id[,id...]>", desc: "filter organization-wide activity by VM IDs" },
 };
 
 // Flags every command shares; pushed below the command's own flags so the
@@ -1326,6 +1691,8 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
       "arker fork <vm_name> [flags]",
       "arker fork --source-vm-id <id> [flags]",
       "arker fork --source-vm-name <name> --source-org-id <org> [flags]",
+      "arker fork --image <reference> [flags]",
+      "arker fork --dockerfile <path> [--context <directory>] [flags]",
     ],
     summary: "Fork a source VM into a new VM.",
     notes: ["Resource flags are capped by the source VM's max_vcpus / max_memory_mib / max_disk_mib."],
@@ -1364,9 +1731,16 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
     ],
   },
   runs: {
-    synopsis: ["arker runs <ls|get|rm> <vm_id> [args] [flags]"],
-    summary: "Inspect or cancel runs on a VM.",
-    subs: { ls: "list runs", get: "show one run", rm: "cancel a run" },
+    synopsis: [
+      "arker runs ls [vm_id] [flags]",
+      "arker runs <get|rm> <vm_id> <run_id> [flags]",
+    ],
+    summary: "Inspect organization-wide activity or inspect and cancel runs on one VM.",
+    subs: { ls: "list organization-wide activity, or runs on one VM", get: "show one run", rm: "cancel a run" },
+    notes: [
+      "Omit vm_id from 'runs ls' to query organization-wide activity through the control plane.",
+      "The organization-wide and per-VM listing modes use separate filter sets.",
+    ],
   },
   sessions: {
     synopsis: ["arker sessions <ls|get|create|rm|update> <vm_id> [args] [flags]"],
@@ -1376,7 +1750,7 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
       get: "show one session",
       create: "create a session",
       rm: "delete a session",
-      update: "update a session's cwd/size",
+      update: "update a session's size or idle timeout",
     },
   },
   shell: {
@@ -1402,7 +1776,7 @@ const COMMAND_HELP: Record<string, CommandHelp> = {
   },
   update: {
     synopsis: ["arker update <vm> [flags]"],
-    summary: "Update a VM's description or resource allocation.",
+    summary: "Update a VM's description, resources, SSH keys, or network policy.",
   },
   vms: {
     synopsis: ["arker vms <ls|get|rm|fork|run|update> [args] [flags]"],
@@ -1493,13 +1867,13 @@ function usage(command?: string, sub?: string): void {
       "  arker fork --source-vm-id <id>                 fork by global id",
       "  arker fork --source-vm-name <n> --source-org-id <org>",
       "                                                 fork by name in another org",
-      "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--no-disk]",
+      "  arker fork <vm> [--vcpu N] [--memory-mib N] [--disk-mib N] [--disk|--no-disk]",
       "                                                 fork with resource overrides",
       "  arker fork <vm> --platform <token[,token...]>  pin the fork to a compute platform",
       "                                                 (e.g. icelake, graviton2; fails closed)",
       "  arker fork <vm> --vgpu 0.25                    size the GPU in eighths of a card (0.125 … 1)",
       "  arker run [flags] <vm> <command> [args...]     run a command",
-      "  arker update <vm> [--description TEXT] [--memory-mib N] [--vcpu N] [--disk-mib N]",
+      "  arker update <vm> [resource, SSH key, or policy flags]",
       "  arker shell <vm_id>                            native PTY shell",
       "  arker shell --source-vm-name <name>            fork a source, then open a shell",
       "",
@@ -1508,7 +1882,8 @@ function usage(command?: string, sub?: string): void {
       "  arker whoami                                   show the authenticated organization",
       "  arker vms         <ls|get|rm|fork|run|update> ...",
       "  arker vms ls --source-org-id ArkerHQ --public  list the public VM catalog",
-      "  arker runs        <ls|get|rm> <vm_id> ...",
+      "  arker runs ls [vm_id] [flags]              list organization or VM runs",
+      "  arker runs <get|rm> <vm_id> <run_id> ...",
       "  arker sessions    <ls|get|create|rm|update> <vm_id> ...",
       "  arker syncs       <ls|create|rm> <vm_id> ...",
       "  arker filesystems <ls|create|get|rm> ...   (alias: fs)",
@@ -1526,19 +1901,37 @@ function usage(command?: string, sub?: string): void {
       "  -v, --version              show version without connecting",
       "",
       "List flags (arker vms ls):",
-      "  --source-org-id <org>      list that org's VMs (only ArkerHQ, with --public)",
+      "  --source-org-id <org>      filter by owner (use ArkerHQ with --public)",
       "  --public                   restrict the listing to public VMs",
       "  --state <idle|running>     filter by VM state",
+      "  --platform <token>         filter by concrete platform ID",
+      "  --created-after <time> --created-before <time>",
       "",
       "Fork flags:",
+      "  --image <reference>        fork from an OCI image",
+      "  --dockerfile <path>        fork from a local Dockerfile",
+      "  --context <directory>      local Dockerfile build context",
+      "  --registry-auth-file <path>  JSON object with username and password",
+      "  --ssh-public-key <key>     authorize one SSH key (repeatable)",
+      "  --ssh-public-keys-file <path>  read SSH keys, one per line",
+      "  --durable                  preserve recoverable state across interruptions",
+      "  --nestedvirt               request nested virtualization for an image-based fork",
+      "  --layers <disk[,memory]>   state layers to inherit from a source VM",
+      "  --policies-file <path>     JSON policy document for the new VM",
+      "  --source-org-name <name>   organization name that owns the source VM",
       "  --description <text>       short description for the new VM",
       "  --vcpu <n>                 vCPU count for the new VM (capped by source max_vcpus)",
       "  --memory-mib <n>           memory (MiB) for the new VM",
       "  --disk-mib <n>             disk size (MiB) for the new VM",
+      "  --disk                     explicitly request a disk-backed VM",
       "  --no-disk                  fork a memory-backed (nodisk) VM",
       "",
       "Update flags:",
       "  --description <text>       replace the VM description (empty clears it)",
+      "  --vcpu <n> --memory-mib <n> --disk-mib <n> --vgpu <fraction>",
+      "  --ssh-public-key <key>     replace authorized SSH keys; repeatable",
+      "  --ssh-public-keys-file <path>  replace keys from a file; empty clears them",
+      "  --policies-file <path>     replace the VM network policy",
       "",
       "Run flags:",
       "  --session-id <ulid>        run in a specific existing session",
@@ -1548,13 +1941,23 @@ function usage(command?: string, sub?: string): void {
       "  --queueing-timeout <seconds>    queue up to this long instead of failing fast (also a fork flag)",
       "  --acquire <list>           warm resources before the run (cpu,memory,disk)",
       "  --release <list>           release resources after the run (cpu,memory,disk)",
+      "  --vcpu <n> --memory-mib <n> --disk-mib <n>",
+      "  --memory-backend <file|uffd>  select the restore memory backend",
+      "  --end-symbol <text>        stop synchronous output after this marker",
+      "  --policies-file <path>     replace VM policy before the command",
+      "  --idempotency-key <key>    deduplicate retries of the run request",
       "",
       "CLI options must appear before <command>; subsequent flags are passed to the remote command.",
       "Use -- before <command> when the executable itself begins with a dash.",
       "",
       "Resource flags:",
       "  --cursor <cursor> --limit <n>               paginate list commands",
-      "  sessions: --cwd <path> --state <state>",
+      "  sessions create: --env NAME=VALUE --env-file <path> --cwd <path> --pty",
+      "                   --cols <n> --rows <n> --command <command>",
+      "  sessions ls: --state <state>",
+      "  runs ls [vm]: --started-after <time> --started-before <time> --completed-after <time>",
+      "  runs ls: --since <seconds> --until <seconds> --vm <id> --vms <id,...>",
+      "           --search <text> --endpoint <kind> --actions <list> --status <list>",
       "  syncs: --filesystem-id <id> --path <path>",
       "  filesystems: --name <name> --name-prefix <prefix>",
       "",
@@ -1563,6 +1966,7 @@ function usage(command?: string, sub?: string): void {
       "  --command <path>           shell executable path (default: /bin/bash)",
       "  --cols <n> --rows <n>      initial terminal size",
       "  --no-persist               close the remote PTY process on disconnect",
+      "  --source-vm-name <name> [--source-org-id <org>|--source-org-name <name>]",
     ].join("\n"),
   );
 }
