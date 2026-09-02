@@ -1627,7 +1627,8 @@ export class VM {
    * and/or network policy via `PATCH /v1/vms/{id}`. Returns the updated `Vm`.
    *
    * Accepts either a `PatchVmRequest` or flat resource fields
-   * (`{ vcpu, memory_mib, disk_mib }`), which are folded into `resources`.
+   * (`{ vcpu, memory_mib, disk_mib, vgpu }`), which are folded into
+   * `resources`.
    * `policies` is a complete replacement for the VM's network policy, the
    * same document `setPolicies` accepts; an empty doc (`{}` or
    * `{ policies: [] }`) clears it to allow-all. Omit it to leave the current
@@ -1642,7 +1643,8 @@ export class VM {
     const r = request as PatchVmRequest &
       ResourcesInput & { resources?: ResourcesInput | null };
     const body: PatchVmRequest =
-      r.resources !== undefined || (r.vcpu === undefined && r.memory_mib === undefined && r.disk_mib === undefined)
+      r.resources !== undefined ||
+      (r.vcpu === undefined && r.memory_mib === undefined && r.disk_mib === undefined && r.vgpu === undefined)
         ? {
             description: r.description,
             resources: r.resources,
@@ -1655,6 +1657,10 @@ export class VM {
               vcpu: r.vcpu ?? null,
               memory_mib: r.memory_mib ?? null,
               disk_mib: r.disk_mib ?? null,
+              // Left undefined (and so pruned) when unset: `vgpu` is mutually
+              // exclusive with the hardware GPU fields, so it must not appear
+              // on the wire for a CPU-only resize.
+              vgpu: r.vgpu,
             },
             ssh_public_keys: r.ssh_public_keys,
             policies: r.policies,
