@@ -163,12 +163,15 @@ async function saveStatCache(
 async function parseErrorResponse(
   res: Response,
   fallbackMessage: string,
-): Promise<{ code: string; message: string }> {
+): Promise<ParsedError> {
   try {
-    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    const body: unknown = await res.json();
+    const parsed = extractError(body);
+    if (parsed) return parsed;
+    const error = isObject(body) && isObject(body.error) ? body.error : undefined;
     return {
-      code: body?.error?.code ?? "internal",
-      message: body?.error?.message ?? fallbackMessage,
+      code: typeof error?.code === "string" ? error.code : "internal",
+      message: typeof error?.message === "string" ? error.message : fallbackMessage,
     };
   } catch {
     return { code: "internal", message: fallbackMessage };
@@ -565,6 +568,7 @@ interface ParsedError {
   message: string;
   /** Seconds the server asked us to wait, if it said. */
   retryAfterS?: number;
+  retryable?: boolean;
 }
 
 export class ArkerError extends Error {
@@ -1393,10 +1397,10 @@ export class VM {
       if (res.ok) return;
       const parsed = await parseErrorResponse(res, `${what} failed (${res.status})`);
       // 413 is the router's body cap, not a transient fault — never retry it.
-      if (!RETRYABLE_HTTP.has(res.status) || attempt === attempts - 1) {
+      if (!isRetryable(res.status, parsed) || attempt === attempts - 1) {
         throw new ArkerError(parsed.code, parsed.message, res.status);
       }
-      await sleep(this._client._retryDelay(attempt));
+      await sleep(this._client._retryDelay(attempt, parsed));
     }
   }
 
@@ -2297,6 +2301,7 @@ function extractError(payload: unknown): ParsedError | undefined {
         code: error.code,
         message: error.message,
         retryAfterS: wireRetryAfter(error.retry_after),
+        retryable: typeof error.retryable === "boolean" ? error.retryable : undefined,
       };
     }
   }
@@ -2310,6 +2315,7 @@ function wireRetryAfter(value: unknown): number | undefined {
 }
 
 function isRetryable(status: number, error?: ParsedError): boolean {
+  if (error?.retryable !== undefined) return error.retryable;
   if (RETRYABLE_HTTP.has(status)) return true;
   if (!error) return false;
   if (RETRYABLE_CODES.has(error.code as ErrorCode)) return true;

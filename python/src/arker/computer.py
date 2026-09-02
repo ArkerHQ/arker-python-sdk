@@ -620,8 +620,10 @@ class Arker:
             retry_network_failures=retry_network_failures,
         )
 
-    def _retry_delay(self, attempt: int) -> float:
-        return _retry_delay(self._retry, attempt)
+    def _retry_delay(
+        self, attempt: int, error: dict[str, Any] | None = None
+    ) -> float:
+        return _retry_delay(self._retry, attempt, error)
 
     def _base_url_for(
         self,
@@ -997,17 +999,21 @@ class VM:
                         raw = b""
             except httpx.RequestError as error:
                 raise _unknown_outcome_error("POST", "/sync-stream", error) from error
+            payload = _parse_json(raw.decode("utf-8", "replace"))
+            parsed_error = _extract_error(payload)
             code, message = "internal", f"{what} failed ({status})"
-            try:
-                error_body = _parse_json(raw.decode("utf-8", "replace")).get("error") or {}
-                code = error_body.get("code") or code
-                message = error_body.get("message") or message
-            except Exception:
-                pass
+            if isinstance(payload, dict):
+                error_body = payload.get("error")
+                if isinstance(error_body, dict):
+                    code = error_body.get("code") or code
+                    message = error_body.get("message") or message
             # 413 is the router's body cap, not a transient fault.
-            if status not in RETRYABLE_HTTP or attempt == self._client._retry.attempts - 1:
+            if (
+                not _is_retryable(status, parsed_error)
+                or attempt == self._client._retry.attempts - 1
+            ):
                 raise ArkerError(code, message, status)
-            time.sleep(self._client._retry_delay(attempt))
+            time.sleep(self._client._retry_delay(attempt, parsed_error))
 
     def _sync_write_stream(self, path: str, data: bytes, sha256: str | None = None) -> None:
         params = {"path": path, "size": str(len(data))}
@@ -2056,6 +2062,11 @@ def _extract_error(payload: Any) -> dict[str, Any] | None:
         "code": response.error.code,
         "message": response.error.message,
         "retry_after": _wire_retry_after(response.error.retry_after),
+        "retryable": (
+            response.error.retryable
+            if isinstance(response.error.retryable, bool)
+            else None
+        ),
     }
 
 
@@ -2072,6 +2083,8 @@ def _wire_retry_after(value: Any) -> float | None:
 
 
 def _is_retryable(status: int, error: dict[str, Any] | None) -> bool:
+    if error and error.get("retryable") is not None:
+        return bool(error["retryable"])
     if status in RETRYABLE_HTTP:
         return True
     if not error:

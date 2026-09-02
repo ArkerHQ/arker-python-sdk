@@ -144,6 +144,15 @@ const RETRYABLE_ERROR_BODY = {
   error: { code: "unavailable", message: "temporarily unavailable", timestamp: "2026-01-01T00:00:00.000Z" },
 };
 
+const UNKNOWN_OUTCOME_ERROR_BODY = {
+  error: {
+    code: "unavailable",
+    message: "operation outcome is unknown; reconcile resource state before retry",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    retryable: false,
+  },
+};
+
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
 }
@@ -994,6 +1003,22 @@ async function testKeyedRunDoesNotRetryAmbiguousNetworkFailure(): Promise<void> 
   assert.equal(fetch.calls[0]?.headers["idempotency-key"], "run-key");
 }
 
+async function testMutationDoesNotRetryServerUnknownOutcome(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/vms/vm_1/runs");
+  fetch.addJson(match, 503, UNKNOWN_OUTCOME_ERROR_BODY);
+  fetch.addJson(match, 200, { run_id: "run_2", exit_code: 0 });
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).vm("vm_1").run("touch /tmp/once", { time_to_background: 0 }),
+    (error: unknown) => error instanceof ArkerError
+      && error.code === "unavailable"
+      && error.status === 503
+      && error.message.includes("outcome is unknown"),
+  );
+  assert.equal(fetch.calls.length, 1);
+}
+
 async function testRetryableStatusSurvivesResponseBodyFailure(): Promise<void> {
   const fetch = new FakeFetch();
   const match = (method: string, url: string) => method === "POST" && url.endsWith("/v1/fork");
@@ -1013,6 +1038,19 @@ async function testSyncStreamDoesNotRetryAmbiguousNetworkFailure(): Promise<void
   const fetch = new FakeFetch();
   const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
   fetch.addNetworkError(match);
+
+  await assert.rejects(
+    () => clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x", "content"),
+    (error: unknown) => error instanceof ArkerError && error.message.includes("outcome is unknown"),
+  );
+  assert.equal(fetch.calls.length, 1);
+}
+
+async function testSyncStreamDoesNotRetryServerUnknownOutcome(): Promise<void> {
+  const fetch = new FakeFetch();
+  const match = (method: string, url: string) => method === "POST" && url.includes("/sync-stream");
+  fetch.addJson(match, 503, UNKNOWN_OUTCOME_ERROR_BODY);
+  fetch.addJson(match, 200, { ok: true });
 
   await assert.rejects(
     () => clientWithRetry(fetch, 2).vm("vm_1").sync("/home/user/x", "content"),
@@ -1528,8 +1566,10 @@ await testNonRetryableStatusFailsImmediately();
 await testGetRetriesNetworkFailure();
 await testSyncReadRetriesNetworkFailure();
 await testKeyedRunDoesNotRetryAmbiguousNetworkFailure();
+await testMutationDoesNotRetryServerUnknownOutcome();
 await testRetryableStatusSurvivesResponseBodyFailure();
 await testSyncStreamDoesNotRetryAmbiguousNetworkFailure();
+await testSyncStreamDoesNotRetryServerUnknownOutcome();
 await testSyncStreamRetriesExplicitRetryableResponse();
 await testGetAndSetPolicies();
 await testCreateFilesystem();
