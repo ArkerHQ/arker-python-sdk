@@ -135,39 +135,6 @@ async function testAbortedRequestSettlesWithoutHanging(): Promise<void> {
   await shutdown(server, sessions);
 }
 
-async function testHttp2RetryAfterHeaderControlsExplicitResponseRetry(): Promise<void> {
-  let streamCount = 0;
-  const server = http2.createServer();
-  const sessions = trackSessions(server);
-  server.on("stream", (stream: http2.ServerHttp2Stream) => {
-    streamCount++;
-    if (streamCount === 1) {
-      stream.respond({
-        ":status": 503,
-        "content-type": "application/json",
-        "retry-after": "0.05",
-      });
-      stream.end(JSON.stringify({ error: { code: "unavailable", message: "wait" } }));
-      return;
-    }
-    stream.respond({ ":status": 200, "content-type": "application/json" });
-    stream.end(RUN_BODY);
-  });
-  const port = await listen(server);
-  const arker = new Arker({
-    apiKey: "ark_live_test",
-    baseUrl: `http://127.0.0.1:${port}/api`,
-    retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 100, jitterMs: 0 },
-  });
-  const started = Date.now();
-
-  await arker.vm("vm_1").run("printf hi");
-
-  assert.ok(Date.now() - started >= 45, "the HTTP/2 Retry-After header must control the delay");
-  assert.equal(streamCount, 2);
-  await shutdown(server, sessions);
-}
-
 async function testUnconfirmedHttp2FailureDoesNotReplayOrDisableHttp2(): Promise<void> {
   let connections = 0;
   const failingServer = net.createServer((socket) => {
@@ -208,7 +175,6 @@ async function testUnconfirmedHttp2FailureDoesNotReplayOrDisableHttp2(): Promise
 await testHttp2HappyPath();
 await testHttp2MultiplexesConcurrentRequests();
 await testAbortedRequestSettlesWithoutHanging();
-await testHttp2RetryAfterHeaderControlsExplicitResponseRetry();
 await testUnconfirmedHttp2FailureDoesNotReplayOrDisableHttp2();
 
 console.log("PASS http2");

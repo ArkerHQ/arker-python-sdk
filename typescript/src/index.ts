@@ -163,17 +163,15 @@ async function saveStatCache(
 async function parseErrorResponse(
   res: Response,
   fallbackMessage: string,
-): Promise<ParsedError> {
-  const headerRetryAfter = wireRetryAfterHeader(res.headers.get("retry-after"));
+): Promise<{ code: string; message: string }> {
   try {
-    const body = (await res.json()) as { error?: { code?: string; message?: string; retry_after?: unknown } };
+    const body = (await res.json()) as { error?: { code?: string; message?: string } };
     return {
       code: body?.error?.code ?? "internal",
       message: body?.error?.message ?? fallbackMessage,
-      retryAfterS: headerRetryAfter ?? wireRetryAfter(body?.error?.retry_after),
     };
   } catch {
-    return { code: "internal", message: fallbackMessage, retryAfterS: headerRetryAfter };
+    return { code: "internal", message: fallbackMessage };
   }
 }
 
@@ -222,7 +220,6 @@ const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
 
 type FetchLike = typeof fetch;
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-type NetworkFailurePolicy = "safe" | "unsafe";
 type JsonObject = Record<string, unknown>;
 
 interface BufferValue extends Uint8Array {
@@ -828,7 +825,7 @@ export class Arker {
     baseUrl = this.baseUrl,
     extraHeaders?: Record<string, string | undefined>,
     maxQueueingSecs?: number | null,
-    networkFailurePolicy?: NetworkFailurePolicy,
+    retryNetworkFailures?: boolean,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
     const headers: Record<string, string> = {
@@ -848,7 +845,7 @@ export class Arker {
       this.http2,
       this.retry,
       maxQueueingSecs ?? undefined,
-      networkFailurePolicy,
+      retryNetworkFailures,
     );
   }
 
@@ -1330,7 +1327,7 @@ export class VM {
       this.baseUrl,
       undefined,
       undefined,
-      "safe",
+      true,
     );
     const out = new Map<string, string>();
     if (Array.isArray(payload.entries)) {
@@ -1396,10 +1393,10 @@ export class VM {
       if (res.ok) return;
       const parsed = await parseErrorResponse(res, `${what} failed (${res.status})`);
       // 413 is the router's body cap, not a transient fault — never retry it.
-      if (!isRetryable(res.status, parsed) || attempt === attempts - 1) {
+      if (!RETRYABLE_HTTP.has(res.status) || attempt === attempts - 1) {
         throw new ArkerError(parsed.code, parsed.message, res.status);
       }
-      await sleep(this._client._retryDelay(attempt, parsed));
+      await sleep(this._client._retryDelay(attempt));
     }
   }
 
@@ -1580,7 +1577,7 @@ export class VM {
       this.baseUrl,
       undefined,
       undefined,
-      "safe",
+      true,
     );
     if ("content" in response) return decodeBytes(response.content, response.encoding);
     const signed = await this._client._fetch(response.presigned_url);
@@ -2195,7 +2192,7 @@ async function requestJson<T>(
   http2: boolean,
   retry: RetryConfig,
   maxQueueingSecs?: number,
-  networkFailurePolicy?: NetworkFailurePolicy,
+  retryNetworkFailures?: boolean,
 ): Promise<T> {
   const headers = { ...requestHeaders };
   let requestBody: string | undefined;
@@ -2210,7 +2207,7 @@ async function requestJson<T>(
     maxQueueingSecs !== undefined && maxQueueingSecs > 0 && retry.attempts > 1
       ? Date.now() + maxQueueingSecs * 1000
       : undefined;
-  const resolvedNetworkPolicy = networkFailurePolicy ?? (method === "GET" ? "safe" : "unsafe");
+  const shouldRetryNetworkFailures = retryNetworkFailures ?? (method === "GET");
 
   for (let attempt = 0; ; attempt++) {
     if (queueingDeadline !== undefined && attempt > 0 && isObject(body)) {
@@ -2224,21 +2221,18 @@ async function requestJson<T>(
       );
     }
     try {
-      const { status, ok, text, retryAfterS } = await sendRequest(
+      const { status, ok, text } = await sendRequest(
         url,
         { method, headers, body: requestBody },
         fetchImpl,
         http2,
-        resolvedNetworkPolicy === "safe",
+        shouldRetryNetworkFailures,
       );
       const payload = parseJson(text);
       const parsedError = extractError(payload);
-      const retryError = retryAfterS === undefined
-        ? parsedError
-        : { ...(parsedError ?? { code: "", message: "" }), retryAfterS };
 
       if (isRetryable(status, parsedError)) {
-        const delay = retryDelay(retry, attempt, retryError);
+        const delay = retryDelay(retry, attempt, parsedError);
         if (canRetryAgain(retry, attempt, queueingDeadline, delay)) {
           await sleep(delay);
           continue;
@@ -2259,7 +2253,7 @@ async function requestJson<T>(
       return payload as T;
     } catch (error) {
       if (error instanceof ArkerError) throw error;
-      if (resolvedNetworkPolicy === "unsafe") {
+      if (!shouldRetryNetworkFailures) {
         throw unknownOutcomeError(method, new URL(url).pathname, error);
       }
       const delay = retryDelay(retry, attempt);
@@ -2313,14 +2307,6 @@ function extractError(payload: unknown): ParsedError | undefined {
 function wireRetryAfter(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
   return value;
-}
-
-function wireRetryAfterHeader(value: string | string[] | null | undefined): number | undefined {
-  const raw = Array.isArray(value) ? value[0] : value;
-  if (raw === null || raw === undefined || raw.trim() === "") return undefined;
-  const seconds = Number(raw);
-  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
-  return seconds;
 }
 
 function isRetryable(status: number, error?: ParsedError): boolean {
@@ -2492,7 +2478,6 @@ interface TransportResponse {
   status: number;
   ok: boolean;
   text: string;
-  retryAfterS?: number;
 }
 
 type Http2Module = typeof import("node:http2");
@@ -2544,7 +2529,6 @@ class Http2Connection {
       const stream = this.session.request({ ...headers, ":method": method, ":path": path });
       let status = 0;
       let text = "";
-      let retryAfterS: number | undefined;
       stream.setEncoding("utf8");
       let timeout: ReturnType<typeof setTimeout> | undefined;
       if (BUN_RUNTIME) {
@@ -2561,7 +2545,6 @@ class Http2Connection {
         timeout?.refresh();
         this.confirmed = true;
         status = Number(responseHeaders[":status"]) || 0;
-        retryAfterS = wireRetryAfterHeader(responseHeaders["retry-after"]);
       });
       stream.on("data", (chunk: string) => {
         timeout?.refresh();
@@ -2573,12 +2556,12 @@ class Http2Connection {
           reject(new Error("HTTP/2 stream ended before response headers"));
           return;
         }
-        resolve({ status, ok: status >= 200 && status < 300, text, retryAfterS });
+        resolve({ status, ok: status >= 200 && status < 300, text });
       });
       stream.on("error", (error) => {
         if (timeout) clearTimeout(timeout);
         if (RETRYABLE_HTTP.has(status)) {
-          resolve({ status, ok: false, text, retryAfterS });
+          resolve({ status, ok: false, text });
           return;
         }
         reject(error);
@@ -2625,20 +2608,14 @@ async function sendRequest(
     }
   }
   const response = await fetchImpl(url, init as RequestInit);
-  const retryAfterS = wireRetryAfterHeader(response.headers.get("retry-after"));
   let text: string;
   try {
     text = await response.text();
   } catch (error) {
     if (RETRYABLE_HTTP.has(response.status)) {
-      return { status: response.status, ok: false, text: "", retryAfterS };
+      return { status: response.status, ok: false, text: "" };
     }
     throw error;
   }
-  return {
-    status: response.status,
-    ok: response.ok,
-    text,
-    retryAfterS,
-  };
+  return { status: response.status, ok: response.ok, text };
 }

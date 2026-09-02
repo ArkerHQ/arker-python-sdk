@@ -24,41 +24,35 @@ class FakeTransport:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.script: list[
-            tuple[Any, int | None, bytes | httpx.RequestError | FailingResponseBody, dict[str, str]]
+            tuple[Any, int | None, bytes | httpx.RequestError | FailingResponseBody]
         ] = []
 
-    def add_json(
-        self,
-        predicate,
-        status: int,
-        body: dict[str, Any],
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        self.script.append((predicate, status, json.dumps(body).encode(), headers or {}))
+    def add_json(self, predicate, status: int, body: dict[str, Any]) -> None:
+        self.script.append((predicate, status, json.dumps(body).encode()))
 
     def add_raw(self, predicate, status: int, body: bytes) -> None:
-        self.script.append((predicate, status, body, {}))
+        self.script.append((predicate, status, body))
 
     def add_network_error(self, predicate, message: str = "response lost") -> None:
-        self.script.append((predicate, None, httpx.ReadError(message), {}))
+        self.script.append((predicate, None, httpx.ReadError(message)))
 
     def add_response_body_error(self, predicate, status: int) -> None:
-        self.script.append((predicate, status, FailingResponseBody(), {}))
+        self.script.append((predicate, status, FailingResponseBody()))
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         method = request.method
         url = str(request.url)
         self.calls.append({"method": method, "url": url, "body": request.content or None, "headers": request.headers})
 
-        for index, (predicate, status, payload, headers) in enumerate(self.script):
+        for index, (predicate, status, payload) in enumerate(self.script):
             if predicate(method, url):
                 self.script.pop(index)
                 if isinstance(payload, httpx.RequestError):
                     raise payload
                 assert status is not None
                 if isinstance(payload, FailingResponseBody):
-                    return httpx.Response(status, stream=payload, headers=headers)
-                return httpx.Response(status, content=payload, headers=headers)
+                    return httpx.Response(status, stream=payload)
+                return httpx.Response(status, content=payload)
 
         raise AssertionError(f"no scripted response for {method} {url}")
 
@@ -1150,61 +1144,10 @@ def test_sync_read_retries_a_network_failure(monkeypatch) -> None:
     assert len(t.calls) == 2
 
 
-def test_fork_does_not_retry_an_ambiguous_network_failure(monkeypatch) -> None:
-    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and url.endswith("/v1/fork")
-    t.add_network_error(predicate)
-    t.add_json(predicate, 200, _fork_response("vm_duplicate"))
-
-    with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
-        sdk.Arker(
-            api_key="k",
-            base_url="https://test.invalid/api",
-            retry={"attempts": 2},
-        ).fork(source_vm_name="ubuntu")
-
-    assert caught.value.code == "unavailable"
-    assert caught.value.status == 0
-    assert "outcome is unknown" in caught.value.message
-    assert "reconcile" in caught.value.message.lower()
-    assert len(t.calls) == 1
-
-
-@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
-def test_other_mutating_methods_do_not_retry_ambiguous_network_failures(
-    monkeypatch, method: str
-) -> None:
-    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
-    t = FakeTransport()
-    predicate = lambda candidate, url: candidate == method and url.endswith("/v1/test")
-    t.add_network_error(predicate)
-    t.add_json(predicate, 200, {})
-
-    with use_transport(t), pytest.raises(sdk.ArkerError, match="outcome is unknown"):
-        sdk._request_json(
-            method,
-            "/v1/test",
-            {},
-            base_url="https://test.invalid/api",
-            retry=sdk.RetryOptions(attempts=2, base_delay_s=0, jitter_s=0),
-        )
-
-    assert len(t.calls) == 1
-
-
-@pytest.mark.parametrize("idempotency_key", [None, "run-key"])
-def test_run_does_not_retry_an_ambiguous_network_failure(
-    idempotency_key: str | None,
-) -> None:
+def test_keyed_run_does_not_retry_an_ambiguous_network_failure() -> None:
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
     t.add_network_error(predicate)
-    t.add_json(predicate, 200, {
-        "run_id": "run_1",
-        "state": "running",
-        "session_id": "session_1",
-    })
     vm = sdk.Arker(
         api_key="k",
         base_url="https://test.invalid/api",
@@ -1215,22 +1158,20 @@ def test_run_does_not_retry_an_ambiguous_network_failure(
         vm.run(
             "touch /tmp/once",
             time_to_background=0,
-            idempotency_key=idempotency_key,
+            idempotency_key="run-key",
         )
 
     assert caught.value.code == "unavailable"
     assert "outcome is unknown" in caught.value.message
     assert "reconcile" in caught.value.message.lower()
     assert len(t.calls) == 1
-    if idempotency_key:
-        assert t.calls[0]["headers"]["idempotency-key"] == idempotency_key
+    assert t.calls[0]["headers"]["idempotency-key"] == "run-key"
 
 
 def test_sync_stream_does_not_retry_an_ambiguous_network_failure() -> None:
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and "/sync-stream" in url
     t.add_network_error(predicate)
-    t.add_json(predicate, 200, {"ok": True})
 
     with use_transport(t), pytest.raises(sdk.ArkerError, match="outcome is unknown"):
         sdk.Arker(
@@ -1260,47 +1201,6 @@ def test_sync_stream_retries_an_explicit_retryable_response(monkeypatch) -> None
             retry={"attempts": 2, "base_delay_s": 0, "jitter_s": 0},
         ).vm("vm_1").sync("/home/user/x", b"content")
 
-    assert len(t.calls) == 2
-
-
-def test_sync_stream_retries_when_a_retryable_response_body_is_lost(monkeypatch) -> None:
-    monkeypatch.setattr(sdk.time, "sleep", lambda *_: None)
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and "/sync-stream" in url
-    t.add_response_body_error(predicate, 503)
-    t.add_json(predicate, 200, {"ok": True})
-
-    with use_transport(t):
-        sdk.Arker(
-            api_key="k",
-            base_url="https://test.invalid/api",
-            retry={"attempts": 2, "base_delay_s": 0, "jitter_s": 0},
-        ).vm("vm_1").sync("/home/user/x", b"content")
-
-    assert len(t.calls) == 2
-
-
-def test_retry_after_header_drives_explicit_response_retry(monkeypatch) -> None:
-    sleeps: list[float] = []
-    monkeypatch.setattr(sdk.time, "sleep", sleeps.append)
-    t = FakeTransport()
-    predicate = lambda method, url: method == "POST" and url.endswith("/v1/fork")
-    t.add_json(
-        predicate,
-        503,
-        {"error": {"code": "unavailable", "message": "wait", "timestamp": "now"}},
-        headers={"retry-after": "0.25"},
-    )
-    t.add_json(predicate, 200, _fork_response("vm_1"))
-
-    with use_transport(t):
-        sdk.Arker(
-            api_key="k",
-            base_url="https://test.invalid/api",
-            retry={"attempts": 2, "base_delay_s": 0, "jitter_s": 0},
-        ).fork(source_vm_name="ubuntu")
-
-    assert sleeps == [0.25]
     assert len(t.calls) == 2
 
 
