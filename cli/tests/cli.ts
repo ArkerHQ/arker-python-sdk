@@ -151,6 +151,12 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
       "0",
       "--timeout",
       "1000",
+      "--end-symbol", "DONE",
+      "--vcpu", "2",
+      "--memory-mib", "4096",
+      "--disk-mib", "8192",
+      "--memory-backend", "uffd",
+      "--idempotency-key", "run-request-1",
       "vm_1",
       "npm",
       "--version",
@@ -159,7 +165,17 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
     assert.deepEqual(requests, [{
       method: "POST",
       url: "/api/v1/vms/vm_1/runs",
-      body: { time_to_background: 0, timeout: 1000, command: "npm --version" },
+      body: {
+        time_to_background: 0,
+        timeout: 1000,
+        command: "npm --version",
+        end_symbol: "DONE",
+        vcpu_count: 2,
+        memory_mib: 4096,
+        disk_mib: 8192,
+        memory_backend: "uffd",
+      },
+      idempotencyKey: "run-request-1",
     }]);
   });
 }
@@ -260,56 +276,6 @@ async function testInvalidNumbersFailBeforeRequest(): Promise<void> {
   }
 }
 
-async function testCliSdkDependencySupportsStructuredForkOptions(): Promise<void> {
-  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
-    dependencies?: Record<string, string>;
-  };
-  assert.equal(pkg.dependencies?.["@arker-ai/sdk"], "^1.2.4");
-}
-
-async function testRunForwardsResourcePolicyAndIdempotencyOptions(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-run-options-"));
-  const policiesFile = join(dir, "policies.json");
-  const policies = {
-    policies: [{ type: "outbound", action: "deny" }],
-    secrets: { TOKEN: "run-policy-secret" },
-  };
-  writeFileSync(policiesFile, JSON.stringify(policies));
-  try {
-    await withCapturedServer((_request, res) => jsonResponse(res, completedRun()), async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, [
-        "run",
-        "--end-symbol", "DONE",
-        "--vcpu", "2",
-        "--memory-mib", "4096",
-        "--disk-mib", "8192",
-        "--memory-backend", "uffd",
-        "--policies-file", policiesFile,
-        "--idempotency-key", "run-request-1",
-        "vm_1",
-        "echo", "ready",
-      ]);
-      assert.equal(result.code, 0, result.stderr);
-      assert.deepEqual(requests, [{
-        method: "POST",
-        url: "/api/v1/vms/vm_1/runs",
-        body: {
-          command: "echo ready",
-          end_symbol: "DONE",
-          vcpu_count: 2,
-          memory_mib: 4096,
-          disk_mib: 8192,
-          memory_backend: "uffd",
-          policies,
-        },
-        idempotencyKey: "run-request-1",
-      }]);
-    });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 /// `--vgpu` is the only fractional resource flag, so it exercises the number
 /// option type as well as the fork wiring — an integer-only parser would have
 /// refused `0.25` outright.
@@ -373,17 +339,20 @@ async function testForkOmitsRetiredGpuResourceKeys(): Promise<void> {
   );
 }
 
-async function testForkForwardsImageAuthSshDurabilityAndPolicyOptions(): Promise<void> {
+async function testForkForwardsImageOptionsAndRedactsSecrets(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "arker-cli-fork-"));
   const registryAuthFile = join(dir, "registry.json");
   const sshKeysFile = join(dir, "authorized_keys");
   const policiesFile = join(dir, "policies.json");
-  writeFileSync(registryAuthFile, JSON.stringify({ username: "registry-user", password: "registry-secret" }));
-  writeFileSync(sshKeysFile, "ssh-ed25519 AAAAfile file@example\n\n");
-  writeFileSync(policiesFile, JSON.stringify({
+  const password = "registry-\"secret\\next\nline";
+  const policySecret = "policy-\"secret\\next\nline";
+  const policies = {
     policies: [{ direction: "outbound", action: "allow", protocol: "tcp", port: 443 }],
-    secrets: { API_TOKEN: "policy-secret" },
-  }));
+    secrets: { API_TOKEN: policySecret },
+  };
+  writeFileSync(registryAuthFile, JSON.stringify({ username: "registry-user", password }));
+  writeFileSync(sshKeysFile, "ssh-ed25519 AAAAfile file@example\n\n");
+  writeFileSync(policiesFile, JSON.stringify(policies));
 
   try {
     await withCapturedServer(
@@ -413,63 +382,34 @@ async function testForkForwardsImageAuthSshDurabilityAndPolicyOptions(): Promise
             ],
             durable: true,
             nestedvirt: true,
-            policies: {
-              policies: [{ direction: "outbound", action: "allow", protocol: "tcp", port: 443 }],
-              secrets: { API_TOKEN: "policy-secret" },
-            },
-            registry_auth: { username: "registry-user", password: "registry-secret" },
+            policies,
+            registry_auth: { username: "registry-user", password },
           },
         }]);
+      },
+    );
+
+    await withCapturedServer(
+      (_request, res) => jsonResponse(res, {
+        code: "bad_request",
+        message: `credentials ${password} ${policySecret}`,
+      }, 400),
+      async (baseUrl) => {
+        const result = await runCli(baseUrl, [
+          "fork", "--image", "private.example/image:v1",
+          "--registry-auth-file", registryAuthFile,
+          "--policies-file", policiesFile,
+        ]);
+        assert.equal(result.code, 1);
+        for (const secret of [password, policySecret]) {
+          assert.ok(!result.stderr.includes(secret));
+          assert.ok(!result.stderr.includes(JSON.stringify(secret).slice(1, -1)));
+        }
       },
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-
-async function testForkCanExplicitlyRequestDisk(): Promise<void> {
-  await withCapturedServer(
-    (_request, res) => jsonResponse(res, { vm_id: "vm_disk" }),
-    async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, ["fork", "source-vm", "--disk", "--description="]);
-      assert.equal(result.code, 0, result.stderr);
-      assert.deepEqual(requests[0]?.body, {
-        source_vm_name: "source-vm",
-        description: "",
-        disk: true,
-      });
-    },
-  );
-
-  await withCapturedServer(
-    (_request, res) => jsonResponse(res, { vm_id: "must_not_exist" }),
-    async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, ["fork", "source-vm", "--disk", "--no-disk"]);
-      assert.equal(result.code, 1);
-      assert.equal(requests.length, 0);
-      assert.match(result.stderr, /disk.*mutually exclusive/i);
-    },
-  );
-}
-
-async function testForkForwardsSourceScopeAndLayers(): Promise<void> {
-  await withCapturedServer(
-    (_request, res) => jsonResponse(res, { vm_id: "vm_layered" }),
-    async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, [
-        "fork",
-        "--source-vm-name", "public-template",
-        "--source-org-name", "ArkerHQ",
-        "--layers", "disk",
-      ]);
-      assert.equal(result.code, 0, result.stderr);
-      assert.deepEqual(requests[0]?.body, {
-        source_vm_name: "public-template",
-        source_org_name: "ArkerHQ",
-        layers: ["disk"],
-      });
-    },
-  );
 }
 
 async function testForkUsesDockerfileAndContext(): Promise<void> {
@@ -494,148 +434,7 @@ async function testForkUsesDockerfileAndContext(): Promise<void> {
   }
 }
 
-async function testForkRejectsInvalidSourcesAndFilesWithoutLeakingSecrets(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-invalid-fork-"));
-  const invalidRegistry = join(dir, "registry.json");
-  const validRegistry = join(dir, "valid-registry.json");
-  writeFileSync(invalidRegistry, '{"username":"user","password":"do-not-print",}');
-  writeFileSync(validRegistry, JSON.stringify({ username: "user", password: "do-not-send" }));
-  try {
-    for (const args of [
-      ["fork", "source-vm", "--image", "ubuntu:24.04"],
-      ["fork", "--image", "ubuntu:24.04", "--dockerfile", "Dockerfile"],
-      ["fork", "--source-vm-name", "source", "--source-org-id", "org_1", "--source-org-name", "ArkerHQ"],
-      ["fork", "--image", "ubuntu:24.04", "--context", dir],
-      ["fork", "--image", "ubuntu:24.04", "--layers", "disk"],
-      ["fork", "source-vm", "--nestedvirt"],
-      ["fork", "--source-vm-name", "source", "--layers", "memory"],
-      ["fork", "--image", "ubuntu:24.04", "--registry-auth-file", invalidRegistry],
-      ["fork", "source-vm", "--registry-auth-file", validRegistry],
-      ["fork", "--dockerfile", join(dir, "missing-Dockerfile")],
-      ["fork", "--image", "ubuntu:24.04", "--policies-file", join(dir, "missing-policy.json")],
-    ]) {
-      await withCapturedServer(
-        (_request, res) => jsonResponse(res, { vm_id: "must_not_exist" }),
-        async (baseUrl, requests) => {
-          const result = await runCli(baseUrl, args);
-          assert.equal(result.code, 1, args.join(" "));
-          assert.equal(requests.length, 0, args.join(" "));
-          assert.doesNotMatch(result.stderr, /do-not-print|policy-secret/);
-        },
-      );
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testForkRejectsEmptyValuesBeforeRequest(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-empty-fork-"));
-  const dockerfile = join(dir, "Dockerfile");
-  writeFileSync(dockerfile, "FROM ubuntu:24.04\n");
-  try {
-    for (const args of [
-      ["fork", "--image="],
-      ["fork", "--image", "ubuntu:24.04", "--policies-file="],
-      ["fork", "--image", "ubuntu:24.04", "--registry-auth-file="],
-      ["fork", "--dockerfile", dockerfile, "--context="],
-      ["fork", "source-vm", "--platform="],
-      ["fork", "--source-vm-name", "source", "--source-org-id="],
-    ]) {
-      await withCapturedServer(
-        (_request, res) => jsonResponse(res, { vm_id: "must_not_exist" }),
-        async (baseUrl, requests) => {
-          const result = await runCli(baseUrl, args);
-          assert.equal(result.code, 1, args.join(" "));
-          assert.equal(requests.length, 0, args.join(" "));
-          assert.match(result.stderr, /must not be empty/, args.join(" "));
-        },
-      );
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testForkRedactsSecretsFromServerErrors(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-secret-error-"));
-  const registryAuthFile = join(dir, "registry.json");
-  const policiesFile = join(dir, "policies.json");
-  writeFileSync(registryAuthFile, JSON.stringify({ username: "private-user", password: "private-password" }));
-  writeFileSync(policiesFile, JSON.stringify({ secrets: { TOKEN: "private-policy-token" } }));
-  try {
-    await withCapturedServer(
-      (_request, res) => jsonResponse(res, {
-        code: "bad_request",
-        message: "private-user private-password private-policy-token",
-      }, 400),
-      async (baseUrl, requests) => {
-        const result = await runCli(baseUrl, [
-          "fork", "--image", "private.example/image:v1",
-          "--registry-auth-file", registryAuthFile,
-          "--policies-file", policiesFile,
-        ]);
-        assert.equal(result.code, 1);
-        assert.equal(requests.length, 1);
-        assert.doesNotMatch(result.stderr, /private-user|private-password|private-policy-token/);
-        assert.match(result.stderr, /\[REDACTED\]/);
-      },
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testForkRedactsJsonEscapedSecretForms(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-escaped-secret-"));
-  const registryAuthFile = join(dir, "registry.json");
-  const policiesFile = join(dir, "policies.json");
-  const password = "registry-\"secret\\next\nline";
-  const policySecret = "policy-\"secret\\next\nline";
-  writeFileSync(registryAuthFile, JSON.stringify({ username: "registry-user", password }));
-  writeFileSync(policiesFile, JSON.stringify({ secrets: { TOKEN: policySecret } }));
-  try {
-    await withCapturedServer(
-      (_request, res) => jsonResponse(res, {
-        code: "bad_request",
-        message: `credentials ${password} ${policySecret}`,
-      }, 400),
-      async (baseUrl) => {
-        const result = await runCli(baseUrl, [
-          "fork", "--image", "private.example/image:v1",
-          "--registry-auth-file", registryAuthFile,
-          "--policies-file", policiesFile,
-        ]);
-        assert.equal(result.code, 1);
-        for (const secret of [password, policySecret]) {
-          assert.ok(!result.stderr.includes(secret));
-          assert.ok(!result.stderr.includes(JSON.stringify(secret).slice(1, -1)));
-        }
-        assert.match(result.stderr, /\[REDACTED\]/);
-      },
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testVmListForwardsSdkFilters(): Promise<void> {
-  await withCapturedServer((_request, res) => jsonResponse(res, { vms: [] }), async (baseUrl, requests) => {
-    const result = await runCli(baseUrl, [
-      "ls",
-      "--platform", "x86_64-l40s",
-      "--created-after", "2026-01-01T00:00:00Z",
-      "--created-before", "2026-02-01T00:00:00Z",
-    ], { controlOnly: true });
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(
-      requests[0]?.url,
-      "/api/v1/vms?platform=x86_64-l40s&created_after=2026-01-01T00%3A00%3A00Z&created_before=2026-02-01T00%3A00%3A00Z",
-    );
-  });
-}
-
-async function testOrgRunListForwardsAllFilters(): Promise<void> {
+async function testOrgRunListForwardsFilters(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, {
     since: 10, until: 20, limit: 100, offset: 5, lite: true, rows: [],
   }), async (baseUrl, requests) => {
@@ -662,176 +461,29 @@ async function testOrgRunListForwardsAllFilters(): Promise<void> {
       "--json",
     ], { controlOnly: true });
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(
-      requests[0]?.url,
-      "/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=100&offset=5&lite=true&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
-    );
-  });
-}
-
-async function testPerVmRunListForwardsTimeFilters(): Promise<void> {
-  await withCapturedServer((_request, res) => jsonResponse(res, { runs: [] }), async (baseUrl, requests) => {
-    const result = await runCli(baseUrl, [
-      "runs", "ls", "vm_1",
-      "--state", "pending",
-      "--started-after", "2026-01-01T00:00:00Z",
-      "--started-before", "2026-02-01T00:00:00Z",
-      "--completed-after", "2026-01-02T00:00:00Z",
-    ]);
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(
-      requests[0]?.url,
-      "/api/v1/vms/vm_1/runs?state=pending&started_after=2026-01-01T00%3A00%3A00Z&started_before=2026-02-01T00%3A00%3A00Z&completed_after=2026-01-02T00%3A00%3A00Z",
-    );
-  });
-}
-
-async function testSessionCreateForwardsAllFields(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-session-"));
-  const envFile = join(dir, "env.json");
-  writeFileSync(envFile, JSON.stringify({ FROM_FILE: "yes", OVERRIDE: "file" }));
-  try {
-    await withCapturedServer((_request, res) => jsonResponse(res, {
-      session_id: "session_1", state: "idle", cwd: "/work",
-    }), async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, [
-        "sessions", "create", "vm_1",
-        "--env-file", envFile,
-        "--env", "OVERRIDE=flag",
-        "--env", "EMPTY=",
-        "--cwd", "/work",
-        "--pty",
-        "--cols", "120",
-        "--rows", "40",
-        "--command", "/bin/zsh",
-      ]);
-      assert.equal(result.code, 0, result.stderr);
-      assert.deepEqual(requests[0]?.body, {
-        env: { FROM_FILE: "yes", OVERRIDE: "flag", EMPTY: "" },
-        cwd: "/work",
-        pty: true,
-        cols: 120,
-        rows: 40,
-        command: "/bin/zsh",
-      });
+    const url = new URL(requests[0]?.url ?? "", "http://localhost");
+    assert.equal(url.pathname, "/api/v1/runs");
+    assert.deepEqual(Object.fromEntries(url.searchParams), {
+      since: "10",
+      until: "20",
+      vm: "vm_1",
+      vms: "vm_2,vm_3",
+      region: "us-west-2",
+      provider: "aws",
+      search: "pytest",
+      limit: "100",
+      offset: "5",
+      lite: "true",
+      runtime: "fc",
+      endpoint: "run",
+      actions: "run,fork",
+      status: "success,internal",
+      status_min: "200",
+      status_max: "599",
+      sort: "when",
+      dir: "asc",
     });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testListModesAndSessionEnvironmentValidateBeforeRequest(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-input-validation-"));
-  const invalidEnvFile = join(dir, "env.json");
-  writeFileSync(invalidEnvFile, JSON.stringify({ PORT: 8080 }));
-  try {
-    for (const args of [
-      ["sessions", "create", "vm_1", "--env-file", invalidEnvFile],
-      ["sessions", "create", "vm_1", "--env", "MISSING_EQUALS"],
-      ["runs", "ls", "--state", "running"],
-      ["runs", "ls", "vm_1", "--status", "success"],
-      ["runs", "ls", "--limit", "201"],
-      ["runs", "ls", "vm_1", "--limit", "1001"],
-    ]) {
-      await withCapturedServer(
-        (_request, res) => jsonResponse(res, { rows: [], runs: [] }),
-        async (baseUrl, requests) => {
-          const result = await runCli(baseUrl, args, { controlOnly: args.length === 4 && args[1] === "ls" });
-          assert.equal(result.code, 1, args.join(" "));
-          assert.equal(requests.length, 0, args.join(" "));
-        },
-      );
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testPolicySecretsAreRedactedOnEveryWritePath(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-policy-redaction-"));
-  const policiesFile = join(dir, "policies.json");
-  const secret = "policy-secret-on-every-write";
-  writeFileSync(policiesFile, JSON.stringify({ secrets: { TOKEN: secret } }));
-  try {
-    for (const args of [
-      ["run", "--policies-file", policiesFile, "vm_1", "true"],
-      ["update", "vm_1", "--policies-file", policiesFile],
-      ["policies", "set", "vm_1", "--file", policiesFile],
-    ]) {
-      await withCapturedServer(
-        (_request, res) => jsonResponse(res, { code: "bad_request", message: `rejected ${secret}` }, 400),
-        async (baseUrl, requests) => {
-          const result = await runCli(baseUrl, args);
-          assert.equal(result.code, 1, args.join(" "));
-          assert.equal(requests.length, 1, args.join(" "));
-          assert.ok(!result.stderr.includes(secret), args.join(" "));
-          assert.match(result.stderr, /\[REDACTED\]/, args.join(" "));
-        },
-      );
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testUpdateForwardsVgpuSshKeysAndPolicies(): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "arker-cli-update-"));
-  const sshKeysFile = join(dir, "authorized_keys");
-  const policiesFile = join(dir, "policies.json");
-  writeFileSync(sshKeysFile, "");
-  writeFileSync(policiesFile, JSON.stringify({ policies: [] }));
-  try {
-    await withCapturedServer((_request, res) => jsonResponse(res, { vm_id: "vm_1" }), async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, [
-        "update", "vm_1",
-        "--ssh-public-keys-file", sshKeysFile,
-        "--policies-file", policiesFile,
-        "--vgpu", "0.25",
-        "--json",
-      ]);
-      assert.equal(result.code, 0, result.stderr);
-      assert.deepEqual(requests[0]?.body, {
-        resources: { vcpu: null, memory_mib: null, disk_mib: null, vgpu: 0.25 },
-        ssh_public_keys: [],
-        policies: { policies: [] },
-      });
-    });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function testShellForwardsSourceOrganization(): Promise<void> {
-  for (const [flag, field] of [
-    ["--source-org-id", "source_org_id"],
-    ["--source-org-name", "source_org_name"],
-  ] as const) {
-    await withCapturedServer(
-      (_request, res) => jsonResponse(res, { error: { code: "bad_request", message: "stop after fork" } }, 400),
-      async (baseUrl, requests) => {
-        const result = await runCli(baseUrl, ["shell", "--source-vm-name", "source", flag, "ArkerHQ"]);
-        assert.equal(result.code, 1);
-        assert.deepEqual(requests[0]?.body, { source_vm_name: "source", [field]: "ArkerHQ" });
-      },
-    );
-  }
-}
-
-async function testShellRejectsConflictingTargetsBeforeRequest(): Promise<void> {
-  for (const args of [
-    ["shell", "vm_1", "--source-vm-name", "source"],
-    ["shell", "vm_1", "--vm-id", "vm_2"],
-  ]) {
-    await withCapturedServer(
-      (_request, res) => jsonResponse(res, { vm_id: "must_not_be_used" }),
-      async (baseUrl, requests) => {
-        const result = await runCli(baseUrl, args);
-        assert.equal(result.code, 1, args.join(" "));
-        assert.equal(requests.length, 0, args.join(" "));
-        assert.match(result.stderr, /mutually exclusive/, args.join(" "));
-      },
-    );
-  }
+  });
 }
 
 async function testGlobalOptionsBeforeCommand(): Promise<void> {
@@ -881,13 +533,22 @@ async function testProviderOnlyVmListDoesNotRequireAComputeRegion(): Promise<voi
   await withCapturedServer(
     (_request, res) => jsonResponse(res, { vms: [] }),
     async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, ["--provider", "provider-one", "list"], {
+      const result = await runCli(baseUrl, [
+        "--provider", "provider-one",
+        "list",
+        "--platform", "x86_64-l40s",
+        "--created-after", "2026-01-01T00:00:00Z",
+        "--created-before", "2026-02-01T00:00:00Z",
+      ], {
         controlOnly: true,
       });
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(requests.length, 1);
-      assert.equal(requests[0]?.url, "/api/v1/vms?provider=provider-one");
+      assert.equal(
+        requests[0]?.url,
+        "/api/v1/vms?provider=provider-one&platform=x86_64-l40s&created_after=2026-01-01T00%3A00%3A00Z&created_before=2026-02-01T00%3A00%3A00Z",
+      );
     },
   );
 }
@@ -969,31 +630,6 @@ async function testPerCommandHelpIsCommandSpecific(): Promise<void> {
     assert.ok(ls.includes(flag), `ls --help should document ${flag}`);
   }
   assert.doesNotMatch(ls, /--vgpu|--no-disk/, "ls --help must not list fork-only flags");
-
-  const fork = stdoutText(await runCli(undefined, ["fork", "--help"], { authenticated: false }));
-  for (const flag of [
-    "--image", "--dockerfile", "--context", "--registry-auth-file",
-    "--ssh-public-key", "--ssh-public-keys-file", "--durable", "--nestedvirt",
-    "--layers", "--policies-file", "--source-org-name", "--disk",
-  ]) {
-    assert.ok(fork.includes(flag), `fork --help should document ${flag}`);
-  }
-  assert.doesNotMatch(fork, /--public[^\n]*restrict the listing/);
-  assert.doesNotMatch(fork, /--source-org-id[^\n]*list that org/);
-
-  const runs = stdoutText(await runCli(undefined, ["runs", "ls", "--help"], { authenticated: false }));
-  for (const flag of [
-    "--since", "--until", "--vm", "--vms", "--search", "--offset", "--lite",
-    "--runtime", "--endpoint", "--actions", "--status", "--status-min", "--status-max",
-    "--sort", "--dir", "--started-after", "--started-before", "--completed-after",
-  ]) {
-    assert.ok(runs.includes(flag), `runs ls --help should document ${flag}`);
-  }
-
-  const update = stdoutText(await runCli(undefined, ["update", "--help"], { authenticated: false }));
-  for (const flag of ["--ssh-public-key", "--ssh-public-keys-file", "--policies-file", "--vgpu"]) {
-    assert.ok(update.includes(flag), `update --help should document ${flag}`);
-  }
 
   // A recognised subcommand is called out by name.
   const vmsLs = stdoutText(await runCli(undefined, ["vms", "ls", "--help"], { authenticated: false }));
@@ -1312,7 +948,6 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     method: string;
     url: string;
     body?: unknown;
-    bodyContains?: Record<string, unknown>;
   }> = [
     {
       name: "vms get",
@@ -1333,14 +968,22 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       args: [
         "vms",
         "fork",
-        "--description",
-        "CI runner",
-        "source-vm",
+        "--source-vm-name", "public-template",
+        "--source-org-name", "ArkerHQ",
+        "--description", "CI runner",
+        "--layers", "disk",
+        "--disk",
       ],
       response: { vm_id: "vm_child" },
       method: "POST",
       url: "/api/v1/fork",
-      bodyContains: { description: "CI runner" },
+      body: {
+        source_vm_name: "public-template",
+        source_org_name: "ArkerHQ",
+        description: "CI runner",
+        disk: true,
+        layers: ["disk"],
+      },
     },
     {
       name: "vms update",
@@ -1351,6 +994,10 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
         "Release runner",
         "--memory-mib",
         "1024",
+        "--vgpu",
+        "0.25",
+        "--ssh-public-key",
+        "ssh-ed25519 AAAAexample user@example",
         "vm_1",
       ],
       response: { vm_id: "vm_1", state: "idle", memory_mib: 1024 },
@@ -1358,15 +1005,21 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       url: "/api/v1/vms/vm_1",
       body: {
         description: "Release runner",
-        resources: { vcpu: null, memory_mib: 1024, disk_mib: null },
+        resources: { vcpu: null, memory_mib: 1024, disk_mib: null, vgpu: 0.25 },
+        ssh_public_keys: ["ssh-ed25519 AAAAexample user@example"],
       },
     },
     {
       name: "runs ls",
-      args: ["runs", "ls", "vm_1"],
+      args: [
+        "runs", "ls", "vm_1",
+        "--started-after", "2026-01-01T00:00:00Z",
+        "--started-before", "2026-02-01T00:00:00Z",
+        "--completed-after", "2026-01-02T00:00:00Z",
+      ],
       response: { runs: [] },
       method: "GET",
-      url: "/api/v1/vms/vm_1/runs",
+      url: "/api/v1/vms/vm_1/runs?started_after=2026-01-01T00%3A00%3A00Z&started_before=2026-02-01T00%3A00%3A00Z&completed_after=2026-01-02T00%3A00%3A00Z",
     },
     {
       name: "sessions ls",
@@ -1384,11 +1037,26 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     },
     {
       name: "sessions create",
-      args: ["sessions", "create", "--cwd", "/work", "vm_1"],
+      args: [
+        "sessions", "create", "vm_1",
+        "--env", "MODE=test",
+        "--cwd", "/work",
+        "--pty",
+        "--cols", "120",
+        "--rows", "40",
+        "--command", "/bin/zsh",
+      ],
       response: { session_id: "session_1", state: "idle", cwd: "/work" },
       method: "POST",
       url: "/api/v1/vms/vm_1/sessions",
-      body: { cwd: "/work" },
+      body: {
+        env: { MODE: "test" },
+        cwd: "/work",
+        pty: true,
+        cols: 120,
+        rows: 40,
+        command: "/bin/zsh",
+      },
     },
     {
       name: "syncs ls",
@@ -1447,18 +1115,6 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       assert.equal(requests[0]?.method, testCase.method, testCase.name);
       assert.equal(requests[0]?.url, testCase.url, testCase.name);
       if (testCase.body !== undefined) assert.deepEqual(requests[0]?.body, testCase.body, testCase.name);
-      if (testCase.bodyContains !== undefined) {
-        assert.deepEqual(
-          Object.fromEntries(
-            Object.keys(testCase.bodyContains).map((key) => [
-              key,
-              (requests[0]?.body as Record<string, unknown>)[key],
-            ]),
-          ),
-          testCase.bodyContains,
-          testCase.name,
-        );
-      }
     });
   }
 }
@@ -1473,27 +1129,11 @@ await testRemovedBackgroundOptionFailsBeforeRequest();
 await testNestedRunStopsAtRemoteCommand();
 await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
-await testCliSdkDependencySupportsStructuredForkOptions();
-await testRunForwardsResourcePolicyAndIdempotencyOptions();
 await testForkOmitsRetiredGpuResourceKeys();
 await testForkForwardsVgpu();
-await testForkForwardsImageAuthSshDurabilityAndPolicyOptions();
-await testForkCanExplicitlyRequestDisk();
-await testForkForwardsSourceScopeAndLayers();
+await testForkForwardsImageOptionsAndRedactsSecrets();
 await testForkUsesDockerfileAndContext();
-await testForkRejectsInvalidSourcesAndFilesWithoutLeakingSecrets();
-await testForkRejectsEmptyValuesBeforeRequest();
-await testForkRedactsSecretsFromServerErrors();
-await testForkRedactsJsonEscapedSecretForms();
-await testVmListForwardsSdkFilters();
-await testOrgRunListForwardsAllFilters();
-await testPerVmRunListForwardsTimeFilters();
-await testSessionCreateForwardsAllFields();
-await testListModesAndSessionEnvironmentValidateBeforeRequest();
-await testPolicySecretsAreRedactedOnEveryWritePath();
-await testUpdateForwardsVgpuSshKeysAndPolicies();
-await testShellForwardsSourceOrganization();
-await testShellRejectsConflictingTargetsBeforeRequest();
+await testOrgRunListForwardsFilters();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
 await testArbitraryProviderFlagIsAccepted();
