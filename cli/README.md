@@ -24,7 +24,8 @@ The CLI requires Node.js 18 or later.
 
 Sign up and get your API key at [arker.ai/console](https://arker.ai/console).
 
-`ARKER_API_KEY` is required. If provider and region are omitted, the CLI uses `aws` and `us-west-2`.
+`ARKER_API_KEY` is required. Compute commands also require a provider and
+region unless `ARKER_BASE_URL` is configured.
 
 ```bash
 export ARKER_API_KEY=ark_live_...

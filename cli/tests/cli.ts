@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
@@ -23,6 +25,7 @@ type CapturedRequest = {
   method: string | undefined;
   url: string | undefined;
   body: unknown;
+  idempotencyKey?: string;
 };
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -57,6 +60,9 @@ async function withCapturedServer(
       method: req.method,
       url: req.url,
       body: await readJson(req),
+      ...(typeof req.headers["idempotency-key"] === "string"
+        ? { idempotencyKey: req.headers["idempotency-key"] }
+        : {}),
     };
     requests.push(request);
     res.setHeader("content-type", "application/json");
@@ -145,6 +151,12 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
       "0",
       "--timeout",
       "1000",
+      "--end-symbol", "DONE",
+      "--vcpu", "2",
+      "--memory-mib", "4096",
+      "--disk-mib", "8192",
+      "--memory-backend", "uffd",
+      "--idempotency-key", "run-request-1",
       "vm_1",
       "npm",
       "--version",
@@ -153,7 +165,17 @@ async function testRunOptionsStopAtRemoteCommand(): Promise<void> {
     assert.deepEqual(requests, [{
       method: "POST",
       url: "/api/v1/vms/vm_1/runs",
-      body: { time_to_background: 0, timeout: 1000, command: "npm --version" },
+      body: {
+        time_to_background: 0,
+        timeout: 1000,
+        command: "npm --version",
+        end_symbol: "DONE",
+        vcpu_count: 2,
+        memory_mib: 4096,
+        disk_mib: 8192,
+        memory_backend: "uffd",
+      },
+      idempotencyKey: "run-request-1",
     }]);
   });
 }
@@ -317,6 +339,153 @@ async function testForkOmitsRetiredGpuResourceKeys(): Promise<void> {
   );
 }
 
+async function testForkForwardsImageOptionsAndRedactsSecrets(): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "arker-cli-fork-"));
+  const registryAuthFile = join(dir, "registry.json");
+  const sshKeysFile = join(dir, "authorized_keys");
+  const policiesFile = join(dir, "policies.json");
+  const password = "registry-\"secret\\next\nline";
+  const policySecret = "policy-\"secret\\next\nline";
+  const policies = {
+    policies: [{ direction: "outbound", action: "allow", protocol: "tcp", port: 443 }],
+    secrets: { API_TOKEN: policySecret },
+  };
+  writeFileSync(registryAuthFile, JSON.stringify({ username: "registry-user", password }));
+  writeFileSync(sshKeysFile, "ssh-ed25519 AAAAfile file@example\n\n");
+  writeFileSync(policiesFile, JSON.stringify(policies));
+
+  try {
+    await withCapturedServer(
+      (_request, res) => jsonResponse(res, { vm_id: "vm_image" }),
+      async (baseUrl, requests) => {
+        const result = await runCli(baseUrl, [
+          "fork",
+          "--image", "ghcr.io/example/private:v1",
+          "--registry-auth-file", registryAuthFile,
+          "--ssh-public-key", "ssh-ed25519 AAAAone one@example",
+          "--ssh-public-key", "ssh-rsa AAAAtwo two@example",
+          "--ssh-public-keys-file", sshKeysFile,
+          "--durable",
+          "--nestedvirt",
+          "--policies-file", policiesFile,
+        ]);
+        assert.equal(result.code, 0, result.stderr);
+        assert.deepEqual(requests, [{
+          method: "POST",
+          url: "/api/v1/fork",
+          body: {
+            image: "ghcr.io/example/private:v1",
+            ssh_public_keys: [
+              "ssh-ed25519 AAAAone one@example",
+              "ssh-rsa AAAAtwo two@example",
+              "ssh-ed25519 AAAAfile file@example",
+            ],
+            durable: true,
+            nestedvirt: true,
+            policies,
+            registry_auth: { username: "registry-user", password },
+          },
+        }]);
+      },
+    );
+
+    await withCapturedServer(
+      (_request, res) => jsonResponse(res, {
+        code: "bad_request",
+        message: `credentials ${password} ${policySecret}`,
+      }, 400),
+      async (baseUrl) => {
+        const result = await runCli(baseUrl, [
+          "fork", "--image", "private.example/image:v1",
+          "--registry-auth-file", registryAuthFile,
+          "--policies-file", policiesFile,
+        ]);
+        assert.equal(result.code, 1);
+        for (const secret of [password, policySecret]) {
+          assert.ok(!result.stderr.includes(secret));
+          assert.ok(!result.stderr.includes(JSON.stringify(secret).slice(1, -1)));
+        }
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testForkUsesDockerfileAndContext(): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "arker-cli-dockerfile-"));
+  const dockerfile = join(dir, "Dockerfile");
+  writeFileSync(dockerfile, "FROM ubuntu:24.04\n");
+  try {
+    await withCapturedServer(
+      (_request, res) => jsonResponse(res, { vm_id: "vm_built" }),
+      async (baseUrl, requests) => {
+        const result = await runCli(baseUrl, ["fork", "--dockerfile", dockerfile, "--context", dir]);
+        assert.equal(result.code, 0, result.stderr);
+        assert.deepEqual(requests, [{
+          method: "POST",
+          url: "/api/v1/fork",
+          body: { image: "ubuntu:24.04" },
+        }]);
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testOrgRunListForwardsFilters(): Promise<void> {
+  await withCapturedServer((_request, res) => jsonResponse(res, {
+    since: 10, until: 20, limit: 100, offset: 5, lite: true, rows: [],
+  }), async (baseUrl, requests) => {
+    const result = await runCli(baseUrl, [
+      "runs", "ls",
+      "--since", "10",
+      "--until", "20",
+      "--vm", "vm_1",
+      "--vms", "vm_2,vm_3",
+      "--region", "us-west-2",
+      "--provider", "aws",
+      "--search", "pytest",
+      "--limit", "100",
+      "--offset", "5",
+      "--lite",
+      "--runtime", "fc",
+      "--endpoint", "run",
+      "--actions", "run,fork",
+      "--status", "success,internal",
+      "--status-min", "200",
+      "--status-max", "599",
+      "--sort", "when",
+      "--dir", "asc",
+      "--json",
+    ], { controlOnly: true });
+    assert.equal(result.code, 0, result.stderr);
+    const url = new URL(requests[0]?.url ?? "", "http://localhost");
+    assert.equal(url.pathname, "/api/v1/runs");
+    assert.deepEqual(Object.fromEntries(url.searchParams), {
+      since: "10",
+      until: "20",
+      vm: "vm_1",
+      vms: "vm_2,vm_3",
+      region: "us-west-2",
+      provider: "aws",
+      search: "pytest",
+      limit: "100",
+      offset: "5",
+      lite: "true",
+      runtime: "fc",
+      endpoint: "run",
+      actions: "run,fork",
+      status: "success,internal",
+      status_min: "200",
+      status_max: "599",
+      sort: "when",
+      dir: "asc",
+    });
+  });
+}
+
 async function testGlobalOptionsBeforeCommand(): Promise<void> {
   await withCapturedServer((_request, res) => jsonResponse(res, { vms: [] }), async (baseUrl, requests) => {
     const result = await runCli(baseUrl, ["--region", "us-west-2", "ls"]);
@@ -364,13 +533,22 @@ async function testProviderOnlyVmListDoesNotRequireAComputeRegion(): Promise<voi
   await withCapturedServer(
     (_request, res) => jsonResponse(res, { vms: [] }),
     async (baseUrl, requests) => {
-      const result = await runCli(baseUrl, ["--provider", "provider-one", "list"], {
+      const result = await runCli(baseUrl, [
+        "--provider", "provider-one",
+        "list",
+        "--platform", "x86_64-l40s",
+        "--created-after", "2026-01-01T00:00:00Z",
+        "--created-before", "2026-02-01T00:00:00Z",
+      ], {
         controlOnly: true,
       });
 
       assert.equal(result.code, 0, result.stderr);
       assert.equal(requests.length, 1);
-      assert.equal(requests[0]?.url, "/api/v1/vms?provider=provider-one");
+      assert.equal(
+        requests[0]?.url,
+        "/api/v1/vms?provider=provider-one&platform=x86_64-l40s&created_after=2026-01-01T00%3A00%3A00Z&created_before=2026-02-01T00%3A00%3A00Z",
+      );
     },
   );
 }
@@ -770,7 +948,6 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     method: string;
     url: string;
     body?: unknown;
-    bodyContains?: Record<string, unknown>;
   }> = [
     {
       name: "vms get",
@@ -791,14 +968,22 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       args: [
         "vms",
         "fork",
-        "--description",
-        "CI runner",
-        "source-vm",
+        "--source-vm-name", "public-template",
+        "--source-org-name", "ArkerHQ",
+        "--description", "CI runner",
+        "--layers", "disk",
+        "--disk",
       ],
       response: { vm_id: "vm_child" },
       method: "POST",
       url: "/api/v1/fork",
-      bodyContains: { description: "CI runner" },
+      body: {
+        source_vm_name: "public-template",
+        source_org_name: "ArkerHQ",
+        description: "CI runner",
+        disk: true,
+        layers: ["disk"],
+      },
     },
     {
       name: "vms update",
@@ -809,6 +994,10 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
         "Release runner",
         "--memory-mib",
         "1024",
+        "--vgpu",
+        "0.25",
+        "--ssh-public-key",
+        "ssh-ed25519 AAAAexample user@example",
         "vm_1",
       ],
       response: { vm_id: "vm_1", state: "idle", memory_mib: 1024 },
@@ -816,15 +1005,21 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       url: "/api/v1/vms/vm_1",
       body: {
         description: "Release runner",
-        resources: { vcpu: null, memory_mib: 1024, disk_mib: null },
+        resources: { vcpu: null, memory_mib: 1024, disk_mib: null, vgpu: 0.25 },
+        ssh_public_keys: ["ssh-ed25519 AAAAexample user@example"],
       },
     },
     {
       name: "runs ls",
-      args: ["runs", "ls", "vm_1"],
+      args: [
+        "runs", "ls", "vm_1",
+        "--started-after", "2026-01-01T00:00:00Z",
+        "--started-before", "2026-02-01T00:00:00Z",
+        "--completed-after", "2026-01-02T00:00:00Z",
+      ],
       response: { runs: [] },
       method: "GET",
-      url: "/api/v1/vms/vm_1/runs",
+      url: "/api/v1/vms/vm_1/runs?started_after=2026-01-01T00%3A00%3A00Z&started_before=2026-02-01T00%3A00%3A00Z&completed_after=2026-01-02T00%3A00%3A00Z",
     },
     {
       name: "sessions ls",
@@ -842,11 +1037,26 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     },
     {
       name: "sessions create",
-      args: ["sessions", "create", "--cwd", "/work", "vm_1"],
+      args: [
+        "sessions", "create", "vm_1",
+        "--env", "MODE=test",
+        "--cwd", "/work",
+        "--pty",
+        "--cols", "120",
+        "--rows", "40",
+        "--command", "/bin/zsh",
+      ],
       response: { session_id: "session_1", state: "idle", cwd: "/work" },
       method: "POST",
       url: "/api/v1/vms/vm_1/sessions",
-      body: { cwd: "/work" },
+      body: {
+        env: { MODE: "test" },
+        cwd: "/work",
+        pty: true,
+        cols: 120,
+        rows: 40,
+        command: "/bin/zsh",
+      },
     },
     {
       name: "syncs ls",
@@ -905,18 +1115,6 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       assert.equal(requests[0]?.method, testCase.method, testCase.name);
       assert.equal(requests[0]?.url, testCase.url, testCase.name);
       if (testCase.body !== undefined) assert.deepEqual(requests[0]?.body, testCase.body, testCase.name);
-      if (testCase.bodyContains !== undefined) {
-        assert.deepEqual(
-          Object.fromEntries(
-            Object.keys(testCase.bodyContains).map((key) => [
-              key,
-              (requests[0]?.body as Record<string, unknown>)[key],
-            ]),
-          ),
-          testCase.bodyContains,
-          testCase.name,
-        );
-      }
     });
   }
 }
@@ -933,6 +1131,9 @@ await testKnownButIrrelevantNestedOptionsFail();
 await testInvalidNumbersFailBeforeRequest();
 await testForkOmitsRetiredGpuResourceKeys();
 await testForkForwardsVgpu();
+await testForkForwardsImageOptionsAndRedactsSecrets();
+await testForkUsesDockerfileAndContext();
+await testOrgRunListForwardsFilters();
 await testGlobalOptionsBeforeCommand();
 await testHelpAndVersionAreLocalSuccesses();
 await testArbitraryProviderFlagIsAccepted();
