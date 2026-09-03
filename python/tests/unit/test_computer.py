@@ -1697,6 +1697,21 @@ def test_get_and_set_policies() -> None:
     assert b"example.com" in put_call["body"]
 
 
+def test_request_policies_reach_the_server_unfiltered() -> None:
+    """A key the model does not know must go out on the wire, not be dropped.
+
+    Decoding an outbound policy doc through PolicyDoc silently discarded
+    unknown keys, so a typo'd `policys` shipped an empty doc and the run went
+    out unrestricted. The server rejects unknown fields and names the valid
+    ones; the SDK must let it.
+    """
+    t = FakeTransport()
+    t.add_json(lambda method, url: method == "PUT", 200, {"policies": []})
+    with use_transport(t):
+        client().vm("vm_1").set_policies({"policys": [{"action": "allow"}]})
+    assert b"policys" in next(c for c in t.calls if c["method"] == "PUT")["body"]
+
+
 def test_create_filesystem() -> None:
     t = FakeTransport()
     t.add_json(

@@ -786,13 +786,6 @@ class VM:
         ``idempotency_key`` asks the server to deduplicate the command. It does
         not make an ambiguous network failure safe to retry automatically.
         """
-        policy_doc = (
-            policies
-            if isinstance(policies, PolicyDoc)
-            else _decode_model(PolicyDoc, policies)
-            if policies is not None
-            else None
-        )
         body = RunRequest(
             command=command,
             session_id=session_id,
@@ -807,7 +800,7 @@ class VM:
             acquire=",".join(acquire) if isinstance(acquire, list) else acquire,
             release=",".join(release) if isinstance(release, list) else release,
             signal=signal,
-            policies=policy_doc,
+            policies=policies,
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
         result = _run_response(
@@ -905,26 +898,19 @@ class VM:
                 disk_mib=disk_mib,
                 vgpu=vgpu,
             )
-        policy_doc = (
-            policies
-            if isinstance(policies, PolicyDoc)
-            else _decode_model(PolicyDoc, policies)
-            if policies is not None
-            else None
-        )
         body: PatchVmRequest | dict[str, Any]
         if description is _UNSET:
             body = PatchVmRequest(
                 resources=resources,
                 ssh_public_keys=ssh_public_keys,
-                policies=policy_doc,
+                policies=policies,
             )
         else:
             body = {
                 "description": _EXPLICIT_NULL if description is None else description,
                 "resources": resources,
                 "ssh_public_keys": ssh_public_keys,
-                "policies": policy_doc,
+                "policies": policies,
             }
         payload = self._client._request("PATCH", _vm_path(self.id), body, base_url=self.base_url)
         return _vm_info(payload)
@@ -955,8 +941,7 @@ class VM:
                 ],
             })
         """
-        request = doc if isinstance(doc, PolicyDoc) else _decode_model(PolicyDoc, doc)
-        payload = self._client._request("PUT", f"{_vm_path(self.id)}/policies", request, base_url=self.base_url)
+        payload = self._client._request("PUT", f"{_vm_path(self.id)}/policies", doc, base_url=self.base_url)
         return _decode_model(PolicyDoc, payload)
 
     def sync(self, path: str, data: bytes | str | None = None) -> bytes | None:
@@ -1996,7 +1981,12 @@ def _drop_none(value: Any) -> Any:
 
 
 def _decode_model(model: type[Model], payload: dict[str, Any]) -> Model:
-    """Decode known response fields and require all mandatory model fields."""
+    """Decode known response fields and require all mandatory model fields.
+
+    Responses only. Unknown keys are dropped, which is right for a payload the
+    server sent and wrong for one a caller wrote: it would swallow a typo that
+    the server would have rejected by name.
+    """
     fields = dataclasses.fields(model)
     hints = get_type_hints(model)
     values = {
