@@ -685,7 +685,7 @@ export interface components {
             gate?: components["schemas"]["Gate"];
             scaling?: components["schemas"]["ScalingAction"];
         };
-        /** @description Auto-scaling behavior for matched traffic. On an `outbound` rule it brackets the time the VM is blocked awaiting an upstream response; on an `inbound` rule it brackets the time the VM is idle between requests (scale to zero). Outbound rules may be narrowed by L7 criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and compose with `rewrite` / `gate` siblings. For outbound, prefer a `match.hosts` scope: a host-less scaling rule matches every flow it can see, which breaks certificate-pinning clients. */
+        /** @description Auto-scaling behavior for matched traffic. On an `outbound` rule it brackets the time the VM is blocked awaiting an upstream response; on an `inbound` rule it brackets the time the VM is idle between requests (scale to zero). Outbound rules may be narrowed by L7 criteria (`methods`/`paths`/`headers`/`body_contains`), for example to suspend only on `POST /v1/messages`, and compose with `rewrite` / `gate` siblings. For outbound, prefer a `match.hosts` scope: a host-less scaling rule matches every flow it can see, which breaks certificate-pinning clients. Where each is enforced differs and explains the asymmetry: an `outbound` rule runs on the MITM (TLS-terminating) data path, which is why it can match L7 fields and carry `rewrite`/`gate` siblings; an `inbound` rule is enforced host-side on the plaintext request the worker already holds, so no MITM is involved and no TLS is terminated. */
         ScalingAction: {
             /**
              * @description Suspend the VM (snapshot and free CPU/RAM). On an `outbound` rule: while a matched upstream request is blocked, resuming when the response arrives. On an `inbound` rule: once a matched request's response has been fully delivered and nothing else is in flight, so the next matched request wakes it again. The suspended window remains part of the VM's Running interval until the VM is paused or stopped. On an `outbound` rule, matched responses are delivered only once the upstream response is COMPLETE: a suspended VM has no running guest to receive bytes, so the proxy holds the whole body and hands it over at the end. Total latency is unchanged, but a response whose fragments are individually usable — an SSE token stream, for example — stops arriving incrementally, so a client rendering tokens as they arrive will see nothing until the response finishes. Enabling this is a deliberate trade of incremental delivery for the memory saving.
@@ -1524,13 +1524,15 @@ export interface components {
             memory_mib?: number | null;
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
-            /** @description Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Only valid for GPU platforms such as `x86_64-l40s`. Omit to use the platform default, or use `vgpu` to size by fraction instead. */
+            /** @description Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Reported on GPU platforms such as `x86_64-l40s`. Response-only: a fork sizes GPU with `vgpu`. */
             gpu_sms?: number | null;
-            /** @description GPU memory available to the VM, in MiB, on EACH of its GPUs (a per-GPU value; see `gpu_count`). Only valid for GPU platforms. Omit to use the platform default. */
+            /** @description GPU memory available to the VM, in MiB, on EACH of its GPUs (a per-GPU value; see `gpu_count`). Reported on GPU platforms. Response-only: a fork sizes GPU with `vgpu`. */
             gpu_vram_mib?: number | null;
-            /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Only valid for GPU platforms; requesting more GPUs than the serving host carries returns 400. Omit for a single GPU (absent means 1). */
+            /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Reported on GPU platforms; absent means 1. Response-only: a fork sizes GPU with `vgpu`, which allocates at most one card. */
             gpu_count?: number | null;
         };
+        /** @description A slice of ONE physical GPU, in eighths of a card: 0.125 through 1. The constraints are the contract — an off-ladder fraction is rejected on the wire, not by the worker that later resolves it. */
+        Vgpu: number;
         /** @description Resource shape a caller asks for. GPU size is set with `vgpu`, in eighths of one card; the resolved per-GPU `gpu_sms`/`gpu_vram_mib` are reported back on the machine. */
         ResourcesInput: {
             /** @description Virtual CPU allocation. */
@@ -1540,7 +1542,7 @@ export interface components {
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
             /** @description Fraction of one physical GPU to allocate, in eighths of a card: 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, or 1. Resolved against the serving platform's GPU (`vgpu: 0.25` on `x86_64-l40s` is 35 SMs and 11517 MiB), so the same fraction is a different amount of silicon on a different card — see the per-platform table in the docs. Mutually exclusive with `gpu_sms` and `gpu_vram_mib`. Request-only: responses report the resolved `gpu_sms`/`gpu_vram_mib` and never this field. */
-            vgpu?: number | null;
+            vgpu?: components["schemas"]["Vgpu"] | null;
         };
         SshPublicKeyInfo: {
             /** @description SSH public key in authorized_keys format. */

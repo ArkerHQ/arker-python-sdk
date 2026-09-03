@@ -480,12 +480,15 @@ class VmResources:
     gpu_count: int | None = None
 
 
+Vgpu: TypeAlias = float
+
+
 @dataclass(frozen=True)
 class ResourcesInput:
     vcpu: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
-    vgpu: float | None = None
+    vgpu: Vgpu | None = None
 
 
 @dataclass(frozen=True)
