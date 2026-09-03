@@ -7,10 +7,6 @@ holding an AWS key and a `.git/config` holding a token URL both landed.
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from arker.dockerignore import load_dockerignore
 
 

@@ -96,7 +96,7 @@ def load_dockerignore(context_root: str) -> DockerIgnore:
     """Read `<context_root>/.dockerignore`. Absent means nothing is excluded."""
     path = os.path.join(context_root, ".dockerignore")
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
         return DockerIgnore(rules=[])

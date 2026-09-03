@@ -49,6 +49,8 @@ jobs:
           enable-cache: true
       - name: Sync (fails if uv.lock is stale)
         run: uv sync --locked --group dev --extra test
+      - run: uv run --locked --group dev ruff check .
+      - run: uv run --locked --group dev ruff format --check .
       - run: uv run --locked --group dev --extra test python -m pytest
 
   typescript:

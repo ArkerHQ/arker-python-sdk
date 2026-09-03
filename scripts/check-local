@@ -9,6 +9,11 @@ uv sync --project "$REPO_ROOT/python" --locked --group dev --extra test
 
 cd "$REPO_ROOT"
 
+(
+  cd python
+  uv run --locked --group dev ruff check .
+  uv run --locked --group dev ruff format --check .
+)
 ./scripts/check-openapi
 python3 tests/test_openapi_enforcement.py
 # Same split as CI: the SDK suite runs from python/ (where pyproject's

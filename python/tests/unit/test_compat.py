@@ -34,7 +34,14 @@ class FakeTransport:
     def handler(self, request: httpx.Request) -> httpx.Response:
         method = request.method
         url = str(request.url)
-        self.calls.append({"method": method, "url": url, "body": request.content or None, "headers": request.headers})
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "body": request.content or None,
+                "headers": request.headers,
+            }
+        )
 
         for index, (predicate, status, payload) in enumerate(self.script):
             if predicate(method, url):
@@ -81,9 +88,21 @@ def completed(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str, An
 
 
 def add_create_run_delete(t: FakeTransport, vm_id: str, stdout: str) -> None:
-    t.add_json(lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork", 200, vm_payload(vm_id))
-    t.add_json(lambda method, url: method == "POST" and url == f"https://test.invalid/api/v1/vms/{vm_id}/runs", 200, completed(stdout))
-    t.add_json(lambda method, url: method == "DELETE" and url == f"https://test.invalid/api/v1/vms/{vm_id}", 200, {"deleted": True})
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        vm_payload(vm_id),
+    )
+    t.add_json(
+        lambda method, url: method == "POST" and url == f"https://test.invalid/api/v1/vms/{vm_id}/runs",
+        200,
+        completed(stdout),
+    )
+    t.add_json(
+        lambda method, url: method == "DELETE" and url == f"https://test.invalid/api/v1/vms/{vm_id}",
+        200,
+        {"deleted": True},
+    )
 
 
 def add_arker_not_found(t: FakeTransport, vm_id: str) -> None:
@@ -105,7 +124,11 @@ def test_daytona_official_surface(monkeypatch) -> None:
     monkeypatch.setenv("ARKER_BASE_URL", "https://test.invalid/api")
     t = FakeTransport()
     add_create_run_delete(t, "vm_daytona", "Hello, World!\n")
-    t.add_json(lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/vms/vm_daytona/runs", 200, completed("Hello, World!\n"))
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/vms/vm_daytona/runs",
+        200,
+        completed("Hello, World!\n"),
+    )
 
     with use_transport(t):
         daytona = Daytona()
@@ -127,11 +150,17 @@ def test_compat_requires_source(monkeypatch) -> None:
         arker_source()
 
 
-def test_arker_shim_config_customizes_source_without_forwarding_to_client(monkeypatch) -> None:
+def test_arker_shim_config_customizes_source_without_forwarding_to_client(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("ARKER_API_KEY", "ark_live_test")
     monkeypatch.setenv("ARKER_BASE_URL", "https://test.invalid/api")
     t = FakeTransport()
-    t.add_json(lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork", 200, vm_payload("vm_custom"))
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        vm_payload("vm_custom"),
+    )
 
     with use_transport(t):
         sandbox = Daytona(arker={"source": "custom-source", "name": "custom-name"}).create()
@@ -174,11 +203,18 @@ def test_unsupported_calls_fail_fast(monkeypatch) -> None:
     monkeypatch.setenv("ARKER_API_KEY", "ark_live_test")
     monkeypatch.setenv("ARKER_BASE_URL", "https://test.invalid/api")
     t = FakeTransport()
-    t.add_json(lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork", 200, vm_payload("vm_unsupported"))
+    t.add_json(
+        lambda method, url: method == "POST" and url == "https://test.invalid/api/v1/fork",
+        200,
+        vm_payload("vm_unsupported"),
+    )
 
     with use_transport(t):
         sandbox = E2BSandbox.create()
-        with pytest.raises(AttributeError, match="not supported by the Arker compatibility layer for e2b"):
+        with pytest.raises(
+            AttributeError,
+            match="not supported by the Arker compatibility layer for e2b",
+        ):
             sandbox.files.rename  # noqa: B018
         with pytest.raises(TypeError, match="only supports create"):
             ModalSandbox.create(image="alpine")
@@ -249,7 +285,7 @@ def test_e2b_connect_falls_back_to_native_sdk(monkeypatch) -> None:
         commands = NativeCommands()
 
         @classmethod
-        def connect(cls, sandbox_id: str) -> "NativeSandbox":
+        def connect(cls, sandbox_id: str) -> NativeSandbox:
             assert sandbox_id == "native_e2b"
             return cls()
 
@@ -278,7 +314,7 @@ def test_modal_from_id_falls_back_to_native_sdk(monkeypatch) -> None:
         sandbox_id = "native_modal"
 
         @classmethod
-        def from_id(cls, sandbox_id: str) -> "NativeSandbox":
+        def from_id(cls, sandbox_id: str) -> NativeSandbox:
             assert sandbox_id == "native_modal"
             return cls()
 

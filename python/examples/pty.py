@@ -10,7 +10,7 @@ already installed in the image, install it from the shell first, e.g.
 
 Exit by leaving the shell (`exit` / Ctrl-D).
 """
-import os
+
 import os
 import sys
 import termios
@@ -23,11 +23,7 @@ def main() -> None:
     ar = Arker()  # reads ARKER_API_KEY + ARKER_REGION/ARKER_BASE_URL
 
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    vm = (
-        ar.vm(arg).refresh()
-        if arg
-        else ar.fork(source_vm_name=os.environ["ARKER_SOURCE_VM"])
-    )
+    vm = ar.vm(arg).refresh() if arg else ar.fork(source_vm_name=os.environ["ARKER_SOURCE_VM"])
     if not arg:
         print(f"forked {vm.id}", file=sys.stderr)
 
@@ -43,8 +39,10 @@ def main() -> None:
     old = termios.tcgetattr(fd) if sys.stdin.isatty() else None
     if old is not None:
         tty.setraw(fd)  # forward every keystroke (incl. Ctrl-C) verbatim
-    print("[connected] you're in the VM. Try: claude  (install first if needed)",
-          file=sys.stderr)
+    print(
+        "[connected] you're in the VM. Try: claude  (install first if needed)",
+        file=sys.stderr,
+    )
     try:
         while True:
             chunk = os.read(fd, 4096)

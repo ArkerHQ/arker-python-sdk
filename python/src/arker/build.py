@@ -36,14 +36,13 @@ afterwards as an explicit ``chown -R``.
 from __future__ import annotations
 
 import glob as _glob
+import hashlib
 import os
 import posixpath
-import hashlib
 import shlex
 import urllib.request
 from typing import Protocol
 
-from .dockerignore import load_dockerignore
 from .build_spec import (
     Add,
     Arg,
@@ -58,6 +57,7 @@ from .build_spec import (
     User,
     Workdir,
 )
+from .dockerignore import load_dockerignore
 
 __all__ = ["BuildError", "apply_steps"]
 
@@ -108,9 +108,7 @@ def _resolve_sources(source: str, context_root: str) -> list[str]:
     matches = sorted(_glob.glob(pattern)) if _glob.has_magic(pattern) else [pattern]
 
     if not matches:
-        raise BuildError(
-            f"COPY {source}: no such file or directory in the build context"
-        )
+        raise BuildError(f"COPY {source}: no such file or directory in the build context")
 
     resolved = []
     for match in matches:
@@ -124,16 +122,12 @@ def _resolve_sources(source: str, context_root: str) -> list[str]:
                 f"COPY reads must live under {context_root}"
             )
         if not os.path.exists(real):
-            raise BuildError(
-                f"COPY {source}: no such file or directory in the build context"
-            )
+            raise BuildError(f"COPY {source}: no such file or directory in the build context")
         resolved.append(real)
     return resolved
 
 
-def _copy_destination(
-    dest: str, source_path: str, multiple: bool, workdir: str = "/"
-) -> str:
+def _copy_destination(dest: str, source_path: str, multiple: bool, workdir: str = "/") -> str:
     """Where one resolved source lands in the guest.
 
     Docker's rule: a destination ending in `/`, or one receiving several
@@ -142,9 +136,7 @@ def _copy_destination(
     resolves against the current WORKDIR.
     """
     if dest.endswith("/") or multiple:
-        return posixpath.join(
-            _join_workdir(workdir, dest), os.path.basename(source_path)
-        )
+        return posixpath.join(_join_workdir(workdir, dest), os.path.basename(source_path))
     return _join_workdir(workdir, dest)
 
 
@@ -153,9 +145,7 @@ def _verify_checksum(step: Add, payload: bytes) -> None:
         return
     algorithm, _, expected = step.checksum.partition(":")
     if not expected:
-        raise BuildError(
-            f"ADD {step.url}: --checksum must be <algorithm>:<hex>, got {step.checksum!r}"
-        )
+        raise BuildError(f"ADD {step.url}: --checksum must be <algorithm>:<hex>, got {step.checksum!r}")
     try:
         digest = hashlib.new(algorithm, payload).hexdigest()
     except ValueError as error:
@@ -305,9 +295,7 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
         if isinstance(step, Run):
             command = step.command
         elif isinstance(step, Env):
-            command = "export " + " ".join(
-                f"{key}={_env_value(value)}" for key, value in step.pairs
-            )
+            command = "export " + " ".join(f"{key}={_env_value(value)}" for key, value in step.pairs)
         elif isinstance(step, Arg):
             if step.default is None:
                 # No --build-arg channel exists, so an ARG with no default can
@@ -329,7 +317,7 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
             try:
                 with urllib.request.urlopen(step.url, timeout=30) as response:
                     payload = response.read()
-            except Exception as error:  # noqa: BLE001 - any fetch failure is a build failure
+            except Exception as error:
                 raise BuildError(f"ADD {step.url}: {error}") from error
             _verify_checksum(step, payload)
             vm.sync(_join_workdir(current_workdir, step.dest), payload)

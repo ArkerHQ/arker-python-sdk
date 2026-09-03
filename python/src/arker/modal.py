@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._compat import CommandResult, UnsupportedMixin, arker_create, arker_get, format_not_found, import_optional, run_command, shell_command
+from ._compat import (
+    CommandResult,
+    UnsupportedMixin,
+    arker_create,
+    arker_get,
+    format_not_found,
+    import_optional,
+    run_command,
+    shell_command,
+)
 from .computer import VM
 
 
@@ -28,8 +37,8 @@ class Process:
             self.stderr = _Stream(result.stderr)
         else:
             self._native = result
-            self.stdout = getattr(result, "stdout")
-            self.stderr = getattr(result, "stderr")
+            self.stdout = result.stdout
+            self.stderr = result.stderr
             self._exit_code = None
 
     def wait(self) -> int:
@@ -54,7 +63,7 @@ class Sandbox(UnsupportedMixin):
         return getattr(module, "Sandbox", None) if module is not None else None
 
     @classmethod
-    def create(cls, *args: Any, **kwargs: Any) -> "Sandbox":
+    def create(cls, *args: Any, **kwargs: Any) -> Sandbox:
         arker_config = kwargs.pop("arker", None)
         if args or kwargs:
             raise TypeError("Sandbox.create only supports create() in the Arker compatibility layer for modal.")
@@ -67,7 +76,7 @@ class Sandbox(UnsupportedMixin):
             return cls(native=native.create())
 
     @classmethod
-    def from_id(cls, sandbox_id: str, **kwargs: Any) -> "Sandbox":
+    def from_id(cls, sandbox_id: str, **kwargs: Any) -> Sandbox:
         arker_config = kwargs.pop("arker", None)
         if kwargs:
             unsupported = ", ".join(sorted(kwargs))
@@ -82,7 +91,7 @@ class Sandbox(UnsupportedMixin):
         raise format_not_found("Sandbox", sandbox_id)
 
     @classmethod
-    def fromId(cls, sandbox_id: str, **kwargs: Any) -> "Sandbox":
+    def fromId(cls, sandbox_id: str, **kwargs: Any) -> Sandbox:
         return cls.from_id(sandbox_id, **kwargs)
 
     def exec(self, *command: Any, **kwargs: Any) -> Process:

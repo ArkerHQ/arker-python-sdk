@@ -7,16 +7,16 @@ context — without needing a real VM.
 
 from __future__ import annotations
 
-import os
-from types import SimpleNamespace
-
 import contextlib
 import io
+import os
+import re
+from types import SimpleNamespace
 
 import pytest
 
-from arker.build_spec import parse_dockerfile
 from arker.build import BuildError, apply_steps
+from arker.build_spec import parse_dockerfile
 
 
 class FakeVM:
@@ -38,12 +38,12 @@ class FakeVM:
 
     def sync(self, path, data=None):
         self.calls.append(("sync", path, len(data) if data else None))
-        return None
+        return
 
     def sync_dir(self, local_dir, remote_dir, **kwargs):
         self.calls.append(("sync_dir", os.path.basename(local_dir.rstrip("/")), remote_dir))
         self.ignores.append(kwargs.get("ignore") or (lambda rel: False))
-        return None
+        return
 
     @property
     def commands(self) -> list[str]:
@@ -168,12 +168,12 @@ def test_a_failed_add_fetch_aborts_the_build(context, monkeypatch):
     monkeypatch.setattr(build_mod.urllib.request, "urlopen", boom)
     vm = FakeVM()
     steps = parse_dockerfile("FROM x\nADD https://example.com/f /f\n").steps
-    with pytest.raises(BuildError, match="https://example.com/f"):
+    with pytest.raises(BuildError, match=re.escape("https://example.com/f")):
         apply_steps(vm, steps, str(context))
 
 
 def test_inert_instructions_produce_no_calls(context):
-    vm = build("FROM x\nLABEL a=b\nEXPOSE 8080\nCMD [\"true\"]\n", context)
+    vm = build('FROM x\nLABEL a=b\nEXPOSE 8080\nCMD ["true"]\n', context)
     assert vm.calls == []
 
 
@@ -336,9 +336,7 @@ def test_add_checksum_mismatch_fails_the_build(context, monkeypatch):
         lambda url, timeout=None: contextlib.closing(io.BytesIO(b"tampered")),
     )
     wrong = "sha256:" + "0" * 64
-    steps = parse_dockerfile(
-        f"FROM x\nADD --checksum={wrong} https://example.com/f /f\n"
-    ).steps
+    steps = parse_dockerfile(f"FROM x\nADD --checksum={wrong} https://example.com/f /f\n").steps
     with pytest.raises(BuildError, match="checksum"):
         apply_steps(FakeVM(), steps, str(context))
 
@@ -355,13 +353,12 @@ def test_add_checksum_match_is_accepted(context, monkeypatch):
         lambda url, timeout=None: contextlib.closing(io.BytesIO(payload)),
     )
     digest = "sha256:" + hashlib.sha256(payload).hexdigest()
-    steps = parse_dockerfile(
-        f"FROM x\nADD --checksum={digest} https://example.com/f /f\n"
-    ).steps
+    steps = parse_dockerfile(f"FROM x\nADD --checksum={digest} https://example.com/f /f\n").steps
 
     vm = FakeVM()
     apply_steps(vm, steps, str(context))
     assert ("sync", "/f", len(payload)) in vm.calls, vm.calls
+
 
 def test_copy_dir_to_a_relative_dest_resolves_against_workdir(context):
     """MEASURED on aider-polyglot: `WORKDIR /app` + `COPY workspace/ ./`.

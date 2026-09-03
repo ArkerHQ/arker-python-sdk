@@ -33,7 +33,10 @@ if pytest and (not API_KEY or not (BASE_URL or (PROVIDER and REGION)) or not SOU
     pytest.skip("live Arker credentials are not configured", allow_module_level=True)
 
 if not API_KEY or not (BASE_URL or (PROVIDER and REGION)) or not SOURCE_VM:
-    print("ARKER_API_KEY, ARKER_PROVIDER + ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
+    print(
+        "ARKER_API_KEY, ARKER_PROVIDER + ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required",
+        file=sys.stderr,
+    )
     sys.exit(2)
 
 

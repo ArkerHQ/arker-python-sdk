@@ -47,7 +47,7 @@ class Sandbox(UnsupportedMixin):
         if vm is not None:
             self.process = Process(vm)
         else:
-            self.process = getattr(native, "process")
+            self.process = native.process
 
     def delete(self) -> None:
         if self._vm is not None:

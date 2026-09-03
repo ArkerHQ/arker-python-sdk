@@ -6,9 +6,16 @@ import os
 import shlex
 from typing import Any
 
-from .computer import Arker, ArkerError, CompletedRunResult, VM
+from .computer import VM, Arker, ArkerError, CompletedRunResult
 
-ARKER_CLIENT_KEYS = {"api_key", "base_url", "control_base_url", "region", "provider", "retry"}
+ARKER_CLIENT_KEYS = {
+    "api_key",
+    "base_url",
+    "control_base_url",
+    "region",
+    "provider",
+    "retry",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,7 +53,12 @@ def arker_source(config: dict[str, Any] | None = None) -> str:
     return str(source)
 
 
-def arker_create(config: dict[str, Any] | None = None, *, name: str | None = None, template_id: str | None = None) -> VM:
+def arker_create(
+    config: dict[str, Any] | None = None,
+    *,
+    name: str | None = None,
+    template_id: str | None = None,
+) -> VM:
     cfg = config or {}
     source = template_id or arker_source(config)
     return arker_client(config).fork(

@@ -10,6 +10,7 @@ Run:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import urllib.request
@@ -80,7 +81,5 @@ except Exception as error:
     sys.exit(1)
 finally:
     if vm is not None:
-        try:
+        with contextlib.suppress(Exception):
             vm.delete()
-        except Exception:
-            pass
