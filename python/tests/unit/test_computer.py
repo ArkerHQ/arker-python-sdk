@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import time
 from contextlib import contextmanager
@@ -11,7 +12,6 @@ import pytest
 
 import arker.computer as sdk
 from arker.generated.api_models import PolicyDoc, PolicyEntry, PolicyMatch
-
 
 UNKNOWN_OUTCOME_ERROR_BODY = {
     "error": {
@@ -42,7 +42,14 @@ class FakeTransport:
     def handler(self, request: httpx.Request) -> httpx.Response:
         method = request.method
         url = str(request.url)
-        self.calls.append({"method": method, "url": url, "body": request.content or None, "headers": request.headers})
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "body": request.content or None,
+                "headers": request.headers,
+            }
+        )
 
         for index, (predicate, status, payload) in enumerate(self.script):
             if predicate(method, url):
@@ -152,8 +159,7 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
         "endpoint": "https://provider-two-region-two.arker.ai/",
     }
     t.add_json(
-        lambda method, url: method == "GET"
-        and url == "https://arker.ai/api/v1/regions",
+        lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/regions",
         200,
         {"regions": [placement]},
     )
@@ -169,8 +175,7 @@ def test_list_regions_uses_public_control_plane_catalog() -> None:
 def test_discover_regions_requires_no_configured_client() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "GET"
-        and url == "https://control.invalid/api/v1/regions",
+        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/regions",
         200,
         {"regions": []},
     )
@@ -188,8 +193,7 @@ def test_discover_regions_requires_no_configured_client() -> None:
 def test_whoami_uses_authenticated_control_plane() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "GET"
-        and url == "https://control.invalid/api/v1/whoami",
+        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/whoami",
         200,
         {"org_id": "org_01", "org_name": "ArkerHQ"},
     )
@@ -277,8 +281,7 @@ def test_fork_preserves_the_canonical_wire_shape() -> None:
 def test_vm_fork_uses_its_id_and_attached_endpoint() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "POST"
-        and url == "https://attached.invalid/api/v1/fork",
+        lambda method, url: method == "POST" and url == "https://attached.invalid/api/v1/fork",
         200,
         _fork_response("vm_child"),
     )
@@ -504,23 +507,30 @@ def test_list_uses_configured_base_url() -> None:
     # `Arker.list()` is an admin call — routed through the control
     # plane, not the compute URL.
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=True&state=idle",
+        lambda method, url: (
+            method == "GET"
+            and url == "https://arker.ai/api/v1/vms?region=us-west-2&provider=aws&org_id=ArkerHQ&public=True&state=idle"
+        ),
         200,
-        {"vms": [{
-            "vm_id": "vm_1",
-            "owner_org_id": "ArkerHQ",
-            "created_at": "now",
-            "description": None,
-            "public": True,
-            "state": "idle",
-            "sessions": [session()],
-            "name": "demo",
-            "network": {},
-            "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
-            "max_vcpus": 8,
-            "max_memory_mib": 32768,
-            "min_memory_mib": 512,
-        }]},
+        {
+            "vms": [
+                {
+                    "vm_id": "vm_1",
+                    "owner_org_id": "ArkerHQ",
+                    "created_at": "now",
+                    "description": None,
+                    "public": True,
+                    "state": "idle",
+                    "sessions": [session()],
+                    "name": "demo",
+                    "network": {},
+                    "resources": {"vcpu": 2, "memory_mib": 1024, "disk_mib": 4096},
+                    "max_vcpus": 8,
+                    "max_memory_mib": 32768,
+                    "min_memory_mib": 512,
+                }
+            ]
+        },
     )
 
     with use_transport(t):
@@ -542,9 +552,7 @@ def test_list_uses_configured_base_url() -> None:
     assert result.vms[0].min_memory_mib == 512
     assert result.vms[0].network is not None
     assert result.vms[0].network.ssh_public_keys is None
-    assert result.vms[0].resources == sdk.VmResources(
-        vcpu=2, memory_mib=1024, disk_mib=4096
-    )
+    assert result.vms[0].resources == sdk.VmResources(vcpu=2, memory_mib=1024, disk_mib=4096)
 
 
 def test_listed_vm_uses_its_placement_endpoint() -> None:
@@ -552,22 +560,28 @@ def test_listed_vm_uses_its_placement_endpoint() -> None:
     t.add_json(
         lambda method, url: method == "GET" and url == "https://arker.ai/api/v1/vms",
         200,
-        {"vms": [{
-            "vm_id": "vm_placed",
-            "owner_org_id": "org_1",
-            "created_at": "now",
-            "description": None,
-            "public": False,
-            "state": "idle",
-            "region": "region-two",
-            "provider": "provider-two",
-            "network": {},
-            "sessions": [],
-            "resources": {},
-        }]},
+        {
+            "vms": [
+                {
+                    "vm_id": "vm_placed",
+                    "owner_org_id": "org_1",
+                    "created_at": "now",
+                    "description": None,
+                    "public": False,
+                    "state": "idle",
+                    "region": "region-two",
+                    "provider": "provider-two",
+                    "network": {},
+                    "sessions": [],
+                    "resources": {},
+                }
+            ]
+        },
     )
     t.add_json(
-        lambda method, url: method == "POST" and url == "https://provider-two-region-two.arker.ai/api/v1/vms/vm_placed/runs",
+        lambda method, url: (
+            method == "POST" and url == "https://provider-two-region-two.arker.ai/api/v1/vms/vm_placed/runs"
+        ),
         200,
         {
             "run_id": "run_placed",
@@ -594,7 +608,11 @@ def test_listed_vm_uses_its_placement_endpoint() -> None:
 def test_list_runs_uses_control_plane_and_filters() -> None:
     t = FakeTransport()
     t.add_json(
-        lambda method, url: method == "GET" and url == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc",
+        lambda method, url: (
+            method == "GET"
+            and url
+            == "https://control.invalid/api/v1/runs?since=10&until=20&vm=vm_1&vms=vm_2%2Cvm_3&region=us-west-2&provider=aws&search=pytest&limit=25&offset=5&lite=True&runtime=fc&endpoint=run&actions=run%2Cfork&status=success%2Cinternal&status_min=200&status_max=599&sort=when&dir=asc"
+        ),
         200,
         {
             "since": 10,
@@ -602,36 +620,38 @@ def test_list_runs_uses_control_plane_and_filters() -> None:
             "limit": 25,
             "offset": 5,
             "lite": True,
-            "rows": [{
-                "source": "arkerd",
-                "t_ms": 10,
-                "request_id": "req_1",
-                "run_id": "run_1",
-                "vm_id": "vm_1",
-                "session_id": "session_1",
-                "region": "us-west-2",
-                "provider": "aws",
-                "status": 200,
-                "total_ms": 12.5,
-                "queue_ms": 1.5,
-                "executor_duration_ms": 10,
-                "executor_kind": "firecracker",
-                "executor_cpu_ms": 8,
-                "executor_mem_mb": 64,
-                "vm_vcpus": 2,
-                "vm_memory_mib": 4096,
-                "path": "/v1/vms/vm_1/runs",
-                "method": "POST",
-                "command": "pytest",
-                "source_vm_id": "",
-                "exit_code": 0,
-                "endpoint": "run",
-                "api_key_prefix": "ark_live",
-                "body_bytes_in": 10,
-                "body_bytes_out": 20,
-                "body_in": "",
-                "body_out": "",
-            }],
+            "rows": [
+                {
+                    "source": "arkerd",
+                    "t_ms": 10,
+                    "request_id": "req_1",
+                    "run_id": "run_1",
+                    "vm_id": "vm_1",
+                    "session_id": "session_1",
+                    "region": "us-west-2",
+                    "provider": "aws",
+                    "status": 200,
+                    "total_ms": 12.5,
+                    "queue_ms": 1.5,
+                    "executor_duration_ms": 10,
+                    "executor_kind": "firecracker",
+                    "executor_cpu_ms": 8,
+                    "executor_mem_mb": 64,
+                    "vm_vcpus": 2,
+                    "vm_memory_mib": 4096,
+                    "path": "/v1/vms/vm_1/runs",
+                    "method": "POST",
+                    "command": "pytest",
+                    "source_vm_id": "",
+                    "exit_code": 0,
+                    "endpoint": "run",
+                    "api_key_prefix": "ark_live",
+                    "body_bytes_in": 10,
+                    "body_bytes_out": 20,
+                    "body_in": "",
+                    "body_out": "",
+                }
+            ],
         },
     )
 
@@ -717,14 +737,30 @@ def test_sync_run_polls_backgrounded_run_to_completion(monkeypatch) -> None:
     t.add_json(
         lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_bg"),
         200,
-        {"run_id": "run_bg", "state": "running", "started_at": "now", "exit_code": None,
-         "stdout": "", "stdout_encoding": "utf-8", "stderr": "", "stderr_encoding": "utf-8"},
+        {
+            "run_id": "run_bg",
+            "state": "running",
+            "started_at": "now",
+            "exit_code": None,
+            "stdout": "",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+        },
     )
     t.add_json(
         lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_bg"),
         200,
-        {"run_id": "run_bg", "state": "completed", "started_at": "now", "exit_code": 0,
-         "stdout": "done\n", "stdout_encoding": "utf-8", "stderr": "", "stderr_encoding": "utf-8"},
+        {
+            "run_id": "run_bg",
+            "state": "completed",
+            "started_at": "now",
+            "exit_code": 0,
+            "stdout": "done\n",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+        },
     )
 
     with use_transport(t):
@@ -760,7 +796,10 @@ def test_explicit_zero_returns_ack_without_polling(monkeypatch) -> None:
     # Only the POST — no polling, no sleeping.
     assert [c["method"] for c in t.calls] == ["POST"]
     assert slept == []
-    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 999", "time_to_background": 0}
+    assert json.loads(t.calls[0]["body"]) == {
+        "command": "sleep 999",
+        "time_to_background": 0,
+    }
 
 
 def test_removed_background_argument_is_rejected() -> None:
@@ -999,7 +1038,11 @@ def test_update_replaces_policies_via_patch() -> None:
 def test_update_accepts_a_policy_doc_instance() -> None:
     doc = PolicyDoc(
         policies=[
-            PolicyEntry(type="outbound", match=PolicyMatch(hosts=["example.com"]), action="allow"),
+            PolicyEntry(
+                type="outbound",
+                match=PolicyMatch(hosts=["example.com"]),
+                action="allow",
+            ),
         ],
     )
     t = FakeTransport()
@@ -1010,7 +1053,15 @@ def test_update_accepts_a_policy_doc_instance() -> None:
 
     assert json.loads(t.calls[0]["body"]) == {
         "resources": {"vcpu": 2},
-        "policies": {"policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}]},
+        "policies": {
+            "policies": [
+                {
+                    "type": "outbound",
+                    "match": {"hosts": ["example.com"]},
+                    "action": "allow",
+                }
+            ]
+        },
     }
 
 
@@ -1023,7 +1074,10 @@ def test_update_sends_policies_alongside_an_explicit_description() -> None:
     with use_transport(t):
         client().vm("vm_1").update(description=None, policies={"policies": []})
 
-    assert json.loads(t.calls[0]["body"]) == {"description": None, "policies": {"policies": []}}
+    assert json.loads(t.calls[0]["body"]) == {
+        "description": None,
+        "policies": {"policies": []},
+    }
 
 
 @pytest.mark.parametrize("doc", [{}, {"policies": []}])
@@ -1066,7 +1120,10 @@ def test_background_run_response() -> None:
     assert isinstance(result, sdk.BackgroundRunResult)
     assert result.run_id == "run_1"
     assert result.state == "running"
-    assert json.loads(t.calls[0]["body"]) == {"command": "sleep 10", "time_to_background": 0}
+    assert json.loads(t.calls[0]["body"]) == {
+        "command": "sleep 10",
+        "time_to_background": 0,
+    }
 
 
 def test_flat_error_response_is_rejected_as_malformed() -> None:
@@ -1082,7 +1139,11 @@ def test_flat_error_response_is_rejected_as_malformed() -> None:
 
 def test_error_response_with_legacy_top_level_field_is_rejected() -> None:
     t = FakeTransport()
-    t.add_json(lambda _method, _url: True, 404, {"ok": False, "error": {"code": "not_found", "message": "missing"}})
+    t.add_json(
+        lambda _method, _url: True,
+        404,
+        {"ok": False, "error": {"code": "not_found", "message": "missing"}},
+    )
 
     with use_transport(t), pytest.raises(sdk.ArkerError) as caught:
         client().vm("missing").delete()
@@ -1117,10 +1178,26 @@ def test_retry_on_503_then_success(monkeypatch) -> None:
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/sync")
     t.add_raw(predicate, 503, b"service unavailable")
-    t.add_json(predicate, 200, {"ok": True, "op": "read", "path": "/home/user/x", "size": 2, "content": "ok", "encoding": "utf-8"})
+    t.add_json(
+        predicate,
+        200,
+        {
+            "ok": True,
+            "op": "read",
+            "path": "/home/user/x",
+            "size": 2,
+            "content": "ok",
+            "encoding": "utf-8",
+        },
+    )
 
     with use_transport(t):
-        assert sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm").sync("/home/user/x") == b"ok"
+        assert (
+            sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2})
+            .vm("vm")
+            .sync("/home/user/x")
+            == b"ok"
+        )
 
     assert len(t.calls) == 2
 
@@ -1230,9 +1307,21 @@ def test_read_presigned_follows_url() -> None:
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/sync"),
         200,
-        {"ok": True, "op": "read", "path": "/home/user/big", "size": 5, "presigned_url": "https://s3.invalid/file", "expires_in": 900, "method": "GET"},
+        {
+            "ok": True,
+            "op": "read",
+            "path": "/home/user/big",
+            "size": 5,
+            "presigned_url": "https://s3.invalid/file",
+            "expires_in": 900,
+            "method": "GET",
+        },
     )
-    t.add_raw(lambda method, url: method == "GET" and url == "https://s3.invalid/file", 200, b"hello")
+    t.add_raw(
+        lambda method, url: method == "GET" and url == "https://s3.invalid/file",
+        200,
+        b"hello",
+    )
 
     with use_transport(t):
         assert client().vm("vm_1").sync("/home/user/big") == b"hello"
@@ -1265,14 +1354,24 @@ def test_small_write_streams_to_sync_stream() -> None:
 def test_empty_write_sends_one_empty_chunk() -> None:
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/sync")
-    t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [{
-        "path": "/home/user/empty",
-        "size": 0,
-        "received_bytes": 0,
-        "ranges": [{"start": 0, "end": 0}],
-        "complete": True,
-        "written": True,
-    }]})
+    t.add_json(
+        predicate,
+        200,
+        {
+            "ok": True,
+            "op": "write",
+            "results": [
+                {
+                    "path": "/home/user/empty",
+                    "size": 0,
+                    "received_bytes": 0,
+                    "ranges": [{"start": 0, "end": 0}],
+                    "complete": True,
+                    "written": True,
+                }
+            ],
+        },
+    )
 
     with use_transport(t):
         # `sync()` streams now; the inline write machinery stays reachable via
@@ -1290,24 +1389,32 @@ def test_mid_size_write_inlines_chunks_in_one_request() -> None:
     payload = b"A" * (sdk.CHUNK_SIZE + 1)
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/sync")
-    t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [
+    t.add_json(
+        predicate,
+        200,
         {
-            "path": "/home/user/big",
-            "size": len(payload),
-            "received_bytes": sdk.CHUNK_SIZE,
-            "ranges": [{"start": 0, "end": sdk.CHUNK_SIZE}],
-            "complete": False,
-            "written": False,
+            "ok": True,
+            "op": "write",
+            "results": [
+                {
+                    "path": "/home/user/big",
+                    "size": len(payload),
+                    "received_bytes": sdk.CHUNK_SIZE,
+                    "ranges": [{"start": 0, "end": sdk.CHUNK_SIZE}],
+                    "complete": False,
+                    "written": False,
+                },
+                {
+                    "path": "/home/user/big",
+                    "size": len(payload),
+                    "received_bytes": len(payload),
+                    "ranges": [{"start": 0, "end": len(payload)}],
+                    "complete": True,
+                    "written": True,
+                },
+            ],
         },
-        {
-            "path": "/home/user/big",
-            "size": len(payload),
-            "received_bytes": len(payload),
-            "ranges": [{"start": 0, "end": len(payload)}],
-            "complete": True,
-            "written": True,
-        },
-    ]})
+    )
 
     with use_transport(t):
         # `sync()` streams now; the inline write machinery stays reachable via
@@ -1499,17 +1606,29 @@ def test_per_entry_internal_error_retries(monkeypatch) -> None:
     }
     predicate = lambda method, url: method == "POST" and url.endswith("/sync")
     t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [transient]})
-    t.add_json(predicate, 200, {"ok": True, "op": "write", "results": [{
-        "path": "/home/user/x",
-        "size": 5,
-        "received_bytes": 5,
-        "ranges": [{"start": 0, "end": 5}],
-        "complete": True,
-        "written": True,
-    }]})
+    t.add_json(
+        predicate,
+        200,
+        {
+            "ok": True,
+            "op": "write",
+            "results": [
+                {
+                    "path": "/home/user/x",
+                    "size": 5,
+                    "received_bytes": 5,
+                    "ranges": [{"start": 0, "end": 5}],
+                    "complete": True,
+                    "written": True,
+                }
+            ],
+        },
+    )
 
     with use_transport(t):
-        sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm")._sync_write_inline("/home/user/x", b"hello")
+        sdk.Arker(api_key="k", base_url="https://test.invalid/api", retry={"attempts": 2}).vm("vm")._sync_write_inline(
+            "/home/user/x", b"hello"
+        )
 
     assert len(t.calls) == 2
 
@@ -1519,7 +1638,13 @@ def test_get_and_set_policies() -> None:
     t.add_json(
         lambda method, url: method == "GET" and url == "https://test.invalid/api/v1/vms/vm_1/policies",
         200,
-        {"policies": [], "secrets": {}, "hostname": None, "mitm_domains": [], "warnings": []},
+        {
+            "policies": [],
+            "secrets": {},
+            "hostname": None,
+            "mitm_domains": [],
+            "warnings": [],
+        },
     )
     with use_transport(t):
         doc = client().vm("vm_1").get_policies()
@@ -1529,7 +1654,13 @@ def test_get_and_set_policies() -> None:
         lambda method, url: method == "PUT" and url == "https://test.invalid/api/v1/vms/vm_1/policies",
         200,
         {
-            "policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}],
+            "policies": [
+                {
+                    "type": "outbound",
+                    "match": {"hosts": ["example.com"]},
+                    "action": "allow",
+                }
+            ],
             "secrets": {},
             "hostname": None,
             "mitm_domains": ["example.com"],
@@ -1537,9 +1668,21 @@ def test_get_and_set_policies() -> None:
         },
     )
     with use_transport(t):
-        updated = client().vm("vm_1").set_policies({
-            "policies": [{"type": "outbound", "match": {"hosts": ["example.com"]}, "action": "allow"}],
-        })
+        updated = (
+            client()
+            .vm("vm_1")
+            .set_policies(
+                {
+                    "policies": [
+                        {
+                            "type": "outbound",
+                            "match": {"hosts": ["example.com"]},
+                            "action": "allow",
+                        }
+                    ],
+                }
+            )
+        )
     # Regression coverage for a bug found writing this test: `PolicyDoc.policies`
     # is typed `list[PolicyEntry] | None`. `_decode_value`'s Union branch used to
     # only recurse when a member was itself a bare dataclass type — `list[PolicyEntry]`
@@ -1786,7 +1929,11 @@ def test_run_and_get_run_agree_on_binary_output() -> None:
     )
     stored_body = _binary_run_body(PNG_1X1)
     stored_body.update({"run_id": "run_1", "state": "completed", "started_at": "now"})
-    t.add_json(lambda method, url: method == "GET" and url.endswith("/runs/run_1"), 200, stored_body)
+    t.add_json(
+        lambda method, url: method == "GET" and url.endswith("/runs/run_1"),
+        200,
+        stored_body,
+    )
 
     with use_transport(t):
         vm = client().vm("vm_1")
@@ -1855,10 +2002,10 @@ def test_connect_pty_defaults_to_plain_text_env() -> None:
     t.add_json(capture, 200, {"session_id": "s1", "vm_id": "vm1", "state": "idle"})
     with use_transport(t):
         vm = client().vm("vm1")
-        try:
-            vm.connect_pty()          # no websocket-client / no server: the
-        except Exception:             # session POST still happens first
-            pass
+        # No websocket-client and no server, but the session POST still
+        # happens first, which is what this asserts on.
+        with contextlib.suppress(Exception):
+            vm.connect_pty()
         for call in getattr(t, "calls", []):
             if str(call).endswith("/sessions") or "/sessions" in str(call):
                 seen["hit"] = True
@@ -2048,15 +2195,33 @@ def test_retry_after_hint_drives_the_actual_sleep() -> None:
     # to the delay, or the hint silently never applies. Lower bound only.
     t = FakeTransport()
     predicate = lambda method, url: method == "POST" and url.endswith("/v1/fork")
-    t.add_json(predicate, 503, {"error": {
-        "code": "unavailable", "message": "cold",
-        "retry_after": 0.05, "timestamp": "2026-01-01T00:00:00.000Z",
-    }})
-    t.add_json(predicate, 200, {
-        "vm_id": "vm_child", "owner_org_id": "owner", "created_at": "now",
-        "description": None, "public": False, "state": "idle",
-        "sessions": [session()], "network": {}, "resources": {},
-    })
+    t.add_json(
+        predicate,
+        503,
+        {
+            "error": {
+                "code": "unavailable",
+                "message": "cold",
+                "retry_after": 0.05,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+            }
+        },
+    )
+    t.add_json(
+        predicate,
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "network": {},
+            "resources": {},
+        },
+    )
 
     started = time.monotonic()
     with use_transport(t):
@@ -2070,16 +2235,26 @@ def test_retry_after_hint_drives_the_actual_sleep() -> None:
 
 
 def _unavailable_body(retry_after_s: float) -> dict[str, Any]:
-    return {"error": {
-        "code": "unavailable", "message": "at capacity",
-        "retry_after": retry_after_s, "timestamp": "2026-01-01T00:00:00.000Z",
-    }}
+    return {
+        "error": {
+            "code": "unavailable",
+            "message": "at capacity",
+            "retry_after": retry_after_s,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+        }
+    }
 
 
 def _completed_run_body() -> dict[str, Any]:
-    return {"run_id": "run_q", "state": "completed", "exit_code": 0,
-            "stdout": "ok", "stdout_encoding": "utf-8",
-            "stderr": "", "stderr_encoding": "utf-8"}
+    return {
+        "run_id": "run_q",
+        "state": "completed",
+        "exit_code": 0,
+        "stdout": "ok",
+        "stdout_encoding": "utf-8",
+        "stderr": "",
+        "stderr_encoding": "utf-8",
+    }
 
 
 def _queueing_client(**retry: Any) -> sdk.Arker:
@@ -2113,9 +2288,8 @@ def test_queueing_window_drains_then_surfaces_unavailable() -> None:
         t.add_json(predicate, 503, _unavailable_body(1.1))
 
     started = time.monotonic()
-    with use_transport(t):
-        with pytest.raises(sdk.ArkerError) as error:
-            _queueing_client(attempts=4).vm("vm_1").run("true", queueing_timeout=3)
+    with use_transport(t), pytest.raises(sdk.ArkerError) as error:
+        _queueing_client(attempts=4).vm("vm_1").run("true", queueing_timeout=3)
     elapsed = time.monotonic() - started
     assert error.value.code == "unavailable"
     assert error.value.status == 503
@@ -2129,9 +2303,8 @@ def test_queueing_timeout_respects_retry_false() -> None:
     predicate = lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs")
     t.add_json(predicate, 503, _unavailable_body(0.05))
 
-    with use_transport(t):
-        with pytest.raises(sdk.ArkerError) as error:
-            client().vm("vm_1").run("true", queueing_timeout=30)
+    with use_transport(t), pytest.raises(sdk.ArkerError) as error:
+        client().vm("vm_1").run("true", queueing_timeout=30)
     assert error.value.code == "unavailable"
     assert len(t.calls) == 1
 
@@ -2139,11 +2312,21 @@ def test_queueing_timeout_respects_retry_false() -> None:
 def test_fork_forwards_queueing_timeout() -> None:
     # fork() passes the caller's retry window to the shared transport.
     t = FakeTransport()
-    t.add_json(lambda method, url: method == "POST" and url.endswith("/v1/fork"), 200, {
-        "vm_id": "vm_child", "owner_org_id": "owner", "created_at": "now",
-        "description": None, "public": False, "state": "idle",
-        "sessions": [session()], "network": {}, "resources": {},
-    })
+    t.add_json(
+        lambda method, url: method == "POST" and url.endswith("/v1/fork"),
+        200,
+        {
+            "vm_id": "vm_child",
+            "owner_org_id": "owner",
+            "created_at": "now",
+            "description": None,
+            "public": False,
+            "state": "idle",
+            "sessions": [session()],
+            "network": {},
+            "resources": {},
+        },
+    )
 
     with use_transport(t):
         client().fork(source_vm_name="ubuntu", queueing_timeout=30)
@@ -2172,12 +2355,14 @@ def test_run_poll_budget_is_unbounded_without_a_caller_timeout() -> None:
     # than as an instantly-expired deadline.
     assert sdk.run_poll_budget_s(-1) is None
 
+
 # ── run(): what bounds the wait, and what does not ──────────────────────────
 # `timeout` is the SERVER-side kill bound (run_command.rs: "timeout: N kills the
 # command after N seconds; zero is unbounded"). The SDK used to substitute a
 # 3600s client deadline when it was unset, which raised `timeout` on runs the
 # service was still executing — an hour-long stall on a deliberately unbounded
 # server run. These pin the corrected contract in both directions.
+
 
 def test_unset_timeout_never_gives_up_on_a_still_running_run(monkeypatch) -> None:
     """No `timeout` = no client deadline. The poll loop must keep waiting.
@@ -2187,28 +2372,40 @@ def test_unset_timeout_never_gives_up_on_a_still_running_run(monkeypatch) -> Non
     """
     monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
     clock = {"t": 0.0}
+
     # Each read jumps an hour, so any surviving 3600s-style deadline trips fast.
     def fake_monotonic() -> float:
         clock["t"] += 3600.0
         return clock["t"]
+
     monkeypatch.setattr(sdk.time, "monotonic", fake_monotonic)
 
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
-        200, {"run_id": "run_srv", "state": "running"},
+        200,
+        {"run_id": "run_srv", "state": "running"},
     )
-    running = {"run_id": "run_srv", "state": "running", "started_at": "now",
-               "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
-               "stderr": "", "stderr_encoding": "utf-8"}
+    running = {
+        "run_id": "run_srv",
+        "state": "running",
+        "started_at": "now",
+        "exit_code": None,
+        "stdout": "",
+        "stdout_encoding": "utf-8",
+        "stderr": "",
+        "stderr_encoding": "utf-8",
+    }
     for _ in range(25):  # far more polls than any hour-based budget would allow
         t.add_json(
             lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_srv"),
-            200, running,
+            200,
+            running,
         )
     t.add_json(
         lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_srv"),
-        200, {**running, "state": "completed", "exit_code": 0, "stdout": "bye\n"},
+        200,
+        {**running, "state": "completed", "exit_code": 0, "stdout": "bye\n"},
     )
 
     with use_transport(t):
@@ -2228,22 +2425,33 @@ def test_explicit_timeout_still_bounds_the_wait(monkeypatch) -> None:
     """
     monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
     clock = {"t": 0.0}
+
     def fake_monotonic() -> float:
         clock["t"] += 5.0
         return clock["t"]
+
     monkeypatch.setattr(sdk.time, "monotonic", fake_monotonic)
 
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
-        200, {"run_id": "run_bound", "state": "running"},
+        200,
+        {"run_id": "run_bound", "state": "running"},
     )
     for _ in range(60):
         t.add_json(
             lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_bound"),
-            200, {"run_id": "run_bound", "state": "running", "started_at": "now",
-                  "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
-                  "stderr": "", "stderr_encoding": "utf-8"},
+            200,
+            {
+                "run_id": "run_bound",
+                "state": "running",
+                "started_at": "now",
+                "exit_code": None,
+                "stdout": "",
+                "stdout_encoding": "utf-8",
+                "stderr": "",
+                "stderr_encoding": "utf-8",
+            },
         )
 
     with use_transport(t), pytest.raises(sdk.ArkerError) as excinfo:
@@ -2260,12 +2468,19 @@ def test_polling_gives_up_when_the_service_stops_answering(monkeypatch) -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
-        200, {"run_id": "run_gone", "state": "running"},
+        200,
+        {"run_id": "run_gone", "state": "running"},
     )
     for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES + 2):
         t.add_json(
             lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_gone"),
-            503, {"error": {"code": "unavailable", "message": "service temporarily unavailable"}},
+            503,
+            {
+                "error": {
+                    "code": "unavailable",
+                    "message": "service temporarily unavailable",
+                }
+            },
         )
 
     with use_transport(t), pytest.raises(sdk.ArkerError) as excinfo:
@@ -2284,12 +2499,20 @@ def test_a_poll_blip_does_not_end_an_unbounded_wait(monkeypatch) -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
-        200, {"run_id": "run_blip", "state": "running"},
+        200,
+        {"run_id": "run_blip", "state": "running"},
     )
     is_get = lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_blip")
-    running = {"run_id": "run_blip", "state": "running", "started_at": "now",
-               "exit_code": None, "stdout": "", "stdout_encoding": "utf-8",
-               "stderr": "", "stderr_encoding": "utf-8"}
+    running = {
+        "run_id": "run_blip",
+        "state": "running",
+        "started_at": "now",
+        "exit_code": None,
+        "stdout": "",
+        "stdout_encoding": "utf-8",
+        "stderr": "",
+        "stderr_encoding": "utf-8",
+    }
     # Blip, recover, blip again — never MAX consecutive — then finish.
     for _ in range(sdk.RUN_POLL_MAX_CONSECUTIVE_FAILURES - 1):
         t.add_json(is_get, 503, {"error": {"code": "unavailable", "message": "blip"}})
@@ -2321,7 +2544,8 @@ def test_time_to_background_zero_matches_background_true(monkeypatch) -> None:
         t = FakeTransport()
         t.add_json(
             lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
-            200, {"run_id": "run_srv", "state": "running"},
+            200,
+            {"run_id": "run_srv", "state": "running"},
         )
         # Deliberately script NO get_run: any poll would 404 and fail loudly,
         # which is what we want — it proves no polling happened.
@@ -2350,13 +2574,22 @@ def test_the_default_sync_path_still_polls_to_completion(monkeypatch) -> None:
     t = FakeTransport()
     t.add_json(
         lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
-        200, {"run_id": "run_d", "state": "running"},
+        200,
+        {"run_id": "run_d", "state": "running"},
     )
     t.add_json(
         lambda method, url: method == "GET" and url.endswith("/v1/vms/vm_1/runs/run_d"),
-        200, {"run_id": "run_d", "state": "completed", "started_at": "now", "exit_code": 0,
-              "stdout": "fin\n", "stdout_encoding": "utf-8", "stderr": "",
-              "stderr_encoding": "utf-8"},
+        200,
+        {
+            "run_id": "run_d",
+            "state": "completed",
+            "started_at": "now",
+            "exit_code": 0,
+            "stdout": "fin\n",
+            "stdout_encoding": "utf-8",
+            "stderr": "",
+            "stderr_encoding": "utf-8",
+        },
     )
 
     with use_transport(t):

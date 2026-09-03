@@ -3,7 +3,15 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from ._compat import CommandResult, UnsupportedMixin, arker_create, arker_get, format_not_found, import_optional, run_command
+from ._compat import (
+    CommandResult,
+    UnsupportedMixin,
+    arker_create,
+    arker_get,
+    format_not_found,
+    import_optional,
+    run_command,
+)
 from .computer import VM
 
 
@@ -58,8 +66,8 @@ class Files(UnsupportedMixin):
             f"cd {quoted} 2>/dev/null || exit 3; "
             "for e in * .*; do "
             '[ "$e" = "." ] && continue; [ "$e" = ".." ] && continue; [ -e "$e" ] || continue; '
-            "if [ -d \"$e\" ]; then t=dir; else t=file; fi; "
-            "printf '%s\t%s\n' \"$t\" \"$e\"; done"
+            'if [ -d "$e" ]; then t=dir; else t=file; fi; '
+            'printf \'%s\t%s\n\' "$t" "$e"; done'
         )
         result = run_command(self._vm, script)
         if result.exit_code != 0:
@@ -102,7 +110,7 @@ class Sandbox(UnsupportedMixin):
         return getattr(module, "Sandbox", None) if module is not None else None
 
     @classmethod
-    def create(cls, template_id: str | None = None, **kwargs: Any) -> "Sandbox":
+    def create(cls, template_id: str | None = None, **kwargs: Any) -> Sandbox:
         timeout = kwargs.pop("timeout", kwargs.pop("timeout_ms", kwargs.pop("timeoutMs", None)))
         arker_config = kwargs.pop("arker", None)
         if kwargs:
@@ -115,11 +123,15 @@ class Sandbox(UnsupportedMixin):
             if native is None:
                 raise
             if template_id is not None:
-                return cls(native=native.create(template_id, timeout=timeout) if timeout is not None else native.create(template_id))
+                return cls(
+                    native=native.create(template_id, timeout=timeout)
+                    if timeout is not None
+                    else native.create(template_id)
+                )
             return cls(native=native.create(timeout=timeout) if timeout is not None else native.create())
 
     @classmethod
-    def connect(cls, sandbox_id: str, **kwargs: Any) -> "Sandbox":
+    def connect(cls, sandbox_id: str, **kwargs: Any) -> Sandbox:
         arker_config = kwargs.pop("arker", None)
         if kwargs:
             unsupported = ", ".join(sorted(kwargs))

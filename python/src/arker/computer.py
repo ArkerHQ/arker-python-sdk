@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import atexit
 import base64
+import contextlib
 import dataclasses
 import gzip
 import hashlib
@@ -23,8 +24,15 @@ import threading
 import time
 import types
 import urllib.parse
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Callable, TypeVar, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import httpx
 
@@ -40,40 +48,33 @@ from .generated.api_models import (
     ErrorResponse,
     Filesystem,
     FilesystemCreateRequest,
-    ListFilesystemsResponse,
     ListFilesystemsParameters,
-    ListOrgRunsResponse,
+    ListFilesystemsResponse,
     ListOrgRunsParameters,
+    ListOrgRunsResponse,
     ListRegionsResponse,
-    ListRunsResponse,
     ListRunsParameters,
-    ListSessionsResponse,
+    ListRunsResponse,
     ListSessionsParameters,
-    ListSyncsResponse,
+    ListSessionsResponse,
     ListSyncsParameters,
-    ListVmsResponse,
+    ListSyncsResponse,
     ListVmsParameters,
-    WhoamiResponse,
-    OrgRunListRow,
     PatchSessionRequest,
     PatchSessionResponse,
     PatchVmRequest,
     PolicyDoc,
     PtyTicketResponse,
-    RegionPlacement,
+    ResourcesInput,
     Run,
     RunRequest,
     RunResponse,
-    RunSummary,
     Session,
     Sync,
     SyncChunkWrite,
     SyncCreateRequest,
     SyncManifestOperationRequest,
     SyncManifestResponse,
-    SyncPresignedWriteCommit,
-    SyncPresignedWriteRequest,
-    SyncPresignedWriteRequestResult,
     SyncReadInlineResponse,
     SyncReadOperationRequest,
     SyncReadPresignedResponse,
@@ -84,10 +85,9 @@ from .generated.api_models import (
     SyncWriteResult,
     Vm,
     VmNetwork,
-    ResourcesInput,
     VmResources,
+    WhoamiResponse,
 )
-
 
 Model = TypeVar("Model")
 
@@ -164,6 +164,8 @@ def run_poll_budget_s(timeout: int | None) -> float | None:
     if timeout is None or timeout <= 0:
         return None
     return timeout + RUN_POLL_MARGIN_S
+
+
 # Terminal run states — RunState ("pending" | "running" | "completed" |
 # "failed" | "cancelled") minus the two NON-terminal states, "pending" and
 # "running". A run is "pending" while it waits behind an earlier run on the
@@ -182,12 +184,19 @@ RETRYABLE_CODES = {
     "stale_route",
     "capacity_unavailable",
 }
-TRANSIENT_HINTS = ("503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException")
+TRANSIENT_HINTS = (
+    "503",
+    "Service Unavailable",
+    "throttle",
+    "SlowDown",
+    "ThrottlingException",
+)
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 DEFAULT_REGION_ENV = "ARKER_REGION"
 DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
 ComputeProvider = str
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
+
 
 @dataclasses.dataclass(frozen=True)
 class RetryOptions:
@@ -261,7 +270,7 @@ class CompletedRunResult:
     # not otherwise be learned: `session_idx` is find-or-create and `session_id`
     # is assigned server-side. None for operation acks, which run no command.
     session_id: str | None = None
-    state: str = "completed"   # "completed" | "failed"; mirrors the run-status (Run) shape
+    state: str = "completed"  # "completed" | "failed"; mirrors the run-status (Run) shape
     # System failure explanation when state is "failed"; distinct from
     # stderr (the program's own error output). None otherwise.
     fail_reason: str | None = None
@@ -309,11 +318,7 @@ def discover_regions(
     retry: RetryOptions | dict[str, Any] | bool | None = None,
 ) -> ListRegionsResponse:
     """Read the public placement catalog without configuring compute or auth."""
-    base_url = _normalize_base_url(
-        control_base_url
-        or _env("ARKER_CONTROL_BASE_URL")
-        or DEFAULT_CONTROL_BASE_URL
-    )
+    base_url = _normalize_base_url(control_base_url or _env("ARKER_CONTROL_BASE_URL") or DEFAULT_CONTROL_BASE_URL)
     payload = _request_json(
         "GET",
         "/v1/regions",
@@ -343,22 +348,14 @@ class Arker:
         resolved_region = _normalize_placement_label("region", raw_region) if raw_region else None
 
         resolved_base_url = explicit_base_url or (
-            _compute_base_url(provider_value, resolved_region)
-            if provider_value and resolved_region
-            else None
+            _compute_base_url(provider_value, resolved_region) if provider_value and resolved_region else None
         )
-        resolved_control_base_url = (
-            control_base_url
-            or _env("ARKER_CONTROL_BASE_URL")
-            or DEFAULT_CONTROL_BASE_URL
-        )
+        resolved_control_base_url = control_base_url or _env("ARKER_CONTROL_BASE_URL") or DEFAULT_CONTROL_BASE_URL
 
         if not resolved_api_key:
             raise ValueError("api_key is required; pass api_key or set ARKER_API_KEY")
         self._api_key = resolved_api_key
-        self._base_url = (
-            _normalize_base_url(resolved_base_url) if resolved_base_url else None
-        )
+        self._base_url = _normalize_base_url(resolved_base_url) if resolved_base_url else None
         self._control_base_url = _normalize_base_url(resolved_control_base_url)
         self._region = resolved_region
         self._provider = provider_value
@@ -391,10 +388,10 @@ class Arker:
         *,
         provider: ComputeProvider | None = None,
         region: str | None = None,
-    ) -> "VM":
+    ) -> VM:
         return VM(self, vm_id, self._base_url_for(vm_id, provider=provider, region=region))
 
-    def fork(self, **options: Any) -> "VM":
+    def fork(self, **options: Any) -> VM:
         """Create a VM from exactly one source accepted by POST /v1/fork."""
         has_context = "context" in options
         context = options.pop("context", None)
@@ -413,7 +410,7 @@ class Arker:
             )
         return self._fork(options, base_url=self.base_url)
 
-    def _fork(self, options: dict[str, Any], *, base_url: str) -> "VM":
+    def _fork(self, options: dict[str, Any], *, base_url: str) -> VM:
         queueing_timeout = options.get("queueing_timeout")
         info = _vm_info(
             self._request(
@@ -421,9 +418,7 @@ class Arker:
                 "/v1/fork",
                 options,
                 base_url=base_url,
-                max_queueing_s=(
-                    queueing_timeout if type(queueing_timeout) is int else None
-                ),
+                max_queueing_s=(queueing_timeout if type(queueing_timeout) is int else None),
                 preserve_nulls=True,
             )
         )
@@ -436,13 +431,13 @@ class Arker:
         fork_options: dict[str, Any],
         *,
         base_url: str,
-    ) -> "VM":
+    ) -> VM:
         from .build import apply_steps
         from .build_spec import DockerfileError, parse_dockerfile
 
         path = os.path.abspath(dockerfile) if os.path.isfile(dockerfile) else None
         if path is not None:
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 text = handle.read()
         else:
             text = dockerfile
@@ -452,13 +447,11 @@ class Arker:
         except DockerfileError as error:
             raise ArkerError("bad_request", f"fork: {error}", 400) from error
 
-        context_root = os.path.abspath(context) if context else (
-            os.path.dirname(path) if path is not None else os.getcwd()
+        context_root = (
+            os.path.abspath(context) if context else (os.path.dirname(path) if path is not None else os.getcwd())
         )
         if not os.path.isdir(context_root):
-            raise ArkerError(
-                "bad_request", f"fork: context is not a directory: {context_root}", 400
-            )
+            raise ArkerError("bad_request", f"fork: context is not a directory: {context_root}", 400)
 
         vm = self._fork(
             {**fork_options, "image": parsed.base_image},
@@ -495,12 +488,14 @@ class Arker:
         vms = []
         for item in payload.get("vms", []):
             info = _vm_info(item)
-            vms.append(VM(
-                self,
-                info.vm_id,
-                self._base_url_for(info.vm_id, provider=info.provider, region=info.region),
-                info,
-            ))
+            vms.append(
+                VM(
+                    self,
+                    info.vm_id,
+                    self._base_url_for(info.vm_id, provider=info.provider, region=info.region),
+                    info,
+                )
+            )
         return VmList(vms=vms, next_cursor=_optional_str(payload.get("next_cursor")))
 
     def list_runs(
@@ -572,10 +567,14 @@ class Arker:
         return VM(self, vm_id, base_url, info)
 
     # ── Filesystems (org-scoped, control-plane) ─────────────────────────
-    def list_filesystems(self, *, cursor: str | None = None, limit: int | None = None, name_prefix: str | None = None) -> ListFilesystemsResponse:
-        parameters = ListFilesystemsParameters(
-            cursor=cursor, limit=limit, name_prefix=name_prefix
-        )
+    def list_filesystems(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        name_prefix: str | None = None,
+    ) -> ListFilesystemsResponse:
+        parameters = ListFilesystemsParameters(cursor=cursor, limit=limit, name_prefix=name_prefix)
         path = _build_query("/v1/filesystems", parameters)
         # Filesystems are region-scoped. Route to
         # the regional endpoint (base_url) rather than the control plane: the
@@ -589,10 +588,20 @@ class Arker:
         return _filesystem(self._request("POST", "/v1/filesystems", request, base_url=self.base_url))
 
     def get_filesystem(self, filesystem_id: str) -> Filesystem:
-        return _filesystem(self._request("GET", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self.base_url))
+        return _filesystem(
+            self._request(
+                "GET",
+                f"/v1/filesystems/{_segment(filesystem_id)}",
+                base_url=self.base_url,
+            )
+        )
 
     def delete_filesystem(self, filesystem_id: str) -> DeleteFilesystemResponse:
-        payload = self._request("DELETE", f"/v1/filesystems/{_segment(filesystem_id)}", base_url=self.base_url)
+        payload = self._request(
+            "DELETE",
+            f"/v1/filesystems/{_segment(filesystem_id)}",
+            base_url=self.base_url,
+        )
         return _decode_model(DeleteFilesystemResponse, payload)
 
     def _request(
@@ -620,14 +629,12 @@ class Arker:
             retry_network_failures=retry_network_failures,
         )
 
-    def _retry_delay(
-        self, attempt: int, error: dict[str, Any] | None = None
-    ) -> float:
+    def _retry_delay(self, attempt: int, error: dict[str, Any] | None = None) -> float:
         return _retry_delay(self._retry, attempt, error)
 
     def _base_url_for(
         self,
-        ref: str,
+        _ref: str,
         *,
         provider: object = None,
         region: str | None = None,
@@ -662,7 +669,13 @@ class VM:
     last_active_at: str | None
     sessions: list[Session] | None
 
-    def __init__(self, client: Arker, vm_id: str, base_url: str | None = None, data: Vm | None = None) -> None:
+    def __init__(
+        self,
+        client: Arker,
+        vm_id: str,
+        base_url: str | None = None,
+        data: Vm | None = None,
+    ) -> None:
         self._client = client
         self.id = vm_id
         self.base_url = base_url or client._base_url_for(vm_id)
@@ -797,14 +810,16 @@ class VM:
             policies=policy_doc,
         )
         headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
-        result = _run_response(self._client._request(
-            "POST",
-            f"{_vm_path(self.id)}/runs",
-            body,
-            base_url=self.base_url,
-            extra_headers=headers,
-            max_queueing_s=queueing_timeout,
-        ))
+        result = _run_response(
+            self._client._request(
+                "POST",
+                f"{_vm_path(self.id)}/runs",
+                body,
+                base_url=self.base_url,
+                extra_headers=headers,
+                max_queueing_s=queueing_timeout,
+            )
+        )
         # The server backgrounds a run that outlived its sync window. When the
         # caller did NOT request background, poll get_run() to a terminal state
         # and hand back the completed run so the synchronous call is
@@ -851,7 +866,7 @@ class VM:
                 raise ArkerError(
                     "timeout",
                     f"run {run_id} did not reach a terminal state within "
-                    f'{int(budget_s)}s; it continues server-side — poll '
+                    f"{int(budget_s)}s; it continues server-side — poll "
                     f'get_run("{run_id}") to retrieve it',
                     0,
                 )
@@ -864,7 +879,7 @@ class VM:
         memory_mib: int | None = None,
         disk_mib: int | None = None,
         vgpu: float | None = None,
-        description: str | None | _UnsetType = _UNSET,
+        description: str | _UnsetType | None = _UNSET,
         ssh_public_keys: list[str] | None = None,
         policies: PolicyDoc | dict[str, Any] | None = None,
     ) -> Vm:
@@ -1010,10 +1025,7 @@ class VM:
                     code = error_body.get("code") or code
                     message = error_body.get("message") or message
             # 413 is the router's body cap, not a transient fault.
-            if (
-                not _is_retryable(status, parsed_error)
-                or attempt == self._client._retry.attempts - 1
-            ):
+            if not _is_retryable(status, parsed_error) or attempt == self._client._retry.attempts - 1:
                 raise ArkerError(code, message, status)
             time.sleep(self._client._retry_delay(attempt, parsed_error))
 
@@ -1049,8 +1061,10 @@ class VM:
     def _sync_read(self, path: str) -> bytes:
         request = SyncReadOperationRequest(op="read", path=path)
         payload = self._client._request(
-            "POST", f"{_vm_path(self.id)}/sync",
-            request, base_url=self.base_url,
+            "POST",
+            f"{_vm_path(self.id)}/sync",
+            request,
+            base_url=self.base_url,
             retry_network_failures=True,
         )
         response = _decode_value(SyncReadResponse, payload)
@@ -1093,8 +1107,10 @@ class VM:
         for attempt in range(self._client._retry.attempts):
             request = SyncWriteOperationRequest(op="write", writes=entries)
             payload = self._client._request(
-                "POST", f"{_vm_path(self.id)}/sync",
-                request, base_url=self.base_url,
+                "POST",
+                f"{_vm_path(self.id)}/sync",
+                request,
+                base_url=self.base_url,
             )
             response = _decode_model(SyncWriteResponse, payload)
             if len(response.results) != len(entries):
@@ -1123,7 +1139,7 @@ class VM:
         remote_dir: str,
         *,
         cache: dict[str, tuple[int, int, str]] | None = None,
-        ignore: "Callable[[str], bool] | None" = None,
+        ignore: Callable[[str], bool] | None = None,
     ) -> SyncDirResult:
         """Recursively sync a local directory INTO this VM at ``remote_dir``,
         rsync-style: fetch the VM's file *manifest* (per-file sha256) in ONE
@@ -1176,19 +1192,20 @@ class VM:
         # only overlapping I/O. Hashing dominates sync_dir on a large tree.
         if len(entries) > 1:
             with ThreadPoolExecutor(max_workers=HASH_CONCURRENCY) as pool:
-                hashes = list(pool.map(
-                    lambda item: _file_hash_cached(item[1][0], item[1][1], item[1][2], cache),
-                    entries,
-                ))
+                hashes = list(
+                    pool.map(
+                        lambda item: _file_hash_cached(item[1][0], item[1][1], item[1][2], cache),
+                        entries,
+                    )
+                )
         else:
             hashes = [
-                _file_hash_cached(abs_path, size, mtime_ns, cache)
-                for _rel, (abs_path, size, mtime_ns) in entries
+                _file_hash_cached(abs_path, size, mtime_ns, cache) for _rel, (abs_path, size, mtime_ns) in entries
             ]
 
         # Diff in sorted order so the tarball is reproducible and the counters
         # are deterministic regardless of which hash finished first.
-        for (rel, (abs_path, size, _mtime_ns)), local_hash in zip(entries, hashes):
+        for (rel, (abs_path, size, _mtime_ns)), local_hash in zip(entries, hashes, strict=True):
             if remote.get(rel) == local_hash:
                 result.skipped += 1
                 continue
@@ -1218,8 +1235,10 @@ class VM:
         into a full sync on exactly the trees where the delta matters most."""
         request = SyncManifestOperationRequest(op="manifest", path=path)
         payload = self._client._request(
-            "POST", f"{_vm_path(self.id)}/sync",
-            request, base_url=self.base_url,
+            "POST",
+            f"{_vm_path(self.id)}/sync",
+            request,
+            base_url=self.base_url,
             retry_network_failures=True,
         )
         response = _decode_model(SyncManifestResponse, payload)
@@ -1252,9 +1271,7 @@ class VM:
             return True
         return compressed / raw < COMPRESSION_WORTH_IT_RATIO
 
-    def _upload_and_extract_tarball(
-        self, changed: list[tuple[str, str]], remote_root: str
-    ) -> None:
+    def _upload_and_extract_tarball(self, changed: list[tuple[str, str]], remote_root: str) -> None:
         """Pack the changed files (arcname = path relative to ``remote_root``)
         into ONE tar, upload it in a single write, and extract it in the guest
         with `tar -x` (which preserves mode/exec bits and creates missing parent
@@ -1298,8 +1315,7 @@ class VM:
             # tarball is removed on success. Missing parent dirs are created by
             # mkdir/tar.
             cmd = (
-                f"set -e; mkdir -p {q(remote_root)}; "
-                f"tar -xf {q(remote_tar)} -C {q(remote_root)}; rm -f {q(remote_tar)}"
+                f"set -e; mkdir -p {q(remote_root)}; tar -xf {q(remote_tar)} -C {q(remote_root)}; rm -f {q(remote_tar)}"
             )
             res = self.run(cmd)
             code = getattr(res, "exit_code", None)
@@ -1314,40 +1330,52 @@ class VM:
                     200,
                 )
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tar_local)
-            except OSError:
-                pass
 
     # ── Syncs: bindings of a filesystem into this VM at a path ────────
-    def list_syncs(self, *, cursor: str | None = None, limit: int | None = None, filesystem_id: str | None = None) -> ListSyncsResponse:
+    def list_syncs(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        filesystem_id: str | None = None,
+    ) -> ListSyncsResponse:
         parameters = ListSyncsParameters(
             id=self.id,
             cursor=cursor,
             limit=limit,
             filesystem_id=filesystem_id,
         )
-        path = _build_query(
-            f"{_vm_path(self.id)}/syncs", parameters, path_fields={"id"}
-        )
+        path = _build_query(f"{_vm_path(self.id)}/syncs", parameters, path_fields={"id"})
         payload = self._client._request("GET", path, base_url=self.base_url)
         return _decode_model(ListSyncsResponse, payload)
 
     def create_sync(self, *, filesystem_id: str, path: str | None = None) -> Sync:
         """Bind a filesystem into this VM at ``path``."""
         request = SyncCreateRequest(filesystem_id=filesystem_id, path=path)
-        payload = self._client._request(
-            "POST", f"{_vm_path(self.id)}/syncs", request, base_url=self.base_url
-        )
+        payload = self._client._request("POST", f"{_vm_path(self.id)}/syncs", request, base_url=self.base_url)
         return _sync(payload)
 
     def delete_sync(self, sync_id: str) -> DeleteSyncResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/syncs/{_segment(sync_id)}", base_url=self.base_url)
+        payload = self._client._request(
+            "DELETE",
+            f"{_vm_path(self.id)}/syncs/{_segment(sync_id)}",
+            base_url=self.base_url,
+        )
         return _decode_model(DeleteSyncResponse, payload)
 
     # ── Runs ──────────────────────────────────────────────────────────
-    def list_runs(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None,
-                  started_after: str | None = None, started_before: str | None = None, completed_after: str | None = None) -> ListRunsResponse:
+    def list_runs(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        state: str | None = None,
+        started_after: str | None = None,
+        started_before: str | None = None,
+        completed_after: str | None = None,
+    ) -> ListRunsResponse:
         parameters = ListRunsParameters(
             id=self.id,
             cursor=cursor,
@@ -1357,9 +1385,7 @@ class VM:
             started_before=started_before,
             completed_after=completed_after,
         )
-        path = _build_query(
-            f"{_vm_path(self.id)}/runs", parameters, path_fields={"id"}
-        )
+        path = _build_query(f"{_vm_path(self.id)}/runs", parameters, path_fields={"id"})
         payload = self._client._request("GET", path, base_url=self.base_url)
         return _decode_model(ListRunsResponse, payload)
 
@@ -1380,33 +1406,45 @@ class VM:
         return _decode_run_record(wire)
 
     def cancel_run(self, run_id: str) -> CancelRunResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/runs/{_segment(run_id)}", base_url=self.base_url)
+        payload = self._client._request(
+            "DELETE",
+            f"{_vm_path(self.id)}/runs/{_segment(run_id)}",
+            base_url=self.base_url,
+        )
         return _decode_model(CancelRunResponse, payload)
 
     # ── Sessions ──────────────────────────────────────────────────────
-    def list_sessions(self, *, cursor: str | None = None, limit: int | None = None, state: str | None = None) -> ListSessionsResponse:
-        parameters = ListSessionsParameters(
-            id=self.id, cursor=cursor, limit=limit, state=state
-        )
-        path = _build_query(
-            f"{_vm_path(self.id)}/sessions", parameters, path_fields={"id"}
-        )
+    def list_sessions(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        state: str | None = None,
+    ) -> ListSessionsResponse:
+        parameters = ListSessionsParameters(id=self.id, cursor=cursor, limit=limit, state=state)
+        path = _build_query(f"{_vm_path(self.id)}/sessions", parameters, path_fields={"id"})
         payload = self._client._request("GET", path, base_url=self.base_url)
         return _decode_model(ListSessionsResponse, payload)
 
     def create_session(self, *, env: dict[str, str] | None = None, cwd: str | None = None) -> Session:
         request = CreateSessionRequest(env=env, cwd=cwd)
-        payload = self._client._request(
-            "POST", f"{_vm_path(self.id)}/sessions", request, base_url=self.base_url
-        )
+        payload = self._client._request("POST", f"{_vm_path(self.id)}/sessions", request, base_url=self.base_url)
         return _session_info(payload)
 
     def get_session(self, session_id: str) -> Session:
-        payload = self._client._request("GET", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
+        payload = self._client._request(
+            "GET",
+            f"{_vm_path(self.id)}/sessions/{_segment(session_id)}",
+            base_url=self.base_url,
+        )
         return _session_info(payload)
 
     def delete_session(self, session_id: str) -> DeleteSessionResponse:
-        payload = self._client._request("DELETE", f"{_vm_path(self.id)}/sessions/{_segment(session_id)}", base_url=self.base_url)
+        payload = self._client._request(
+            "DELETE",
+            f"{_vm_path(self.id)}/sessions/{_segment(session_id)}",
+            base_url=self.base_url,
+        )
         return _decode_model(DeleteSessionResponse, payload)
 
     def update_session(
@@ -1423,9 +1461,7 @@ class VM:
         :meth:`Pty.resize` (which sends an in-band control frame on the live
         WebSocket).
         """
-        request = PatchSessionRequest(
-            cols=cols, rows=rows, timeout_secs=timeout_secs
-        )
+        request = PatchSessionRequest(cols=cols, rows=rows, timeout_secs=timeout_secs)
         payload = self._client._request(
             "PATCH",
             f"{_vm_path(self.id)}/sessions/{_segment(session_id)}",
@@ -1489,9 +1525,7 @@ class VM:
             "rows": _clamp_pty_dimension(rows) if rows is not None else None,
             "command": command,
             "persist": persist,
-            "cancel_ttl_secs": int(cancel_ttl_secs)
-            if cancel_ttl_secs and cancel_ttl_secs > 0
-            else None,
+            "cancel_ttl_secs": int(cancel_ttl_secs) if cancel_ttl_secs and cancel_ttl_secs > 0 else None,
         }
 
         ticket: str | None = None
@@ -1557,8 +1591,7 @@ class Pty:
         except ImportError as error:  # pragma: no cover - import guard
             raise ArkerError(
                 "missing_dependency",
-                "interactive PTY needs the 'websocket-client' package; "
-                "install with: pip install 'arker[pty]'",
+                "interactive PTY needs the 'websocket-client' package; install with: pip install 'arker[pty]'",
                 0,
             ) from error
 
@@ -1586,9 +1619,7 @@ class Pty:
             on_error=self._handle_error,
             on_close=self._handle_close,
         )
-        self._thread = threading.Thread(
-            target=self._ws.run_forever, name="arker-pty", daemon=True
-        )
+        self._thread = threading.Thread(target=self._ws.run_forever, name="arker-pty", daemon=True)
         self._thread.start()
 
         if not self._open.wait(timeout=connect_timeout):
@@ -1623,11 +1654,13 @@ class Pty:
 
     def resize(self, cols: int, rows: int) -> None:
         """Resize the terminal (a JSON control frame)."""
-        self._send_control({
-            "type": "resize",
-            "cols": _clamp_pty_dimension(cols),
-            "rows": _clamp_pty_dimension(rows),
-        })
+        self._send_control(
+            {
+                "type": "resize",
+                "cols": _clamp_pty_dimension(cols),
+                "rows": _clamp_pty_dimension(rows),
+            }
+        )
 
     def kill(self) -> None:
         """Destroy the shell (a JSON ``kill`` control frame)."""
@@ -1703,12 +1736,8 @@ _http_client = httpx.Client(
 atexit.register(_http_client.close)
 
 
-def _http(
-    method: str, url: str, headers: dict[str, str], data: bytes | None
-) -> tuple[int, bytes]:
-    with _http_client.stream(
-        method, url, headers=headers, content=data, timeout=REQUEST_TIMEOUT_S
-    ) as response:
+def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) -> tuple[int, bytes]:
+    with _http_client.stream(method, url, headers=headers, content=data, timeout=REQUEST_TIMEOUT_S) as response:
         try:
             content = response.read()
         except httpx.RequestError:
@@ -1747,15 +1776,9 @@ def _request_json(
 
     # queueing_timeout swaps the retry budget from attempt count to wall-clock
     # window; retry=False (attempts = 1) still means exactly one request.
-    deadline = (
-        time.monotonic() + max_queueing_s
-        if max_queueing_s and retry.attempts > 1
-        else None
-    )
+    deadline = time.monotonic() + max_queueing_s if max_queueing_s and retry.attempts > 1 else None
     should_retry_network_failures = (
-        method.upper() == "GET"
-        if retry_network_failures is None
-        else retry_network_failures
+        method.upper() == "GET" if retry_network_failures is None else retry_network_failures
     )
 
     attempt = 0
@@ -1795,9 +1818,7 @@ def _request_json(
         return payload
 
 
-def _can_retry_again(
-    retry: RetryOptions, attempt: int, deadline: float | None, delay_s: float
-) -> bool:
+def _can_retry_again(retry: RetryOptions, attempt: int, deadline: float | None, delay_s: float) -> bool:
     """No window: the attempt count is the budget. With one: the retry's
     sleep must still land inside the window."""
     if deadline is not None:
@@ -1805,9 +1826,7 @@ def _can_retry_again(
     return attempt < retry.attempts - 1
 
 
-def _retry_delay(
-    retry: RetryOptions, attempt: int, error: dict[str, Any] | None = None
-) -> float:
+def _retry_delay(retry: RetryOptions, attempt: int, error: dict[str, Any] | None = None) -> float:
     """Wait before the next attempt.
 
     The server's hint beats backoff, bounded by an explicitly configured
@@ -1846,11 +1865,7 @@ def _build_query(
     values = _drop_none(parameters)
     if not isinstance(values, dict):
         raise TypeError("operation parameters must serialize to an object")
-    pairs = [
-        (key, str(value))
-        for key, value in values.items()
-        if key not in path_fields
-    ]
+    pairs = [(key, str(value)) for key, value in values.items() if key not in path_fields]
     qs = urllib.parse.urlencode(pairs)
     return f"{path}?{qs}" if qs else path
 
@@ -1893,7 +1908,9 @@ def _optional_compute_provider(value: object) -> ComputeProvider | None:
         return None
 
 
-def _normalize_retry(retry: RetryOptions | dict[str, Any] | bool | None) -> RetryOptions:
+def _normalize_retry(
+    retry: RetryOptions | dict[str, Any] | bool | None,
+) -> RetryOptions:
     if retry is False:
         return RetryOptions(attempts=1, base_delay_s=0, max_delay_s=0, jitter_s=0)
     if isinstance(retry, RetryOptions):
@@ -1970,9 +1987,7 @@ def _drop_none(value: Any) -> Any:
     if value is _EXPLICIT_NULL:
         return None
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        value = {
-            field.name: getattr(value, field.name) for field in dataclasses.fields(value)
-        }
+        value = {field.name: getattr(value, field.name) for field in dataclasses.fields(value)}
     if isinstance(value, list):
         return [_drop_none(item) for item in value]
     if isinstance(value, dict):
@@ -1985,9 +2000,7 @@ def _decode_model(model: type[Model], payload: dict[str, Any]) -> Model:
     fields = dataclasses.fields(model)
     hints = get_type_hints(model)
     values = {
-        field.name: _decode_value(hints[field.name], payload[field.name])
-        for field in fields
-        if field.name in payload
+        field.name: _decode_value(hints[field.name], payload[field.name]) for field in fields if field.name in payload
     }
     return model(**values)
 
@@ -2004,11 +2017,7 @@ def _decode_value(annotation: Any, value: Any) -> Any:
         return {key: _decode_value(value_type, item) for key, item in value.items()}
     if origin is types.UnionType:
         args = get_args(annotation)
-        model_types = [
-            member
-            for member in args
-            if isinstance(member, type) and dataclasses.is_dataclass(member)
-        ]
+        model_types = [member for member in args if isinstance(member, type) and dataclasses.is_dataclass(member)]
         if isinstance(value, dict):
             candidates: list[tuple[tuple[int, int], type[Any]]] = []
             for model_type in model_types:
@@ -2017,12 +2026,14 @@ def _decode_value(annotation: Any, value: Any) -> Any:
                 required = {
                     field.name
                     for field in fields
-                    if field.default is dataclasses.MISSING
-                    and field.default_factory is dataclasses.MISSING
+                    if field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING
                 }
                 if required.issubset(value):
                     candidates.append(
-                        ((len(required), len(field_names.intersection(value))), model_type)
+                        (
+                            (len(required), len(field_names.intersection(value))),
+                            model_type,
+                        )
                     )
             if candidates:
                 _, model_type = max(candidates, key=lambda candidate: candidate[0])
@@ -2064,11 +2075,7 @@ def _extract_error(payload: Any) -> dict[str, Any] | None:
         "code": response.error.code,
         "message": response.error.message,
         "retry_after": _wire_retry_after(response.error.retry_after),
-        "retryable": (
-            response.error.retryable
-            if isinstance(response.error.retryable, bool)
-            else None
-        ),
+        "retryable": (response.error.retryable if isinstance(response.error.retryable, bool) else None),
     }
 
 

@@ -26,7 +26,6 @@ import os
 import secrets
 import sys
 import time
-from pathlib import Path
 
 import arker.computer as sdk  # local-import; install with pip install -e .
 
@@ -38,7 +37,10 @@ SOURCE_VM = os.environ.get("ARKER_SOURCE_VM")
 N = int(os.environ.get("STRESS_N", "30"))
 
 if not API_KEY or not (BASE_URL or (PROVIDER and REGION)) or not SOURCE_VM:
-    print("ARKER_API_KEY, ARKER_PROVIDER + ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required", file=sys.stderr)
+    print(
+        "ARKER_API_KEY, ARKER_PROVIDER + ARKER_REGION or ARKER_BASE_URL, and ARKER_SOURCE_VM are required",
+        file=sys.stderr,
+    )
     sys.exit(2)
 
 
@@ -48,27 +50,37 @@ def install_http_tracer() -> list[dict]:
     run."""
     trace: list[dict] = []
     original = sdk._http
+
     def traced(method, url, headers, body):
         t0 = time.monotonic()
         try:
             status, raw = original(method, url, headers, body)
             elapsed = time.monotonic() - t0
-            trace.append({
-                "method": method, "url": url, "status": status,
-                "elapsed_ms": elapsed * 1000,
-                "body_size": len(body) if body else 0,
-                "resp_size": len(raw) if raw else 0,
-                "is_transient": status in sdk.RETRYABLE_HTTP,
-            })
+            trace.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "status": status,
+                    "elapsed_ms": elapsed * 1000,
+                    "body_size": len(body) if body else 0,
+                    "resp_size": len(raw) if raw else 0,
+                    "is_transient": status in sdk.RETRYABLE_HTTP,
+                }
+            )
             return status, raw
         except Exception as e:
             elapsed = time.monotonic() - t0
-            trace.append({
-                "method": method, "url": url, "status": -1,
-                "elapsed_ms": elapsed * 1000,
-                "exception": str(e),
-            })
+            trace.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "status": -1,
+                    "elapsed_ms": elapsed * 1000,
+                    "exception": str(e),
+                }
+            )
             raise
+
     sdk._http = traced
     return trace
 
@@ -100,17 +112,24 @@ def run_phase(label: str, fn, n: int, trace: list[dict]) -> None:
             err_code = e.code
             by_code[e.code] = by_code.get(e.code, 0) + 1
         elapsed_ms = (time.monotonic() - t0) * 1000
-        op_records.append({
-            "i": i, "ok": ok, "err": err_code, "ms": elapsed_ms,
-            "http_calls": list(trace[trace_idx_start:]),
-        })
+        op_records.append(
+            {
+                "i": i,
+                "ok": ok,
+                "err": err_code,
+                "ms": elapsed_ms,
+                "http_calls": list(trace[trace_idx_start:]),
+            }
+        )
     times = [r["ms"] for r in op_records]
     successes = sum(1 for r in op_records if r["ok"])
     print(f"  successes: {successes}/{n}")
-    print(f"  p50={percentile(times, 50):.0f}ms  "
-          f"p90={percentile(times, 90):.0f}ms  "
-          f"p99={percentile(times, 99):.0f}ms  "
-          f"max={max(times):.0f}ms")
+    print(
+        f"  p50={percentile(times, 50):.0f}ms  "
+        f"p90={percentile(times, 90):.0f}ms  "
+        f"p99={percentile(times, 99):.0f}ms  "
+        f"max={max(times):.0f}ms"
+    )
     if by_code:
         print(f"  failures by code: {by_code}")
     # Anatomy of the slowest op — what HTTP calls happened, in what order,
@@ -122,9 +141,11 @@ def run_phase(label: str, fn, n: int, trace: list[dict]) -> None:
             url_short = h["url"].split("/v1/")[-1] if "/v1/" in h["url"] else h["url"]
             url_short = url_short[:60]
             tag = "↻" if h.get("is_transient") else " "
-            print(f"     {j+1}. {tag} {h['method']:5s} /{url_short:60s} "
-                  f"→ {h['status']:>4d}  in {h['elapsed_ms']:>7.0f}ms  "
-                  f"(body={h.get('body_size',0)}B resp={h.get('resp_size',0)}B)")
+            print(
+                f"     {j + 1}. {tag} {h['method']:5s} /{url_short:60s} "
+                f"→ {h['status']:>4d}  in {h['elapsed_ms']:>7.0f}ms  "
+                f"(body={h.get('body_size', 0)}B resp={h.get('resp_size', 0)}B)"
+            )
 
 
 def main() -> None:
@@ -144,13 +165,13 @@ def main() -> None:
             payload = f"hello-{i:04d}".encode()
             vm.sync(f"/home/user/probe-{i:04d}.txt", payload)
 
-        run_phase("WRITE 30× tiny files (chunk fast-path)", write_one, N, trace)
+        run_phase("WRITE 30x tiny files (chunk fast-path)", write_one, N, trace)
 
         # Phase 2: read those same files back. Server returns inline utf8.
         def read_one(i: int) -> None:
             vm.sync(f"/home/user/probe-{i:04d}.txt")
 
-        run_phase("READ 30× tiny files (inline)", read_one, N, trace)
+        run_phase("READ 30x tiny files (inline)", read_one, N, trace)
 
         # Phase 3: alternating write/read on a single path. Most stressful
         # because each op contends on state.log CAS for one VM.
@@ -166,7 +187,7 @@ def main() -> None:
         def med_write(i: int) -> None:
             vm.sync(f"/home/user/med-{i}.bin", secrets.token_bytes(6 * 1024 * 1024))
 
-        run_phase("WRITE 10× 6MB files (multi-chunk → finalize)", med_write, min(10, N), trace)
+        run_phase("WRITE 10x 6MB files (multi-chunk → finalize)", med_write, min(10, N), trace)
 
     finally:
         try:

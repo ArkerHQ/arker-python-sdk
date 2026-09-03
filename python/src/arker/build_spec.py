@@ -39,12 +39,12 @@ Refused by name, rather than silently dropped:
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import shlex
-import io
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator
 
 from dockerfile_parse import DockerfileParser
 
@@ -185,8 +185,16 @@ _INERT = {"LABEL", "EXPOSE"}
 
 #: Everything this SDK knows about. Anything else is named in the error.
 _KNOWN = {
-    "FROM", "RUN", "COPY", "ADD", "ENV", "WORKDIR",
-    "USER", "ARG", "ENTRYPOINT", "CMD",
+    "FROM",
+    "RUN",
+    "COPY",
+    "ADD",
+    "ENV",
+    "WORKDIR",
+    "USER",
+    "ARG",
+    "ENTRYPOINT",
+    "CMD",
 } | _INERT
 
 
@@ -336,9 +344,7 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
                     "need multi-stage builds, which this path does not implement"
                 )
             if len(tokens) < 2:
-                raise DockerfileError(
-                    f"COPY requires at least one source and a destination, got: {argument}"
-                )
+                raise DockerfileError(f"COPY requires at least one source and a destination, got: {argument}")
             steps.append(Copy(tokens[:-1], tokens[-1], chown=flags.get("chown")))
 
         elif directive == "ADD":

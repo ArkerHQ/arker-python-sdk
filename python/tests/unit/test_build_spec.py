@@ -29,13 +29,7 @@ from arker.build_spec import (
 
 
 def test_parses_a_plain_single_stage_dockerfile():
-    parsed = parse_dockerfile(
-        "FROM ubuntu:24.04\n"
-        "RUN apt-get update\n"
-        "ENV FOO=bar\n"
-        "WORKDIR /app\n"
-        "USER root\n"
-    )
+    parsed = parse_dockerfile("FROM ubuntu:24.04\nRUN apt-get update\nENV FOO=bar\nWORKDIR /app\nUSER root\n")
     assert parsed.base_image == "ubuntu:24.04"
     assert parsed.steps == [
         Run("apt-get update"),
@@ -46,13 +40,7 @@ def test_parses_a_plain_single_stage_dockerfile():
 
 
 def test_comments_and_blank_lines_are_ignored():
-    parsed = parse_dockerfile(
-        "# leading comment\n"
-        "\n"
-        "FROM ubuntu:24.04\n"
-        "   # indented comment\n"
-        "RUN echo hi\n"
-    )
+    parsed = parse_dockerfile("# leading comment\n\nFROM ubuntu:24.04\n   # indented comment\nRUN echo hi\n")
     assert parsed.base_image == "ubuntu:24.04"
     assert parsed.steps == [Run("echo hi")]
 
@@ -64,11 +52,7 @@ def test_line_continuations_join_into_one_instruction():
     shell here, but collapsing would corrupt a command where the spaces sit
     inside quotes (`RUN echo "a    b"`). One Run step is what matters.
     """
-    parsed = parse_dockerfile(
-        "FROM ubuntu:24.04\n"
-        "RUN apt-get update \\\n"
-        "    && apt-get install -y curl\n"
-    )
+    parsed = parse_dockerfile("FROM ubuntu:24.04\nRUN apt-get update \\\n    && apt-get install -y curl\n")
     assert parsed.steps == [Run("apt-get update     && apt-get install -y curl")]
 
 
@@ -139,9 +123,7 @@ def test_add_with_a_url_is_kept_as_a_fetch():
 
 
 def test_entrypoint_and_cmd_are_recorded():
-    parsed = parse_dockerfile(
-        'FROM ubuntu:24.04\nENTRYPOINT ["/bin/sh"]\nCMD ["-c", "true"]\n'
-    )
+    parsed = parse_dockerfile('FROM ubuntu:24.04\nENTRYPOINT ["/bin/sh"]\nCMD ["-c", "true"]\n')
     assert parsed.steps == [Entrypoint("/bin/sh"), Cmd("-c true")]
 
 
@@ -152,9 +134,7 @@ def test_rejects_a_dockerfile_with_no_from():
 
 def test_rejects_multi_stage_builds():
     with pytest.raises(DockerfileError, match="multi-stage"):
-        parse_dockerfile(
-            "FROM ubuntu:24.04 AS build\nRUN echo hi\nFROM alpine:3.20\n"
-        )
+        parse_dockerfile("FROM ubuntu:24.04 AS build\nRUN echo hi\nFROM alpine:3.20\n")
 
 
 def test_rejects_cross_stage_copy():
