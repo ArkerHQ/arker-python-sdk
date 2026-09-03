@@ -1,21 +1,14 @@
 name: CI
 
-# Runs on every PR and on main after merge. `pull_request` defaults to
-# opened + synchronize + reopened, and `synchronize` fires on every push to the
-# PR branch — so a new commit re-runs this with no extra wiring.
-#
-# The jobs mirror ./scripts/check-local, split so a red X names the thing that
-# broke. Live suites (python `test_e2e.py`/`test_presigned.py`, the TS
-# `*-live.ts` tests) skip themselves without ARKER_API_KEY, so nothing here
-# needs a credential or touches real infrastructure.
+# Mirrors ./scripts/check-local, split so a red X names what broke.
+# `pull_request` includes synchronize, so a new commit on a PR re-runs this.
 
 on:
   pull_request:
   push:
     branches: [main]
 
-# A PR that gets three pushes in a minute only needs the last one. main is
-# never cancelled — post-merge results are the record.
+# Supersede a PR's earlier runs; never cancel main.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -24,8 +17,7 @@ permissions:
   contents: read
 
 jobs:
-  # Repo-level tests, not SDK tests: contract generation, the CLI examples and
-  # the React demo. They drive scripts/ and bun, so they need the full toolchain.
+  # Repo tooling, not the SDK: contract generation, CLI examples, React demo.
   contract:
     name: contract + tooling
     runs-on: ubuntu-latest
@@ -43,8 +35,7 @@ jobs:
       - name: Repo tooling tests
         run: uv run --project python --locked --group dev --extra test python -m pytest tests
 
-  # The Python SDK's own suite, run from python/ so it collects python/tests and
-  # nothing else. Needs no bun and no toolchain beyond uv.
+  # Run from python/ so it collects the SDK suite only. No bun needed.
   python:
     name: python
     runs-on: ubuntu-latest
@@ -83,6 +74,9 @@ jobs:
         with:
           bun-version: 1.3.8
       - run: bun ci
+      # cli imports @arker-ai/sdk; its types must exist before typecheck.
+      - run: bun run build:sdk
+        working-directory: typescript
       - run: bun run typecheck
         working-directory: cli
       - run: bun run test

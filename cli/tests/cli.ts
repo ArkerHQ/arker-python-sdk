@@ -34,20 +34,14 @@ const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", impor
 const cliEntry = "dist/cli.js";
 const cliRuntime = "node";
 
-// The CLI is a real process, so it uses the SDK's real transport: it speaks
-// h2c first and only falls back to fetch for SAFE methods (#126 — a mutation
-// whose outcome is unknown must not be replayed on another transport). An
-// HTTP/1.1-only double therefore fails every POST/PATCH/DELETE before it is
-// even sent, which says nothing about the CLI. Serve HTTP/2, like the SDK's
-// own tests/http2.ts does, so these exercise the transport the CLI really uses.
-//
-// `http1: true` is for the one case HTTP/2 cannot express: a WebSocket upgrade.
+// The CLI speaks h2c and only falls back to fetch for safe methods (#126), so an
+// HTTP/1.1-only double fails every mutation. `http1: true` covers what HTTP/2
+// cannot express here: WebSocket upgrades, and /sync-stream's plain fetch.
 async function withServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
   fn: (baseUrl: string, server: Server) => Promise<void>,
   options: { http1?: boolean } = {},
 ): Promise<void> {
-  // http2.createServer's compatibility API hands the same (req, res) pair.
   const server = (options.http1
     ? createHttp1Server(handler)
     : createHttp2Server(handler as never)) as Server;
