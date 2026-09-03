@@ -45,9 +45,8 @@ Issues = "https://github.com/ArkerHQ/arker-sdk/issues"
 packages = ["src/arker"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-# `test_e2e.py` and `test_presigned.py` hit a live deployment; skip
-# unless ARKER_API_KEY is set in the environment.
+# tests/e2e hits a live deployment: run it explicitly, with ARKER_API_KEY set.
+testpaths = ["tests/unit"]
 addopts = "-q"
 
 [dependency-groups]

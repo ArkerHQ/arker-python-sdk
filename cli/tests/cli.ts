@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttp1Server, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttp2Server } from "node:http2";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,8 +37,11 @@ const cliRuntime = "node";
 async function withServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
   fn: (baseUrl: string, server: Server) => Promise<void>,
+  options: { http1?: boolean } = {},
 ): Promise<void> {
-  const server = createServer(handler);
+  const server = (options.http1
+    ? createHttp1Server(handler)
+    : createHttp2Server(handler as never)) as Server;
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -53,6 +57,7 @@ async function withServer(
 async function withCapturedServer(
   responder: (request: CapturedRequest, res: ServerResponse) => void,
   fn: (baseUrl: string, requests: CapturedRequest[]) => Promise<void>,
+  options: { http1?: boolean } = {},
 ): Promise<void> {
   const requests: CapturedRequest[] = [];
   await withServer(async (req, res) => {
@@ -67,7 +72,7 @@ async function withCapturedServer(
     requests.push(request);
     res.setHeader("content-type", "application/json");
     responder(request, res);
-  }, async (baseUrl) => fn(baseUrl, requests));
+  }, async (baseUrl) => fn(baseUrl, requests), options);
 }
 
 async function runCli(baseUrl: string | undefined, args: string[], options: CliOptions = {}): Promise<CliResult> {
@@ -780,7 +785,7 @@ async function testEmptyPipedInputWritesZeroBytes(): Promise<void> {
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.method, "POST");
     assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/sync-stream?path=%2Ftmp%2Fexample.txt&size=0");
-  });
+  }, { http1: true });
 }
 
 // `-` is the explicit "write stdin" form. It exists so a caller never has to
@@ -794,7 +799,7 @@ async function testSyncDashWritesStdin(): Promise<void> {
     assert.equal(result.code, 0, result.stderr);
     assert.equal(stdoutText(result), "wrote 3 bytes to /tmp/a.txt\n");
     assert.equal(requests[0]?.url, "/api/v1/vms/vm_1/sync-stream?path=%2Ftmp%2Fa.txt&size=3");
-  });
+  }, { http1: true });
 }
 
 // --read is the explicit "read" form: it must win even when data is piped in,
@@ -874,7 +879,7 @@ async function testNoPipeReadsFileBytes(): Promise<void> {
       url: "/api/v1/vms/vm_1/sync",
       body: { op: "read", path: "/tmp/example.bin" },
     }]);
-  });
+  }, { http1: true });
 }
 
 async function testShellSetupUsesPackagedCli(): Promise<void> {
@@ -894,7 +899,7 @@ async function testShellSetupUsesPackagedCli(): Promise<void> {
     });
     const result = await runCli(baseUrl, ["shell", "--session-id", "session_1", "vm_1"]);
     assert.equal(result.code, 0, result.stderr);
-  });
+  }, { http1: true });
   assert.deepEqual(requests, [{ method: "GET", url: "/api/v1/vms/vm_1", body: undefined }]);
   assert.match(upgradeUrl ?? "", /^\/api\/v1\/vms\/vm_1\/sessions\/session_1\/pty\?/);
   assert.equal(upgradeAuthorization, "Bearer ark_live_test");
@@ -948,6 +953,7 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     method: string;
     url: string;
     body?: unknown;
+    http1?: boolean;
   }> = [
     {
       name: "vms get",
@@ -1077,6 +1083,7 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       // `sync` streams the bytes now: path and size ride in the query string
       // and the body is raw, rather than base64 inside a JSON `writes[]`.
       name: "sync streamed write",
+      http1: true,
       args: ["sync", "vm_1", "/tmp/file", "hello"],
       response: { results: [{ complete: true, written: true }] },
       method: "POST",
@@ -1115,7 +1122,7 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
       assert.equal(requests[0]?.method, testCase.method, testCase.name);
       assert.equal(requests[0]?.url, testCase.url, testCase.name);
       if (testCase.body !== undefined) assert.deepEqual(requests[0]?.body, testCase.body, testCase.name);
-    });
+    }, { http1: testCase.http1 });
   }
 }
 

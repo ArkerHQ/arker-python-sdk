@@ -1,0 +1,83 @@
+name: CI
+
+# Mirrors ./scripts/check-local, split so a red X names what broke.
+# `pull_request` includes synchronize, so a new commit on a PR re-runs this.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Supersede a PR's earlier runs; never cancel main.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Repo tooling, not the SDK: contract generation, CLI examples, React demo.
+  contract:
+    name: contract + tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: bun ci
+      - name: Generated artifacts match openapi.json
+        run: ./scripts/check-openapi
+      - name: Repo tooling tests
+        run: uv run --project python --locked --group dev --extra test python -m pytest tests
+
+  # Run from python/ so it collects the SDK suite only. No bun needed.
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync (fails if uv.lock is stale)
+        run: uv sync --locked --group dev --extra test
+      - run: uv run --locked --group dev --extra test python -m pytest
+
+  typescript:
+    name: typescript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - run: bun ci
+      - run: bun run typecheck
+        working-directory: typescript
+      - run: bun run test
+        working-directory: typescript
+
+  cli:
+    name: cli
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.8
+      - run: bun ci
+      # cli imports @arker-ai/sdk; its types must exist before typecheck.
+      - run: bun run build:sdk
+        working-directory: typescript
+      - run: bun run typecheck
+        working-directory: cli
+      - run: bun run test
+        working-directory: cli

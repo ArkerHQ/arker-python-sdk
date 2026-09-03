@@ -11,7 +11,12 @@ cd "$REPO_ROOT"
 
 ./scripts/check-openapi
 python3 tests/test_openapi_enforcement.py
-uv run --project python --locked --group dev --extra test python -m pytest
+# Same split as CI: the SDK suite runs from python/ (where pyproject's
+# testpaths keeps the live tests/e2e out), the repo tooling tests run from
+# the root. A bare root `pytest` would load no config at all and sweep up
+# both plus e2e.
+(cd python && uv run --locked --group dev --extra test python -m pytest)
+uv run --project python --locked --group dev --extra test python -m pytest tests
 (
   cd typescript
   bun run typecheck

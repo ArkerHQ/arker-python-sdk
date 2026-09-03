@@ -367,11 +367,6 @@ def test_full_local_check_covers_all_generated_surfaces() -> None:
     assert "bun run test" in check
 
 
-def test_contract_checks_do_not_use_hosted_ci() -> None:
-    assert not (REPO_ROOT / ".github/workflows/ci.yml").exists()
-    assert not (REPO_ROOT / ".github/workflows/openapi-contract.yml").exists()
-
-
 FAST_TESTS = (
     test_public_wire_types_are_generated,
     test_sdk_runtime_uses_only_current_public_error_codes,
@@ -389,7 +384,6 @@ ALL_TESTS = (
     test_check_detects_generated_drift,
     test_pre_push_hook_runs_fast_local_contract_checks,
     test_full_local_check_covers_all_generated_surfaces,
-    test_contract_checks_do_not_use_hosted_ci,
 )
 
 
