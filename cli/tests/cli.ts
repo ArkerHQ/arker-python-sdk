@@ -34,9 +34,6 @@ const packageVersion = (JSON.parse(readFileSync(new URL("../package.json", impor
 const cliEntry = "dist/cli.js";
 const cliRuntime = "node";
 
-// The CLI speaks h2c and only falls back to fetch for safe methods (#126), so an
-// HTTP/1.1-only double fails every mutation. `http1: true` covers what HTTP/2
-// cannot express here: WebSocket upgrades, and /sync-stream's plain fetch.
 async function withServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>,
   fn: (baseUrl: string, server: Server) => Promise<void>,
@@ -902,7 +899,6 @@ async function testShellSetupUsesPackagedCli(): Promise<void> {
     });
     const result = await runCli(baseUrl, ["shell", "--session-id", "session_1", "vm_1"]);
     assert.equal(result.code, 0, result.stderr);
-    // A WebSocket upgrade is HTTP/1.1-only: HTTP/2 has no Upgrade mechanism.
   }, { http1: true });
   assert.deepEqual(requests, [{ method: "GET", url: "/api/v1/vms/vm_1", body: undefined }]);
   assert.match(upgradeUrl ?? "", /^\/api\/v1\/vms\/vm_1\/sessions\/session_1\/pty\?/);
@@ -957,7 +953,6 @@ async function testRemainingHttpCommandSurface(): Promise<void> {
     method: string;
     url: string;
     body?: unknown;
-    // /sync-stream goes out over plain fetch, not the h2 transport.
     http1?: boolean;
   }> = [
     {
