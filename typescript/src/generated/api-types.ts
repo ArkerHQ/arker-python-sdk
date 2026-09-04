@@ -678,6 +678,8 @@ export interface components {
             };
             /** @description Substrings that must appear in the request body. */
             body_contains?: string[];
+            /** @description Caller VM ids, OR'd; the rule matches only if the request arrived from one of them. Inbound only. The identity is stamped and signed by the CALLING VM's egress under a fleet key the guest never holds, and is bound to (caller, target, expiry), so it is not a bearer token and cannot be replayed against a different VM. Distinct from `auth: arker`, which is org-scoped and therefore satisfied by every VM in the org. */
+            peer_vms?: string[] | null;
         };
         /** @description allow / deny, or an object with any combination of `rewrite`, `gate`, and `scaling` (at least one). */
         PolicyAction: ("allow" | "deny") | {
@@ -935,6 +937,18 @@ export interface components {
             /** @description Unique session identifier. */
             session_id: string;
         };
+        /** @description Explicit fork source for `RunRequest.fork`. Same selectors as ForkRequest. */
+        RunForkSpec: {
+            source_vm_id?: string | null;
+            source_vm_name?: string | null;
+            /** @description OCI image reference, e.g. `ubuntu:24.04`. A bare reference, never a URI. */
+            image?: string | null;
+            /**
+             * @description Fork only when the addressed VM does not exist; otherwise run on it directly. Default false = always fork, so live state is never mutated by surprise.
+             * @default false
+             */
+            if_absent?: boolean;
+        };
         RunRequest: {
             /** @description The session to run in. Arker's run interface works like a terminal: sessions are tabs, each keeps its own state — working directory, environment, shell history — and each handles one run at a time. Create a session with `POST /v1/vms/{id}/sessions`, which also sets its starting directory and environment, then pass its id here. Run sequential commands in one session; for a long-running task, use `time_to_background: 0` in a session of its own so later work does not interrupt it. Distinct sessions run concurrently. A session that no longer exists is a 404. Omitted, the run uses the VM's default session, which every caller that omits it shares. */
             session_id?: string | null;
@@ -983,6 +997,8 @@ export interface components {
              *     suspend).
              */
             release?: string | null;
+            /** @description Run against a fork of the addressed VM instead of the VM itself. `true` forks the addressed VM and runs on the child; the object form names an explicit source. Mutually exclusive with `session_id`/`session_idx`. */
+            fork?: boolean | components["schemas"]["RunForkSpec"];
             /**
              * @description Deliver a signal to the selected persistent session's foreground process group. When set, the service does not execute `command`; it returns a completed acknowledgement with no run id. Use `session_id` or `session_idx` to select the session.
              * @enum {string|null}

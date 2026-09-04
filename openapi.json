@@ -2149,6 +2149,16 @@
             "items": {
               "type": "string"
             }
+          },
+          "peer_vms": {
+            "description": "Caller VM ids, OR'd; the rule matches only if the request arrived from one of them. Inbound only. The identity is stamped and signed by the CALLING VM's egress under a fleet key the guest never holds, and is bound to (caller, target, expiry), so it is not a bearer token and cannot be replayed against a different VM. Distinct from `auth: arker`, which is org-scoped and therefore satisfied by every VM in the org.",
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -2987,6 +2997,37 @@
           }
         }
       },
+      "RunForkSpec": {
+        "description": "Explicit fork source for `RunRequest.fork`. Same selectors as ForkRequest.",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_vm_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_vm_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "image": {
+            "description": "OCI image reference, e.g. `ubuntu:24.04`. A bare reference, never a URI.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "if_absent": {
+            "description": "Fork only when the addressed VM does not exist; otherwise run on it directly. Default false = always fork, so live state is never mutated by surprise.",
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
       "RunRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -3100,6 +3141,17 @@
               "null"
             ],
             "description": "Comma-separated list of resources to release after the run\nfinishes. Values: `cpu`, `memory`, `disk`. `\"cpu\"` frees\nvCPU but keeps memory hot for the next run on this VM;\n`\"cpu,memory,disk\"` is a full release (closest to a\nsuspend).\n"
+          },
+          "fork": {
+            "description": "Run against a fork of the addressed VM instead of the VM itself. `true` forks the addressed VM and runs on the child; the object form names an explicit source. Mutually exclusive with `session_id`/`session_idx`.",
+            "oneOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "$ref": "#/components/schemas/RunForkSpec"
+              }
+            ]
           },
           "signal": {
             "type": [

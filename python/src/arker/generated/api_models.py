@@ -110,6 +110,7 @@ class PolicyMatch:
     paths: list[str] | None = None
     headers: dict[str, list[str]] | None = None
     body_contains: list[str] | None = None
+    peer_vms: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,14 @@ class PatchSessionRequest:
 class PatchSessionResponse:
     ok: bool
     session_id: str
+
+
+@dataclass(frozen=True)
+class RunForkSpec:
+    source_vm_id: str | None = None
+    source_vm_name: str | None = None
+    image: str | None = None
+    if_absent: bool | None = False
 
 
 @dataclass(frozen=True)
@@ -1033,6 +1042,7 @@ class RunRequest:
     memory_backend: Literal['file', 'uffd'] | None = None
     acquire: str | None = None
     release: str | None = None
+    fork: bool | RunForkSpec | None = None
     signal: Literal['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'] | None = None
     policies: PolicyWriteRequest | None = None
 
