@@ -191,17 +191,6 @@ def test_placement_requires_separate_provider_and_region() -> None:
         sdk.Arker(api_key="ark_live_test", provider="provider-one")
 
 
-def test_explicit_vm_handle_uses_placement_endpoint() -> None:
-    arker = sdk.Arker(
-        api_key="ark_live_test",
-        base_url="https://fallback.invalid/api",
-        retry=False,
-    )
-    vm = arker.vm("vm_placed", provider="provider-two", region="region-two")
-
-    assert vm.base_url == "https://provider-two-region-two.arker.ai/api"
-
-
 def test_list_regions_uses_public_control_plane_catalog() -> None:
     t = FakeTransport()
     # `endpoint` is required, so a placement missing it is not a shape the

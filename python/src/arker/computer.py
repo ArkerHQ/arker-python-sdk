@@ -381,14 +381,8 @@ class Arker:
     def provider(self) -> ComputeProvider | None:
         return self._provider
 
-    def vm(
-        self,
-        vm_id: str,
-        *,
-        provider: ComputeProvider | None = None,
-        region: str | None = None,
-    ) -> VM:
-        return VM(self, vm_id, self._base_url_for(vm_id, provider=provider, region=region))
+    def vm(self, vm_id: str) -> VM:
+        return VM(self, vm_id)
 
     def fork(self, **options: Any) -> VM:
         """Create a VM from exactly one source accepted by POST /v1/fork."""
@@ -487,14 +481,9 @@ class Arker:
         vms = []
         for item in payload.get("vms", []):
             info = _vm_info(item)
-            vms.append(
-                VM(
-                    self,
-                    info.vm_id,
-                    self._base_url_for(info.vm_id, provider=info.provider, region=info.region),
-                    info,
-                )
-            )
+            placed = info.provider and info.region
+            base_url = _compute_base_url(info.provider, info.region) if placed else self.base_url
+            vms.append(VM(self, info.vm_id, base_url, info))
         return VmList(vms=vms, next_cursor=_optional_str(payload.get("next_cursor")))
 
     def list_runs(
@@ -554,14 +543,8 @@ class Arker:
         payload = self._request("GET", "/v1/whoami", base_url=self._control_base_url)
         return _decode_model(WhoamiResponse, payload)
 
-    def get_vm(
-        self,
-        vm_id: str,
-        *,
-        provider: ComputeProvider | None = None,
-        region: str | None = None,
-    ) -> VM:
-        base_url = self._base_url_for(vm_id, provider=provider, region=region)
+    def get_vm(self, vm_id: str) -> VM:
+        base_url = self.base_url
         info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=base_url))
         return VM(self, vm_id, base_url, info)
 
@@ -631,18 +614,6 @@ class Arker:
     def _retry_delay(self, attempt: int, error: dict[str, Any] | None = None) -> float:
         return _retry_delay(self._retry, attempt, error)
 
-    def _base_url_for(
-        self,
-        _ref: str,
-        *,
-        provider: object = None,
-        region: str | None = None,
-    ) -> str:
-        placement_provider = _optional_compute_provider(provider)
-        if placement_provider and region and region.strip():
-            return _compute_base_url(placement_provider, region)
-        return self.base_url
-
 
 class VM:
     # Data fields — populated from fork/get/list/refresh; ``None`` on a bare
@@ -677,7 +648,7 @@ class VM:
     ) -> None:
         self._client = client
         self.id = vm_id
-        self.base_url = base_url or client._base_url_for(vm_id)
+        self.base_url = base_url or client.base_url
         for f in dataclasses.fields(Vm):
             setattr(self, f.name, getattr(data, f.name) if data is not None else None)
         resources = data.resources if data is not None else None
@@ -1858,10 +1829,6 @@ def _normalize_base_url(base_url: str) -> str:
 def _compute_base_url(provider: str, region: str) -> str:
     """Derive the regional API URL from a provider and region pair."""
     return f"https://{provider}-{region}.arker.ai/api"
-
-
-def _optional_compute_provider(value: object) -> ComputeProvider | None:
-    return value or None if isinstance(value, str) else None
 
 
 def _normalize_retry(
