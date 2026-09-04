@@ -6,7 +6,7 @@ import types
 from contextlib import contextmanager
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 import arker.computer as sdk
