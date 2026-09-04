@@ -467,6 +467,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vms/{id}/sync-read-batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Read a directory out of the VM in one request
+         * @description Read a whole directory back in a single round trip instead of one request per file. The response is one gzip-compressed tar archive whose entries are named relative to `root`. Pass the relative paths you want in `paths` — typically the ones a manifest reported as changed — or set `all` to take every file under `root` without listing them first. Files that are not regular files, and files that disappear while the archive is being built, are omitted.
+         */
+        post: operations["syncReadBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/filesystems": {
         parameters: {
             query?: never;
@@ -1328,6 +1351,22 @@ export interface components {
             written?: boolean;
             /** @description Present on `extract_stream`. */
             extracted?: boolean;
+        };
+        SyncReadBatchRequest: {
+            /** @description Absolute directory the returned archive entries are named relative to. */
+            root: string;
+            /** @description Paths under `root`, relative to it, to include in the archive. Ignored when `all` is true. */
+            paths?: string[];
+            /**
+             * @description Include every file under `root` rather than the listed `paths`. Use it for a first download, when there is nothing local to compare against.
+             * @default false
+             */
+            all?: boolean;
+            /**
+             * @description Flush a running VM's pending writes before reading so the archive includes them. Defaults to true; set it to false only when a manifest for the same directory was just fetched, which already flushed.
+             * @default true
+             */
+            quiesce?: boolean;
         };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
@@ -2517,6 +2556,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SyncStreamResponse"];
+                };
+            };
+            402: components["responses"]["PaymentRequired"];
+            default: components["responses"]["Error"];
+        };
+    };
+    syncReadBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SyncReadBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description A gzip-compressed tar archive of the requested files. Each entry is named relative to `root` and carries the file's mode, owner and modification time. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/gzip": string;
                 };
             };
             402: components["responses"]["PaymentRequired"];

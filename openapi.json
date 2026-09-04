@@ -1432,6 +1432,50 @@
         "description": "Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request."
       }
     },
+    "/v1/vms/{id}/sync-read-batch": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "post": {
+        "operationId": "syncReadBatch",
+        "tags": [
+          "Sync"
+        ],
+        "summary": "Read a directory out of the VM in one request",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyncReadBatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A gzip-compressed tar archive of the requested files. Each entry is named relative to `root` and carries the file's mode, owner and modification time.",
+            "content": {
+              "application/gzip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "402": {
+            "$ref": "#/components/responses/PaymentRequired"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Read a whole directory back in a single round trip instead of one request per file. The response is one gzip-compressed tar archive whose entries are named relative to `root`. Pass the relative paths you want in `paths` — typically the ones a manifest reported as changed — or set `all` to take every file under `root` without listing them first. Files that are not regular files, and files that disappear while the archive is being built, are omitted."
+      }
+    },
     "/v1/filesystems": {
       "get": {
         "operationId": "listFilesystems",
@@ -4097,6 +4141,36 @@
           "extracted": {
             "type": "boolean",
             "description": "Present on `extract_stream`."
+          }
+        }
+      },
+      "SyncReadBatchRequest": {
+        "type": "object",
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "root": {
+            "description": "Absolute directory the returned archive entries are named relative to.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Paths under `root`, relative to it, to include in the archive. Ignored when `all` is true.",
+            "type": "array",
+            "maxItems": 50000,
+            "items": {
+              "type": "string"
+            }
+          },
+          "all": {
+            "description": "Include every file under `root` rather than the listed `paths`. Use it for a first download, when there is nothing local to compare against.",
+            "type": "boolean",
+            "default": false
+          },
+          "quiesce": {
+            "description": "Flush a running VM's pending writes before reading so the archive includes them. Defaults to true; set it to false only when a manifest for the same directory was just fetched, which already flushed.",
+            "type": "boolean",
+            "default": true
           }
         }
       },

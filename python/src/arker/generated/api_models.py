@@ -383,6 +383,14 @@ class SyncStreamResponse:
 
 
 @dataclass(frozen=True)
+class SyncReadBatchRequest:
+    root: str
+    paths: list[str] | None = None
+    all: bool | None = False
+    quiesce: bool | None = True
+
+
+@dataclass(frozen=True)
 class SyncChunkWrite:
     path: str
     size: int
@@ -702,6 +710,11 @@ class SyncStreamParameters:
     id: str
     sha256: str | None = None
     extract: Literal['tar.gz', 'tgz', 'tar'] | None = None
+
+
+@dataclass(frozen=True)
+class SyncReadBatchParameters:
+    id: str
 
 
 @dataclass(frozen=True)
@@ -1318,6 +1331,16 @@ class SyncOperation(TypedDict):
     errors: ErrorResponse
 
 
+class SyncReadBatchOperation(TypedDict):
+    operation_id: Literal['syncReadBatch']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/sync-read-batch']
+    parameters: SyncReadBatchParameters
+    request: SyncReadBatchRequest
+    success: None
+    errors: ErrorResponse
+
+
 class SyncStreamOperation(TypedDict):
     operation_id: Literal['syncStream']
     method: Literal['POST']
@@ -1395,6 +1418,7 @@ ApiOperation: TypeAlias = (
     AttachSessionPtyOperation |
     MintSessionPtyTicketOperation |
     SyncOperation |
+    SyncReadBatchOperation |
     SyncStreamOperation |
     ListSyncsOperation |
     CreateSyncOperation |
