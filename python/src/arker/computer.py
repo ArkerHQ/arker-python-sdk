@@ -364,8 +364,8 @@ class Arker:
     def base_url(self) -> str:
         if not self._base_url:
             raise ValueError(
-                "provider and region or base_url are required; pass provider and region, "
-                "base_url, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL"
+                "this client has no compute endpoint; pass provider and region (or base_url) "
+                "to Arker(), or set ARKER_PROVIDER and ARKER_REGION (or ARKER_BASE_URL)"
             )
         return self._base_url
 

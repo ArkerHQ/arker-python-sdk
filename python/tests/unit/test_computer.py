@@ -161,7 +161,7 @@ def test_control_only_client_defers_compute_placement_error(monkeypatch) -> None
     monkeypatch.delenv("ARKER_REGION", raising=False)
     monkeypatch.delenv("ARKER_API_KEY", raising=False)
     arker = sdk.Arker(api_key="ark_live_test")
-    with pytest.raises(ValueError, match="provider and region or base_url are required"):
+    with pytest.raises(ValueError, match="this client has no compute endpoint"):
         arker.vm("vm_01")
 
 
