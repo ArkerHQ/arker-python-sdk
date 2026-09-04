@@ -96,6 +96,10 @@ def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
     assert sdk._http_client._transport._pool._http2 is True
 
 
+def test_request_read_timeout_exceeds_max_sync_window() -> None:
+    assert sdk.REQUEST_TIMEOUT.read > sdk.MAX_TIME_TO_BACKGROUND_S
+
+
 def test_control_only_client_defers_compute_placement_error(monkeypatch) -> None:
     monkeypatch.delenv("ARKER_BASE_URL", raising=False)
     monkeypatch.delenv("ARKER_REGION", raising=False)

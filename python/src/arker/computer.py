@@ -174,9 +174,15 @@ def run_poll_budget_s(timeout: int | None) -> float | None:
 # "keep polling" rather than a false completion.
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
 PRESIGNED_PUT_TIMEOUT_S = 600
-# Must exceed the server's 120s sync window, or the request is given up on just
+MAX_TIME_TO_BACKGROUND_S = 300
+# Must exceed the server's maximum sync window, or the request is given up on just
 # as the background ack arrives and run() never gets to poll.
-REQUEST_TIMEOUT_S = 300
+REQUEST_TIMEOUT = httpx.Timeout(
+    connect=30,
+    pool=60,
+    write=300,
+    read=MAX_TIME_TO_BACKGROUND_S + 60,
+)
 RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {
     "unavailable",
@@ -1729,7 +1735,7 @@ atexit.register(_http_client.close)
 
 
 def _http(method: str, url: str, headers: dict[str, str], data: bytes | None) -> tuple[int, bytes]:
-    with _http_client.stream(method, url, headers=headers, content=data, timeout=REQUEST_TIMEOUT_S) as response:
+    with _http_client.stream(method, url, headers=headers, content=data, timeout=REQUEST_TIMEOUT) as response:
         try:
             content = response.read()
         except httpx.RequestError:
