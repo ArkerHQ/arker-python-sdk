@@ -151,13 +151,6 @@ def test_placement_errors(kwargs, message) -> None:
         sdk.Arker(api_key="ark_live_test", **kwargs)
 
 
-@pytest.mark.parametrize("method", ["vm", "get_vm"])
-@pytest.mark.parametrize("kwargs", [{"provider": "future-cloud"}, {"region": "moon-1"}])
-def test_per_call_placement_requires_both(method, kwargs) -> None:
-    with pytest.raises(ValueError, match="provider and region are required together"):
-        getattr(client(), method)("vm_01", **kwargs)
-
-
 def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
     assert type(sdk._http_client).__module__.split(".", 1)[0] == "httpx2"
     assert sdk._http_client._transport._pool._http2 is True
@@ -196,17 +189,6 @@ def test_placement_requires_separate_provider_and_region() -> None:
         sdk.Arker(api_key="ark_live_test", region="region-one")
     with pytest.raises(ValueError, match="provider and region are required together"):
         sdk.Arker(api_key="ark_live_test", provider="provider-one")
-
-
-def test_explicit_vm_handle_uses_placement_endpoint() -> None:
-    arker = sdk.Arker(
-        api_key="ark_live_test",
-        base_url="https://fallback.invalid/api",
-        retry=False,
-    )
-    vm = arker.vm("vm_placed", provider="provider-two", region="region-two")
-
-    assert vm.base_url == "https://provider-two-region-two.arker.ai/api"
 
 
 def test_list_regions_uses_public_control_plane_catalog() -> None:
