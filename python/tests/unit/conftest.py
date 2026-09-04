@@ -1,0 +1,18 @@
+from __future__ import annotations
+
+import pytest
+
+ARKER_ENV_VARS = (
+    "ARKER_API_KEY",
+    "ARKER_BASE_URL",
+    "ARKER_CONTROL_BASE_URL",
+    "ARKER_PROVIDER",
+    "ARKER_REGION",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_arker_env(monkeypatch):
+    """Unit tests exercise env resolution itself; ambient ARKER_* must not leak in."""
+    for name in ARKER_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)

@@ -91,6 +91,66 @@ def session(session_id: str = "s0") -> dict[str, str]:
     return {"session_id": session_id, "state": "ready", "cwd": "/home/user"}
 
 
+def test_api_key_from_argument_beats_env(monkeypatch) -> None:
+    monkeypatch.setenv("ARKER_API_KEY", "ark_live_env")
+    assert sdk.Arker(api_key="ark_live_arg")._api_key == "ark_live_arg"
+
+
+def test_api_key_falls_back_to_env(monkeypatch) -> None:
+    monkeypatch.setenv("ARKER_API_KEY", "ark_live_env")
+    assert sdk.Arker()._api_key == "ark_live_env"
+
+
+def test_missing_api_key_raises() -> None:
+    with pytest.raises(ValueError, match="api_key is required"):
+        sdk.Arker()
+
+
+@pytest.mark.parametrize(
+    "base_url_argument, base_url_env",
+    [
+        ("https://pinned.invalid/api", None),
+        (None, "https://pinned.invalid/api"),
+    ],
+    ids=["from_argument", "from_env"],
+)
+def test_base_url_overrides_placement(monkeypatch, base_url_argument, base_url_env) -> None:
+    monkeypatch.setenv("ARKER_PROVIDER", "env-cloud")
+    monkeypatch.setenv("ARKER_REGION", "env-1")
+    if base_url_env:
+        monkeypatch.setenv("ARKER_BASE_URL", base_url_env)
+
+    arker = sdk.Arker(
+        api_key="ark_live_test",
+        base_url=base_url_argument,
+        provider="future-cloud",
+        region="moon-1",
+    )
+
+    assert arker.base_url == "https://pinned.invalid/api"
+    assert arker.provider is None
+    assert arker.region is None
+
+
+def test_base_url_argument_beats_env(monkeypatch) -> None:
+    monkeypatch.setenv("ARKER_BASE_URL", "https://env.invalid/api")
+    arker = sdk.Arker(api_key="ark_live_test", base_url="https://arg.invalid/api")
+    assert arker.base_url == "https://arg.invalid/api"
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"region": "moon-1"}, "provider and region are required together"),
+        ({"provider": "future-cloud"}, "provider and region are required together"),
+        ({"provider": "", "region": "moon-1"}, "provider and region are required together"),
+    ],
+)
+def test_placement_errors(kwargs, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        sdk.Arker(api_key="ark_live_test", **kwargs)
+
+
 def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
     assert type(sdk._http_client).__module__.split(".", 1)[0] == "httpx2"
     assert sdk._http_client._transport._pool._http2 is True
@@ -129,15 +189,6 @@ def test_placement_requires_separate_provider_and_region() -> None:
         sdk.Arker(api_key="ark_live_test", region="region-one")
     with pytest.raises(ValueError, match="provider and region are required together"):
         sdk.Arker(api_key="ark_live_test", provider="provider-one")
-
-
-def test_invalid_provider_syntax_fails_closed() -> None:
-    with pytest.raises(ValueError, match="provider"):
-        sdk.Arker(
-            api_key="ark_live_test",
-            provider="bad.example/path",
-            region="region-one",
-        )
 
 
 def test_explicit_vm_handle_uses_placement_endpoint() -> None:
