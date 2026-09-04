@@ -381,14 +381,8 @@ class Arker:
     def provider(self) -> ComputeProvider | None:
         return self._provider
 
-    def vm(
-        self,
-        vm_id: str,
-        *,
-        provider: ComputeProvider | None = None,
-        region: str | None = None,
-    ) -> VM:
-        return VM(self, vm_id, self._placement_base_url(provider, region))
+    def vm(self, vm_id: str) -> VM:
+        return VM(self, vm_id)
 
     def fork(self, **options: Any) -> VM:
         """Create a VM from exactly one source accepted by POST /v1/fork."""
@@ -549,14 +543,8 @@ class Arker:
         payload = self._request("GET", "/v1/whoami", base_url=self._control_base_url)
         return _decode_model(WhoamiResponse, payload)
 
-    def get_vm(
-        self,
-        vm_id: str,
-        *,
-        provider: ComputeProvider | None = None,
-        region: str | None = None,
-    ) -> VM:
-        base_url = self._placement_base_url(provider, region)
+    def get_vm(self, vm_id: str) -> VM:
+        base_url = self.base_url
         info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=base_url))
         return VM(self, vm_id, base_url, info)
 
@@ -625,12 +613,6 @@ class Arker:
 
     def _retry_delay(self, attempt: int, error: dict[str, Any] | None = None) -> float:
         return _retry_delay(self._retry, attempt, error)
-
-    def _placement_base_url(self, provider: ComputeProvider | None, region: str | None) -> str:
-        """Caller-supplied placement: both or neither. Server data goes through list_vms instead."""
-        if bool(provider) != bool(region):
-            raise ValueError("provider and region are required together")
-        return _compute_base_url(provider, region) if provider else self.base_url
 
 
 class VM:
