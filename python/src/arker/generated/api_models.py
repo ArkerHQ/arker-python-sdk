@@ -316,6 +316,20 @@ class PtyTicketResponse:
 
 
 @dataclass(frozen=True)
+class ScopedTicketRequest:
+    session_id: str | None = None
+    ttl_seconds: int | None = None
+
+
+@dataclass(frozen=True)
+class ScopedTicketResponse:
+    ticket: str
+    expires_in: int
+    vm_id: str
+    session_id: str | None = None
+
+
+@dataclass(frozen=True)
 class Sync:
     sync_id: str
     vm_id: str
@@ -380,6 +394,7 @@ class SyncStreamResponse:
     complete: bool
     written: bool | None = None
     extracted: bool | None = None
+    manifest: SyncManifestResponse | None = None
 
 
 @dataclass(frozen=True)
@@ -672,6 +687,11 @@ class MintSessionPtyTicketParameters:
 
 
 @dataclass(frozen=True)
+class MintScopedTicketParameters:
+    id: str
+
+
+@dataclass(frozen=True)
 class CreateSyncParameters:
     id: str
 
@@ -693,6 +713,11 @@ class DeleteSyncParameters:
 @dataclass(frozen=True)
 class SyncParameters:
     id: str
+    path: str | None = None
+    size: int | None = None
+    sha256: str | None = None
+    extract: Literal['tar.gz', 'tgz', 'tar'] | None = None
+    return_manifest: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -702,6 +727,7 @@ class SyncStreamParameters:
     id: str
     sha256: str | None = None
     extract: Literal['tar.gz', 'tgz', 'tar'] | None = None
+    return_manifest: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -1052,7 +1078,9 @@ class PatchVmRequest:
     policies: PolicyWriteRequest | None = None
 
 
-SyncResponse: TypeAlias = SyncReadResponse | SyncWriteResponse | SyncManifestResponse
+SyncResponse: TypeAlias = (
+    SyncReadResponse | SyncWriteResponse | SyncManifestResponse | SyncStreamResponse
+)
 
 from typing import TypedDict
 
@@ -1238,6 +1266,16 @@ class CancelRunOperation(TypedDict):
     errors: ErrorResponse
 
 
+class MintScopedTicketOperation(TypedDict):
+    operation_id: Literal['mintScopedTicket']
+    method: Literal['POST']
+    path: Literal['/v1/vms/{id}/scoped-ticket']
+    parameters: MintScopedTicketParameters
+    request: ScopedTicketRequest | None
+    success: ScopedTicketResponse
+    errors: ErrorResponse
+
+
 class ListSessionsOperation(TypedDict):
     operation_id: Literal['listSessions']
     method: Literal['GET']
@@ -1324,7 +1362,7 @@ class SyncStreamOperation(TypedDict):
     path: Literal['/v1/vms/{id}/sync-stream']
     parameters: SyncStreamParameters
     request: None
-    success: SyncStreamResponse
+    success: SyncResponse
     errors: ErrorResponse
 
 
@@ -1387,6 +1425,7 @@ ApiOperation: TypeAlias = (
     CreateRunOperation |
     GetRunOperation |
     CancelRunOperation |
+    MintScopedTicketOperation |
     ListSessionsOperation |
     CreateSessionOperation |
     GetSessionOperation |

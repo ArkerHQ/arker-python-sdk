@@ -1179,6 +1179,58 @@
         }
       }
     },
+    "/v1/vms/{id}/scoped-ticket": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/VmId"
+        }
+      ],
+      "post": {
+        "operationId": "mintScopedTicket",
+        "tags": [
+          "VMs"
+        ],
+        "summary": "Mint an arkerd-native VM-scoped ticket",
+        "description": "Mints a short-lived, stateless credential scoped to this VM (and, optionally, one session within it) directly from the region the VM lives in — no round trip to the global control plane. The bearer-authenticated caller must be org-wide (not itself VM-scoped) and must own the VM. The returned ticket is usable anywhere an API key is usable for that VM (`/sync`, `/run`, PTY attach) but nothing org-level, the same restriction a DB-backed VM-scoped key (`POST /api/v1/api-keys/scoped`) enforces — present it as `Authorization: Bearer <ticket>` or `x-api-key: <ticket>`. Unlike a DB-backed scoped key, this ticket cannot be revoked before it expires; keep `ttl_seconds` short and re-mint as needed.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopedTicketRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ticket minted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopedTicketResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "402": {
+            "$ref": "#/components/responses/PaymentRequired"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/v1/vms/{id}/syncs": {
       "parameters": [
         {
@@ -1309,7 +1361,60 @@
         "tags": [
           "Sync"
         ],
-        "summary": "Read or write VM files",
+        "summary": "Read, write, or stream VM files",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Streaming body only (`Content-Type: application/octet-stream`): absolute destination path. With `extract` set this is the destination DIRECTORY. Unused for a JSON body — that protocol's paths ride in the request body instead."
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Streaming body only: exact byte length of the streamed body. The request fails if the stream does not match."
+          },
+          {
+            "name": "sha256",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Streaming body only: optional checksum, verified on the write that completes the file."
+          },
+          {
+            "name": "extract",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "tar.gz",
+                "tgz",
+                "tar"
+              ]
+            },
+            "description": "Streaming body only: treat the body as a tar archive and extract it into `path` server-side, so a whole directory syncs in one request. Use `tar` for already-compressed data and `tar.gz` when compression reduces the upload size."
+          },
+          {
+            "name": "return_manifest",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Streaming body with `extract` set only: when true, ride a host-first manifest of the destination directory back on the response (taken immediately after extraction), so a caller with a local manifest cache stays current without a follow-up `{op:\"manifest\"}` round trip."
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -1317,12 +1422,18 @@
               "schema": {
                 "$ref": "#/components/schemas/SyncRequest"
               }
+            },
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Read or write result, matching the request op.",
+            "description": "Read, write, or stream result, matching the request op / Content-Type.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1341,7 +1452,7 @@
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Read or write files in the VM filesystem. Op-discriminated:\n`{op:\"read\",path}` reads a file (inline content for small files, a\npresigned GET URL for large ones); `{op:\"write\",writes:[...]}` writes,\neach entry an inline chunk or a presigned-upload step. Binding a\nfilesystem into the VM is the separate `/v1/vms/{id}/syncs` resource.\n"
+        "description": "Read, write, or stream files in the VM filesystem — one route, dispatched on the request's own `Content-Type`.\n\n`Content-Type: application/json` (or omitted) runs the op-discriminated JSON protocol:\n`{op:\"read\",path}` reads a file (inline content for small files, a\npresigned GET URL for large ones); `{op:\"write\",writes:[...]}` writes,\neach entry an inline chunk or a presigned-upload step; `{op:\"manifest\",path}`\nlists a directory tree for delta sync. Binding a\nfilesystem into the VM is the separate `/v1/vms/{id}/syncs` resource.\n\n`Content-Type: application/octet-stream` runs the streaming protocol: the\nbody IS the raw file/tar bytes (no base64 inflation), written to the guest\nas they arrive; `path`/`size`/`sha256`/`extract`/`return_manifest` ride the\nquery string instead of a JSON body. With `extract` set, the body is a tar\narchive unpacked server-side into the `path` directory, so a whole\ndirectory syncs in one round trip. Linux-only today (`arkerd-worker-mac`\nhas no streaming guest transport and answers `422 unsupported_operation`);\nSDKs treat it as an optional fast path with a JSON fallback.\n"
       }
     },
     "/v1/vms/{id}/sync-stream": {
@@ -1398,6 +1509,15 @@
               ]
             },
             "description": "Treat the body as a tar archive and extract it into `path` server-side, so a whole directory syncs in one request. Use `tar` for already-compressed data and `tar.gz` when compression reduces the upload size."
+          },
+          {
+            "name": "return_manifest",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "With `extract` set only: when true, ride a host-first manifest of the destination directory back on the response (taken immediately after extraction), so a caller with a local manifest cache stays current without a follow-up `{op:\"manifest\"}` round trip."
           }
         ],
         "requestBody": {
@@ -1417,7 +1537,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SyncStreamResponse"
+                  "$ref": "#/components/schemas/SyncResponse"
                 }
               }
             }
@@ -1425,11 +1545,14 @@
           "402": {
             "$ref": "#/components/responses/PaymentRequired"
           },
+          "422": {
+            "$ref": "#/components/responses/UnsupportedOperation"
+          },
           "default": {
             "$ref": "#/components/responses/Error"
           }
         },
-        "description": "Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request."
+        "description": "Equivalent to `POST /v1/vms/{id}/sync` with `Content-Type: application/octet-stream` — same operation, addressable by its own URL. Not content-type dispatched: the body here is always raw bytes. New integrations should prefer `POST /v1/vms/{id}/sync` with `Content-Type: application/octet-stream` directly. Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request. Linux-only today (`arkerd-worker-mac` answers `422 unsupported_operation`)."
       }
     },
     "/v1/filesystems": {
@@ -3794,6 +3917,50 @@
           }
         }
       },
+      "ScopedTicketRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Narrow the ticket to one session within the VM. Omit for a VM-level ticket usable on /sync, /run, and any other VM route."
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Requested lifetime; clamped server-side to a short ceiling. Omit for the default (300s)."
+          }
+        }
+      },
+      "ScopedTicketResponse": {
+        "type": "object",
+        "required": [
+          "ticket",
+          "expires_in",
+          "vm_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ticket": {
+            "description": "Short-lived, VM-scoped credential. Present as Authorization: Bearer <ticket> or x-api-key: <ticket>.",
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Seconds until expiry."
+          },
+          "vm_id": {
+            "type": "string",
+            "description": "The VM's canonical id, which the ticket is bound to — always the canonical id, even if the request path named the VM by its human-readable name. Use this value (not the name) when addressing the VM with the ticket."
+          },
+          "session_id": {
+            "type": "string",
+            "nullable": true,
+            "description": "The session the ticket is narrowed to, if any."
+          }
+        }
+      },
       "Sync": {
         "type": "object",
         "required": [
@@ -4052,6 +4219,9 @@
           },
           {
             "$ref": "#/components/schemas/SyncManifestResponse"
+          },
+          {
+            "$ref": "#/components/schemas/SyncStreamResponse"
           }
         ]
       },
@@ -4097,6 +4267,10 @@
           "extracted": {
             "type": "boolean",
             "description": "Present on `extract_stream`."
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/SyncManifestResponse",
+            "description": "Present when the request set `return_manifest=true` on an `extract_stream`: a host-first manifest of the destination directory taken immediately after extraction, so a caller with a local manifest cache stays current without a follow-up `{op:\"manifest\"}` round trip."
           }
         }
       },

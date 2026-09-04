@@ -361,6 +361,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/vms/{id}/scoped-ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint an arkerd-native VM-scoped ticket
+         * @description Mints a short-lived, stateless credential scoped to this VM (and, optionally, one session within it) directly from the region the VM lives in — no round trip to the global control plane. The bearer-authenticated caller must be org-wide (not itself VM-scoped) and must own the VM. The returned ticket is usable anywhere an API key is usable for that VM (`/sync`, `/run`, PTY attach) but nothing org-level, the same restriction a DB-backed VM-scoped key (`POST /api/v1/api-keys/scoped`) enforces — present it as `Authorization: Bearer <ticket>` or `x-api-key: <ticket>`. Unlike a DB-backed scoped key, this ticket cannot be revoked before it expires; keep `ttl_seconds` short and re-mint as needed.
+         */
+        post: operations["mintScopedTicket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/vms/{id}/syncs": {
         parameters: {
             query?: never;
@@ -430,12 +453,24 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Read or write VM files
-         * @description Read or write files in the VM filesystem. Op-discriminated:
+         * Read, write, or stream VM files
+         * @description Read, write, or stream files in the VM filesystem — one route, dispatched on the request's own `Content-Type`.
+         *
+         *     `Content-Type: application/json` (or omitted) runs the op-discriminated JSON protocol:
          *     `{op:"read",path}` reads a file (inline content for small files, a
          *     presigned GET URL for large ones); `{op:"write",writes:[...]}` writes,
-         *     each entry an inline chunk or a presigned-upload step. Binding a
+         *     each entry an inline chunk or a presigned-upload step; `{op:"manifest",path}`
+         *     lists a directory tree for delta sync. Binding a
          *     filesystem into the VM is the separate `/v1/vms/{id}/syncs` resource.
+         *
+         *     `Content-Type: application/octet-stream` runs the streaming protocol: the
+         *     body IS the raw file/tar bytes (no base64 inflation), written to the guest
+         *     as they arrive; `path`/`size`/`sha256`/`extract`/`return_manifest` ride the
+         *     query string instead of a JSON body. With `extract` set, the body is a tar
+         *     archive unpacked server-side into the `path` directory, so a whole
+         *     directory syncs in one round trip. Linux-only today (`arkerd-worker-mac`
+         *     has no streaming guest transport and answers `422 unsupported_operation`);
+         *     SDKs treat it as an optional fast path with a JSON fallback.
          */
         post: operations["sync"];
         delete?: never;
@@ -458,7 +493,7 @@ export interface paths {
         put?: never;
         /**
          * Stream a file or archive into the VM
-         * @description Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request.
+         * @description Equivalent to `POST /v1/vms/{id}/sync` with `Content-Type: application/octet-stream` — same operation, addressable by its own URL. Not content-type dispatched: the body here is always raw bytes. New integrations should prefer `POST /v1/vms/{id}/sync` with `Content-Type: application/octet-stream` directly. Stream raw bytes directly into the VM as they arrive, avoiding an intermediate copy. With `extract` set, the body is a tar archive and `path` is the destination directory: the archive is unpacked into `path`, so a whole directory syncs in a single request. Linux-only today (`arkerd-worker-mac` answers `422 unsupported_operation`).
          */
         post: operations["syncStream"];
         delete?: never;
@@ -1214,6 +1249,22 @@ export interface components {
             /** @description Seconds until expiry. */
             expires_in: number;
         };
+        ScopedTicketRequest: {
+            /** @description Narrow the ticket to one session within the VM. Omit for a VM-level ticket usable on /sync, /run, and any other VM route. */
+            session_id?: string;
+            /** @description Requested lifetime; clamped server-side to a short ceiling. Omit for the default (300s). */
+            ttl_seconds?: number;
+        };
+        ScopedTicketResponse: {
+            /** @description Short-lived, VM-scoped credential. Present as Authorization: Bearer <ticket> or x-api-key: <ticket>. */
+            ticket: string;
+            /** @description Seconds until expiry. */
+            expires_in: number;
+            /** @description The VM's canonical id, which the ticket is bound to — always the canonical id, even if the request path named the VM by its human-readable name. Use this value (not the name) when addressing the VM with the ticket. */
+            vm_id: string;
+            /** @description The session the ticket is narrowed to, if any. */
+            session_id?: string | null;
+        };
         Sync: {
             /** @description Unique sync identifier. */
             sync_id: string;
@@ -1306,7 +1357,7 @@ export interface components {
             truncated: boolean;
         };
         SyncRequest: components["schemas"]["SyncReadOperationRequest"] | components["schemas"]["SyncWriteOperationRequest"] | components["schemas"]["SyncManifestOperationRequest"];
-        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncManifestResponse"];
+        SyncResponse: components["schemas"]["SyncReadResponse"] | components["schemas"]["SyncWriteResponse"] | components["schemas"]["SyncManifestResponse"] | components["schemas"]["SyncStreamResponse"];
         SyncStreamResponse: {
             /** @description True when the operation succeeded. */
             ok: boolean;
@@ -1328,6 +1379,8 @@ export interface components {
             written?: boolean;
             /** @description Present on `extract_stream`. */
             extracted?: boolean;
+            /** @description Present when the request set `return_manifest=true` on an `extract_stream`: a host-first manifest of the destination directory taken immediately after extraction, so a caller with a local manifest cache stays current without a follow-up `{op:"manifest"}` round trip. */
+            manifest?: components["schemas"]["SyncManifestResponse"];
         };
         SyncWriteEntry: components["schemas"]["SyncChunkWrite"] | components["schemas"]["SyncPresignedWriteRequest"] | components["schemas"]["SyncPresignedWriteCommit"];
         SyncChunkWrite: {
@@ -2368,6 +2421,38 @@ export interface operations {
             default: components["responses"]["Error"];
         };
     };
+    mintScopedTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
+                id: components["parameters"]["VmId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ScopedTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description Ticket minted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScopedTicketResponse"];
+                };
+            };
+            401: components["responses"]["Error"];
+            402: components["responses"]["PaymentRequired"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            default: components["responses"]["Error"];
+        };
+    };
     listSyncs: {
         parameters: {
             query?: {
@@ -2457,7 +2542,18 @@ export interface operations {
     };
     sync: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Streaming body only (`Content-Type: application/octet-stream`): absolute destination path. With `extract` set this is the destination DIRECTORY. Unused for a JSON body — that protocol's paths ride in the request body instead. */
+                path?: string;
+                /** @description Streaming body only: exact byte length of the streamed body. The request fails if the stream does not match. */
+                size?: number;
+                /** @description Streaming body only: optional checksum, verified on the write that completes the file. */
+                sha256?: string;
+                /** @description Streaming body only: treat the body as a tar archive and extract it into `path` server-side, so a whole directory syncs in one request. Use `tar` for already-compressed data and `tar.gz` when compression reduces the upload size. */
+                extract?: "tar.gz" | "tgz" | "tar";
+                /** @description Streaming body with `extract` set only: when true, ride a host-first manifest of the destination directory back on the response (taken immediately after extraction), so a caller with a local manifest cache stays current without a follow-up `{op:"manifest"}` round trip. */
+                return_manifest?: boolean;
+            };
             header?: never;
             path: {
                 /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
@@ -2468,10 +2564,11 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SyncRequest"];
+                "application/octet-stream": string;
             };
         };
         responses: {
-            /** @description Read or write result, matching the request op. */
+            /** @description Read, write, or stream result, matching the request op / Content-Type. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2496,6 +2593,8 @@ export interface operations {
                 sha256?: string;
                 /** @description Treat the body as a tar archive and extract it into `path` server-side, so a whole directory syncs in one request. Use `tar` for already-compressed data and `tar.gz` when compression reduces the upload size. */
                 extract?: "tar.gz" | "tgz" | "tar";
+                /** @description With `extract` set only: when true, ride a host-first manifest of the destination directory back on the response (taken immediately after extraction), so a caller with a local manifest cache stays current without a follow-up `{op:"manifest"}` round trip. */
+                return_manifest?: boolean;
             };
             header?: never;
             path: {
@@ -2516,10 +2615,11 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SyncStreamResponse"];
+                    "application/json": components["schemas"]["SyncResponse"];
                 };
             };
             402: components["responses"]["PaymentRequired"];
+            422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
     };
