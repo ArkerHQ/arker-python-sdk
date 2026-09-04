@@ -388,6 +388,7 @@ class Arker:
         provider: ComputeProvider | None = None,
         region: str | None = None,
     ) -> VM:
+        _require_placement_pair(provider, region)
         return VM(self, vm_id, self._base_url_for(vm_id, provider=provider, region=region))
 
     def fork(self, **options: Any) -> VM:
@@ -561,6 +562,7 @@ class Arker:
         provider: ComputeProvider | None = None,
         region: str | None = None,
     ) -> VM:
+        _require_placement_pair(provider, region)
         base_url = self._base_url_for(vm_id, provider=provider, region=region)
         info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=base_url))
         return VM(self, vm_id, base_url, info)
@@ -1868,6 +1870,12 @@ def _env(name: str) -> str | None:
 def _normalize_base_url(base_url: str) -> str:
     """Strip the trailing slash so path joins do not double up."""
     return base_url.rstrip("/")
+
+
+def _require_placement_pair(provider: object, region: str | None) -> None:
+    """Half a placement pair is a caller mistake; list_vms tolerates it for server data."""
+    if bool(provider) != bool(region):
+        raise ValueError("provider and region are required together")
 
 
 def _compute_base_url(provider: str, region: str) -> str:

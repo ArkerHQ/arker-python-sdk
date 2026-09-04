@@ -151,6 +151,13 @@ def test_placement_errors(kwargs, message) -> None:
         sdk.Arker(api_key="ark_live_test", **kwargs)
 
 
+@pytest.mark.parametrize("method", ["vm", "get_vm"])
+@pytest.mark.parametrize("kwargs", [{"provider": "future-cloud"}, {"region": "moon-1"}])
+def test_per_call_placement_requires_both(method, kwargs) -> None:
+    with pytest.raises(ValueError, match="provider and region are required together"):
+        getattr(client(), method)("vm_01", **kwargs)
+
+
 def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
     assert type(sdk._http_client).__module__.split(".", 1)[0] == "httpx2"
     assert sdk._http_client._transport._pool._http2 is True
