@@ -174,9 +174,15 @@ def run_poll_budget_s(timeout: int | None) -> float | None:
 # "keep polling" rather than a false completion.
 TERMINAL_RUN_STATES = frozenset({"completed", "failed", "cancelled"})
 PRESIGNED_PUT_TIMEOUT_S = 600
-# Must exceed the server's 120s sync window, or the request is given up on just
+MAX_TIME_TO_BACKGROUND_S = 300
+# Must exceed the server's maximum sync window, or the request is given up on just
 # as the background ack arrives and run() never gets to poll.
-REQUEST_TIMEOUT = httpx.Timeout(connect=30, pool=60, write=300, read=360)
+REQUEST_TIMEOUT = httpx.Timeout(
+    connect=30,
+    pool=60,
+    write=300,
+    read=MAX_TIME_TO_BACKGROUND_S + 60,
+)
 RETRYABLE_HTTP = {429, 502, 503, 504}
 RETRYABLE_CODES = {
     "unavailable",

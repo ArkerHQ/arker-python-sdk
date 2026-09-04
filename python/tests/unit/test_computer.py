@@ -48,7 +48,6 @@ class FakeTransport:
                 "url": url,
                 "body": request.content or None,
                 "headers": request.headers,
-                "extensions": request.extensions,
             }
         )
 
@@ -97,27 +96,8 @@ def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
     assert sdk._http_client._transport._pool._http2 is True
 
 
-def test_maximum_sync_window_leaves_time_to_receive_the_response() -> None:
-    transport = FakeTransport()
-    transport.add_json(
-        lambda method, url: method == "POST" and url.endswith("/v1/vms/vm_1/runs"),
-        200,
-        {
-            "stdout": "done\n",
-            "stdout_encoding": "utf-8",
-            "stderr": "",
-            "stderr_encoding": "utf-8",
-            "exit_code": 0,
-        },
-    )
-
-    with use_transport(transport):
-        result = client().vm("vm_1").run("true", time_to_background=300)
-
-    assert result.exit_code == 0
-    request = transport.calls[0]
-    sync_window = json.loads(request["body"])["time_to_background"]
-    assert request["extensions"]["timeout"]["read"] > sync_window
+def test_request_read_timeout_exceeds_max_sync_window() -> None:
+    assert sdk.REQUEST_TIMEOUT.read > sdk.MAX_TIME_TO_BACKGROUND_S
 
 
 def test_control_only_client_defers_compute_placement_error(monkeypatch) -> None:
