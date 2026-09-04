@@ -614,6 +614,8 @@ class ListRunsParameters:
 class GetRunParameters:
     id: str
     run_id: str
+    stdout_offset: int | None = None
+    stderr_offset: int | None = None
 
 
 @dataclass(frozen=True)
@@ -884,6 +886,7 @@ class ForkRequest1:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -907,6 +910,7 @@ class ForkRequest2:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -930,6 +934,7 @@ class ForkRequest3:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -953,6 +958,7 @@ class ForkRequest4:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -976,6 +982,7 @@ class ForkRequest5:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -999,6 +1006,7 @@ class ForkRequest6:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -1025,6 +1033,7 @@ class RunRequest:
     timeout: int | None = None
     time_to_background: int | None = None
     background: bool | None = None
+    end_on_all_subprocesses_exit: bool | None = None
     queueing_timeout: int | None = None
     end_symbol: str | None = 'auto'
     vcpu_count: int | None = None

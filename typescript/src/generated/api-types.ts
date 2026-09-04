@@ -223,7 +223,7 @@ export interface paths {
         };
         /**
          * Get a run
-         * @description Return one recorded run, including its current state and available output.
+         * @description Return one recorded run, including its current state and available output. `stdout`/`stderr` reflect the run's live in-progress output while it is still `running`, not just its output after completion — pass `stdout_offset`/`stderr_offset` to receive only the bytes produced since a previous poll, instead of the full transcript again.
          */
         get: operations["getRun"];
         put?: never;
@@ -609,7 +609,7 @@ export interface components {
         VmState: "idle" | "running";
         SessionState: components["schemas"]["VmState"];
         /**
-         * @description Lifecycle state for a run. `pending` means the run was accepted but has not started yet because an earlier run on the same session is still in flight; it is not terminal, and a client should keep polling. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run.
+         * @description Lifecycle state for a run. `pending` means the run was accepted but has not started yet because an earlier run on the same session is still in flight; it is not terminal, and a client should keep polling. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run — a run cancelled while still `pending` never executes.
          * @enum {string}
          */
         RunState: "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -767,6 +767,8 @@ export interface components {
             disk?: boolean | null;
             /** @description Whether the VM should preserve recoverable state across compute interruptions. */
             durable?: boolean | null;
+            /** @description Self-checkpoint instead of forking: convert the source VM's own current-plus-queued runs to a resumable `pending` queue in place and return that same VM, unchanged. Mints no new vm_id and creates no new VM at all. Default false = a normal fork (a distinct child VM is created). Requires an existing VM to act upon: combining `true` with `image` or `dockerfile` is refused with a 400. */
+            inplace?: boolean | null;
             /** @description Preferred compute platforms for a public template, such as `["graviton3"]`. Supply multiple values to allow any listed platform. Omit or pass an empty list for automatic selection. A fork of an existing VM inherits its source platform. */
             platforms?: string[] | null;
             /** @description State to inherit from the source VM. Omit this field or pass `["disk", "memory"]` for a warm fork that resumes the source's filesystem and running processes. Pass `["disk"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`. */
@@ -942,7 +944,7 @@ export interface components {
             session_idx?: number | null;
             /** @description Command submitted for execution. Omit it only for a resource operation (`acquire` or `release`) or a `signal` request. */
             command?: string;
-            /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
+            /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. When `end_on_all_subprocesses_exit` is true (the default), a run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, everything the run started is killed, not just the foreground command. */
             timeout?: number | null;
             /** @description Sync window in seconds. `0` returns a pollable command run immediately after successful dispatch without polling for completion. A positive value bounds the synchronous wait. Omission uses the 300-second default. Control requests do not accept this field. This does not bound command execution; use `timeout` for the execution and kill bound. Values above approximately 350 seconds can exceed the load balancer idle limit. */
             time_to_background?: number | null;
@@ -951,6 +953,8 @@ export interface components {
              * @description Alias for `time_to_background`. `true` is exactly `time_to_background: 0` (return a pollable run immediately); `false` leaves the default sync window. Send only one of the two — supplying both is rejected, because they can disagree. Prefer `time_to_background`, which can also bound the wait instead of only switching it off.
              */
             background?: boolean | null;
+            /** @description When true (the default), a run is not complete until every process it spawned has exited — including work backgrounded or detached from the foreground command (`cmd &`, `disown`, `nohup … &`, `setsid`). When false, the run completes as soon as the foreground command exits, leaving any background children running unattended. This governs how long the run stays open (and therefore the `time_to_background` sync window and the run's hold on the VM); it does not change whether background work is billed. */
+            end_on_all_subprocesses_exit?: boolean | null;
             /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. Omit this field or pass `0` to fail immediately when the run cannot start. This is independent of `timeout` and `time_to_background`. */
             queueing_timeout?: number | null;
             /**
@@ -2099,7 +2103,12 @@ export interface operations {
     };
     getRun: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Return only stdout bytes at or after this offset (as previously observed via a prior response's stdout length), instead of the full cumulative stdout. Omit or pass 0 for the full value. */
+                stdout_offset?: number;
+                /** @description Return only stderr bytes at or after this offset, the stderr counterpart to `stdout_offset`. */
+                stderr_offset?: number;
+            };
             header?: never;
             path: {
                 /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
