@@ -767,6 +767,8 @@ export interface components {
             disk?: boolean | null;
             /** @description Whether the VM should preserve recoverable state across compute interruptions. */
             durable?: boolean | null;
+            /** @description Self-checkpoint instead of forking: convert the source VM's own current-plus-queued runs to a resumable `pending` queue in place and return that same VM, unchanged. Mints no new vm_id and creates no new VM at all. Default false = a normal fork (a distinct child VM is created). Requires an existing VM to act upon: combining `true` with `image`, `dockerfile` or `layers: ["disk"]` is refused with a 400. */
+            inplace?: boolean | null;
             /** @description Preferred compute platforms for a public template, such as `["graviton3"]`. Supply multiple values to allow any listed platform. Omit or pass an empty list for automatic selection. A fork of an existing VM inherits its source platform. */
             platforms?: string[] | null;
             /** @description State to inherit from the source VM. Omit this field or pass `["disk", "memory"]` for a warm fork that resumes the source's filesystem and running processes. Pass `["disk"]` for a filesystem-only fork that cold-boots without the source's running processes. The list must include `disk`; supported values are `disk` and `memory`. */
