@@ -1030,6 +1030,8 @@ class RunRequest:
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
+    gpu_vram_mib: int | None = None
+    gpu_sms: int | None = None
     memory_backend: Literal['file', 'uffd'] | None = None
     acquire: str | None = None
     release: str | None = None
