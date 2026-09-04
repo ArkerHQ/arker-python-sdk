@@ -1947,7 +1947,7 @@
           "failed",
           "cancelled"
         ],
-        "description": "Lifecycle state for a run. `pending` means the run was accepted but has not started yet because an earlier run on the same session is still in flight; it is not terminal, and a client should keep polling. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run."
+        "description": "Lifecycle state for a run. `pending` means the run was accepted but has not started yet because an earlier run on the same session is still in flight; it is not terminal, and a client should keep polling. `running` means the command is in progress. `completed` means the command finished; `exit_code` reports its result. `failed` means the service could not start or finish the command, with a client-safe explanation in `fail_reason`. `cancelled` means the client cancelled the run — a run cancelled while still `pending` never executes, and one cancelled while running keeps the output it had already produced."
       },
       "Provider": {
         "type": "string",
@@ -2525,6 +2525,13 @@
           },
           "durable": {
             "description": "Whether the VM should preserve recoverable state across compute interruptions.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "inplace": {
+            "description": "Self-checkpoint instead of forking: convert the source VM's own current-plus-queued runs to a resumable `pending` queue in place and return that same VM, unchanged. Mints no new vm_id and creates no new VM at all. Default false = a normal fork (a distinct child VM is created). Requires an existing VM to act upon: combining `true` with `image`, `dockerfile` or `layers: [\"disk\"]` is refused with a 400.",
             "type": [
               "boolean",
               "null"
