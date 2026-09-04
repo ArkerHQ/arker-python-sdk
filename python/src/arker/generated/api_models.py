@@ -884,6 +884,7 @@ class ForkRequest1:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -907,6 +908,7 @@ class ForkRequest2:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -930,6 +932,7 @@ class ForkRequest3:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -953,6 +956,7 @@ class ForkRequest4:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -976,6 +980,7 @@ class ForkRequest5:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
@@ -999,6 +1004,7 @@ class ForkRequest6:
     ssh_public_keys: list[str] | None = None
     disk: bool | None = None
     durable: bool | None = None
+    inplace: bool | None = None
     platforms: list[str] | None = None
     layers: list[Literal['disk', 'memory']] | None = None
     queueing_timeout: int | None = None
