@@ -34,7 +34,7 @@ from typing import (
     get_type_hints,
 )
 
-import httpx
+import httpx2 as httpx
 
 from .generated.api_models import (
     BackgroundRunResponse,
@@ -1718,19 +1718,11 @@ class Pty:
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
-# Shared HTTP/1.1 client, one connection per in-flight request.
-#
-# Not HTTP/2: h2 puts every thread's requests on one socket, and httpcore's sync
-# backend races `sock.settimeout()` between its read and write paths, failing every
-# request in flight on that connection with `ReadError: [Errno 35]`. The longer a
-# request is held open the likelier it is to be caught, so `run()` is worst hit. A
-# synchronous client gains nothing from multiplexing anyway, so reviving h2 means
-# going async, not flipping this flag.
-#
-# `max_connections` is a real concurrency ceiling here (a synchronous `run()` holds
-# its connection for the whole command); httpx defaults to 100.
+# Shared HTTP/2 client. HTTPX2 keeps concurrent stream I/O independent, including
+# long-running requests such as run(). The connection limit remains a bound for
+# HTTP/1.1 fallbacks and for connections to distinct origins.
 _http_client = httpx.Client(
-    http2=False,
+    http2=True,
     limits=httpx.Limits(max_connections=256, max_keepalive_connections=256),
 )
 atexit.register(_http_client.close)

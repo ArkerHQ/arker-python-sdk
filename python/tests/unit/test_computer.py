@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 import arker.computer as sdk
@@ -89,6 +89,11 @@ def region_client() -> sdk.Arker:
 
 def session(session_id: str = "s0") -> dict[str, str]:
     return {"session_id": session_id, "state": "ready", "cwd": "/home/user"}
+
+
+def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
+    assert type(sdk._http_client).__module__.split(".", 1)[0] == "httpx2"
+    assert sdk._http_client._transport._pool._http2 is True
 
 
 def test_control_only_client_defers_compute_placement_error(monkeypatch) -> None:
