@@ -15,7 +15,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import secrets
 import shlex
 import tarfile
@@ -192,8 +191,6 @@ TRANSIENT_HINTS = (
     "ThrottlingException",
 )
 ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-DEFAULT_REGION_ENV = "ARKER_REGION"
-DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER"
 ComputeProvider = str
 DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api"
 
@@ -338,27 +335,29 @@ class Arker:
         provider: ComputeProvider | None = None,
         retry: RetryOptions | dict[str, Any] | bool | None = None,
     ) -> None:
-        resolved_api_key = api_key or _env("ARKER_API_KEY") or _env("AUTH_KEY")
-        explicit_base_url = base_url or _env("ARKER_BASE_URL")
-        raw_region = region or (None if explicit_base_url else _env(DEFAULT_REGION_ENV))
-        raw_provider = provider or (None if explicit_base_url else _env(DEFAULT_PROVIDER_ENV))
-        if not explicit_base_url and bool(raw_provider) != bool(raw_region):
-            raise ValueError("provider and region are required together unless base_url is supplied")
-        provider_value = _normalize_placement_label("provider", raw_provider) if raw_provider else None
-        resolved_region = _normalize_placement_label("region", raw_region) if raw_region else None
-
-        resolved_base_url = explicit_base_url or (
-            _compute_base_url(provider_value, resolved_region) if provider_value and resolved_region else None
-        )
-        resolved_control_base_url = control_base_url or _env("ARKER_CONTROL_BASE_URL") or DEFAULT_CONTROL_BASE_URL
-
-        if not resolved_api_key:
+        api_key = api_key or _env("ARKER_API_KEY")
+        if not api_key:
             raise ValueError("api_key is required; pass api_key or set ARKER_API_KEY")
-        self._api_key = resolved_api_key
-        self._base_url = _normalize_base_url(resolved_base_url) if resolved_base_url else None
-        self._control_base_url = _normalize_base_url(resolved_control_base_url)
-        self._region = resolved_region
-        self._provider = provider_value
+
+        # base_url fully determines routing, so provider/region are ignored when it is set.
+        base_url = base_url or _env("ARKER_BASE_URL")
+        if base_url:
+            provider = region = None
+        else:
+            provider = provider or _env("ARKER_PROVIDER")
+            region = region or _env("ARKER_REGION")
+            if bool(provider) != bool(region):
+                raise ValueError("provider and region are required together unless base_url is supplied")
+            if provider and region:
+                base_url = _compute_base_url(provider, region)
+
+        self._api_key = api_key
+        self._base_url = _normalize_base_url(base_url) if base_url else None
+        self._control_base_url = _normalize_base_url(
+            control_base_url or _env("ARKER_CONTROL_BASE_URL") or DEFAULT_CONTROL_BASE_URL
+        )
+        self._region = region
+        self._provider = provider
         self._retry = _normalize_retry(retry)
 
     @property
@@ -1848,41 +1847,21 @@ def _build_query(
 
 
 def _env(name: str) -> str | None:
-    value = os.environ.get(name)
-    return value.strip() if value and value.strip() else None
+    return os.environ.get(name) or None
 
 
 def _normalize_base_url(base_url: str) -> str:
-    normalized = base_url.strip().rstrip("/")
-    if not normalized:
-        raise ValueError("base_url must not be empty")
-    return normalized
-
-
-def _normalize_placement_label(name: str, value: str) -> str:
-    normalized = value.strip().lower()
-    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", normalized):
-        raise ValueError(f"{name} must be a valid DNS label")
-    return normalized
+    """Strip the trailing slash so path joins do not double up."""
+    return base_url.rstrip("/")
 
 
 def _compute_base_url(provider: str, region: str) -> str:
     """Derive the regional API URL from a provider and region pair."""
-    normalized_provider = _normalize_placement_label("provider", provider)
-    normalized_region = _normalize_placement_label("region", region)
-    placement = f"{normalized_provider}-{normalized_region}"
-    if len(placement) > 63:
-        raise ValueError("provider and region produce a DNS label longer than 63 characters")
-    return f"https://{placement}.arker.ai/api"
+    return f"https://{provider}-{region}.arker.ai/api"
 
 
 def _optional_compute_provider(value: object) -> ComputeProvider | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return _normalize_placement_label("provider", value)
-    except ValueError:
-        return None
+    return value or None if isinstance(value, str) else None
 
 
 def _normalize_retry(

@@ -216,8 +216,6 @@ const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set([
 ]);
 const TRANSIENT_HINTS = ["503", "Service Unavailable", "throttle", "SlowDown", "ThrottlingException"];
 const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const DEFAULT_REGION_ENV = "ARKER_REGION";
-const DEFAULT_PROVIDER_ENV = "ARKER_PROVIDER";
 export type ComputeProvider = string;
 const DEFAULT_CONTROL_BASE_URL = "https://arker.ai/api";
 
@@ -614,10 +612,10 @@ export class Arker {
   private readonly retry: RetryConfig;
 
   constructor(opts: ArkerOptions = {}) {
-    const apiKey = opts.apiKey ?? env("ARKER_API_KEY") ?? env("AUTH_KEY");
+    const apiKey = opts.apiKey ?? env("ARKER_API_KEY");
     const explicitBaseUrl = opts.baseUrl ?? env("ARKER_BASE_URL");
-    const rawRegion = opts.region ?? (explicitBaseUrl ? undefined : env(DEFAULT_REGION_ENV));
-    const rawProvider = opts.provider ?? (explicitBaseUrl ? undefined : env(DEFAULT_PROVIDER_ENV));
+    const rawRegion = opts.region ?? (explicitBaseUrl ? undefined : env("ARKER_REGION"));
+    const rawProvider = opts.provider ?? (explicitBaseUrl ? undefined : env("ARKER_PROVIDER"));
     if (!explicitBaseUrl && Boolean(rawProvider) !== Boolean(rawRegion)) {
       throw new Error("provider and region are required together unless baseUrl is supplied");
     }
