@@ -197,7 +197,6 @@ class CompletedRunResponse:
     memory_requested_mib: int | None = None
     memory_achieved_mib: int | None = None
     memory_partial: bool | None = None
-    memory_backend: Literal['file', 'uffd'] | None = None
 
 
 @dataclass(frozen=True)
@@ -1030,7 +1029,6 @@ class RunRequest:
     vcpu_count: int | None = None
     memory_mib: int | None = None
     disk_mib: int | None = None
-    memory_backend: Literal['file', 'uffd'] | None = None
     acquire: str | None = None
     release: str | None = None
     signal: Literal['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'] | None = None

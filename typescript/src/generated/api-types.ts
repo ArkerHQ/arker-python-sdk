@@ -965,11 +965,6 @@ export interface components {
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
             /**
-             * @description Preferred guest-memory mode when this run restores the VM. `file` maps the memory image from the host page cache; `uffd` supplies pages on demand. Omit this field to let the service choose. The setting has no effect when the VM is already running, and the response reports the mode used.
-             * @enum {string|null}
-             */
-            memory_backend?: "file" | "uffd" | null;
-            /**
              * @description Comma-separated list of resources to ensure are
              *     pre-allocated (warm) before the run starts. Values: `cpu`,
              *     `memory`, `disk`. Example: `"cpu,memory"`.
@@ -1023,11 +1018,6 @@ export interface components {
             memory_achieved_mib?: number | null;
             /** @description True when a requested memory reduction was only partially applied. The command runs with the achieved allocation, and `memory_achieved_mib` reports that allocation. Defaults to false. */
             memory_partial?: boolean;
-            /**
-             * @description Which guest-memory mode this VM is restored with: `file` maps the memory image from the host page cache, `uffd` supplies pages on demand through a userfaultfd handler. Absent when this run involved no Firecracker restore — a `brush` dispatch, or a VM that was already running. Informational only: the mode is chosen per restore from the image's resident size, and an image reconstructed from object storage always uses `uffd`, which is a correctness requirement rather than a tuning choice.
-             * @enum {string|null}
-             */
-            memory_backend?: "file" | "uffd" | null;
         };
         BackgroundRunResponse: {
             /** @description Session used by this run. Use this identifier to inspect or stop work that continues after the initial response. Absent for resource and signal requests that execute no command. */
