@@ -942,7 +942,7 @@ export interface components {
             session_idx?: number | null;
             /** @description Command submitted for execution. Omit it only for a resource operation (`acquire` or `release`) or a `signal` request. */
             command?: string;
-            /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
+            /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. When `end_on_all_subprocesses_exit` is true (the default), a run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, everything the run started is killed, not just the foreground command. */
             timeout?: number | null;
             /** @description Sync window in seconds. `0` returns a pollable command run immediately after successful dispatch without polling for completion. A positive value bounds the synchronous wait. Omission uses the 300-second default. Control requests do not accept this field. This does not bound command execution; use `timeout` for the execution and kill bound. Values above approximately 350 seconds can exceed the load balancer idle limit. */
             time_to_background?: number | null;
@@ -951,6 +951,8 @@ export interface components {
              * @description Alias for `time_to_background`. `true` is exactly `time_to_background: 0` (return a pollable run immediately); `false` leaves the default sync window. Send only one of the two — supplying both is rejected, because they can disagree. Prefer `time_to_background`, which can also bound the wait instead of only switching it off.
              */
             background?: boolean | null;
+            /** @description When true (the default), a run is not complete until every process it spawned has exited — including work backgrounded or detached from the foreground command (`cmd &`, `disown`, `nohup … &`, `setsid`). When false, the run completes as soon as the foreground command exits, leaving any background children running unattended. This governs how long the run stays open (and therefore the `time_to_background` sync window and the run's hold on the VM); it does not change whether background work is billed. */
+            end_on_all_subprocesses_exit?: boolean | null;
             /** @description Maximum time in seconds this request may wait to start before failing with `unavailable`. Omit this field or pass `0` to fail immediately when the run cannot start. This is independent of `timeout` and `time_to_background`. */
             queueing_timeout?: number | null;
             /**

@@ -1025,6 +1025,7 @@ class RunRequest:
     timeout: int | None = None
     time_to_background: int | None = None
     background: bool | None = None
+    end_on_all_subprocesses_exit: bool | None = None
     queueing_timeout: int | None = None
     end_symbol: str | None = 'auto'
     vcpu_count: int | None = None
