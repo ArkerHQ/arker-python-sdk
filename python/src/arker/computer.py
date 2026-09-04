@@ -389,7 +389,7 @@ class Arker:
         region: str | None = None,
     ) -> VM:
         _require_placement_pair(provider, region)
-        return VM(self, vm_id, self._base_url_for(vm_id, provider=provider, region=region))
+        return VM(self, vm_id, self._base_url_for(provider=provider, region=region))
 
     def fork(self, **options: Any) -> VM:
         """Create a VM from exactly one source accepted by POST /v1/fork."""
@@ -492,7 +492,7 @@ class Arker:
                 VM(
                     self,
                     info.vm_id,
-                    self._base_url_for(info.vm_id, provider=info.provider, region=info.region),
+                    self._base_url_for(provider=info.provider, region=info.region),
                     info,
                 )
             )
@@ -563,7 +563,7 @@ class Arker:
         region: str | None = None,
     ) -> VM:
         _require_placement_pair(provider, region)
-        base_url = self._base_url_for(vm_id, provider=provider, region=region)
+        base_url = self._base_url_for(provider=provider, region=region)
         info = _vm_info(self._request("GET", _vm_path(vm_id), base_url=base_url))
         return VM(self, vm_id, base_url, info)
 
@@ -635,15 +635,11 @@ class Arker:
 
     def _base_url_for(
         self,
-        _ref: str,
         *,
-        provider: object = None,
+        provider: ComputeProvider | None = None,
         region: str | None = None,
     ) -> str:
-        placement_provider = _optional_compute_provider(provider)
-        if placement_provider and region and region.strip():
-            return _compute_base_url(placement_provider, region)
-        return self.base_url
+        return _compute_base_url(provider, region) if provider and region else self.base_url
 
 
 class VM:
@@ -679,7 +675,7 @@ class VM:
     ) -> None:
         self._client = client
         self.id = vm_id
-        self.base_url = base_url or client._base_url_for(vm_id)
+        self.base_url = base_url or client._base_url_for()
         for f in dataclasses.fields(Vm):
             setattr(self, f.name, getattr(data, f.name) if data is not None else None)
         resources = data.resources if data is not None else None
@@ -1872,7 +1868,7 @@ def _normalize_base_url(base_url: str) -> str:
     return base_url.rstrip("/")
 
 
-def _require_placement_pair(provider: object, region: str | None) -> None:
+def _require_placement_pair(provider: ComputeProvider | None, region: str | None) -> None:
     """Half a placement pair is a caller mistake; list_vms tolerates it for server data."""
     if bool(provider) != bool(region):
         raise ValueError("provider and region are required together")
@@ -1881,10 +1877,6 @@ def _require_placement_pair(provider: object, region: str | None) -> None:
 def _compute_base_url(provider: str, region: str) -> str:
     """Derive the regional API URL from a provider and region pair."""
     return f"https://{provider}-{region}.arker.ai/api"
-
-
-def _optional_compute_provider(value: object) -> ComputeProvider | None:
-    return value or None if isinstance(value, str) else None
 
 
 def _normalize_retry(
