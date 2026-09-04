@@ -156,13 +156,13 @@ def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
     assert sdk._http_client._transport._pool._http2 is True
 
 
-def test_control_only_client_defers_compute_placement_error(monkeypatch) -> None:
-    monkeypatch.delenv("ARKER_BASE_URL", raising=False)
-    monkeypatch.delenv("ARKER_REGION", raising=False)
-    monkeypatch.delenv("ARKER_API_KEY", raising=False)
+def test_control_only_client_defers_compute_placement_error() -> None:
     arker = sdk.Arker(api_key="ark_live_test")
-    with pytest.raises(ValueError, match="provider and region or base_url are required"):
+    with pytest.raises(ValueError) as excinfo:
         arker.vm("vm_01")
+    assert str(excinfo.value) == (
+        "No placement configured; set ARKER_PROVIDER and ARKER_REGION, or pass Arker(provider=..., region=...)"
+    )
 
 
 def test_constructor_reads_env(monkeypatch) -> None:

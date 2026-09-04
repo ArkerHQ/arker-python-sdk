@@ -364,8 +364,7 @@ class Arker:
     def base_url(self) -> str:
         if not self._base_url:
             raise ValueError(
-                "provider and region or base_url are required; pass provider and region, "
-                "base_url, ARKER_PROVIDER and ARKER_REGION, or ARKER_BASE_URL"
+                "No placement configured; set ARKER_PROVIDER and ARKER_REGION, or pass Arker(provider=..., region=...)"
             )
         return self._base_url
 
