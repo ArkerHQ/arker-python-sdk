@@ -257,3 +257,9 @@ def test_exec_form_entrypoint_and_cmd_ignore_shell():
         'FROM ubuntu:24.04\nSHELL ["/bin/bash", "-c"]\nENTRYPOINT ["echo", "hi"]\nCMD ["echo", "bye"]\n'
     )
     assert parsed.steps == [Entrypoint("echo hi"), Cmd("echo bye")]
+
+
+def test_shell_quoting_of_an_embedded_single_quote():
+    """Locks the exact bytes, so the TypeScript SDK can assert the same string."""
+    parsed = parse_dockerfile('FROM ubuntu:24.04\nSHELL ["/bin/bash", "-c"]\nRUN echo \'hi\'\n')
+    assert parsed.steps == [Run("/bin/bash -c 'echo '\"'\"'hi'\"'\"''")]

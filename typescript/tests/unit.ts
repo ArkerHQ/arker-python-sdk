@@ -2256,7 +2256,18 @@ function testDockerfileShell(): void {
 
   // Instructions that become driver-generated export/cd never take it.
   const other = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nENV A=b\nWORKDIR /app\n');
-  assert.deepEqual(other.steps.map((step) => step.kind), ["env", "workdir"]);
+  assert.deepEqual(other.steps, [
+    { kind: "env", pairs: [["A", "b"]] },
+    { kind: "workdir", path: "/app" },
+  ]);
+
+  // Byte-identical to the Python SDK, which asserts this same string. The two
+  // parsers read the same Dockerfiles, so their quoting must not diverge.
+  const quoted = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nRUN echo \'hi\'\n');
+  assert.deepEqual(
+    quoted.steps.map((step) => (step as { command: string }).command),
+    [`/bin/bash -c 'echo '"'"'hi'"'"''`],
+  );
 
   for (const [text, needle] of [
     ['FROM a\nSHELL /bin/bash -c\n', "exec form"],

@@ -241,7 +241,7 @@ def _exec_form(argument: str) -> list[str] | None:
     return None
 
 
-def _command_line(argument: str, shell: list[str] | None = None) -> str:
+def _command_line(argument: str, shell: list[str] | None) -> str:
     """Render RUN/ENTRYPOINT/CMD as one shell command line.
 
     Exec form does not go through a shell in Docker, but the only execution

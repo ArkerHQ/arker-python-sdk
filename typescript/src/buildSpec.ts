@@ -88,17 +88,10 @@ const KNOWN = new Set([
  */
 function shellQuote(value: string): string {
   if (value.length > 0 && /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-/**
- * Render RUN/ENTRYPOINT/CMD as one command line.
- *
- * Exec form does not go through a shell in Docker, but the only execution
- * primitive here is "a command line in a shell", so each element is quoted and
- * joined. That invokes the same argv a direct exec would, via the shell's own
- * fork+exec.
- */
+/** The argv of an exec-form instruction, or undefined if it is shell form. */
 function execForm(raw: string): string[] | undefined {
   const trimmed = raw.trim();
   if (!trimmed.startsWith("[")) return undefined;
@@ -115,12 +108,17 @@ function execForm(raw: string): string[] | undefined {
 /**
  * Render RUN/ENTRYPOINT/CMD as one command line.
  *
+ * Exec form does not go through a shell in Docker, but the only execution
+ * primitive here is "a command line in a shell", so each element is quoted and
+ * joined. That invokes the same argv a direct exec would, via the shell's own
+ * fork+exec.
+ *
  * `shell` is the interpreter set by a preceding `SHELL`. Docker applies it to
  * the SHELL FORM of all three instructions, and to exec form of none of them,
  * which is what the branch below encodes. Absent a `SHELL` the argument is
  * passed through untouched, so the guest's own default shell runs it as before.
  */
-function commandLine(raw: string, shell?: string[]): string {
+function commandLine(raw: string, shell: string[] | undefined): string {
   const argv = execForm(raw);
   if (argv !== undefined) return argv.map(shellQuote).join(" ");
   if (shell === undefined) return raw.trim();
