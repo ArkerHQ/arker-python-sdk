@@ -194,3 +194,53 @@ def test_parsing_does_not_write_into_the_working_directory(tmp_path, monkeypatch
 
     assert existing.read_text() == "FROM myrealbase:1\nRUN important-thing\n"
     assert sorted(q.name for q in tmp_path.iterdir()) == ["Dockerfile"]
+
+
+# --- SHELL -----------------------------------------------------------------
+#
+# Docker's SHELL replaces the interpreter used for the SHELL FORM of RUN. Its
+# common real-world use is `["/bin/bash", "-o", "pipefail", "-c"]`: plain `sh`
+# reports only the last exit code in a pipeline, so `curl bad | tar xz`
+# succeeds even when the download failed. Dropping SHELL silently is what makes
+# that pipeline look green in a broken image.
+
+
+def test_shell_sets_the_interpreter_for_a_later_run():
+    parsed = parse_dockerfile(
+        'FROM ubuntu:24.04\nSHELL ["/bin/bash", "-o", "pipefail", "-c"]\nRUN curl -f url | tar xz\n'
+    )
+    assert parsed.steps == [Run("/bin/bash -o pipefail -c 'curl -f url | tar xz'")]
+
+
+def test_run_before_a_shell_keeps_the_default_interpreter():
+    """SHELL applies forward only, so an earlier RUN is untouched."""
+    parsed = parse_dockerfile('FROM ubuntu:24.04\nRUN echo early\nSHELL ["/bin/bash", "-c"]\nRUN echo late\n')
+    assert parsed.steps == [Run("echo early"), Run("/bin/bash -c 'echo late'")]
+
+
+def test_a_second_shell_replaces_the_first():
+    parsed = parse_dockerfile('FROM ubuntu:24.04\nSHELL ["/bin/bash", "-c"]\nSHELL ["/bin/zsh", "-c"]\nRUN echo hi\n')
+    assert parsed.steps == [Run("/bin/zsh -c 'echo hi'")]
+
+
+def test_exec_form_run_ignores_shell():
+    """Exec form does not go through an interpreter in Docker, so SHELL cannot apply."""
+    parsed = parse_dockerfile('FROM ubuntu:24.04\nSHELL ["/bin/bash", "-c"]\nRUN ["echo", "hi"]\n')
+    assert parsed.steps == [Run("echo hi")]
+
+
+def test_shell_does_not_leak_into_env_or_workdir():
+    """Only RUN takes the interpreter; ENV/WORKDIR stay plain instructions."""
+    parsed = parse_dockerfile('FROM ubuntu:24.04\nSHELL ["/bin/bash", "-c"]\nENV A=b\nWORKDIR /app\n')
+    assert parsed.steps == [Env([("A", "b")]), Workdir("/app")]
+
+
+def test_shell_must_be_given_in_exec_form():
+    """Docker requires the JSON-array form; the shell form is an error there too."""
+    with pytest.raises(DockerfileError, match="exec form"):
+        parse_dockerfile("FROM ubuntu:24.04\nSHELL /bin/bash -c\n")
+
+
+def test_shell_must_not_be_empty():
+    with pytest.raises(DockerfileError, match="at least one"):
+        parse_dockerfile("FROM ubuntu:24.04\nSHELL []\n")

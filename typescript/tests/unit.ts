@@ -2207,6 +2207,51 @@ function testDockerfileParsingBasics(): void {
   );
 }
 
+// Docker's SHELL replaces the interpreter for the SHELL FORM of RUN. Its usual
+// real-world use is ["/bin/bash", "-o", "pipefail", "-c"]: plain sh reports only
+// the last exit code in a pipeline, so a failed download in `curl bad | tar xz`
+// looks green. Kept in step with the Python SDK, which parses the same files.
+function testDockerfileShell(): void {
+  const applied = parseDockerfile(
+    'FROM ubuntu:24.04\nSHELL ["/bin/bash", "-o", "pipefail", "-c"]\nRUN curl -f url | tar xz\n',
+  );
+  assert.deepEqual(
+    applied.steps.map((step) => (step as { command: string }).command),
+    ["/bin/bash -o pipefail -c 'curl -f url | tar xz'"],
+  );
+
+  // Applies forward only, and the last SHELL wins.
+  const ordered = parseDockerfile(
+    'FROM a\nRUN echo early\nSHELL ["/bin/bash", "-c"]\nSHELL ["/bin/zsh", "-c"]\nRUN echo late\n',
+  );
+  assert.deepEqual(
+    ordered.steps.map((step) => (step as { command: string }).command),
+    ["echo early", "/bin/zsh -c 'echo late'"],
+  );
+
+  // Exec form does not go through an interpreter, so SHELL cannot apply.
+  const execForm = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nRUN ["echo", "hi"]\n');
+  assert.deepEqual(
+    execForm.steps.map((step) => (step as { command: string }).command),
+    ["echo hi"],
+  );
+
+  // Only RUN takes the interpreter.
+  const other = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nENV A=b\n');
+  assert.deepEqual(other.steps.map((step) => step.kind), ["env"]);
+
+  for (const [text, needle] of [
+    ['FROM a\nSHELL /bin/bash -c\n', "exec form"],
+    ['FROM a\nSHELL []\n', "at least one"],
+  ] as [string, string][]) {
+    assert.throws(
+      () => parseDockerfile(text),
+      (error: unknown) => error instanceof DockerfileError && error.message.includes(needle),
+      `expected ${needle} named for: ${text}`,
+    );
+  }
+}
+
 function testDockerfileRefusalsAreNamed(): void {
   const cases: [string, string][] = [
     ["RUN echo hi\n", "FROM"],
@@ -2515,6 +2560,7 @@ await testAddUrlIsFetchedByTheClient();
 await testAFailingRunAbortsTheBuild();
 testDockerfileParsingBasics();
 testDockerfileRefusalsAreNamed();
+testDockerfileShell();
 await testBuildAppliesShellStateInOrder();
 await testUserWrapsOnlyLaterRuns();
 await testCopyResolvesAgainstTheContext();

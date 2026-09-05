@@ -19,7 +19,11 @@ manifest-diffed, ships only the files that actually changed.
 ## Scope
 
 Supported: ``FROM``, ``RUN``, ``COPY``, ``ADD <url>``, ``ENV``, ``WORKDIR``,
-``USER``, ``ARG``, ``LABEL``, ``EXPOSE``, ``ENTRYPOINT``, ``CMD``.
+``USER``, ``ARG``, ``LABEL``, ``EXPOSE``, ``ENTRYPOINT``, ``CMD``, ``SHELL``.
+
+``SHELL`` replaces the interpreter for the shell form of later ``RUN``s, as it
+does in Docker. It is state, not a step: nothing executes it. Exec-form ``RUN``
+is left alone, because exec form does not go through an interpreter at all.
 
 Refused by name, rather than silently dropped:
 
@@ -28,7 +32,7 @@ Refused by name, rather than silently dropped:
   long-lived VM is its own feature.
 * **``ARG``-substituted ``FROM``** — ``FROM`` resolves through a real image
   fork, so it has to be a literal reference.
-* **Everything else** (``VOLUME``, ``ONBUILD``, ``HEALTHCHECK``, ``SHELL``,
+* **Everything else** (``VOLUME``, ``ONBUILD``, ``HEALTHCHECK``,
   ``STOPSIGNAL``, ``MAINTAINER``, ...) — named in the error so an unsupported
   directive never passes silently.
 
@@ -195,6 +199,7 @@ _KNOWN = {
     "ARG",
     "ENTRYPOINT",
     "CMD",
+    "SHELL",
 } | _INERT
 
 
@@ -246,6 +251,19 @@ def _command_line(argument: str) -> str:
     if argv is None:
         return argument
     return " ".join(shlex.quote(item) for item in argv)
+
+
+def _run_command_line(argument: str, shell: list[str] | None) -> str:
+    """RUN's command line, honouring an active ``SHELL``.
+
+    Exec form does not go through an interpreter in Docker, so ``SHELL`` has
+    nothing to replace there and is deliberately not applied to it. With no
+    ``SHELL`` in the file the argument is passed through untouched, so the
+    guest's own default shell runs it exactly as before.
+    """
+    if shell is None or _exec_form(argument) is not None:
+        return _command_line(argument)
+    return " ".join(shlex.quote(part) for part in [*shell, argument])
 
 
 def _validate_env_key(key: str, directive: str) -> str:
@@ -305,6 +323,9 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
     base_image: str | None = None
     steps: list[Step] = []
     from_count = 0
+    # `SHELL` is parse-time state, not a step: it changes how LATER RUNs are
+    # rendered and has no effect of its own to execute.
+    shell: list[str] | None = None
 
     for directive, argument in _instructions(text):
         if directive not in _KNOWN:
@@ -334,7 +355,7 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
         elif directive == "RUN":
             if not argument:
                 raise DockerfileError("RUN requires a command")
-            steps.append(Run(_command_line(argument)))
+            steps.append(Run(_run_command_line(argument, shell)))
 
         elif directive == "COPY":
             flags, tokens = _split_flags(argument, "COPY")
@@ -397,6 +418,14 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
 
         elif directive == "CMD":
             steps.append(Cmd(_command_line(argument)))
+
+        elif directive == "SHELL":
+            argv = _exec_form(argument)
+            if argv is None:
+                raise DockerfileError('SHELL must be given in exec form, for example `SHELL ["/bin/bash", "-c"]`')
+            if not argv:
+                raise DockerfileError("SHELL requires at least one element, the interpreter to run")
+            shell = argv
 
     if base_image is None:
         raise DockerfileError("dockerfile has no FROM instruction")
