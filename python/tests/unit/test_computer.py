@@ -5,6 +5,7 @@ import contextlib
 import json
 import time
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import httpx2 as httpx
@@ -2658,3 +2659,51 @@ def test_the_default_sync_path_still_polls_to_completion(monkeypatch) -> None:
     assert isinstance(result, sdk.CompletedRunResult)
     assert result.stdout == "fin\n"
     assert [c["method"] for c in t.calls] == ["POST", "GET"]
+
+
+def test_a_failed_build_step_deletes_the_vm_it_created(tmp_path, monkeypatch):
+    import arker.build as build_mod
+    from arker.build import BuildError
+
+    deleted: list[str] = []
+    fake_vm = SimpleNamespace(id="vmh-fake", delete=lambda: deleted.append("vmh-fake"))
+
+    arker = sdk.Arker(api_key="ark_live_test", base_url="https://test.invalid/api", retry=False)
+    monkeypatch.setattr(sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm)
+
+    def failing_step(vm, steps, context_root):
+        raise BuildError("RUN exited 1")
+
+    monkeypatch.setattr(build_mod, "apply_steps", failing_step)
+
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM ubuntu:24.04\nRUN false\n")
+
+    with pytest.raises(BuildError):
+        arker.fork(dockerfile=str(dockerfile))
+
+    assert deleted == ["vmh-fake"]
+
+
+def test_a_delete_that_fails_does_not_mask_the_build_error(tmp_path, monkeypatch):
+    import arker.build as build_mod
+    from arker.build import BuildError
+
+    def refuse_delete():
+        raise RuntimeError("delete refused")
+
+    fake_vm = SimpleNamespace(id="vmh-fake", delete=refuse_delete)
+
+    arker = sdk.Arker(api_key="ark_live_test", base_url="https://test.invalid/api", retry=False)
+    monkeypatch.setattr(sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm)
+
+    def failing_step(vm, steps, context_root):
+        raise BuildError("RUN exited 1")
+
+    monkeypatch.setattr(build_mod, "apply_steps", failing_step)
+
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM ubuntu:24.04\nRUN false\n")
+
+    with pytest.raises(BuildError, match="RUN exited 1"):
+        arker.fork(dockerfile=str(dockerfile))

@@ -449,7 +449,12 @@ class Arker:
             {**fork_options, "image": parsed.base_image},
             base_url=base_url,
         )
-        apply_steps(vm, parsed.steps, context_root)
+        try:
+            apply_steps(vm, parsed.steps, context_root)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                vm.delete()
+            raise
         return vm
 
     def list_vms(
