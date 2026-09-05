@@ -452,10 +452,8 @@ class Arker:
         try:
             apply_steps(vm, parsed.steps, context_root)
         except BaseException:
-            try:
+            with contextlib.suppress(Exception):
                 vm.delete()
-            except Exception:
-                pass
             raise
         return vm
 

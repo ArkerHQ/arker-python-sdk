@@ -2666,16 +2666,10 @@ def test_a_failed_build_step_deletes_the_vm_it_created(tmp_path, monkeypatch):
     from arker.build import BuildError
 
     deleted: list[str] = []
-    fake_vm = SimpleNamespace(
-        id="vmh-fake", delete=lambda: deleted.append("vmh-fake")
-    )
+    fake_vm = SimpleNamespace(id="vmh-fake", delete=lambda: deleted.append("vmh-fake"))
 
-    arker = sdk.Arker(
-        api_key="ark_live_test", base_url="https://test.invalid/api", retry=False
-    )
-    monkeypatch.setattr(
-        sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm
-    )
+    arker = sdk.Arker(api_key="ark_live_test", base_url="https://test.invalid/api", retry=False)
+    monkeypatch.setattr(sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm)
 
     def failing_step(vm, steps, context_root):
         raise BuildError("RUN exited 1")
@@ -2700,12 +2694,8 @@ def test_a_delete_that_fails_does_not_mask_the_build_error(tmp_path, monkeypatch
 
     fake_vm = SimpleNamespace(id="vmh-fake", delete=refuse_delete)
 
-    arker = sdk.Arker(
-        api_key="ark_live_test", base_url="https://test.invalid/api", retry=False
-    )
-    monkeypatch.setattr(
-        sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm
-    )
+    arker = sdk.Arker(api_key="ark_live_test", base_url="https://test.invalid/api", retry=False)
+    monkeypatch.setattr(sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm)
 
     def failing_step(vm, steps, context_root):
         raise BuildError("RUN exited 1")
