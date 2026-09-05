@@ -244,3 +244,16 @@ def test_shell_must_be_given_in_exec_form():
 def test_shell_must_not_be_empty():
     with pytest.raises(DockerfileError, match="at least one"):
         parse_dockerfile("FROM ubuntu:24.04\nSHELL []\n")
+
+
+def test_shell_applies_to_shell_form_entrypoint_and_cmd():
+    """Docker's SHELL rewrites the shell form of CMD and ENTRYPOINT too, not just RUN."""
+    parsed = parse_dockerfile('FROM ubuntu:24.04\nSHELL ["/bin/bash", "-c"]\nENTRYPOINT echo hi\nCMD echo bye\n')
+    assert parsed.steps == [Entrypoint("/bin/bash -c 'echo hi'"), Cmd("/bin/bash -c 'echo bye'")]
+
+
+def test_exec_form_entrypoint_and_cmd_ignore_shell():
+    parsed = parse_dockerfile(
+        'FROM ubuntu:24.04\nSHELL ["/bin/bash", "-c"]\nENTRYPOINT ["echo", "hi"]\nCMD ["echo", "bye"]\n'
+    )
+    assert parsed.steps == [Entrypoint("echo hi"), Cmd("echo bye")]

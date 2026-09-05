@@ -20,9 +20,10 @@
  * Supported: `FROM`, `RUN`, `COPY`, `ADD <url>`, `ENV`, `WORKDIR`, `USER`,
  * `ARG`, `LABEL`, `EXPOSE`, `ENTRYPOINT`, `CMD`, `SHELL`.
  *
- * `SHELL` replaces the interpreter for the shell form of later `RUN`s, as it
- * does in Docker. It is state, not a step: nothing executes it. Exec-form `RUN`
- * is left alone, because exec form does not go through an interpreter at all.
+ * `SHELL` replaces the interpreter for the shell form of later `RUN`,
+ * `ENTRYPOINT` and `CMD`, as it does in Docker. It is state, not a step:
+ * nothing executes it. Exec form is left alone throughout, because it does not
+ * go through an interpreter at all.
  *
  * Refused by name rather than silently dropped: multi-stage builds (more than
  * one `FROM`, or a `COPY --from=`), an `ARG`-substituted `FROM` (it resolves
@@ -111,21 +112,18 @@ function execForm(raw: string): string[] | undefined {
   return undefined;
 }
 
-function commandLine(raw: string): string {
-  const argv = execForm(raw);
-  return argv === undefined ? raw.trim() : argv.map(shellQuote).join(" ");
-}
-
 /**
- * RUN's command line, honouring an active `SHELL`.
+ * Render RUN/ENTRYPOINT/CMD as one command line.
  *
- * Exec form does not go through an interpreter in Docker, so `SHELL` has
- * nothing to replace there and is deliberately not applied to it. With no
- * `SHELL` in the file the argument is passed through untouched, so the guest's
- * own default shell runs it exactly as before.
+ * `shell` is the interpreter set by a preceding `SHELL`. Docker applies it to
+ * the SHELL FORM of all three instructions, and to exec form of none of them,
+ * which is what the branch below encodes. Absent a `SHELL` the argument is
+ * passed through untouched, so the guest's own default shell runs it as before.
  */
-function runCommandLine(raw: string, shell: string[] | undefined): string {
-  if (shell === undefined || execForm(raw) !== undefined) return commandLine(raw);
+function commandLine(raw: string, shell?: string[]): string {
+  const argv = execForm(raw);
+  if (argv !== undefined) return argv.map(shellQuote).join(" ");
+  if (shell === undefined) return raw.trim();
   return [...shell, raw.trim()].map(shellQuote).join(" ");
 }
 
@@ -145,8 +143,6 @@ export function parseDockerfile(text: string): ParsedDockerfile {
   let baseImage: string | undefined;
   let fromCount = 0;
   const steps: Step[] = [];
-  // `SHELL` is parse-time state, not a step: it changes how LATER RUNs are
-  // rendered and has no effect of its own to execute.
   let shell: string[] | undefined;
 
   for (const instruction of instructions) {
@@ -184,7 +180,7 @@ export function parseDockerfile(text: string): ParsedDockerfile {
       }
       case "RUN": {
         if (!argument) throw new DockerfileError("RUN requires a command");
-        steps.push({ kind: "run", command: runCommandLine(argument, shell) });
+        steps.push({ kind: "run", command: commandLine(argument, shell) });
         break;
       }
       case "COPY": {
@@ -272,11 +268,11 @@ export function parseDockerfile(text: string): ParsedDockerfile {
         break;
       }
       case "ENTRYPOINT": {
-        steps.push({ kind: "entrypoint", value: commandLine(argument) });
+        steps.push({ kind: "entrypoint", value: commandLine(argument, shell) });
         break;
       }
       case "CMD": {
-        steps.push({ kind: "cmd", value: commandLine(argument) });
+        steps.push({ kind: "cmd", value: commandLine(argument, shell) });
         break;
       }
       case "SHELL": {

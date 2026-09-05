@@ -2236,9 +2236,27 @@ function testDockerfileShell(): void {
     ["echo hi"],
   );
 
-  // Only RUN takes the interpreter.
-  const other = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nENV A=b\n');
-  assert.deepEqual(other.steps.map((step) => step.kind), ["env"]);
+  // Docker rewrites the shell form of CMD and ENTRYPOINT too, not just RUN.
+  const entry = parseDockerfile(
+    'FROM a\nSHELL ["/bin/bash", "-c"]\nENTRYPOINT echo hi\nCMD echo bye\n',
+  );
+  assert.deepEqual(
+    entry.steps.map((step) => (step as { value: string }).value),
+    ["/bin/bash -c 'echo hi'", "/bin/bash -c 'echo bye'"],
+  );
+
+  // ...and leaves their exec form alone, as for RUN.
+  const entryExec = parseDockerfile(
+    'FROM a\nSHELL ["/bin/bash", "-c"]\nENTRYPOINT ["echo", "hi"]\nCMD ["echo", "bye"]\n',
+  );
+  assert.deepEqual(
+    entryExec.steps.map((step) => (step as { value: string }).value),
+    ["echo hi", "echo bye"],
+  );
+
+  // Instructions that become driver-generated export/cd never take it.
+  const other = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nENV A=b\nWORKDIR /app\n');
+  assert.deepEqual(other.steps.map((step) => step.kind), ["env", "workdir"]);
 
   for (const [text, needle] of [
     ['FROM a\nSHELL /bin/bash -c\n', "exec form"],

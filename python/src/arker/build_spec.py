@@ -21,9 +21,10 @@ manifest-diffed, ships only the files that actually changed.
 Supported: ``FROM``, ``RUN``, ``COPY``, ``ADD <url>``, ``ENV``, ``WORKDIR``,
 ``USER``, ``ARG``, ``LABEL``, ``EXPOSE``, ``ENTRYPOINT``, ``CMD``, ``SHELL``.
 
-``SHELL`` replaces the interpreter for the shell form of later ``RUN``s, as it
-does in Docker. It is state, not a step: nothing executes it. Exec-form ``RUN``
-is left alone, because exec form does not go through an interpreter at all.
+``SHELL`` replaces the interpreter for the shell form of later ``RUN``,
+``ENTRYPOINT`` and ``CMD``, as it does in Docker. It is state, not a step:
+nothing executes it. Exec form is left alone throughout, because it does not go
+through an interpreter at all.
 
 Refused by name, rather than silently dropped:
 
@@ -240,29 +241,24 @@ def _exec_form(argument: str) -> list[str] | None:
     return None
 
 
-def _command_line(argument: str) -> str:
+def _command_line(argument: str, shell: list[str] | None = None) -> str:
     """Render RUN/ENTRYPOINT/CMD as one shell command line.
 
     Exec form does not go through a shell in Docker, but the only execution
     primitive we have is "a command line in a shell", so each element is quoted
     and joined — which invokes the same argv a direct exec would.
+
+    ``shell`` is the interpreter set by a preceding ``SHELL``. Docker applies it
+    to the SHELL FORM of all three instructions, and to exec form of none of
+    them, which is what the branch below encodes. Absent a ``SHELL`` the
+    argument is passed through untouched, so the guest's own default shell runs
+    it exactly as before.
     """
     argv = _exec_form(argument)
-    if argv is None:
+    if argv is not None:
+        return " ".join(shlex.quote(item) for item in argv)
+    if shell is None:
         return argument
-    return " ".join(shlex.quote(item) for item in argv)
-
-
-def _run_command_line(argument: str, shell: list[str] | None) -> str:
-    """RUN's command line, honouring an active ``SHELL``.
-
-    Exec form does not go through an interpreter in Docker, so ``SHELL`` has
-    nothing to replace there and is deliberately not applied to it. With no
-    ``SHELL`` in the file the argument is passed through untouched, so the
-    guest's own default shell runs it exactly as before.
-    """
-    if shell is None or _exec_form(argument) is not None:
-        return _command_line(argument)
     return " ".join(shlex.quote(part) for part in [*shell, argument])
 
 
@@ -323,8 +319,6 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
     base_image: str | None = None
     steps: list[Step] = []
     from_count = 0
-    # `SHELL` is parse-time state, not a step: it changes how LATER RUNs are
-    # rendered and has no effect of its own to execute.
     shell: list[str] | None = None
 
     for directive, argument in _instructions(text):
@@ -355,7 +349,7 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
         elif directive == "RUN":
             if not argument:
                 raise DockerfileError("RUN requires a command")
-            steps.append(Run(_run_command_line(argument, shell)))
+            steps.append(Run(_command_line(argument, shell)))
 
         elif directive == "COPY":
             flags, tokens = _split_flags(argument, "COPY")
@@ -414,10 +408,10 @@ def parse_dockerfile(text: str) -> ParsedDockerfile:
             steps.append(Expose(argument))
 
         elif directive == "ENTRYPOINT":
-            steps.append(Entrypoint(_command_line(argument)))
+            steps.append(Entrypoint(_command_line(argument, shell)))
 
         elif directive == "CMD":
-            steps.append(Cmd(_command_line(argument)))
+            steps.append(Cmd(_command_line(argument, shell)))
 
         elif directive == "SHELL":
             argv = _exec_form(argument)
