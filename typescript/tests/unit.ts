@@ -2153,6 +2153,11 @@ await testTimeToBackgroundZeroReturnsTheAckWithoutPolling();
 class FakeBuildVM implements BuildTarget {
   readonly calls: { kind: string; a: string; b?: string }[] = [];
   readonly ignores: ((rel: string) => boolean)[] = [];
+  readonly written = new Map<string, string>();
+  readonly deletedSessions: string[] = [];
+  // What the base image left in the guest, as the agent stores it. The driver
+  // must fold the Dockerfile over this, not replace it.
+  static readonly BASE_CONFIG = '{"env": [["PATH", "/usr/bin"]], "cmd": "\'/bin/bash\'"}';
   constructor(private readonly exitCodes: Record<string, number> = {}) {}
   async run(command: string): Promise<unknown> {
     this.calls.push({ kind: "run", a: command });
@@ -2162,8 +2167,29 @@ class FakeBuildVM implements BuildTarget {
     }
     return { exit_code: code, stdout: "", stderr: "" };
   }
-  async sync(path: string, data: Uint8Array | string): Promise<void> {
+  async sync(path: string): Promise<Uint8Array>;
+  async sync(path: string, data: Uint8Array | string): Promise<void>;
+  async sync(path: string, data?: Uint8Array | string): Promise<Uint8Array | void> {
+    if (data === undefined) {
+      if (path === "/etc/arker/image-config.json") {
+        return new TextEncoder().encode(FakeBuildVM.BASE_CONFIG);
+      }
+      throw new Error(`no such file: ${path}`);
+    }
     this.calls.push({ kind: "sync", a: path, b: String(data.length) });
+    this.written.set(path, typeof data === "string" ? data : new TextDecoder().decode(data));
+  }
+  async listSessions(): Promise<unknown> {
+    return {
+      sessions: [
+        { session_id: "sid-0", session_idx: 0 },
+        { session_id: "sid-30", session_idx: 30 },
+      ],
+    };
+  }
+  async deleteSession(sessionId: string): Promise<unknown> {
+    this.deletedSessions.push(sessionId);
+    return { deleted: true };
   }
   async syncDir(localDir: string, remoteDir: string, options?: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ kind: "syncDir", a: nodePath.basename(localDir), b: remoteDir });
@@ -2520,3 +2546,56 @@ await testUserWrapsOnlyLaterRuns();
 await testCopyResolvesAgainstTheContext();
 await testCopyRefusesToEscapeTheContext();
 await testCopyIsNotWrappedInTheUserShell();
+
+// --- The Dockerfile's final USER and WORKDIR, folded into the guest config ---
+//
+// `su -p` and `cd` only ever touched the build's own session. The agent
+// re-reads /etc/arker/image-config.json every time it starts a shell, so that
+// file is what makes USER and WORKDIR hold for the sessions the customer runs
+// in. Mirrors the Python suite.
+
+function builtConfig(vm: FakeBuildVM): Record<string, unknown> {
+  return JSON.parse(vm.written.get("/etc/arker/image-config.json")!);
+}
+
+async function testUserIsPersistedIntoTheGuestImageConfig(): Promise<void> {
+  const dir = makeBuildContext();
+  const vm = await buildAgainst("FROM x\nUSER app\nRUN whoami\n", dir);
+  assert.equal(builtConfig(vm).user, "app");
+}
+
+async function testWorkdirIsPersistedIntoTheGuestImageConfig(): Promise<void> {
+  const dir = makeBuildContext();
+  const vm = await buildAgainst("FROM x\nWORKDIR /app\n", dir);
+  assert.equal(builtConfig(vm).workdir, "/app");
+  assert.match(
+    vm.written.get("/etc/profile.d/99-arker-image.sh")!,
+    /cd '\/app' 2>\/dev\/null \|\| true/,
+  );
+}
+
+async function testPersistingKeepsWhatTheBaseImageConfigured(): Promise<void> {
+  const dir = makeBuildContext();
+  const vm = await buildAgainst("FROM x\nUSER app\n", dir);
+  assert.equal(builtConfig(vm).cmd, "'/bin/bash'");
+  assert.match(vm.written.get("/etc/profile.d/99-arker-image.sh")!, /export PATH='\/usr\/bin'/);
+}
+
+async function testTheBuildSessionIsResetSoTheNewConfigApplies(): Promise<void> {
+  const dir = makeBuildContext();
+  const vm = await buildAgainst("FROM x\nUSER app\n", dir);
+  assert.deepEqual(vm.deletedSessions, ["sid-0"]);
+}
+
+async function testADockerfileThatSetsNeitherWritesNoConfig(): Promise<void> {
+  const dir = makeBuildContext();
+  const vm = await buildAgainst("FROM x\nRUN echo hi\n", dir);
+  assert.equal(vm.written.size, 0);
+  assert.deepEqual(vm.deletedSessions, []);
+}
+
+await testUserIsPersistedIntoTheGuestImageConfig();
+await testWorkdirIsPersistedIntoTheGuestImageConfig();
+await testPersistingKeepsWhatTheBaseImageConfigured();
+await testTheBuildSessionIsResetSoTheNewConfigApplies();
+await testADockerfileThatSetsNeitherWritesNoConfig();

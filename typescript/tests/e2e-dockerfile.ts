@@ -32,6 +32,8 @@ fs.writeFileSync(
     'ENV GREETING="hello world"',
     "RUN cat /app/app.js > /app/proof.txt",
     'RUN echo "$GREETING" >> /app/proof.txt',
+    "RUN useradd -m -s /bin/bash appuser",
+    "USER appuser",
     "",
   ].join("\n"),
 );
@@ -47,6 +49,8 @@ const checks: [string, string][] = [
   ["ls /app/ignored.txt 2>&1 || true", "No such file"],
   ["cat /app/src/index.txt", "from-src"],
   ["pwd", "/app"],
+  // A Dockerfile ending in USER must not hand back a root shell.
+  ["whoami", "appuser"],
   ["echo $GREETING", "hello world"],
 ];
 
@@ -57,6 +61,16 @@ for (const [command, expected] of checks) {
   const ok = out.includes(expected);
   if (!ok) failures += 1;
   console.log(`${ok ? "ok  " : "FAIL"} ${JSON.stringify(command)} -> ${JSON.stringify(out.trim().slice(0, 80))}`);
+}
+
+// Shell state is per-session; only the guest image config makes USER and
+// WORKDIR hold in a session the build never touched.
+{
+  const result = (await vm.run("whoami; pwd", { session_idx: 9 })) as { stdout?: string };
+  const out = (result.stdout ?? "").split(/\s+/).filter(Boolean).join(" ");
+  const ok = out === "appuser /app";
+  if (!ok) failures += 1;
+  console.log(`${ok ? "ok  " : "FAIL"} "whoami; pwd" in a fresh session -> ${JSON.stringify(out)}`);
 }
 
 console.log(`\n>>> cleaning up ${vm.id}`);

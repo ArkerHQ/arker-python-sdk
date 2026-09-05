@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import re
 from types import SimpleNamespace
@@ -22,11 +23,17 @@ from arker.build_spec import parse_dockerfile
 class FakeVM:
     """Records what the driver asks a VM to do."""
 
+    # What the base image left in the guest, as the agent stores it. The
+    # driver must fold the Dockerfile over this, not replace it.
+    BASE_CONFIG = '{"env": [["PATH", "/usr/bin"]], "cmd": "\'/bin/bash\'"}'
+
     def __init__(self, exit_codes=None):
         self.calls: list[tuple] = []
         self.ignores: list = []
         # Per-command exit codes, keyed by a substring of the command.
         self.exit_codes = exit_codes or {}
+        self.written: dict[str, bytes] = {}
+        self.deleted_sessions: list[str] = []
 
     def run(self, command, **kwargs):
         self.calls.append(("run", command))
@@ -37,8 +44,26 @@ class FakeVM:
         return SimpleNamespace(exit_code=code, stdout="", stderr="")
 
     def sync(self, path, data=None):
-        self.calls.append(("sync", path, len(data) if data else None))
-        return
+        if data is None:
+            # A read. The base image left its own config here.
+            if path == "/etc/arker/image-config.json":
+                return self.BASE_CONFIG.encode()
+            raise FileNotFoundError(path)
+        self.calls.append(("sync", path, len(data)))
+        self.written[path] = data if isinstance(data, bytes) else data.encode()
+        return None
+
+    def list_sessions(self, **kwargs):
+        return SimpleNamespace(
+            sessions=[
+                SimpleNamespace(session_id="sid-0", session_idx=0),
+                SimpleNamespace(session_id="sid-30", session_idx=30),
+            ]
+        )
+
+    def delete_session(self, session_id):
+        self.deleted_sessions.append(session_id)
+        return SimpleNamespace(deleted=True)
 
     def sync_dir(self, local_dir, remote_dir, **kwargs):
         self.calls.append(("sync_dir", os.path.basename(local_dir.rstrip("/")), remote_dir))
@@ -374,7 +399,8 @@ def test_copy_dir_to_a_relative_dest_resolves_against_workdir(context):
 
 def test_copy_file_to_a_relative_dest_resolves_against_workdir(context):
     vm = build("FROM x\nWORKDIR /app\nCOPY app.js ./\n", context)
-    dests = [c[1] for c in vm.calls if c[0] == "sync"]
+    # The guest config the build writes at the end is not a COPY destination.
+    dests = [c[1] for c in vm.calls if c[0] == "sync" and not c[1].startswith("/etc/")]
     assert dests == ["/app/app.js"], dests
 
 
@@ -395,3 +421,64 @@ def test_absolute_copy_dest_is_unchanged_by_workdir(context):
     vm = build("FROM x\nWORKDIR /app\nCOPY src/ /opt/src\n", context)
     dests = [c[2] for c in vm.calls if c[0] == "sync_dir"]
     assert dests == ["/opt/src"], dests
+
+
+# --- The Dockerfile's final USER and WORKDIR, folded into the guest config ---
+#
+# `export`/`cd`/`su -p` only ever touched the build's own session. The agent
+# re-reads /etc/arker/image-config.json every time it starts a shell, so that
+# file — and only that file — is what makes USER and WORKDIR hold for the
+# sessions the customer actually runs in.
+
+
+def config(vm) -> dict:
+    return json.loads(vm.written["/etc/arker/image-config.json"])
+
+
+def profile(vm) -> str:
+    return vm.written["/etc/profile.d/99-arker-image.sh"].decode()
+
+
+def test_user_is_persisted_into_the_guest_image_config(context):
+    vm = build("FROM x\nUSER app\nRUN whoami\n", context)
+    assert config(vm)["user"] == "app"
+
+
+def test_workdir_is_persisted_into_the_guest_image_config(context):
+    vm = build("FROM x\nWORKDIR /app\n", context)
+    assert config(vm)["workdir"] == "/app"
+
+
+def test_a_persisted_workdir_is_also_entered_by_every_new_shell(context):
+    vm = build("FROM x\nWORKDIR /app\n", context)
+    assert "cd '/app' 2>/dev/null || true" in profile(vm)
+
+
+def test_persisting_keeps_what_the_base_image_configured(context):
+    """The image's own CMD and PATH must survive the fold, as in Docker."""
+    vm = build("FROM x\nUSER app\n", context)
+    assert config(vm)["cmd"] == "'/bin/bash'"
+    assert config(vm)["env"] == [["PATH", "/usr/bin"]]
+    assert "export PATH='/usr/bin'" in profile(vm)
+
+
+def test_the_last_user_and_workdir_win(context):
+    vm = build("FROM x\nUSER one\nWORKDIR /a\nUSER two\nWORKDIR /b\n", context)
+    assert config(vm)["user"] == "two"
+    assert config(vm)["workdir"] == "/b"
+
+
+def test_the_build_session_is_reset_so_the_new_config_applies(context):
+    """The build's own shell is already running as root, in its old cwd.
+
+    A shell picks the config up when it STARTS, so the session the build used
+    keeps the pre-build identity until it is respawned.
+    """
+    vm = build("FROM x\nUSER app\n", context)
+    assert vm.deleted_sessions == ["sid-0"]
+
+
+def test_a_dockerfile_that_sets_neither_writes_no_config(context):
+    vm = build("FROM x\nRUN echo hi\n", context)
+    assert vm.written == {}
+    assert vm.deleted_sessions == []
