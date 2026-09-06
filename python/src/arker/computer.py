@@ -1681,11 +1681,14 @@ class Pty:
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
-# Shared HTTP/2 client. HTTPX2 keeps concurrent stream I/O independent, including
-# long-running requests such as run(). The connection limit remains a bound for
-# HTTP/1.1 fallbacks and for connections to distinct origins.
+# Shared client, one connection per concurrent request. HTTP/2 multiplexes every
+# request onto a single socket, and a socket operation that returns EAGAIN there
+# aborts the request instead of waiting for readiness: 10 concurrent forks lose 7
+# to "Network failure ... outcome is unknown", each one orphaning the VM the
+# server may already have created. The connection limit is the real concurrency
+# bound.
 _http_client = httpx.Client(
-    http2=True,
+    http2=False,
     limits=httpx.Limits(max_connections=256, max_keepalive_connections=256),
 )
 atexit.register(_http_client.close)
