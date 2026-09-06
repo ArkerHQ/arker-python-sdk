@@ -152,9 +152,8 @@ def test_placement_errors(kwargs, message) -> None:
         sdk.Arker(api_key="ark_live_test", **kwargs)
 
 
-def test_shared_client_uses_httpx2_with_http2_enabled() -> None:
+def test_shared_client_uses_httpx2() -> None:
     assert type(sdk._http_client).__module__.split(".", 1)[0] == "httpx2"
-    assert sdk._http_client._transport._pool._http2 is True
 
 
 def test_control_only_client_defers_compute_placement_error() -> None:
@@ -2759,3 +2758,9 @@ def test_a_failed_build_retries_a_cleanup_delete_that_fails(tmp_path, monkeypatc
         arker._fork_dockerfile(_dockerfile(tmp_path), None, {}, base_url="https://test.invalid/api")
 
     assert len(attempts) == 3
+
+
+def test_the_shared_client_does_not_multiplex_requests_over_one_socket() -> None:
+    pool = sdk._http_client._transport._pool
+    assert pool._http2 is False
+    assert pool._http1 is True
