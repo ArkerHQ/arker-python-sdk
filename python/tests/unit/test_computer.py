@@ -2725,9 +2725,7 @@ def test_a_dockerfile_build_inherits_the_fork_queueing_window(tmp_path, monkeypa
 
     monkeypatch.setattr(build_module, "apply_steps", fake_apply_steps)
     arker = client()
-    monkeypatch.setattr(
-        type(arker), "_fork", lambda self, options, *, base_url: SimpleNamespace(delete=lambda: None)
-    )
+    monkeypatch.setattr(type(arker), "_fork", lambda self, options, *, base_url: SimpleNamespace(delete=lambda: None))
 
     arker._fork_dockerfile(
         _dockerfile(tmp_path),
@@ -2755,13 +2753,9 @@ def test_a_failed_build_retries_a_cleanup_delete_that_fails(tmp_path, monkeypatc
     monkeypatch.setattr(build_module, "apply_steps", failing_apply_steps)
     monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
     arker = client()
-    monkeypatch.setattr(
-        type(arker), "_fork", lambda self, options, *, base_url: SimpleNamespace(delete=flaky_delete)
-    )
+    monkeypatch.setattr(type(arker), "_fork", lambda self, options, *, base_url: SimpleNamespace(delete=flaky_delete))
 
     with pytest.raises(RuntimeError, match="build step failed"):
-        arker._fork_dockerfile(
-            _dockerfile(tmp_path), None, {}, base_url="https://test.invalid/api"
-        )
+        arker._fork_dockerfile(_dockerfile(tmp_path), None, {}, base_url="https://test.invalid/api")
 
     assert len(attempts) == 3
