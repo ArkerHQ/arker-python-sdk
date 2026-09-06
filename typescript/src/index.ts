@@ -596,6 +596,18 @@ function rejectUnsupportedRunNetworkInputs(request: unknown): void {
   }
 }
 
+async function deleteAfterFailedBuild(vm: VM, attempts = 3, baseDelayMs = 1000): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await vm.delete();
+      return;
+    } catch {
+      if (attempt === attempts - 1) return;
+      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (attempt + 1)));
+    }
+  }
+}
+
 export class Arker {
   /** Compute base URL for `provider` + `region` — used for fork/run/
    * per-VM ops. SDK calls go straight to this host, skipping the CF
@@ -736,7 +748,13 @@ export class Arker {
       { ...forkOptions, image: parsed.baseImage } as ForkRequest,
       this.baseUrl,
     );
-    await applySteps(vm, parsed.steps, contextRoot);
+    const queueingTimeout = forkOptions.queueing_timeout as number | undefined;
+    try {
+      await applySteps(vm, parsed.steps, contextRoot, { queueingTimeout });
+    } catch (error) {
+      await deleteAfterFailedBuild(vm);
+      throw error;
+    }
     return vm;
   }
 

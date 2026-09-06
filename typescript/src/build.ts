@@ -48,6 +48,10 @@ export class BuildError extends Error {
 }
 
 /** The slice of `VM` this module uses. */
+export type BuildOptions = {
+  queueingTimeout?: number;
+};
+
 export type BuildTarget = {
   run(command: string, options?: Record<string, unknown>): Promise<unknown>;
   sync(path: string, data: Uint8Array | string): Promise<void>;
@@ -169,8 +173,16 @@ function destinationFor(dest: string, sourcePath: string, multiple: boolean): st
  * rather than its completion marker — an interpreter left running by an earlier
  * instruction swallowed it — so the command never ran at all.
  */
-async function runChecked(vm: BuildTarget, command: string, what: string): Promise<void> {
-  const result = (await vm.run(command)) as {
+async function runChecked(
+  vm: BuildTarget,
+  command: string,
+  what: string,
+  options: BuildOptions = {},
+): Promise<void> {
+  const result = (await vm.run(
+    command,
+    options.queueingTimeout === undefined ? undefined : { queueing_timeout: options.queueingTimeout },
+  )) as {
     exit_code?: number | null;
     exitCode?: number | null;
     stdout?: string;
@@ -199,6 +211,7 @@ export async function applySteps(
   vm: BuildTarget,
   steps: Step[],
   contextRoot: string,
+  options: BuildOptions = {},
 ): Promise<void> {
   let currentUser: string | undefined;
 
@@ -245,7 +258,7 @@ export async function applySteps(
       }
       case "copy":
         // Unwrapped by design; see the module docstring.
-        await applyCopy(vm, step, contextRoot);
+        await applyCopy(vm, step, contextRoot, options);
         continue;
       case "label":
       case "expose":
@@ -265,7 +278,7 @@ export async function applySteps(
     if (currentUser !== undefined && step.kind === "run") {
       command = `su -p ${shellQuote(currentUser)} -c ${shellQuote(command)}`;
     }
-    await runChecked(vm, command, `${step.kind.toUpperCase()} step`);
+    await runChecked(vm, command, `${step.kind.toUpperCase()} step`, options);
   }
 }
 
@@ -297,6 +310,7 @@ async function applyCopy(
   vm: BuildTarget,
   step: Extract<Step, { kind: "copy" }>,
   contextRoot: string,
+  options: BuildOptions = {},
 ): Promise<void> {
   // realpath BOTH sides. `resolveSources` returns resolved paths, and on a
   // platform where the context sits under a symlink (macOS /tmp ->
@@ -331,7 +345,12 @@ async function applyCopy(
       const target = destinationFor(step.dest, path, multiple);
       await vm.sync(target, fs.readFileSync(path));
       if (fs.statSync(path).mode & 0o111) {
-        await runChecked(vm, `chmod +x ${shellQuote(target)}`, `COPY ${nodePath.basename(path)}`);
+        await runChecked(
+          vm,
+          `chmod +x ${shellQuote(target)}`,
+          `COPY ${nodePath.basename(path)}`,
+          options,
+        );
       }
     }
   }
@@ -341,6 +360,7 @@ async function applyCopy(
       vm,
       `chown -R ${shellQuote(step.chown)} ${shellQuote(step.dest)}`,
       `COPY --chown=${step.chown}`,
+      options,
     );
   }
 }

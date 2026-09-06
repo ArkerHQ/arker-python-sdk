@@ -450,10 +450,14 @@ class Arker:
             base_url=base_url,
         )
         try:
-            apply_steps(vm, parsed.steps, context_root)
+            apply_steps(
+                vm,
+                parsed.steps,
+                context_root,
+                queueing_timeout=fork_options.get("queueing_timeout"),
+            )
         except BaseException:
-            with contextlib.suppress(Exception):
-                vm.delete()
+            _delete_after_failed_build(vm)
             raise
         return vm
 
@@ -2021,6 +2025,17 @@ def _wire_retry_after(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value) if value > 0 else None
+
+
+def _delete_after_failed_build(vm: VM, attempts: int = 3, base_delay_s: float = 1.0) -> None:
+    for attempt in range(attempts):
+        try:
+            vm.delete()
+            return
+        except Exception:
+            if attempt == attempts - 1:
+                return
+            time.sleep(base_delay_s * (attempt + 1))
 
 
 def _is_retryable(status: int, error: dict[str, Any] | None) -> bool:

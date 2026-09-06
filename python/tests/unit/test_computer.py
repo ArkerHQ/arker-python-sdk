@@ -2671,7 +2671,7 @@ def test_a_failed_build_step_deletes_the_vm_it_created(tmp_path, monkeypatch):
     arker = sdk.Arker(api_key="ark_live_test", base_url="https://test.invalid/api", retry=False)
     monkeypatch.setattr(sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm)
 
-    def failing_step(vm, steps, context_root):
+    def failing_step(vm, steps, context_root, **kwargs):
         raise BuildError("RUN exited 1")
 
     monkeypatch.setattr(build_mod, "apply_steps", failing_step)
@@ -2697,7 +2697,7 @@ def test_a_delete_that_fails_does_not_mask_the_build_error(tmp_path, monkeypatch
     arker = sdk.Arker(api_key="ark_live_test", base_url="https://test.invalid/api", retry=False)
     monkeypatch.setattr(sdk.Arker, "_fork", lambda self, options, *, base_url: fake_vm)
 
-    def failing_step(vm, steps, context_root):
+    def failing_step(vm, steps, context_root, **kwargs):
         raise BuildError("RUN exited 1")
 
     monkeypatch.setattr(build_mod, "apply_steps", failing_step)
@@ -2707,3 +2707,61 @@ def test_a_delete_that_fails_does_not_mask_the_build_error(tmp_path, monkeypatch
 
     with pytest.raises(BuildError, match="RUN exited 1"):
         arker.fork(dockerfile=str(dockerfile))
+
+
+def _dockerfile(tmp_path) -> str:
+    path = tmp_path / "Dockerfile"
+    path.write_text("FROM ubuntu\nRUN echo hi\n")
+    return str(path)
+
+
+def test_a_dockerfile_build_inherits_the_fork_queueing_window(tmp_path, monkeypatch) -> None:
+    import arker.build as build_module
+
+    seen: dict[str, Any] = {}
+
+    def fake_apply_steps(vm, steps, context_root, **kwargs):
+        seen.update(kwargs)
+
+    monkeypatch.setattr(build_module, "apply_steps", fake_apply_steps)
+    arker = client()
+    monkeypatch.setattr(
+        type(arker), "_fork", lambda self, options, *, base_url: SimpleNamespace(delete=lambda: None)
+    )
+
+    arker._fork_dockerfile(
+        _dockerfile(tmp_path),
+        None,
+        {"queueing_timeout": 900},
+        base_url="https://test.invalid/api",
+    )
+
+    assert seen.get("queueing_timeout") == 900
+
+
+def test_a_failed_build_retries_a_cleanup_delete_that_fails(tmp_path, monkeypatch) -> None:
+    import arker.build as build_module
+
+    attempts: list[int] = []
+
+    def failing_apply_steps(vm, steps, context_root, **kwargs):
+        raise RuntimeError("build step failed")
+
+    def flaky_delete():
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise sdk.ArkerError("unavailable", "service temporarily unavailable", 503)
+
+    monkeypatch.setattr(build_module, "apply_steps", failing_apply_steps)
+    monkeypatch.setattr(sdk.time, "sleep", lambda _s: None)
+    arker = client()
+    monkeypatch.setattr(
+        type(arker), "_fork", lambda self, options, *, base_url: SimpleNamespace(delete=flaky_delete)
+    )
+
+    with pytest.raises(RuntimeError, match="build step failed"):
+        arker._fork_dockerfile(
+            _dockerfile(tmp_path), None, {}, base_url="https://test.invalid/api"
+        )
+
+    assert len(attempts) == 3
