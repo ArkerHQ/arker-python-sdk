@@ -18,7 +18,12 @@
  * ## Scope
  *
  * Supported: `FROM`, `RUN`, `COPY`, `ADD <url>`, `ENV`, `WORKDIR`, `USER`,
- * `ARG`, `LABEL`, `EXPOSE`, `ENTRYPOINT`, `CMD`.
+ * `ARG`, `LABEL`, `EXPOSE`, `ENTRYPOINT`, `CMD`, `SHELL`.
+ *
+ * `SHELL` replaces the interpreter for the shell form of later `RUN`,
+ * `ENTRYPOINT` and `CMD`, as it does in Docker. It is state, not a step:
+ * nothing executes it. Exec form is left alone throughout, because it does not
+ * go through an interpreter at all.
  *
  * Refused by name rather than silently dropped: multi-stage builds (more than
  * one `FROM`, or a `COPY --from=`), an `ARG`-substituted `FROM` (it resolves
@@ -74,7 +79,7 @@ export type ParsedDockerfile = { baseImage: string; steps: Step[] };
 
 const KNOWN = new Set([
   "FROM", "RUN", "COPY", "ADD", "ENV", "WORKDIR",
-  "USER", "ARG", "LABEL", "EXPOSE", "ENTRYPOINT", "CMD",
+  "USER", "ARG", "LABEL", "EXPOSE", "ENTRYPOINT", "CMD", "SHELL",
 ]);
 
 /**
@@ -83,7 +88,21 @@ const KNOWN = new Set([
  */
 function shellQuote(value: string): string {
   if (value.length > 0 && /^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) return value;
-  return `'${value.replace(/'/g, `'\\''`)}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** The argv of an exec-form instruction, or undefined if it is shell form. */
+function execForm(raw: string): string[] | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("[")) return undefined;
+  try {
+    const argv = JSON.parse(trimmed);
+    if (Array.isArray(argv) && argv.every((item) => typeof item === "string")) return argv;
+  } catch {
+    // Not valid JSON, so it was never exec form: a shell-form command may
+    // legitimately start with `[` (the `test` builtin), so this is not an error.
+  }
+  return undefined;
 }
 
 /**
@@ -93,20 +112,17 @@ function shellQuote(value: string): string {
  * primitive here is "a command line in a shell", so each element is quoted and
  * joined. That invokes the same argv a direct exec would, via the shell's own
  * fork+exec.
+ *
+ * `shell` is the interpreter set by a preceding `SHELL`. Docker applies it to
+ * the SHELL FORM of all three instructions, and to exec form of none of them,
+ * which is what the branch below encodes. Absent a `SHELL` the argument is
+ * passed through untouched, so the guest's own default shell runs it as before.
  */
-function commandLine(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed.startsWith("[")) return trimmed;
-  try {
-    const argv = JSON.parse(trimmed);
-    if (Array.isArray(argv) && argv.every((item) => typeof item === "string")) {
-      return argv.map(shellQuote).join(" ");
-    }
-  } catch {
-    // Not valid JSON, so it was never exec form. Fall through and use it
-    // verbatim rather than rejecting a shell-form command that starts with `[`.
-  }
-  return trimmed;
+function commandLine(raw: string, shell: string[] | undefined): string {
+  const argv = execForm(raw);
+  if (argv !== undefined) return argv.map(shellQuote).join(" ");
+  if (shell === undefined) return raw.trim();
+  return [...shell, raw.trim()].map(shellQuote).join(" ");
 }
 
 function keyValuePairs(instruction: Instruction, directive: string): [string, string][] {
@@ -125,6 +141,7 @@ export function parseDockerfile(text: string): ParsedDockerfile {
   let baseImage: string | undefined;
   let fromCount = 0;
   const steps: Step[] = [];
+  let shell: string[] | undefined;
 
   for (const instruction of instructions) {
     const directive = (instruction.getKeyword() ?? "").toUpperCase();
@@ -161,7 +178,7 @@ export function parseDockerfile(text: string): ParsedDockerfile {
       }
       case "RUN": {
         if (!argument) throw new DockerfileError("RUN requires a command");
-        steps.push({ kind: "run", command: commandLine(argument) });
+        steps.push({ kind: "run", command: commandLine(argument, shell) });
         break;
       }
       case "COPY": {
@@ -249,11 +266,24 @@ export function parseDockerfile(text: string): ParsedDockerfile {
         break;
       }
       case "ENTRYPOINT": {
-        steps.push({ kind: "entrypoint", value: commandLine(argument) });
+        steps.push({ kind: "entrypoint", value: commandLine(argument, shell) });
         break;
       }
       case "CMD": {
-        steps.push({ kind: "cmd", value: commandLine(argument) });
+        steps.push({ kind: "cmd", value: commandLine(argument, shell) });
+        break;
+      }
+      case "SHELL": {
+        const argv = execForm(argument);
+        if (argv === undefined) {
+          throw new DockerfileError(
+            'SHELL must be given in exec form, for example `SHELL ["/bin/bash", "-c"]`',
+          );
+        }
+        if (argv.length === 0) {
+          throw new DockerfileError("SHELL requires at least one element, the interpreter to run");
+        }
+        shell = argv;
         break;
       }
     }

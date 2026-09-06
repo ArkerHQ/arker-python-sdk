@@ -2207,6 +2207,80 @@ function testDockerfileParsingBasics(): void {
   );
 }
 
+// Docker's SHELL replaces the interpreter for the SHELL FORM of RUN. Its usual
+// real-world use is ["/bin/bash", "-o", "pipefail", "-c"]: plain sh reports only
+// the last exit code in a pipeline, so a failed download in `curl bad | tar xz`
+// looks green. Kept in step with the Python SDK, which parses the same files.
+function testDockerfileShell(): void {
+  const applied = parseDockerfile(
+    'FROM ubuntu:24.04\nSHELL ["/bin/bash", "-o", "pipefail", "-c"]\nRUN curl -f url | tar xz\n',
+  );
+  assert.deepEqual(
+    applied.steps.map((step) => (step as { command: string }).command),
+    ["/bin/bash -o pipefail -c 'curl -f url | tar xz'"],
+  );
+
+  // Applies forward only, and the last SHELL wins.
+  const ordered = parseDockerfile(
+    'FROM a\nRUN echo early\nSHELL ["/bin/bash", "-c"]\nSHELL ["/bin/zsh", "-c"]\nRUN echo late\n',
+  );
+  assert.deepEqual(
+    ordered.steps.map((step) => (step as { command: string }).command),
+    ["echo early", "/bin/zsh -c 'echo late'"],
+  );
+
+  // Exec form does not go through an interpreter, so SHELL cannot apply.
+  const execForm = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nRUN ["echo", "hi"]\n');
+  assert.deepEqual(
+    execForm.steps.map((step) => (step as { command: string }).command),
+    ["echo hi"],
+  );
+
+  // Docker rewrites the shell form of CMD and ENTRYPOINT too, not just RUN.
+  const entry = parseDockerfile(
+    'FROM a\nSHELL ["/bin/bash", "-c"]\nENTRYPOINT echo hi\nCMD echo bye\n',
+  );
+  assert.deepEqual(
+    entry.steps.map((step) => (step as { value: string }).value),
+    ["/bin/bash -c 'echo hi'", "/bin/bash -c 'echo bye'"],
+  );
+
+  // ...and leaves their exec form alone, as for RUN.
+  const entryExec = parseDockerfile(
+    'FROM a\nSHELL ["/bin/bash", "-c"]\nENTRYPOINT ["echo", "hi"]\nCMD ["echo", "bye"]\n',
+  );
+  assert.deepEqual(
+    entryExec.steps.map((step) => (step as { value: string }).value),
+    ["echo hi", "echo bye"],
+  );
+
+  // Instructions that become driver-generated export/cd never take it.
+  const other = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nENV A=b\nWORKDIR /app\n');
+  assert.deepEqual(other.steps, [
+    { kind: "env", pairs: [["A", "b"]] },
+    { kind: "workdir", path: "/app" },
+  ]);
+
+  // Byte-identical to the Python SDK, which asserts this same string. The two
+  // parsers read the same Dockerfiles, so their quoting must not diverge.
+  const quoted = parseDockerfile('FROM a\nSHELL ["/bin/bash", "-c"]\nRUN echo \'hi\'\n');
+  assert.deepEqual(
+    quoted.steps.map((step) => (step as { command: string }).command),
+    [`/bin/bash -c 'echo '"'"'hi'"'"''`],
+  );
+
+  for (const [text, needle] of [
+    ['FROM a\nSHELL /bin/bash -c\n', "exec form"],
+    ['FROM a\nSHELL []\n', "at least one"],
+  ] as [string, string][]) {
+    assert.throws(
+      () => parseDockerfile(text),
+      (error: unknown) => error instanceof DockerfileError && error.message.includes(needle),
+      `expected ${needle} named for: ${text}`,
+    );
+  }
+}
+
 function testDockerfileRefusalsAreNamed(): void {
   const cases: [string, string][] = [
     ["RUN echo hi\n", "FROM"],
@@ -2515,6 +2589,7 @@ await testAddUrlIsFetchedByTheClient();
 await testAFailingRunAbortsTheBuild();
 testDockerfileParsingBasics();
 testDockerfileRefusalsAreNamed();
+testDockerfileShell();
 await testBuildAppliesShellStateInOrder();
 await testUserWrapsOnlyLaterRuns();
 await testCopyResolvesAgainstTheContext();
