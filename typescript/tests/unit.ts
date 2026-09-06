@@ -2153,9 +2153,11 @@ await testTimeToBackgroundZeroReturnsTheAckWithoutPolling();
 class FakeBuildVM implements BuildTarget {
   readonly calls: { kind: string; a: string; b?: string }[] = [];
   readonly ignores: ((rel: string) => boolean)[] = [];
+  readonly runOptions: (Record<string, unknown> | undefined)[] = [];
   constructor(private readonly exitCodes: Record<string, number> = {}) {}
-  async run(command: string): Promise<unknown> {
+  async run(command: string, options?: Record<string, unknown>): Promise<unknown> {
     this.calls.push({ kind: "run", a: command });
+    this.runOptions.push(options);
     let code = 0;
     for (const [needle, value] of Object.entries(this.exitCodes)) {
       if (command.includes(needle)) code = value;
@@ -2587,6 +2589,72 @@ await testAddChecksumMatchIsAccepted();
 
 await testAddUrlIsFetchedByTheClient();
 await testAFailingRunAbortsTheBuild();
+async function testBuildStepsInheritTheForkQueueingWindow(): Promise<void> {
+  const dir = makeBuildContext();
+  const vm = new FakeBuildVM();
+  await applySteps(vm, parseDockerfile("FROM x\nRUN one\nRUN two\n").steps, dir, {
+    queueingTimeout: 900,
+  });
+  assert.ok(vm.commands.length > 0, "expected RUN commands");
+  for (const options of vm.runOptions) {
+    assert.equal(options?.queueing_timeout, 900);
+  }
+}
+
+async function testBuildStepsOmitTheWindowWhenTheForkHadNone(): Promise<void> {
+  const dir = makeBuildContext();
+  const vm = new FakeBuildVM();
+  await applySteps(vm, parseDockerfile("FROM x\nRUN one\n").steps, dir);
+  for (const options of vm.runOptions) {
+    assert.equal(options?.queueing_timeout, undefined);
+  }
+}
+
+async function testForkDockerfileGivesBuildStepsTheQueueingWindow(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    { vm_id: "vm_q", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  );
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_q/runs",
+    200,
+    { stdout: "", stdout_encoding: "utf-8", stderr: "", stderr_encoding: "utf-8", exit_code: 0 },
+  );
+
+  await client(fetch).fork({ dockerfile: "FROM ubuntu\nRUN echo hi\n", queueing_timeout: 900 });
+
+  const run = fetch.calls.find((c) => c.url.endsWith("/runs"));
+  assert.equal(JSON.parse(run!.body!).queueing_timeout, 900);
+}
+
+async function testAFailedDockerfileBuildDeletesTheVm(): Promise<void> {
+  const fetch = new FakeFetch();
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/fork",
+    200,
+    { vm_id: "vm_boom", owner_org_id: "o", created_at: "now", public: false, state: "idle", sessions: [] },
+  );
+  fetch.addJson(
+    (method, url) => method === "POST" && url === "https://test.invalid/api/v1/vms/vm_boom/runs",
+    200,
+    { stdout: "", stdout_encoding: "utf-8", stderr: "nope", stderr_encoding: "utf-8", exit_code: 1 },
+  );
+  fetch.addJson(
+    (method, url) => method === "DELETE" && url === "https://test.invalid/api/v1/vms/vm_boom",
+    200,
+    { deleted: true },
+  );
+
+  await assert.rejects(() => client(fetch).fork({ dockerfile: "FROM ubuntu\nRUN boom\n" }));
+
+  assert.ok(
+    fetch.calls.some((c) => c.method === "DELETE" && c.url.endsWith("/v1/vms/vm_boom")),
+    "a failed build must delete the VM it created",
+  );
+}
+
 testDockerfileParsingBasics();
 testDockerfileRefusalsAreNamed();
 testDockerfileShell();
@@ -2595,3 +2663,7 @@ await testUserWrapsOnlyLaterRuns();
 await testCopyResolvesAgainstTheContext();
 await testCopyRefusesToEscapeTheContext();
 await testCopyIsNotWrappedInTheUserShell();
+await testBuildStepsInheritTheForkQueueingWindow();
+await testBuildStepsOmitTheWindowWhenTheForkHadNone();
+await testForkDockerfileGivesBuildStepsTheQueueingWindow();
+await testAFailedDockerfileBuildDeletesTheVm();

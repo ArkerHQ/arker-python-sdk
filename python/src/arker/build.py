@@ -170,7 +170,14 @@ def _join_workdir(workdir: str, dest: str) -> str:
     return normalised if normalised.startswith("/") else "/" + normalised
 
 
-def _apply_copy(vm: _VM, step: Copy, context_root: str, workdir: str = "/") -> None:
+def _apply_copy(
+    vm: _VM,
+    step: Copy,
+    context_root: str,
+    workdir: str = "/",
+    *,
+    queueing_timeout: int | None = None,
+) -> None:
     resolved: list[str] = []
     for source in step.sources:
         resolved.extend(_resolve_sources(source, context_root))
@@ -209,6 +216,7 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str, workdir: str = "/") -> N
                     vm,
                     f"chmod +x {shlex.quote(target)}",
                     f"COPY {os.path.basename(path)}",
+                    queueing_timeout=queueing_timeout,
                 )
 
     if step.chown:
@@ -216,10 +224,11 @@ def _apply_copy(vm: _VM, step: Copy, context_root: str, workdir: str = "/") -> N
             vm,
             f"chown -R {shlex.quote(step.chown)} {shlex.quote(step.dest)}",
             f"COPY --chown={step.chown}",
+            queueing_timeout=queueing_timeout,
         )
 
 
-def _run_checked(vm: _VM, command: str, what: str) -> None:
+def _run_checked(vm: _VM, command: str, what: str, *, queueing_timeout: int | None = None) -> None:
     """Run `command` and abort the build unless it succeeded.
 
     Docker fails a build on a non-zero `RUN`, and the reason is not tidiness: a
@@ -232,7 +241,7 @@ def _run_checked(vm: _VM, command: str, what: str) -> None:
     earlier step swallowed it — so the command never ran at all. Folding that
     to success would be the same lie in a quieter form.
     """
-    result = vm.run(command)
+    result = vm.run(command, queueing_timeout=queueing_timeout)
     code = getattr(result, "exit_code", 0)
     if code == 0:
         return
@@ -250,38 +259,13 @@ def _run_checked(vm: _VM, command: str, what: str) -> None:
     raise BuildError(f"{what} failed with exit code {code}{detail}")
 
 
-def _run_checked(vm: _VM, command: str, what: str) -> None:
-    """Run `command` and abort the build unless it succeeded.
-
-    Docker fails a build on a non-zero `RUN`, and the reason is not tidiness: a
-    build that continues past a failure applies every later instruction on top
-    of it and hands back a VM that looks built and is not. `RUN npm install`
-    failing must not produce a "successful" image with no node_modules.
-
-    `exit_code is None` is also a failure. It means a prompt ended the command
-    rather than its completion marker — an interpreter left running by an
-    earlier step swallowed it — so the command never ran at all. Folding that
-    to success would be the same lie in a quieter form.
-    """
-    result = vm.run(command)
-    code = getattr(result, "exit_code", 0)
-    if code == 0:
-        return
-    detail = ""
-    for stream in ("stderr", "stdout"):
-        text = (getattr(result, stream, "") or "").strip()
-        if text:
-            detail = f": {text[:400]}"
-            break
-    if code is None:
-        raise BuildError(
-            f"{what} never reached the shell (an interpreter started by an earlier "
-            f"instruction is holding the session){detail}"
-        )
-    raise BuildError(f"{what} failed with exit code {code}{detail}")
-
-
-def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
+def apply_steps(
+    vm: _VM,
+    steps: list[Step],
+    context_root: str,
+    *,
+    queueing_timeout: int | None = None,
+) -> None:
     """Execute every step after ``FROM`` against ``vm``, in file order."""
     current_user: str | None = None
     # Docker resolves a RELATIVE copy destination against the current WORKDIR,
@@ -324,7 +308,13 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
             continue
         elif isinstance(step, Copy):
             # Unwrapped by design — see the module docstring.
-            _apply_copy(vm, step, context_root, current_workdir)
+            _apply_copy(
+                vm,
+                step,
+                context_root,
+                current_workdir,
+                queueing_timeout=queueing_timeout,
+            )
             continue
         elif isinstance(step, (Label, Expose, Entrypoint, Cmd)):
             # Recorded by the parser, no effect on a VM: nothing invokes a VM
@@ -341,4 +331,9 @@ def apply_steps(vm: _VM, steps: list[Step], context_root: str) -> None:
         # does not affect, and this matches that.
         if current_user is not None and isinstance(step, (Run, Add)):
             command = f"su -p {shlex.quote(current_user)} -c {shlex.quote(command)}"
-        _run_checked(vm, command, f"{step.__class__.__name__.upper()} step")
+        _run_checked(
+            vm,
+            command,
+            f"{step.__class__.__name__.upper()} step",
+            queueing_timeout=queueing_timeout,
+        )

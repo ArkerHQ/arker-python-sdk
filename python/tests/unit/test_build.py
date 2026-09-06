@@ -25,11 +25,13 @@ class FakeVM:
     def __init__(self, exit_codes=None):
         self.calls: list[tuple] = []
         self.ignores: list = []
+        self.run_kwargs: list[dict] = []
         # Per-command exit codes, keyed by a substring of the command.
         self.exit_codes = exit_codes or {}
 
     def run(self, command, **kwargs):
         self.calls.append(("run", command))
+        self.run_kwargs.append(kwargs)
         code = 0
         for needle, value in self.exit_codes.items():
             if needle in command:
@@ -395,3 +397,22 @@ def test_absolute_copy_dest_is_unchanged_by_workdir(context):
     vm = build("FROM x\nWORKDIR /app\nCOPY src/ /opt/src\n", context)
     dests = [c[2] for c in vm.calls if c[0] == "sync_dir"]
     assert dests == ["/opt/src"], dests
+
+
+def test_build_steps_inherit_the_fork_queueing_window(context):
+    vm = FakeVM()
+    steps = parse_dockerfile("FROM ubuntu\nRUN echo one\nRUN echo two\n").steps
+
+    apply_steps(vm, steps, str(context), queueing_timeout=900)
+
+    assert vm.commands, "expected the driver to issue RUN commands"
+    assert all(kw.get("queueing_timeout") == 900 for kw in vm.run_kwargs)
+
+
+def test_build_steps_omit_the_window_when_the_fork_had_none(context):
+    vm = FakeVM()
+    steps = parse_dockerfile("FROM ubuntu\nRUN echo one\n").steps
+
+    apply_steps(vm, steps, str(context))
+
+    assert all(kw.get("queueing_timeout") is None for kw in vm.run_kwargs)
