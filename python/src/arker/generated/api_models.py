@@ -1031,8 +1031,6 @@ class RunRequest:
     memory_mib: int | None = None
     disk_mib: int | None = None
     memory_backend: Literal['file', 'uffd'] | None = None
-    acquire: str | None = None
-    release: str | None = None
     signal: Literal['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'] | None = None
     policies: PolicyWriteRequest | None = None
 
@@ -1102,7 +1100,7 @@ class ForkOperation(TypedDict):
     operation_id: Literal['fork']
     method: Literal['POST']
     path: Literal['/v1/fork']
-    parameters: None
+    parameters: ForkParameters
     request: ForkRequest
     success: Vm
     errors: ErrorResponse

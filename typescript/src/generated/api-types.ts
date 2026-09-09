@@ -940,7 +940,7 @@ export interface components {
             session_id?: string | null;
             /** @description Numeric session selector. `session_id` takes precedence when both selectors are sent. */
             session_idx?: number | null;
-            /** @description Command submitted for execution. Omit it only for a resource operation (`acquire` or `release`) or a `signal` request. */
+            /** @description Command submitted for execution. Omit it only for a signal request. */
             command?: string;
             /** @description Maximum command runtime in seconds. Omitted means no limit; the run is killed only if you set a `timeout`. `0` is an explicit spelling of the same thing. This is separate from `time_to_background`, which controls how long the request waits for completion. A run is not complete until everything it spawned has exited, so this is also the bound on a run that leaves a daemon behind; when it fires, the run's processes are killed. */
             timeout?: number | null;
@@ -970,20 +970,6 @@ export interface components {
              */
             memory_backend?: "file" | "uffd" | null;
             /**
-             * @description Comma-separated list of resources to ensure are
-             *     pre-allocated (warm) before the run starts. Values: `cpu`,
-             *     `memory`, `disk`. Example: `"cpu,memory"`.
-             */
-            acquire?: string | null;
-            /**
-             * @description Comma-separated list of resources to release after the run
-             *     finishes. Values: `cpu`, `memory`, `disk`. `"cpu"` frees
-             *     vCPU but keeps memory hot for the next run on this VM;
-             *     `"cpu,memory,disk"` is a full release (closest to a
-             *     suspend).
-             */
-            release?: string | null;
-            /**
              * @description Deliver a signal to the selected persistent session's foreground process group. When set, the service does not execute `command`; it returns a completed acknowledgement with no run id. Use `session_id` or `session_idx` to select the session.
              * @enum {string|null}
              */
@@ -995,7 +981,7 @@ export interface components {
         CompletedRunResponse: {
             /** @description Session used by this run. Use this identifier to inspect or stop work that continues after the initial response. Absent for resource and signal requests that execute no command. */
             session_id?: string | null;
-            /** @description The run's own id. Present for executed runs; absent for operation acks (release/signal) with no run record. */
+            /** @description The run's own id. Present for executed runs; absent for operation acks (signal) with no run record. */
             run_id?: string | null;
             /** @description Lifecycle state — "completed" for this shape. Read this (not the variant) for completion, uniformly with the run-status (`Run`) shape. */
             state?: string;
@@ -1524,14 +1510,14 @@ export interface components {
             memory_mib?: number | null;
             /** @description Disk allocation in mebibytes. */
             disk_mib?: number | null;
-            /** @description Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Reported on GPU platforms such as `x86_64-l40s`. Response-only: a fork sizes GPU with `vgpu`. */
+            /** @description Number of GPU streaming multiprocessors available to the VM on EACH of its GPUs (a per-GPU value, uniform across the VM's devices; see `gpu_count`). Reported on GPU platforms such as `x86_64-l40s`. Response-only: a fork sizes GPU with `vgpu`. `0` means the VM was forked with `vgpu: 0` and holds no GPU; an absent field means the VM has no GPU at all. */
             gpu_sms?: number | null;
-            /** @description GPU memory available to the VM, in MiB, on EACH of its GPUs (a per-GPU value; see `gpu_count`). Reported on GPU platforms. Response-only: a fork sizes GPU with `vgpu`. */
+            /** @description GPU memory available to the VM, in MiB, on EACH of its GPUs (a per-GPU value; see `gpu_count`). Reported on GPU platforms. Response-only: a fork sizes GPU with `vgpu`. `0` means the VM was forked with `vgpu: 0` and holds no GPU; an absent field means the VM has no GPU at all. */
             gpu_vram_mib?: number | null;
-            /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Reported on GPU platforms; absent means 1. Response-only: a fork sizes GPU with `vgpu`, which allocates at most one card. */
+            /** @description Number of physical GPUs attached to the VM. `gpu_sms`/`gpu_vram_mib` are per-GPU values applied uniformly to every attached device, so the VM's total GPU allocation (and quota charge) is `gpu_count x per-GPU`. Reported on GPU platforms. Response-only: a fork sizes GPU with `vgpu`, which allocates at most one card. `0` means the VM was forked with `vgpu: 0` and holds no GPU; an absent field means the VM has no GPU at all. */
             gpu_count?: number | null;
         };
-        /** @description A slice of ONE physical GPU, in eighths of a card: 0.125 through 1. The constraints are the contract — an off-ladder fraction is rejected on the wire, not by the worker that later resolves it. */
+        /** @description A slice of ONE physical GPU, in eighths of a card: 0.125 through 1 — plus 0, which declines a GPU entirely and yields a CPU-only VM. The constraints are the contract — an off-ladder fraction is rejected on the wire, not by the worker that later resolves it. */
         Vgpu: number;
         /** @description Resource shape a caller asks for. GPU size is set with `vgpu`, in eighths of one card; the resolved per-GPU `gpu_sms`/`gpu_vram_mib` are reported back on the machine. */
         ResourcesInput: {
@@ -1634,6 +1620,15 @@ export interface components {
         };
     };
     responses: {
+        /** @description The `Idempotency-Key` was already used for a different request. Reusing a key is only meaningful for retrying the SAME request; a key that arrives with different semantic content is refused rather than answered with the earlier result, which would silently hand back something the caller did not ask for. */
+        Conflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorResponse"];
+            };
+        };
         /** @description The organization must complete billing setup or payment before starting new compute. */
         PaymentRequired: {
             headers: {
@@ -1664,7 +1659,7 @@ export interface components {
         };
     };
     parameters: {
-        /** @description Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict. */
+        /** @description Makes the request safely retryable. Reusing a key with the same request returns the original result — the same run, or the same VM for a fork — instead of doing the work twice; reusing it with a different request returns a conflict. A fork whose key is claimed but still running answers 503 with a retry hint, since the VM it would name does not exist yet. */
         IdempotencyKey: string;
         /** @description VM identifier: a VM id, or a name. Names resolve in the public base-VM registry first (e.g. ubuntu-full), then among the calling organization's own named VMs. Names never have the shape of a VM id. */
         VmId: string;
@@ -1765,7 +1760,10 @@ export interface operations {
     fork: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Makes the request safely retryable. Reusing a key with the same request returns the original result — the same run, or the same VM for a fork — instead of doing the work twice; reusing it with a different request returns a conflict. A fork whose key is claimed but still running answers 503 with a retry hint, since the VM it would name does not exist yet. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1785,6 +1783,7 @@ export interface operations {
                 };
             };
             402: components["responses"]["PaymentRequired"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
@@ -2059,7 +2058,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Makes run submission safely retryable. Reusing a key with the same request returns the original result; reusing it with a different request returns a conflict. */
+                /** @description Makes the request safely retryable. Reusing a key with the same request returns the original result — the same run, or the same VM for a fork — instead of doing the work twice; reusing it with a different request returns a conflict. A fork whose key is claimed but still running answers 503 with a retry hint, since the VM it would name does not exist yet. */
                 "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path: {
@@ -2093,6 +2092,7 @@ export interface operations {
                 };
             };
             402: components["responses"]["PaymentRequired"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["UnsupportedOperation"];
             default: components["responses"]["Error"];
         };
